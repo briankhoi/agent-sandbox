@@ -1,0 +1,62 @@
+diff --git a/dev/tools/create-kind-cluster b/dev/tools/create-kind-cluster
+index 70dd715..b74866d 100755
+--- a/dev/tools/create-kind-cluster
++++ b/dev/tools/create-kind-cluster
+@@ -23,7 +23,7 @@ import textwrap
+ from shared import utils
+ 
+ 
+-def create_kind_config(kubelet_verbosity, containerd_loglevel=None):
++def create_kind_config(kubelet_verbosity, containerd_loglevel=None, workers=0):
+     """Create a kind config with kubelet verbosity and containerd settings."""
+     config = textwrap.dedent(f"""\
+         kind: Cluster
+@@ -35,13 +35,21 @@ def create_kind_config(kubelet_verbosity, containerd_loglevel=None):
+             kind: ClusterConfiguration
+             apiServer:
+               extraArgs:
+-                - name: "enable-admission-plugins"
+-                  value: "NodeRestriction,OwnerReferencesPermissionEnforcement"
++                enable-admission-plugins: "NodeRestriction,OwnerReferencesPermissionEnforcement"
+           - |
+             kind: KubeletConfiguration
+             logging:
+               verbosity: {kubelet_verbosity}
+         """)
++    # Extra worker nodes, appended to the `nodes:` list before any top-level
++    # keys below. A single-node cluster's only node carries the
++    # control-plane label, which test/stress's capacity accounting treats as
++    # having zero schedulable pod slots (see inspectCluster in
++    # test/stress/main.go) -- that reads as a 0-capacity cluster and fails
++    # the tool's preflight check, so stress testing needs at least one
++    # worker node.
++    for _ in range(workers):
++        config += "- role: worker\n"
+     if containerd_loglevel:
+         config += textwrap.dedent(f"""\
+             containerdConfigPatches:
+@@ -67,6 +75,9 @@ def main():
+                         help="Containerd log level (default: debug). Set to empty string to skip.")
+     parser.add_argument("--kubelet-verbosity", type=int, default=8,
+                         help="Kubelet verbosity level (requires cluster creation, not applied to existing clusters).")
++    parser.add_argument("--workers", type=int, default=0,
++                        help="Number of additional worker nodes beyond the control-plane node "
++                             "(requires cluster creation, not applied to existing clusters).")
+     parser.add_argument("--container-engine",
+                         choices=["docker", "podman"],
+                         default=os.environ.get("CONTAINER_ENGINE", "docker"),
+@@ -100,12 +111,12 @@ def main():
+         create_cmd = ["kind", "create", "cluster", "--name", args.name]
+ 
+         # Create a temporary config file with kubelet verbosity and containerd settings
+-        config_content = create_kind_config(args.kubelet_verbosity, args.containerd_loglevel)
++        config_content = create_kind_config(args.kubelet_verbosity, args.containerd_loglevel, args.workers)
+         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+             f.write(config_content)
+             config_path = f.name
+ 
+-        print(f"Using kind config with kubelet verbosity: {args.kubelet_verbosity}")
++        print(f"Using kind config with kubelet verbosity: {args.kubelet_verbosity}, {args.workers} worker node(s)")
+         create_cmd.extend(["--config", config_path])
+ 
+         try:

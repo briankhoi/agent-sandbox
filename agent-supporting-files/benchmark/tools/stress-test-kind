@@ -1,0 +1,88 @@
+#!/bin/bash
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# stress-test-kind builds this checkout, deploys it to a local kind cluster,
+# and runs the test/stress load generator against it -- a local, laptop-sized
+# counterpart to test/benchmarks/scenarios/benchmarks-kops-gcp/run (the CI
+# recipe that runs the same tool against a multi-node kOps/GCP cluster and
+# renders the stress-test HTML report seen from presubmit jobs).
+#
+# Uses a dedicated kind cluster ("agent-sandbox-stress" by default) rather
+# than the "agent-sandbox" cluster from `make deploy-kind`: test/stress's
+# capacity accounting counts only worker nodes (control-plane nodes are
+# excluded -- see isControlPlaneNode in test/stress/main.go), so a
+# single-node kind cluster reads as zero spare pod capacity and fails the
+# tool's preflight check ("... but the cluster only has 0 spare pod
+# slots"). This cluster always gets at least one real worker node.
+#
+# Phase shape (fill -> probe -> descending throughput-mif sweep) matches the
+# CI recipe; magnitudes are cut down to fit a laptop-sized kind cluster
+# instead of an 80-node kOps cluster.
+#
+# All STRESS_* / CONTAINER_ENGINE env vars below can be overridden, e.g.:
+#   STRESS_KIND_WORKERS=2 STRESS_THROUGHPUT_COUNT=200 ./dev/tools/stress-test-kind
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}"
+
+KIND_CLUSTER="${STRESS_KIND_CLUSTER:-agent-sandbox-stress}"
+CONTAINER_ENGINE="${CONTAINER_ENGINE:-docker}"
+KUBECONFIG_PATH="${REPO_ROOT}/bin/stress-KUBECONFIG"
+export KUBECONFIG="${KUBECONFIG_PATH}"
+
+echo "Creating/reusing kind cluster '${KIND_CLUSTER}' (1 control-plane + ${STRESS_KIND_WORKERS:-1} worker node(s))..."
+create_args=("${KIND_CLUSTER}" "--workers=${STRESS_KIND_WORKERS:-1}" "--kubeconfig=${KUBECONFIG_PATH}" "--container-engine=${CONTAINER_ENGINE}")
+if [[ "${STRESS_RECREATE_CLUSTER:-false}" == "true" ]]; then
+  create_args+=("--recreate")
+fi
+./dev/tools/create-kind-cluster "${create_args[@]}"
+
+echo "Building and loading images into '${KIND_CLUSTER}'..."
+./dev/tools/push-images --image-prefix=kind.local/ --kind-cluster-name="${KIND_CLUSTER}" --container-engine="${CONTAINER_ENGINE}" --controller-only
+
+echo "Deploying agent-sandbox-controller..."
+./dev/tools/deploy-to-kube --image-prefix=kind.local/
+
+echo "Waiting for controller to be ready..."
+kubectl rollout status deployment agent-sandbox-controller --namespace agent-sandbox-system --timeout=5m
+
+STRESS_OUTPUT_DIR="${STRESS_OUTPUT_DIR:-${REPO_ROOT}/bin/stress-test}"
+rm -rf "${STRESS_OUTPUT_DIR}"
+mkdir -p "${STRESS_OUTPUT_DIR}"
+
+# Phase magnitudes sized for a 1-control-plane + N-worker kind cluster at the
+# kubelet default of 110 pods/node: with 1 worker (110 spare slots), peak
+# concurrent pods here (fill 5 + throughput-mif 30 = 35) stays well under the
+# tool's 90%-of-spare-capacity warning threshold. Raise --workers and the
+# phase counts together if you want a heavier local run.
+echo "Running stress test against kind cluster '${KIND_CLUSTER}'..."
+# shellcheck disable=SC2086
+go run ./test/stress \
+  --phases="${STRESS_PHASES:-fill,probe,throughput-mif:30,throughput-mif:20,throughput-mif:10,throughput-mif:5}" \
+  --fill-per-node="${STRESS_FILL_PER_NODE:-5}" \
+  --probe-count="${STRESS_PROBE_COUNT:-10}" \
+  --throughput-count="${STRESS_THROUGHPUT_COUNT:-100}" \
+  --throughput-min-seconds="${STRESS_THROUGHPUT_MIN_SECONDS:-20}" \
+  --create-concurrency="${STRESS_CREATE_CONCURRENCY:-10}" \
+  --timeout="${STRESS_TIMEOUT:-10m}" \
+  --output-dir="${STRESS_OUTPUT_DIR}" \
+  ${STRESS_EXTRA_ARGS:-}
+
+echo "Stress test complete. Raw results in ${STRESS_OUTPUT_DIR}"
+echo "Kubeconfig for this cluster: ${KUBECONFIG_PATH}"
