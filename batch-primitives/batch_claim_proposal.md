@@ -1,11 +1,11 @@
 <!-- # KEP-NNNN: Sandbox Batch Claim API for SDK -->
 # Sandbox Batch Claim API for SDK
 
-## 1. Summary
+## Summary
 
 This document (which may later be changed to a KEP) introduces to the SDKs `ClaimBatch`, a method that claims N `Sandboxes` as a single batch and returns a `Batch` handle for interacting with them, giving SDK users consistent, reliable, and efficient batch claiming instead of the duplicated fan-out, polling, and cleanup logic every task currently manually implements. A batch may span several `SandboxWarmPools`, since the sandboxes a single run needs are not always the same shape.
 
-## 2. Motivation
+## Motivation
 
 Currently, work that involves claiming N `Sandboxes` as a batch, most notably in RL rollouts, a batch-eval harness, or our stress/benchmark tests, has to repeatedly and manually implement fan-out, polling, quorum, retry, and cleanup logic. Because the current SDK functions to claim `Sandboxes` were not designed with large scale claiming in mind, current efforts have suboptimal effects, such as (but not limited to):
 
@@ -13,7 +13,7 @@ Currently, work that involves claiming N `Sandboxes` as a batch, most notably in
 - A driver that dies partway through a fan-out leaks every claim it already created, until a user notices and cleans it up
 - Readiness costs a watch stream per claim, and with the Python SDK in particular using HTTP/1.1, we have one TCP connection per claim, held open for the entire wait. These connections starve the client's connection pool, so at scale the create path stops reusing connections and dials a fresh one per claim.
 
-## 3. Proposal
+## Proposal
 
 This proposal introduces `ClaimBatch`, a method that claims N sandboxes as a single batch and returns a `Batch` handle for interacting with them. The SDK gains new methods and operators grant drivers one Role; they also optionally deploy one stateless reaper CronJob with another Role.
 
@@ -31,9 +31,9 @@ Non-goals:
 - No placement policy. A batch takes explicit per-pool sizes from the caller and never decides for itself how to spread a total across interchangeable pools.
 - A batch is scoped to one cluster and one namespace. Multi-cluster rollouts compose K batches through the caller's placement, as the RL example already does.
 
-## 4. Design
+## Design
 
-### 4.1 Batch Model
+### Batch Model
 
 A batch organizes a set of claims around a singular batch id, and a shared cleanup path. It is composed of one or more `BatchGroups`, each naming a warmpool and how many `Sandboxes` to claim from it. Groups exist to allow for workloads which entail claiming many sandboxes across different images (e.g. eval harnesses).
 
@@ -46,7 +46,7 @@ A `Batch` has five core properties:
 
 `Batch` is designed as a handle following the same implemented pattern [KEP 359](../docs/keps/359-refactor-python-sdk/README.md) established for `Sandbox` in the Python SDK: obtained from a factory method (`ClaimBatch`/`GetBatch`), identified by a server-side id, re-attachable from a different process, and torn down by an explicit function (`Release`/`Detach`).
 
-### 4.2 Batch Lifecycle
+### Batch Lifecycle
 
 #### Paced Creation
 
@@ -85,7 +85,7 @@ To calculate quorum efficiently, we replace the existing behavior of having a wa
 
 Cache updates trigger a level-triggered reconciliation loop that tracks claimed resources in a local `dispatched` set to guarantee each claim is returned to the caller at most once. When `WaitForQuorum` resolves, it populates this set with the initial `MinReady` claims and returns them synchronously. Any remaining or late-arriving claims that reach Ready are added to `dispatched` and streamed over `Events`, ensuring members returned to the caller are never duplicates.
 
-`Events` closes when the initial fill "settles", which we define as no initial-fill member being able to still arrive (i.e. either ready, terminal or lost). This allows a caller write `for event in batch.events()` as its dispatch loop and finish as soon as the work is done.
+`Events` closes when the initial fill "settles", which we define as no initial-fill member being able to still arrive (i.e. either ready, terminal or lost). This allows a caller to write `for event in batch.events()` as its dispatch loop and finish as soon as the work is done.
 
 #### Liveness
 
@@ -109,7 +109,7 @@ There are three ways a batch is cleaned up:
 2. Where the driver runs no code at all (`SIGKILL`, OOM kill, node preemption), the Lease is no longer renewed and the reaper issues the same label-scoped `deletecollection` to delete the claims, then delete the Lease.
 3. The `shutdownTime` on the claim passes, and the claim is consequently deleted.
 
-### 4.3 Batch Lifecycle Diagram
+### Batch Lifecycle Diagram
 
 This diagram walks through how `ClaimBatch` builds and runs the `Batch` handle end to end:
 
@@ -144,7 +144,7 @@ flowchart TD
     Renew -.->|driver dies at<br/>any point:<br/>renewals stop| NoRenew
 ```
 
-### 4.4 RBAC
+### RBAC
 
 As a batch entails access to `deletecollection` for `SandboxClaims` and create/get/update/delete for `coordination.k8s.io` Leases, a Role will be needed to grant the driver further permissions to these.
 
@@ -197,7 +197,7 @@ rules:
     - `detach`: Stops the informer and renewal but leaves the claims alive for a later `get_batch`.
     - `release_not_ready`: Deletes only the members that never reached `Ready`
 
-### 5.2 Python
+### Python
 Helper/supporting classes:
 ```python
 class BatchGroup(BaseModel):
@@ -289,16 +289,16 @@ class AsyncSandboxBatch:
 # There will also be a SandboxBatch variant which is similar to above, but uses Iterator over AsyncIterator, contains no async functions, and returns a Sandbox type for connect()
 ```
 
-### 5.3 Go
+### Go
 
 The Go SDK mirrors the Python SDK additions, with the following differences:
 - Extends the single client and adds a single `Batch` struct as there is no async/sync class differences
 - `claim_batch`'s keyword arguments become a `BatchOptions` struct, with the groups in a required `Groups []BatchGroup` field.
 - The event iterator becomes a receive-only channel
 
-## 6. SDK Usage
+## SDK Usage
 
-### 6.1 Python
+### Python
 
 Examples use the async Python class, and the `SandboxClient`/`SandboxBatch` variant is the same code with `await` removed and `for` in place of `async for`.
 
@@ -411,7 +411,7 @@ finally:
     await batch.release()
 ```
 
-### 6.2 Go
+### Go
 
 Go's SDK usage shares the same structure as Python's usage above, but with some syntax differences due to language/library differences.
 
@@ -514,9 +514,9 @@ We make similar changes for `reuse_git_restore_sandbox` and the async executor v
 
 #### Rollout Waves: Cohort-Based RL Execution
 
-For SWE-bench-style RL workloads where cohorts of $G$ tasks target problem environments, we introduce the `rollout_wave` executor. Selected via `wave=True` on `fleet.run()` (mutually exclusive with `recycle=True`), it provides cohort-based batch allocation for rollout waves.
+For SWE-bench-style RL workloads where cohorts of G tasks target problem environments, we introduce the `rollout_wave` executor. Selected via `wave=True` on `fleet.run()` (mutually exclusive with `recycle=True`), it provides cohort-based batch allocation for rollout waves.
 
-While `BatchClaimer` expands lazily from `size=0` to bound active claims to worker concurrency, `rollout_wave` declares each pool's full cohort size (`size=G`) upfront. This creates all $G$ `SandboxClaim` resources simultaneously, allowing parallel claim creation.
+While `BatchClaimer` expands lazily from `size=0` to bound active claims to worker concurrency, `rollout_wave` declares each pool's full cohort size (`size=G`) upfront. This creates all G `SandboxClaim` resources simultaneously, allowing parallel claim creation.
 
 `rollout_wave` supports two dispatch paradigms via `sync`:
 - `sync=True` (Synchronous On-Policy RL): Uses `batch.wait_for_quorum()` to block until `min_ready` members are Ready (e.g. PPO/GRPO trajectory collection)
@@ -609,70 +609,73 @@ Currently, claiming a `Sandbox` involves:
 
 Through the use of batch claiming, we see improvements in control-plane connection overhead, watch resource saturation, and lifecycle management efficiency compared to the current approach:
 
-| Dimension | Current (`CreateSandbox` $\times\ N$) | Batch Claim (`ClaimBatch`) |
+| Dimension | Current (`CreateSandbox` x N) | Batch Claim (`ClaimBatch`) |
 | :--- | :--- | :--- |
-| **Claim Creation** | $N$ creates (Go: $+N$ gets) | $N$ creates |
-| **Sandbox Pod Checks** | $N$ list calls (Go only) | $0$ (mirrored onto claim status) |
-| **Readiness Watches** | $N$ (Go: $2N$, Python: $N$) | 1 watch stream across all groups |
-| **Control-Plane Connections** | $O(N)$ dialed/discarded (Python)<br>$\lceil 2N/100 \rceil$ streams (Go) | $O(\text{MaxInFlight})$, reused |
-| **Batch Deletion** | $N$ individual `Delete` calls | **Fixed Cohort:** 1 deletecollection<br>**Rolling:** $M$ individual deletes ($M \le N$) $+ 1$ deletecollection  |
+| **Claim Creation** | N creates (Go: +N gets) | N creates |
+| **Sandbox Pod Checks** | N list calls (Go only) | 0 (mirrored onto claim status) |
+| **Readiness Watches** | N (Go: 2N, Python: N) | 1 watch stream across all groups |
+| **Control-Plane Connections** | O(N) dialed/discarded (Python)<br>ceil(2N/100) streams (Go) | O(MaxInFlight), reused |
+| **Batch Deletion** | N individual `Delete` calls | **Fixed Cohort:** 1 deletecollection<br>**Rolling:** M individual deletes (where M <= N) + 1 deletecollection  |
 
 #### Transport & Connection Scaling
 
-Under the current individual claim approach, both SDKs hit connection bottlenecks well before $N$ gets large due to unmanaged defaults:
+Under the current individual claim approach, both SDKs hit connection bottlenecks well before N gets large due to unmanaged defaults:
 - **Control-Plane Watch Saturation:** Long-lived readiness watches for each individual claim exhaust client connection budgets. The Python SDK [defaults](
 https://github.com/kubernetes-client/python/blob/master/kubernetes/client/configuration.py#L334-L337) to a `connection_pool_maxsize` of `cpu_count() * 5` and sets `block=False` so new requests/watches dial a new connection, incurring connection setup overhead. Meanwhile, the Go SDK has a 100 concurrent stream HTTP/2 cap and relies on the `client-go` defaults of  `QPS: 5` and `Burst: 10`, causing client-side queuing during create bursts.
-- **Data-Plane Host Eviction:** SDK connectors (to Sandboxes) limit connection pooling to relatively low defaults (see data plane section below), evicting sockets when communicating across hundreds of distinct sandbox pod IPs.
+- **Data-Plane Host Eviction:** Existing SDK connectors use conservative default connection limits (e.g., Python sync capping cached host pools at 10), causing active socket eviction when communicating across hundreds of distinct sandbox pod IPs.
 
-Batch claiming helps frees up connections through mechanisms such as eliminating per-claim readiness checks and instead, using a single informer. To further support connection scalability, we propose the following transport changes:
+Batch claiming helps free up connections through mechanisms such as eliminating per-claim readiness checks and instead, using a single informer. To further support connection scalability, we propose the following transport changes:
 
 **Control Plane (Kubernetes API):**
-- **Python Pool Sizing:** With watches no longer persistently claiming connections, we have `K8sHelper` expand `connection_pool_maxsize` and sets `block=True` with an explicit `pool_timeout` so requests queue under backpressure instead of thrashing TCP handshakes. If a custom `api_client` is injected ([(per the work being done in #1509)](https://github.com/kubernetes-sigs/agent-sandbox/pull/1509)), `ClaimBatch` validates that its pool accommodates `max_in_flight` and raises if undersized.
-* **Go Concurrency:** For claim creation beyond single-connection stream limits, `ClaimBatch` raises `client-go`'s `QPS` and `Burst`, as well as shards create requests across distinct connections using custom `Dial` functions (mirroring the agent-sandbox-controller's [established pattern](https://github.com/kubernetes-sigs/agent-sandbox/blob/527d9346fe1d237dea5c003f3c720531c7bab1df/cmd/agent-sandbox-controller/transport.go#L32-L61)).
+Because clients are instantiated before batch parameters are known, connection budgets cannot be dynamically resized at claim time. Instead, both SDKs adopt a construction-time configuration with runtime validation model:
+- Python: 
+  - Add an explicit `pool_size: int | None = None` parameter to `SandboxClient()` / `AsyncSandboxClient()` to configure `connection_pool_maxsize`.
+  - At runtime, `ClaimBatch` validates that `connection_pool_maxsize >= max_in_flight` (accounting for custom injected `api_client`s via [#1509](https://github.com/kubernetes-sigs/agent-sandbox/pull/1509) as well). If undersized, it raises an error instructing the caller to either lower `max_in_flight` or construct `SandboxClient` with a sufficient `pool_size`.
+- Go: 
+  - `NewK8sHelper` already accepts a custom `*rest.Config`, so callers supply a config with elevated `QPS`/`Burst` and transport sharding (mirroring agent-sandbox-controller's [established pattern](https://github.com/kubernetes-sigs/agent-sandbox/blob/527d9346fe1d237dea5c003f3c720531c7bab1df/cmd/agent-sandbox-controller/transport.go#L32-L61)).
+  - `ClaimBatch` validates that `Burst >= max_in_flight`.
 
 **Data Plane (Sandbox Endpoints):**
 Existing SDK connectors use unmanaged pool defaults that evict active sockets when connecting to many sandbox endpoints:
   - *Python sync (`requests` library):* Defaults to [pool_connections=10](https://github.com/psf/requests/blob/dae7ef63b4df6eded86637f251fc4e3a06c3b479/src/requests/adapters.py#L80), evicting the least-recently-used host's entire pool once a batch exceeds 10 distinct pod IPs.
   - *Python async (`httpx`):* Uses [max_connections=100 and max_keepalive_connections=20](https://github.com/encode/httpx/blob/b5addb64f0161ff6bfe94c124ef76f6a1fba5254/httpx/_config.py#L247) across all origins, throttling concurrency across larger cohorts.
-  - *Go (`http.Transport`):* Sets [MaxIdleConns: 100 and MaxIdleConnsPerHost: 10](https://github.com/briankhoi/agent-sandbox/blob/84236592ab60f214ae71f02c42ccff488c620b55/clients/go/sandbox/connector.go#L112-L113), closing idle sockets as concurrent endpoints outgrow the cache.
+  - *Go (`http.Transport`):* Sets [MaxIdleConns: 100 and MaxIdleConnsPerHost: 10](https://github.com/kubernetes-sigs/agent-sandbox/blob/527d9346fe1d237dea5c003f3c720531c7bab1df/clients/go/sandbox/connector.go#L114-L115), closing idle sockets as concurrent endpoints outgrow the cache.
 
-To fix this, we have `batch.connect()` shares a single transport across the entire batch with the respective capacity knob sized to $\approx N$ (`pool_connections` in Python sync, `max_connections` / `max_keepalive_connections` in Python async, and `MaxIdleConns` in Go).
+To fix this, `batch.connect()` shares a single connection pool across the entire batch with capacity sized to ~N (`pool_connections` in Python sync, `max_connections` / `max_keepalive_connections` in Python async, and `MaxIdleConns` in Go) to maintain persistent connections to each unique sandbox IP and avoid socket churn between steps.
 
 #### Batch Scaling
 
 We analyze batch resource costs at scale across 4 axes:
 
-- **Batch Size ($N$):**
-  - **Informer Memory:** Scales as $O(N)$, as the client stores every claim in local memory to track its readiness and status.
-  - **Watch Event Volume:** Emits $O(N)$ events over the batch lifecycle (claim creation, status phase changes, deletion).
-- **Warm Pool Groups ($G$):**
-  - Supporting $G$ groups in a single batch consolidates multi-image rollouts into a single label-scoped watch and a single `Lease` per cluster, avoiding the overhead of managing $G$ independent single-pool batches.
-- **Active Batches ($B$):**
-  - Background reaper overhead scales with $O(B)$ as it tracks 1 per active batch.
-  - The reaper's cache memory and watch event volume scale as $O(B)$ as the cache stores one Lease object and the watch event produces $O(1)$ renewal events per active batch.
+- **Batch Size (N):**
+  - **Informer Memory:** Scales as O(N), as the client stores every claim in local memory to track its readiness and status.
+  - **Watch Event Volume:** Emits O(N) events over the batch lifecycle (claim creation, status phase changes, deletion).
+- **Warm Pool Groups (G):**
+  - Supporting G groups in a single batch consolidates multi-image rollouts into a single label-scoped watch and a single `Lease` per cluster, avoiding the overhead of managing G independent single-pool batches.
+- **Active Batches (B):**
+  - Background reaper overhead scales with O(B) as it tracks 1 Lease per active batch.
+  - The reaper's cache memory and watch event volume scale as O(B) as the cache stores one Lease object and the watch event produces O(1) renewal events per active batch.
 - **Batch Lifetime (Time):**
-  - The write overhead of lease renewal should effectively be $O(1)$ over time, as a batch emits only 1 write to the batch's single Lease object per `RenewInterval`.
+  - The write overhead of lease renewal should effectively be O(1) over time, as a batch emits only 1 write to the batch's single Lease object per `RenewInterval`.
 
 #### Client-side vs. Server-side Scaling
 
-As batch claim is implemented as a client-side feature, we investigate the bottlenecks that may arise at large $N$ claim volume:
+As batch claim is implemented as a client-side feature, we investigate the bottlenecks that may arise at large N claim volume:
 
-1. **Teardown Lag:** While the client issues a single $O(1)$ `DeleteCollection` API request, downstream pod termination is bottlenecked by physical kubelet graceful termination and Kubernetes cluster garbage collection throughput ($\sim 200\text{ pods/s}$). For a batch of $N = 20{,}000$, final pod cleanup incurs on the order of $\sim 100\text{ s}$ of downstream draining latency that the client process must wait on if monitoring termination to completion.
-2. **Client Fan-Out Latency & API Throttling:** Creating $N$ claims requires $N$ individual HTTP POST requests from the client. Even with connection pooling and `MaxInFlight` pacing, issuing tens of thousands of requests from an external client over network hops takes considerable wall-clock time and risks triggering API Priority and Fairness (APF) rate-limiting on the API server.
-3. **Slow Cleanup:** Because liveness is governed by client heartbeat renewals, an unexpected driver crash (`SIGKILL` or host failure) leaves $N$ sandboxes idling until the `Lease` times out and the background reaper executes. With an early crash failure, a significant amount of cluster compute and quota could be tied up and idle for an extensive amount of time, especially if `work_budget` is set high.
-4. **Client-Side Informer Memory:** Retaining tens of thousands of claim states in memory for event streaming and quorum tracking increases client memory footprint, creating OOM risks on resource-constrained runner pods.
+1. **Client Fan-Out Latency & API Throttling:** Creating N claims requires N individual HTTP POST requests from the client. Even with connection pooling and `MaxInFlight` pacing, issuing tens of thousands of requests from an external client over network hops takes considerable wall-clock time and risks triggering API Priority and Fairness (APF) rate-limiting on the API server.
+2. **Slow Cleanup:** Because liveness is governed by client heartbeat renewals, an unexpected driver crash (`SIGKILL` or host failure) leaves N sandboxes idling until the `Lease` times out and the background reaper executes. With an early crash failure, a significant amount of cluster compute and quota could be tied up and idle for an extensive amount of time, especially if `work_budget` is set high.
+3. **Client-Side Informer Memory:** Retaining tens of thousands of claim states in memory for event streaming and quorum tracking increases client memory footprint, creating OOM risks on resource-constrained runner pods.
 
 In contrast to these scaling issues from client-side batching, a dedicated server-side batch CRD would instead offload claim dispatch, aggregation, and lifecycle tracking to cluster-local controllers. This would mean:
-- The client issues a single batch create request for $N$ claims. While total creations remain unchanged as work shifts to the controller, this significantly reduces cross-network round-trips for external drivers and allows claim fan-out to run under higher in-cluster APF priority tiers.
-- The client's watch would only be on a single `SandboxBatch` object for readiness, rather than a single watch on $N$ claims
+- The client issues a single batch create request for N claims. While total creations remain unchanged as work shifts to the controller, this significantly reduces cross-network round-trips for external drivers and allows claim fan-out to run under higher in-cluster APF priority tiers.
+- The client's watch would only be on a single `SandboxBatch` object for readiness, rather than a single watch on N claims
 - For in-cluster runner jobs, a CRD can bind claims to the running Job/Pod via `ownerReferences` so Kubernetes garbage collection automatically cleans up the claims (and their underlying sandboxes) upon driver termination, eliminating the need for a Lease and background reaper.
 
 Due to these benefits, we should re-evaluate implementing batch claiming server-side when client-side request latency, memory overhead, or the cost of maintaining reaper and Lease become operational bottlenecks.
 
-## 8. Alternatives
+## Alternatives
 
-- Single-pool batches: A caller could claim one batch per pool (for $G$ pools) and coordinate them itself. However, that would lead to $G$ Leases, $G$ informers, and $G$ `deletecollection` calls.
-- Server-side CRD: A server-side CRD would cleanup without a reaper and survive death natively, however does not contribute to the connection and watch cost optimizations that a client-side implementation would introduce.
+- Single-pool batches: A caller could claim one batch per pool (for G pools) and coordinate them itself. However, that would lead to G Leases, G informers, and G `deletecollection` calls.
 - Server-Side Batch CRD: A server-side CRD would cleanup without a reaper and survive death natively, but introduces upgrade burden (CRD management/versioning, an extra controller, RBAC, controller deployments). Callers still require client-side pacing, transport pooling, and crash handling regardless.
-- Liveness replacements: Instead of creating a single `Lease` per batch, liveness could be tracked either by a heartbeat timestamp directly on each claim's status. We reject this as it would lead to $N$ writes every renewal interval.
+- Liveness replacements: Instead of creating a single `Lease` per batch, liveness could be tracked either by a heartbeat timestamp directly on each claim's status. We reject this as it would lead to N writes every renewal interval.
 - Batch metadata location: We could combine all batch group information and write it only once, either on the `Lease` object directly, or a `ConfigMap` object that a `Lease` would reference. We reject the former as annotations are rejected if they have size > 256 KiB which would cap out at around ~3-5k groups, and we reject the latter, as it would entail an additional object for the reaper to maintain. We also accept the tradeoff of redundant information writing on each claim to prevent a single point of failure.
