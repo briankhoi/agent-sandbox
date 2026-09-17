@@ -610,6 +610,11 @@ results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutD
 results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.STREAM, concurrency=64)
 ```
 
+**Adjacent Paradigms:** These group and dispatch primitives also can be used for other post-training and evaluation workflows without any additional changes:
+- LVR: Verifier engines (test harnesses, formal proof checkers) execute under `GROUP` or `STREAM`, isolating verifier crashes or timeouts from the rest of the evaluation wave.
+- Best-of-N & DPO Sampling: Form prompt-level cohorts sized to N or 2 using `GROUP`, collecting independent solution sets per prompt without cross-task head-of-line blocking.
+- Synthetic Data & Distillation: Offline agent trajectory generation (recording multi-step shell commands, file edits, and tool observations) streams continuously via `STREAM` with no readiness barriers.
+
 ### Scalability
 
 #### Batch Claim Improvements
