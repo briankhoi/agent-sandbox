@@ -631,6 +631,8 @@ Through the use of batch claiming, we see improvements in control-plane connecti
 | **Control-Plane Connections** | O(N) dialed/discarded (Python)<br>ceil(2N/100) streams (Go) | O(MaxInFlight), reused |
 | **Batch Deletion** | N individual `Delete` calls | **Fixed Cohort:** 1 deletecollection<br>**Rolling:** M individual deletes (where M >= N, the total replacements across the run) + 1 deletecollection  |
 
+Note that for deletion, although batch uses a single `deletecollection` call, this does not minimize the amount of deletions overall, as the work is now migrated to the controller.
+
 #### Transport & Connection Scaling
 
 Under the current individual claim approach, both SDKs hit connection bottlenecks well before N gets large due to unmanaged defaults:
