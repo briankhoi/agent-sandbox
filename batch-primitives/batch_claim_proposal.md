@@ -653,7 +653,7 @@ Because clients are instantiated before batch parameters are known, connection b
   - Add an explicit `pool_size: int | None = None` parameter to `SandboxClient()` / `AsyncSandboxClient()` to configure `connection_pool_maxsize`.
   - At runtime, `ClaimBatch` validates that `connection_pool_maxsize >= max_in_flight` (accounting for custom injected `api_client`s via [#1509](https://github.com/kubernetes-sigs/agent-sandbox/pull/1509) as well). If undersized, it raises an error instructing the caller to either lower `max_in_flight` or construct `SandboxClient` with a sufficient `pool_size`.
 - Go: 
-  - `NewK8sHelper` already accepts a custom `*rest.Config`, so callers supply a config with elevated `QPS`/`Burst` and transport sharding (mirroring agent-sandbox-controller's [established pattern](https://github.com/kubernetes-sigs/agent-sandbox/blob/527d9346fe1d237dea5c003f3c720531c7bab1df/cmd/agent-sandbox-controller/transport.go#L32-L61)).
+  - `NewK8sHelper` already accepts a custom `*rest.Config`, so callers supply a config with elevated `QPS`/`Burst`. We also apply transport sharding (mirroring agent-sandbox-controller's [established pattern](https://github.com/kubernetes-sigs/agent-sandbox/blob/527d9346fe1d237dea5c003f3c720531c7bab1df/cmd/agent-sandbox-controller/transport.go#L32-L61)).
   - `ClaimBatch` validates that `Burst >= max_in_flight`.
 
 **Data Plane (Sandbox Endpoints):**
@@ -662,7 +662,9 @@ Existing SDK connectors use unmanaged pool defaults that evict active sockets wh
   - *Python async (`httpx`):* Uses [max_connections=100 and max_keepalive_connections=20](https://github.com/encode/httpx/blob/b5addb64f0161ff6bfe94c124ef76f6a1fba5254/httpx/_config.py#L247) across all origins, throttling concurrency across larger cohorts.
   - *Go (`http.Transport`):* Sets [MaxIdleConns: 100 and MaxIdleConnsPerHost: 10](https://github.com/kubernetes-sigs/agent-sandbox/blob/527d9346fe1d237dea5c003f3c720531c7bab1df/clients/go/sandbox/connector.go#L114-L115), closing idle sockets as concurrent endpoints outgrow the cache.
 
-To fix this, `batch.connect()` shares a single connection pool across the entire batch with capacity sized to ~N (`pool_connections` in Python sync, `max_connections` / `max_keepalive_connections` in Python async, and `MaxIdleConns` in Go) to maintain persistent connections to each unique sandbox IP and avoid socket churn between steps.
+To fix this, we have `batch.connect()` share a single connection pool across the entire batch with capacity sized to batch concurrency N (via `pool_connections` in Python sync, `max_connections` / `max_keepalive_connections` in Python async, and `MaxIdleConns` in Go) to maintain persistent connections to each unique sandbox IP and avoid socket churn between steps.
+
+We accept the tradeoff that a N sized connection pool would result in more resource usage (N file descriptors and additional memory usage in the kernel's socket buffers), to avoid the much steeper cost of connection thrashing (repeated TCP/TLS handshakes across multi-turn agent steps, latency spikes, and ephemeral port exhaustion from lingering TIME_WAIT sockets).
 
 #### Batch Scaling
 
