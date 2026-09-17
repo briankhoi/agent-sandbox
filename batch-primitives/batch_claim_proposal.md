@@ -180,9 +180,9 @@ rules:
   verbs: ["list", "deletecollection"]
 ```
 
-## 5. SDK API Additions
+## SDK API Additions
 
-### 5.1 Core Batch Methods
+### Core Batch Methods
 
 - `claim_batch`: Create a new batch, returning a `Batch` handle
 - `get_batch`: Return a batch handle (no create) of an existing batch by id, resuming lease renewal
