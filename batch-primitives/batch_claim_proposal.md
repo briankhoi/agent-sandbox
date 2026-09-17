@@ -73,17 +73,18 @@ Ordinals cannot be reused, as a released claim may still be terminating when its
 
 #### Events and Quorum
 
-A batch provides two ways to consume ready claims: streaming them as they become ready via an `Events` channel, or waiting for a baseline threshold of ready claims via `WaitForQuorum`. These mechanisms can be used independently or combined.
+A batch provides three ways to consume ready claims: streaming them as they become ready via an `Events` channel, waiting for a baseline threshold of ready claims across the whole batch via `WaitForQuorum`, or consuming each group's own threshold independently via `IterReadyGroups`. These mechanisms can be used independently or combined, except `WaitForQuorum` and `IterReadyGroups`, which are mutually exclusive on the same batch.
 
 **Consumption models**:
 - Stream-only: Callers read claims directly from `batch.Events()` as they become ready. The batch applies no readiness thresholds and never blocks execution.
-- Quorum-gated streaming: Callers call `WaitForQuorum` which blocks until each group has at least `MinReady` members that are Ready (i.e. quorum is met), then returns the members synchronously, and `Events` continues streaming any subsequent ready claims in the background.
+- Quorum-gated streaming: Callers call `WaitForQuorum` which blocks until each group has at least `MinReady` members that are Ready (i.e. quorum is met) across the whole batch, then returns the members synchronously, and `Events` continues streaming any subsequent ready claims in the background.
+- Per-group quorum streaming: Callers range over `IterReadyGroups`, which yields once per group, as soon as that group's own `MinReady` is met or becomes unreachable, independent of every other group's progress. This lets a fast group dispatch its cohort without waiting on a slow group sharing the same batch, unlike `WaitForQuorum`, which gates on all groups at once. It closes once every group has yielded exactly once.
 
-`MinReady` is a group-level field that only affects `WaitForQuorum`. If a caller does not call `WaitForQuorum`, `MinReady` has no effect. Quorum fails fast and returns errors if any group satisfies `size - terminalFailures - lost - createFailures < minReady`. We classify terminal reasons as ones that never resolve on their own (i.e. not transient errors), lost reasons as the claim being deleted from the batch, and create failures as non-retriable API errors (400, 403, 404, 422) and exhausted 429/5xx retries.
+`MinReady` is a group-level field that only affects `WaitForQuorum` and `IterReadyGroups`. If a caller uses neither, `MinReady` has no effect. We calculate group failure to fail fast via `size - terminalFailures - lost - createFailures < minReady`. We classify terminal reasons as ones that never resolve on their own (i.e. not transient errors), lost reasons as the claim being deleted from the batch, and create failures as non-retriable API errors (400, 403, 404, 422) and exhausted 429/5xx retries. Both `WaitForQuorum` and `IterReadyGroups` fail-fast, but with different scopes: `WaitForQuorum` fails the whole call if any single group satisfies it, while `IterReadyGroups` scopes the check to each group independently, so one unreachable group never affects groups that already met quorum or are still filling. An unreachable group's yield from `IterReadyGroups` carries an error and no members. 
 
 To calculate quorum efficiently, we replace the existing behavior of having a watch per claim with a single watch (informer) on the `SandboxClaims` collection, scoped to the batch's namespace and batch's id label to aggregate readiness for each claim in the batch. As the batch id label covers every group, adding groups adds no watches and the informer buckets each event by the claim's own `spec.warmPoolRef.name`.
 
-Cache updates trigger a level-triggered reconciliation loop that tracks claimed resources in a local `dispatched` set to guarantee each claim is returned to the caller at most once. When `WaitForQuorum` resolves, it populates this set with the initial `MinReady` claims and returns them synchronously. Any remaining or late-arriving claims that reach Ready are added to `dispatched` and streamed over `Events`, ensuring members returned to the caller are never duplicates.
+Cache updates trigger a level-triggered reconciliation loop that tracks claimed resources in a local `dispatched` set to guarantee each claim is returned to the caller at most once. When `WaitForQuorum` resolves, it populates this set with the initial `MinReady` claims across every group and returns them synchronously; `IterReadyGroups` populates it one group's `MinReady` claims at a time, on each yield. Because both draw down the same `dispatched` set for the initial fill, a batch uses at most one of them to avoid races. Any remaining or late-arriving claims that reach Ready, for either model, are added to `dispatched` and streamed over `Events`, ensuring members returned to the caller are never duplicates.
 
 `Events` closes when the initial fill "settles", which we define as no initial-fill member being able to still arrive (i.e. either ready, terminal or lost). This allows a caller to write `for event in batch.events()` as its dispatch loop and finish as soon as the work is done.
 
@@ -192,6 +193,7 @@ rules:
 - `release_member(member)`: Deletes one member's claim, with no successor
 - `replace(member)`: `release_member` then `acquire` on that member's own pool. Blocks until the successor is Ready and returns it, and raises if it fails terminally
 - `events`: A live channel of member transitions, closed once the initial fill settles
+- `iter_ready_groups`: A live channel yielding once per group, as soon as that group's own `min_ready` is met or becomes unreachable, independent of other groups. Mutually exclusive with `wait_for_quorum` on the same batch
 - Cleanup
     - `release`: Stop the informer and renewal, `deletecollection` the batch label, delete the Lease
     - `detach`: Stops the informer and renewal but leaves the claims alive for a later `get_batch`.
@@ -229,6 +231,12 @@ class BatchEvent(BaseModel):
     """A member Ready transition, or a batch-level event carrying no member."""
     type: BatchEventType
     member: Member | None = None
+
+class GroupReady:
+    """One group's own quorum outcome, yielded by iter_ready_groups()."""
+    warmpool: str
+    members: list[Member]                             # this group's min_ready members
+    error: Exception | None = None                    # set instead of members if this group is unreachable
 ```
 
 Claim batch:
@@ -273,6 +281,7 @@ class AsyncSandboxBatch:
     size: int                                             # sum of the group sizes
 
     async def wait_for_quorum(self, timeout: float | None = None) -> list[Member]: ...
+    def iter_ready_groups(self) -> AsyncIterator[GroupReady]: ...         # mutually exclusive with wait_for_quorum
     def members(self, warmpool: str | None = None) -> list[Member]: ...   # current snapshot
     def events(self) -> AsyncIterator[BatchEvent]: ...
     def err(self) -> Exception | None: ...
@@ -294,7 +303,7 @@ class AsyncSandboxBatch:
 The Go SDK mirrors the Python SDK additions, with the following differences:
 - Extends the single client and adds a single `Batch` struct as there is no async/sync class differences
 - `claim_batch`'s keyword arguments become a `BatchOptions` struct, with the groups in a required `Groups []BatchGroup` field.
-- The event iterator becomes a receive-only channel
+- The `events` and `iter_ready_groups` iterators become receive-only channels
 
 ## SDK Usage
 
@@ -302,7 +311,7 @@ The Go SDK mirrors the Python SDK additions, with the following differences:
 
 Examples use the async Python class, and the `SandboxClient`/`SandboxBatch` variant is the same code with `await` removed and `for` in place of `async for`.
 
-#### Fixed cohort example
+#### 1. Fixed cohort example
 
 Claim a batch from one pool, start at quorum, release together.
 
@@ -332,10 +341,9 @@ async def run_one(batch, member):
     return await sbx.commands.run("python rollout.py")
 ```
 
-#### Rolling, multi-pool example
+#### 2. Per-group quorum example
 
-Hold `size` members per group and swap each for a fresh one from its own group as its task finishes. We set `min_ready=1` to start as soon as each group has at least one member ready, with the rest joining through `events()`. `wait_for_quorum()` blocks until `min_ready` is achieved for all groups, but as a tradeoff a slow pool's first member will cause idle Sandboxes in the other pools until it is ready.
-
+Each group starts its own cohort as soon as its own `min_ready` is met (via `iter_ready_groups`), without waiting on slower groups. A group whose quorum is unreachable doesn't stop the other groups: its `group.error` is collected instead of raised inline, and surfaced as an `ExceptionGroup` once every group has settled.
 
 ```python
 pool = collections.defaultdict(list)
@@ -343,8 +351,91 @@ for t in tasks:
     pool[pool_for(t.image)].append(t)
 
 batch = await client.claim_batch(
-    groups=[BatchGroup(warmpool=p, size=min(len(ts), 40), min_ready=1)
-            for p, ts in pool.items()],
+    groups=[
+        BatchGroup(warmpool=p, size=min(len(ts), 40), min_ready=max(1, int(min(len(ts), 40) * 0.8)))
+        for p, ts in pool.items()
+    ],
+    work_budget=3600,
+)
+try:
+    group_errors = []
+    async with asyncio.TaskGroup() as tg:
+        # Drain late arrivals (the remaining 20% beyond min_ready)
+        async def drain_late_arrivals():
+            async for event in batch.events():
+                if event.type is BatchEventType.MEMBER_READY:
+                    tg.create_task(run_one(batch, event.member))
+
+        tg.create_task(drain_late_arrivals())
+
+        async for group in batch.iter_ready_groups():
+            if group.error is not None:
+                group_errors.append(group.error)   # surfaced below, not dropped; other groups keep flowing
+                continue
+            for m in group.members:
+                tg.create_task(run_one(batch, m))
+
+    if batch.err():                                 # e.g. lease renewal stopped succeeding
+        raise batch.err()
+    if group_errors:
+        raise ExceptionGroup("one or more groups failed to reach quorum", group_errors)
+finally:
+    await batch.release()
+```
+
+#### 3. Pure streaming dispatch example
+
+`Sandboxes` are used the moment they are ready, regardless of group. `size` is set equal to the number of tasks and `min_ready` is omitted. If a pool loses `Sandboxes` to `MEMBER_FAILED` or `MEMBER_LOST`, execution continues with fewer active dispatches rather than crashing. Once `events()` settles and closes, the driver drains any unserviced tasks from that pool's queue into `unrun`.
+
+```python
+pool = collections.defaultdict(list)
+for t in tasks:
+    pool[pool_for(t.image)].append(t)
+
+batch = await client.claim_batch(
+    # Sized 1:1 to tasks
+    groups=[BatchGroup(warmpool=p, size=len(ts)) for p, ts in pool.items()],
+    work_budget=3600,
+)
+try:
+    pending, unrun = {p: list(ts) for p, ts in pool.items()}, []
+    tasks_to_gather = []
+
+    async for event in batch.events():
+        if event.type is not BatchEventType.MEMBER_READY:
+            continue                                # MEMBER_FAILED/MEMBER_LOST: that pool got one fewer sandbox
+        p = event.member.warmpool
+        if pending[p]:
+            task = pending[p].pop(0)
+            tasks_to_gather.append(asyncio.create_task(run_task(task, await batch.connect(event.member))))
+
+    await asyncio.gather(*tasks_to_gather)
+
+    if batch.err():                                 # e.g. lease renewal stopped succeeding
+        raise batch.err()
+
+    for p, ts in pending.items():                   # a pool that lost sandboxes to terminal failures leaves work behind
+        for t in ts:
+            unrun.append((p, t))                    # never attempted, not the same as failed
+finally:
+    await batch.release()
+```
+
+#### 4. Pipelined rolling queue example
+
+Maintains a fixed concurrency budget `(N=40)` across a larger `M` task backlog where `M >> N`. A `Sandbox` is used the moment it is ready via `events()`, and when a task is completed, `replace()` swaps the used `Sandbox` for a newly claimed one from the same warmpool.
+
+```python
+TOTAL_CONCURRENCY = 40
+pool = collections.defaultdict(list)
+for t in tasks:
+    pool[pool_for(t.image)].append(t)
+
+# Partition concurrency budget across pools (proportional or fair-share)
+per_pool_size = max(1, TOTAL_CONCURRENCY // len(pool))
+
+batch = await client.claim_batch(
+    groups=[BatchGroup(warmpool=p, size=min(len(ts), per_pool_size)) for p, ts in pool.items()],
     work_budget=3600,
 )
 try:
@@ -359,54 +450,32 @@ try:
             try:
                 task = pending[member.warmpool].get_nowait()
             except asyncio.QueueEmpty:
-                return                          # no more work; member is left for release() to collect
+                # Free the sandbox so cluster quota is released immediately
+                await batch.release_member(member)
+                return
             if not first:
-                # Replace only with a task in hand, so the run never claims a trailing sandbox it will not use.
                 try:
-                    member = await batch.replace(member)   # same group, blocks until Ready
+                    member = await batch.replace(member)  # blocks until clean successor is Ready
                 except TerminalMemberError:
-                    pending[member.warmpool].put_nowait(task)   # untried; a peer can run it
-                    return                      # leave worker pool due to error
+                    # replace() internally releases the failed member; requeue task for a peer
+                    pending[member.warmpool].put_nowait(task)
+                    return                                       # leave worker pool due to error
             first = False
             await run_task(task, await batch.connect(member))
 
-    workers = [asyncio.create_task(worker(m)) for m in await batch.wait_for_quorum()]
-    async for event in batch.events():          # remainder of the initial fill, all groups
-        if event.type is BatchEventType.MEMBER_READY:
-            workers.append(asyncio.create_task(worker(event.member)))
-    await asyncio.gather(*workers)
-
-    for p, q in pending.items():                # a group that lost every worker leaves work behind
-        while not q.empty():
-            unrun.append((p, q.get_nowait()))   # never attempted, not the same as failed
-finally:
-    await batch.release()
-```
-
-#### Independent multi-pool example
-
-This example has the same structure as the rolling, multi-pool example above but bypasses `wait_for_quorum()` to allow a group's work to be done as soon as a single claim in it is ready, independent from other groups. This is achieved by retrieving members from `events()` instead.
-
-```python
-batch = await client.claim_batch(
-    groups=[BatchGroup(warmpool=p, size=min(len(ts), 40)) for p, ts in pool.items()],
-    work_budget=3600,
-)
-try:
-    pending, unrun = {p: asyncio.Queue() for p in pool}, []
-    for p, ts in pool.items():
-        for t in ts:
-            pending[p].put_nowait(t)
-
     workers = []
+    # Stream initial workers as each sandbox is ready
     async for event in batch.events():
         if event.type is BatchEventType.MEMBER_READY:
             workers.append(asyncio.create_task(worker(event.member)))
     await asyncio.gather(*workers)
 
-    for p, q in pending.items():                # a group that lost every worker leaves work behind
+    if batch.err():                                  # e.g. lease renewal stopped succeeding
+        raise batch.err()
+
+    for p, q in pending.items():                      # a pool that lost every worker leaves work behind
         while not q.empty():
-            unrun.append((p, q.get_nowait()))   # never attempted, not the same as failed
+            unrun.append((p, q.get_nowait()))          # never attempted, not the same as failed
 finally:
     await batch.release()
 ```
@@ -437,7 +506,7 @@ For rolling mode, a worker ranges over its own group's channel and the producer 
 
 In `fleet.run()`, agent-sandbox-rl uses an executor called once per window to execute benchmark tasks. The existing executors (`process_parallel` and `reuse_git_restore_sandbox`) manage claims individually through `fleet.acquire(task)` and `fleet.release(handle)`.
 
-For standard evaluation workloads (1 task per image), we introduce a `batch=True` flag on `fleet.run()`. This enables `BatchClaimer`, a drop-in adapter that replaces individual claim churn with a single batch per cluster, lazily expanding groups as worker threads demand them while keeping active cluster claims strictly bounded by concurrency limits.
+For standard evaluation workloads (1 task per image), we introduce a `batch=True` flag on `fleet.run()`. This enables `BatchClaimer`, a drop-in adapter that replaces individual claim churn with a single batch per cluster, lazily expanding groups as worker threads demand them while keeping active cluster claims strictly bounded by concurrency limits. By replacing the individual claim handling logic with batch claiming, we collapse `N` claim watches into 1, and support automatic cleanup via the reaper and Lease.
 
 ```python
 class BatchClaimer:
@@ -514,86 +583,31 @@ We make similar changes for `reuse_git_restore_sandbox` and the async executor v
 
 #### Rollout Waves: Cohort-Based RL Execution
 
-For SWE-bench-style RL workloads where cohorts of G tasks target problem environments, we introduce the `rollout_wave` executor. Selected via `wave=True` on `fleet.run()` (mutually exclusive with `recycle=True`), it provides cohort-based batch allocation for rollout waves.
+For SWE-bench-style RL workloads where a training wave evaluates a cohort of G tasks across heterogeneous problem environments, we introduce the `rollout_wave` executor. Selected via `wave=True` on `fleet.run()` (mutually exclusive with `recycle=True`), it provides cohort-based batch allocation for rollout waves.
 
-While `BatchClaimer` expands lazily from `size=0` to bound active claims to worker concurrency, `rollout_wave` declares each pool's full cohort size (`size=G`) upfront. This creates all G `SandboxClaim` resources simultaneously, allowing parallel claim creation.
+While `BatchClaimer` expands lazily from `size=0` to bound active claims to worker concurrency, `rollout_wave` declares each pool's full cohort size (`size=G`) upfront. This creates all G `SandboxClaim` resources simultaneously, allowing parallel claim creation and container warming across clusters.
 
-`rollout_wave` supports two dispatch paradigms via `sync`:
-- `sync=True` (Synchronous On-Policy RL): Uses `batch.wait_for_quorum()` to block until `min_ready` members are Ready (e.g. PPO/GRPO trajectory collection)
-* `sync=False` (Asynchronous Streaming Rollouts): Uses only `batch.events()` to receive Ready members, preventing Ready delays in a slow pool from stalling execution in a faster one (e.g. IMPALA/APPO actor loops).
-
+`rollout_wave` supports three dispatch paradigms via `dispatch`:
 ```python
-# Calling code: Synchronous on-policy RL rollout wave
-results = fleet.run( process_fn, strategy="sliding", wave=True, sync=True, concurrency=64)
+class RolloutDispatch(str, Enum):
+    QUORUM = "quorum"
+    GROUP = "group"
+    STREAM = "stream"
+```
+- `RolloutDispatch.QUORUM` (Synchronous Joint-Batch RL): Uses `batch.wait_for_quorum()` to block until every group's `min_ready` members are Ready. Required when an on-policy training step mandates a fixed mixture ratio and joint normalization across all environments simultaneously before stepping (e.g. joint-batch PPO/GRPO).
+- `RolloutDispatch.GROUP` (Pipelined Domain / Task Cohorts): Uses `batch.iter_ready_groups()` so each pool's cohort dispatches as soon as its own `min_ready` is met. Ideal for GRPO prompt-group sampling or multi-task PPO with domain-specific advantage normalization and gradient accumulation, preventing slow warm pools from blocking faster cohorts. If a pool hits a terminal failure (`group.error`), only that pool's cohort fails, while healthy groups continue.
+- `RolloutDispatch.STREAM` (Asynchronous Streaming Rollouts): Uses only `batch.events()` to receive Ready members individually, with no per-pool or per-batch gating at all (e.g. IMPALA/APPO actor loops or asynchronous replay buffers).
 
-# Calling code: Asynchronous streaming RL rollout wave
-results = fleet.run( process_fn, strategy="pipelined", wave=True, sync=False, concurrency=64)
+Caller code:
+```python
+# Synchronous joint-batch RL (waits for fixed mixture ratio across all pools)
+results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.QUORUM, concurrency=64)
 
-def rollout_wave(fleet, tasks, process_fn, concurrency, *, sync=True):
-    results = [None] * len(tasks)
-    by_cluster = collections.defaultdict(lambda: collections.defaultdict(list))
-    for i, t in enumerate(tasks):
-        entry = fleet.plan_.for_image(t.image)
-        by_cluster[entry.cluster][entry.pool].append((i, t))
+# Pipelined domain / task cohorts (each pool dispatches its cohort as soon as its own min_ready is met)
+results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.GROUP, concurrency=64)
 
-    def _run_cluster(cluster_name, pools):
-        cluster = fleet.registry.get(cluster_name)
-        # Sized upfront per cohort (size=G) for parallel cluster warming
-        batch = cluster.sandbox_client.claim_batch(
-            groups=[
-                BatchGroup(
-                    warmpool=p,
-                    size=len(pool_tasks),
-                    min_ready=len(pool_tasks),
-                )
-                for p, pool_tasks in pools.items()
-            ],
-            namespace=cluster.namespace,
-            labels=dict(fleet.config.labels),
-            work_budget=fleet.config.work_budget,
-        )
-
-        with ThreadPoolExecutor(max_workers=concurrency) as ex:
-            futs = []
-            try:
-                if sync:
-                    # Synchronous: Unblock once quorum is achieved across the cohort
-                    ready_members = batch.wait_for_quorum(timeout=fleet.config.ready_timeout)
-                    pool_members = collections.defaultdict(list)
-                    for m in ready_members:
-                        pool_members[m.warmpool].append(m)
-
-                    for pool, pool_tasks in pools.items():
-                        for (i, task), member in zip(pool_tasks, pool_members[pool]):
-                            futs.append(ex.submit(_run_task, fleet, cluster, batch, task, member, process_fn, results, i))
-                else:
-                    # Asynchronous: Dispatch tasks as individual members arrive via event stream
-                    pool_tasks = {p: list(ts) for p, ts in pools.items()}
-                    for event in batch.events():
-                        if event.type != BatchEventType.MEMBER_READY:
-                            continue
-                        pool = event.member.warmpool
-                        if pool_tasks[pool]:
-                            i, task = pool_tasks[pool].pop(0)
-                            futs.append(ex.submit(_run_task, fleet, cluster, batch, task, event.member, process_fn, results, i))
-            finally:
-                for f in futs:
-                    f.result()
-                batch.release()  # DeleteCollection cleanup for all claims in this batch
-
-    with ThreadPoolExecutor(max_workers=len(by_cluster)) as cx:
-        for f in [cx.submit(_run_cluster, c, p) for c, p in by_cluster.items()]:
-            f.result()
-
-    return results
-
-
-def _run_task(fleet, cluster, batch, task, member, process_fn, results, i):
-    handle = fleet.handle_for(cluster, member, task)
-    try:
-        results[i] = process_fn(task, handle)
-    finally:
-        batch.release_member(member)
+# Asynchronous streaming rollouts (dispatches members individually via events() with no gating)
+results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.STREAM, concurrency=64)
 ```
 
 ### Scalability
@@ -615,7 +629,7 @@ Through the use of batch claiming, we see improvements in control-plane connecti
 | **Sandbox Pod Checks** | N list calls (Go only) | 0 (mirrored onto claim status) |
 | **Readiness Watches** | N (Go: 2N, Python: N) | 1 watch stream across all groups |
 | **Control-Plane Connections** | O(N) dialed/discarded (Python)<br>ceil(2N/100) streams (Go) | O(MaxInFlight), reused |
-| **Batch Deletion** | N individual `Delete` calls | **Fixed Cohort:** 1 deletecollection<br>**Rolling:** M individual deletes (where M <= N) + 1 deletecollection  |
+| **Batch Deletion** | N individual `Delete` calls | **Fixed Cohort:** 1 deletecollection<br>**Rolling:** M individual deletes (where M >= N, the total replacements across the run) + 1 deletecollection  |
 
 #### Transport & Connection Scaling
 
