@@ -41,7 +41,7 @@ A `Batch` has five core properties:
 1. A randomly generated id with a leading letter so the id is a valid DNS label prefix for the Sandbox/Service names on a cold-started claim (a claim adopted from the warm pool keeps that Sandbox's own pre-generated name instead). The id is attached to each claim in the batch through the `agents.x-k8s.io/batch-id: <id>` label.
 2. A deterministic name for each claim following the format `<batch-id>-<ordinal>`, so a retried create is idempotent. Ordinals come from one counter for the whole batch rather than one per group.
 3. A `coordination.k8s.io/v1` Lease named `batch-<id>` in the same namespace as the claims, carrying the same batch-id label, which the driver renews while it is alive. Stale leases are later used for batch claim cleanup.
-4. The annotations `agents.x-k8s.io/batch-group-size` and `agents.x-k8s.io/batch-group-min-ready` written on each claim to record its batch group's original size and minimum-ready count so `GetBatch` can recover them. We choose to write them on the claims to avoid a single point of failure and accept the duplicated cost at scale as a tradeoff.
+4. The annotations `agents.x-k8s.io/batch-group-size` and `agents.x-k8s.io/batch-group-min-ready` written on each claim to record its batch group's original size and minimum-ready count so `GetBatch` can recover them. We choose to write them on the claims to avoid a single point of failure and accept the duplicated cost at scale as a tradeoff. For groups that are created with `size=0`, we omit writing these annotations and have the user recover them via `members(warmpool_name)` (see API reference tab); `GetBatch` also assumes they have an initial `size=0` and thus `min_ready=0`.
 5. All of a batch's claims live in one namespace. The controller only resolves a claim's warmPoolRef within the same namespace, and K namespace batch support would lead to K `deletecollection` calls instead of one, and messier RBAC.
 
 `Batch` is designed as a handle following the same implemented pattern [KEP 359](../docs/keps/359-refactor-python-sdk/README.md) established for `Sandbox` in the Python SDK: obtained from a factory method (`ClaimBatch`/`GetBatch`), identified by a server-side id, re-attachable from a different process, and torn down by an explicit function (`Release`/`Detach`).
@@ -79,6 +79,8 @@ A batch provides three ways to consume ready claims: streaming them as they beco
 - Stream-only: Callers read claims directly from `batch.Events()` as they become ready. The batch applies no readiness thresholds and never blocks execution.
 - Quorum-gated streaming: Callers call `WaitForQuorum` which blocks until each group has at least `MinReady` members that are Ready (i.e. quorum is met) across the whole batch, then returns the members synchronously, and `Events` continues streaming any subsequent ready claims in the background.
 - Per-group quorum streaming: Callers range over `IterReadyGroups`, which yields once per group, as soon as that group's own `MinReady` is met or becomes unreachable, independent of every other group's progress. This lets a fast group dispatch its cohort without waiting on a slow group sharing the same batch, unlike `WaitForQuorum`, which gates on all groups at once. It closes once every group has yielded exactly once.
+
+Because a group can be created lazily (i.e. `size=0` then claim members via `acquire()`), `WaitForQuorum` and `IterReadyGroups` only check readiness and return for groups with `(initial) size != 0`.
 
 `MinReady` is a group-level field that only affects `WaitForQuorum` and `IterReadyGroups`. If a caller uses neither, `MinReady` has no effect. We calculate group failure to fail fast via `size - terminalFailures - lost - createFailures < minReady`. We classify terminal reasons as ones that never resolve on their own (i.e. not transient errors), lost reasons as the claim being deleted from the batch, and create failures as non-retriable API errors (400, 403, 404, 422) and exhausted 429/5xx retries. Both `WaitForQuorum` and `IterReadyGroups` fail-fast, but with different scopes: `WaitForQuorum` fails the whole call if any single group satisfies it, while `IterReadyGroups` scopes the check to each group independently, so one unreachable group never affects groups that already met quorum or are still filling. An unreachable group's yield from `IterReadyGroups` carries an error and no members. 
 
@@ -185,7 +187,7 @@ rules:
 
 ### Core Batch Methods
 
-- `claim_batch`: Create a new batch, returning a `Batch` handle
+- `claim_batch`: Create a new batch, returning a `Batch` handle. Errors upon `min_ready` > `size`.
 - `get_batch`: Return a batch handle (no create) of an existing batch by id, resuming lease renewal
 - `wait_for_quorum`: Blocks until quorum is reached or not and returns either initial fill or error
 - `connect(member)`: Returns a connected `Sandbox` (same return type as `Client.GetSandbox`) for interactive use. In contrast to `GetSandbox`, because information is already stored in `Member`, it skips the API calls to get the Sandbox and claim details and connects to the `Sandbox` directly.
