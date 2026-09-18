@@ -3,7 +3,7 @@
 
 ## Summary
 
-This document (which may later be changed to a KEP) introduces to the SDKs `ClaimBatch`, a method that claims N `Sandboxes` as a single batch and returns a `Batch` handle for interacting with them, giving SDK users consistent, reliable, and efficient batch claiming instead of the duplicated fan-out, polling, and cleanup logic every task currently manually implements. A batch may span several `SandboxWarmPools`, since the sandboxes a single run needs are not always the same shape.
+This document introduces to the SDKs `ClaimBatch`, a method that claims N `Sandboxes` as a single batch and returns a `Batch` handle for interacting with them, giving SDK users consistent, reliable, and efficient batch claiming instead of the duplicated fan-out, polling, and cleanup logic every task currently manually implements. A batch may span several `SandboxWarmPools`, since the sandboxes a single run needs are not always the same shape.
 
 ## Motivation
 
@@ -58,7 +58,7 @@ Note that this is pacing only for the client; server-side is through `--sandbox-
 
 For the Go SDK, these caps are inert until the default QPS/Burst settings on `rest.Config` are overridden (otherwise, caps are bounded by min(default, cap)).
 
-Similarly for the Python SDK, the bound is the shared `ApiClient`'s connection pool (`connection_pool_maxsize`, defaulting to `cpu_count() * 5`): an in-flight cap set above the pool size thrashes on new connections instead of queuing cleanly. There is currently no supported way to raise it; however, [#1509](https://github.com/kubernetes-sigs/agent-sandbox/pull/1509) will fix this by letting callers inject a pre-configured `ApiClient` with a larger pool.
+Similarly for the Python SDK, the bound is the shared `ApiClient`'s connection pool size. There is currently no supported way to raise it; however, [#1509](https://github.com/kubernetes-sigs/agent-sandbox/pull/1509) will allow callers to inject a pre-configured `ApiClient` with a larger pool. We talk more about this in the "Transport & Connection Scaling" section in the Scalability tab.
 
 #### Membership
 
@@ -84,7 +84,7 @@ A batch provides three ways to consume ready claims: streaming them as they beco
 
 To calculate quorum efficiently, we replace the existing behavior of having a watch per claim with a single watch (informer) on the `SandboxClaims` collection, scoped to the batch's namespace and batch's id label to aggregate readiness for each claim in the batch. As the batch id label covers every group, adding groups adds no watches and the informer buckets each event by the claim's own `spec.warmPoolRef.name`.
 
-Cache updates trigger a level-triggered reconciliation loop that tracks claimed resources in a local `dispatched` set to guarantee each claim is returned to the caller at most once. When `WaitForQuorum` resolves, it populates this set with the initial `MinReady` claims across every group and returns them synchronously; `IterReadyGroups` populates it one group's `MinReady` claims at a time, on each yield. Because both draw down the same `dispatched` set for the initial fill, a batch uses at most one of them to avoid races. Any remaining or late-arriving claims that reach Ready, for either model, are added to `dispatched` and streamed over `Events`, ensuring members returned to the caller are never duplicates.
+Informer cache updates trigger a level-triggered reconciliation loop that tracks claimed resources in a local `dispatched` set to guarantee each claim is returned to the caller at most once. When `WaitForQuorum` resolves, it populates this set with the initial `MinReady` claims across every group and returns them synchronously; `IterReadyGroups` populates it one group's `MinReady` claims at a time, on each yield. Because both draw down the same `dispatched` set for the initial fill, a batch uses at most one of them to avoid races. Any remaining or late-arriving claims that reach Ready, for either model, are chacked against then added to `dispatched` and streamed over `Events`, ensuring members returned to the caller are never duplicates.
 
 `Events` closes when the initial fill "settles", which we define as no initial-fill member being able to still arrive (i.e. either ready, terminal or lost). This allows a caller to write `for event in batch.events()` as its dispatch loop and finish as soon as the work is done.
 
@@ -504,7 +504,7 @@ For rolling mode, a worker ranges over its own group's channel and the producer 
 
 #### Upgrading Existing Evaluation Executors
 
-In `fleet.run()`, agent-sandbox-rl uses an executor called once per window to execute benchmark tasks. The existing executors (`process_parallel` and `reuse_git_restore_sandbox`) manage claims individually through `fleet.acquire(task)` and `fleet.release(handle)`.
+In `fleet.run()`, agent-sandbox-rl uses an executor called once per window to execute tasks. The existing executors (`process_parallel` and `reuse_git_restore_sandbox`) manage claims individually through `fleet.acquire(task)` and `fleet.release(handle)`.
 
 For standard evaluation workloads (1 task per image), we introduce a `batch=True` flag on `fleet.run()`. This enables `BatchClaimer`, a drop-in adapter that replaces individual claim churn with a single batch per cluster, lazily expanding groups as worker threads demand them while keeping active cluster claims strictly bounded by concurrency limits. By replacing the individual claim handling logic with batch claiming, we collapse `N` claim watches into 1, and support automatic cleanup via the reaper and Lease.
 
@@ -585,7 +585,7 @@ We make similar changes for `reuse_git_restore_sandbox` and the async executor v
 
 For SWE-bench-style RL workloads where a training wave evaluates a cohort of G tasks across heterogeneous problem environments, we introduce the `rollout_wave` executor. Selected via `wave=True` on `fleet.run()` (mutually exclusive with `recycle=True`), it provides cohort-based batch allocation for rollout waves.
 
-While `BatchClaimer` expands lazily from `size=0` to bound active claims to worker concurrency, `rollout_wave` declares each pool's full cohort size (`size=G`) upfront. This creates all G `SandboxClaim` resources simultaneously, allowing parallel claim creation and container warming across clusters.
+While `BatchClaimer` expands lazily from `size=0` to bound active claims to worker concurrency, `rollout_wave` declares each pool's full cohort size (`size=G`) upfront. This creates all G `SandboxClaim` resources simultaneously, allowing parallel claim creation.
 
 `rollout_wave` supports three dispatch paradigms via `dispatch`:
 ```python
@@ -611,7 +611,7 @@ results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutD
 ```
 
 **Adjacent Paradigms:** These group and dispatch primitives also can be used for other post-training and evaluation workflows without any additional changes:
-- LVR: Verifier engines (test harnesses, formal proof checkers) execute under `GROUP` or `STREAM`, isolating verifier crashes or timeouts from the rest of the evaluation wave.
+- RLVR: Verifier engines (test harnesses, formal proof checkers) execute under `GROUP` or `STREAM`, isolating verifier crashes or timeouts from the rest of the evaluation wave.
 - Best-of-N & DPO Sampling: Form prompt-level cohorts sized to N or 2 using `GROUP`, collecting independent solution sets per prompt without cross-task head-of-line blocking.
 - Synthetic Data & Distillation: Offline agent trajectory generation (recording multi-step shell commands, file edits, and tool observations) streams continuously via `STREAM` with no readiness barriers.
 
@@ -686,7 +686,7 @@ We analyze batch resource costs at scale across 4 axes:
 As batch claim is implemented as a client-side feature, we investigate the bottlenecks that may arise at large N claim volume:
 
 1. **Client Fan-Out Latency & API Throttling:** Creating N claims requires N individual HTTP POST requests from the client. Even with connection pooling and `MaxInFlight` pacing, issuing tens of thousands of requests from an external client over network hops takes considerable wall-clock time and risks triggering API Priority and Fairness (APF) rate-limiting on the API server.
-2. **Slow Cleanup:** Because liveness is governed by client heartbeat renewals, an unexpected driver crash (`SIGKILL` or host failure) leaves N sandboxes idling until the `Lease` times out and the background reaper executes. With an early crash failure, a significant amount of cluster compute and quota could be tied up and idle for an extensive amount of time, especially if `work_budget` is set high.
+2. **Slow Cleanup:** Because liveness is governed by client Lease renewals, an unexpected driver crash (`SIGKILL` or host failure) leaves N sandboxes idling until the `Lease` times out and the background reaper executes. With an early crash failure, a significant amount of cluster compute and quota could be tied up and idle for an extensive amount of time, especially if `work_budget` is set high.
 3. **Client-Side Informer Memory:** Retaining tens of thousands of claim states in memory for event streaming and quorum tracking increases client memory footprint, creating OOM risks on resource-constrained runner pods.
 
 In contrast to these scaling issues from client-side batching, a dedicated server-side batch CRD would instead offload claim dispatch, aggregation, and lifecycle tracking to cluster-local controllers. This would mean:
@@ -694,7 +694,7 @@ In contrast to these scaling issues from client-side batching, a dedicated serve
 - The client's watch would only be on a single `SandboxBatch` object for readiness, rather than a single watch on N claims
 - For in-cluster runner jobs, a CRD can bind claims to the running Job/Pod via `ownerReferences` so Kubernetes garbage collection automatically cleans up the claims (and their underlying sandboxes) upon driver termination, eliminating the need for a Lease and background reaper.
 
-Due to these benefits, we should re-evaluate implementing batch claiming server-side when client-side request latency, memory overhead, or the cost of maintaining reaper and Lease become operational bottlenecks.
+Due to these benefits, we should re-evaluate implementing batch claiming server-side in the future when client-side request latency, memory overhead, or the cost of maintaining reaper and Lease become operational bottlenecks.
 
 ## Alternatives
 
