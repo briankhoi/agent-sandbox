@@ -53,3 +53,18 @@ TERMINAL_CLAIM_READY_REASONS = frozenset({
     "ClaimExpired",     # extensions ClaimExpiredReason
     "SandboxExpired",   # core SandboxReasonExpired, forwarded to the claim
 })
+
+# Batch claim (see batch-primitives/batch_claim_proposal.md).
+BATCH_ID_LABEL = "agents.x-k8s.io/batch-id"
+BATCH_GROUP_SIZE_ANNOTATION = "agents.x-k8s.io/batch-group-size"
+BATCH_GROUP_MIN_READY_ANNOTATION = "agents.x-k8s.io/batch-group-min-ready"
+BATCH_LEASE_NAME_PREFIX = "batch-"
+BATCH_LEASE_DURATION_ANNOTATION = "agents.x-k8s.io/batch-lease-duration"
+
+# A batch Lease is only a process-liveness heartbeat, independent of
+# work_budget/quorum_timeout/shutdownTime (see the proposal's "Two clocks").
+CLOCK_SKEW_MARGIN = 5
+BATCH_DEFAULT_LEASE_DURATION_SECONDS = 60
+BATCH_DEFAULT_QUORUM_TIMEOUT_SECONDS = 600
+BATCH_DEFAULT_WORK_BUDGET_SECONDS = 3600
+BATCH_DEFAULT_SHUTDOWN_MARGIN_SECONDS = 600

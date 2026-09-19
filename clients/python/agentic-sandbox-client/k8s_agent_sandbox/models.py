@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 import re
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Literal, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _ENV_VAR_NAME_RE = re.compile(r"^[-._a-zA-Z][-._a-zA-Z0-9]*$")
 
@@ -144,3 +146,65 @@ class SandboxTracerConfig(BaseModel):
     """Configuration for tracer level information"""
     enable_tracing: bool = False  # Whether to enable OpenTelemetry tracing.
     trace_service_name: str = "sandbox-client"  # Service name used for traces.
+
+
+class BatchGroup(BaseModel):
+    """One warm pool's share of a batch, and its own readiness threshold."""
+    warmpool: str
+    size: int = Field(ge=0)
+    min_ready: int | None = None  # Defaults to ``size``.
+
+    @model_validator(mode="after")
+    def _apply_min_ready_default(self) -> "BatchGroup":
+        if self.min_ready is None:
+            self.min_ready = self.size
+        if not (0 <= self.min_ready <= self.size):
+            raise ValueError(
+                f"min_ready ({self.min_ready}) must be between 0 and size ({self.size})"
+            )
+        return self
+
+
+class Member(BaseModel):
+    """One claim in a batch, with its identity, its group, and current readiness."""
+    # Members cross threads, so snapshots are frozen and replaced rather than
+    # mutated; see batch_state.py for why pod_ips still needs a fresh list
+    # per snapshot despite frozen=True.
+    model_config = ConfigDict(frozen=True)
+
+    claim_name: str
+    sandbox_name: str | None = None
+    warmpool: str  # The group this member belongs to.
+    pod_ips: list[str] = Field(default_factory=list)
+    service_fqdn: str | None = None
+    ready: bool = False
+    terminal: bool = False
+    lost: bool = False
+    reason: str | None = None
+    message: str | None = None
+
+
+class BatchEventType(str, Enum):
+    MEMBER_READY = "member_ready"
+    MEMBER_LOST = "member_lost"
+    MEMBER_FAILED = "member_failed"
+    LEASE_DEGRADED = "lease_degraded"
+
+
+class BatchEvent(BaseModel):
+    """A member Ready transition, or a batch-level event carrying no member."""
+    type: BatchEventType
+    member: Member | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class GroupReady:
+    """One group's own quorum outcome, yielded by ``iter_ready_groups()``.
+
+    A plain dataclass rather than a pydantic model (AGENTS.md's convention
+    for this SDK's data models): ``error`` holds a raw ``Exception``, which
+    pydantic can only accept with ``arbitrary_types_allowed``.
+    """
+    warmpool: str
+    members: list[Member] = dataclasses.field(default_factory=list)
+    error: Exception | None = None  # Set instead of members if unreachable.
