@@ -893,5 +893,26 @@ class TestConnectionConfigValidation(unittest.TestCase):
                 SandboxLocalTunnelConnectionConfig(router_namespace=ns)
 
 
+class TestSandboxClientGetBatch(unittest.TestCase):
+
+    @patch('k8s_agent_sandbox.sandbox_client.K8sHelper')
+    def setUp(self, MockK8sHelper):
+        self.client = SandboxClient()
+
+    @patch("k8s_agent_sandbox.sandbox_client.SandboxBatch._attach")
+    def test_get_batch_registers_and_unregisters(self, mock_attach):
+        mock_batch = MagicMock()
+        mock_attach.return_value = mock_batch
+
+        batch = self.client.get_batch("b1", namespace="ns-a")
+
+        mock_attach.assert_called_once_with(self.client, "b1", "ns-a")
+        self.assertIs(batch, mock_batch)
+        self.assertEqual(self.client._active_batches, {("ns-a", "b1"): mock_batch})
+
+        self.client._unregister_batch("ns-a", "b1")
+        self.assertEqual(self.client._active_batches, {})
+
+
 if __name__ == '__main__':
     unittest.main()

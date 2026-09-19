@@ -439,6 +439,56 @@ Latency guidance:
   for the `kubectl port-forward` startup; the SDK probes the local port every
   50ms while it comes up. Gateway/in-cluster modes do not have this step.
 
+### 10. Batch claims
+
+`SandboxClient.get_batch()` attaches to an existing batch of `SandboxClaims` sharing an
+`agents.x-k8s.io/batch-id` label, returning a `SandboxBatch` handle. The claims can be spread across
+warmpools but must be in the same namespace. `get_batch()` is only for re-attaching to claims;
+it does not create anything and assumes the batch's claims and its `coordination.k8s.io/v1`
+Lease (named `batch-<id>`) already exist. `claim_batch`, which creates both, is a later
+addition to this SDK.
+
+```python
+batch = client.get_batch("b1234abcd12", namespace="default")
+
+ready = [m for m in batch.members() if m.ready]
+for member in ready:
+    sandbox = batch.connect(member)
+    sandbox.commands.run("echo hello")
+
+batch.detach()
+```
+
+`get_batch` takes over the Lease and renews it in the background. It raises `BatchLeaseExpiredError`
+if the Lease is missing or stale, `BatchInUseError` if another process holds it live, and `BatchNotFoundError`
+if there's no Lease and no labeled claims.
+
+`SandboxBatch` (and its async twin `AsyncSandboxBatch`) expose:
+
+- `batch_id`, `namespace`, `groups`, `size`: the batch's identity and its per-warmpool `BatchGroup`s.
+- `members(warmpool=None)`: a snapshot of every `Member`, sorted by ordinal.
+- `connect(member)`: a connected `Sandbox`/`AsyncSandbox` for a ready member.
+- `err()`: the error that stopped the background watch/renewal, or `None`.
+- `detach(grace=None)`: stops the background tasks and releases the Lease so another `get_batch` can take over; idempotent.
+
+#### RBAC
+
+A batch driver needs, in the batch's namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-batch-driver
+rules:
+- apiGroups: ["extensions.agents.x-k8s.io"]
+  resources: ["sandboxclaims"]
+  verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create", "get", "update", "delete"]
+```
+
 ## Testing
 
 A test script is included to verify the full lifecycle (Creation -> Execution -> File I/O -> Cleanup).

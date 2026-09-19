@@ -29,6 +29,7 @@ from typing import Generic, TypeVar
 
 from .async_k8s_helper import AsyncK8sHelper
 from .async_sandbox import AsyncSandbox
+from .async_sandbox_batch import AsyncSandboxBatch
 from .exceptions import SandboxNotFoundError
 from .k8s_helper import K8sHelper
 from .pod_metadata import build_pod_metadata, validate_labels
@@ -121,6 +122,7 @@ class AsyncSandboxClient(Generic[T]):
         self.k8s_helper = AsyncK8sHelper()
 
         self._active_connection_sandboxes: dict[tuple[str, str], T] = {}
+        self._active_batches: dict[tuple[str, str], AsyncSandboxBatch] = {}
         self._lock = asyncio.Lock()
 
         if cleanup:
@@ -154,6 +156,13 @@ class AsyncSandboxClient(Generic[T]):
                     logger.error(f"Failed to close sandbox connection: {e}")
                 else:
                     self._active_connection_sandboxes.pop(key, None)
+            batches = list(self._active_batches.values())
+            self._active_batches.clear()
+        for batch in batches:
+            try:
+                await batch._stop_background_tasks()
+            except Exception as e:
+                logger.error(f"Failed to stop batch '{batch.batch_id}' tasks: {e}")
         await self.k8s_helper.close()
 
     async def create_sandbox(
@@ -365,6 +374,26 @@ class AsyncSandboxClient(Generic[T]):
                 the selector are returned.
         """
         return await self.k8s_helper.list_sandbox_claims(namespace, label_selector=label_selector)
+
+    async def get_batch(self, batch_id: str, namespace: str = "default") -> AsyncSandboxBatch:
+        """Attaches to an existing batch, taking over its Lease.
+
+        Resumes batch lease renewal and starts a label-scoped watch that keeps
+        ``members()`` up to date. Returns an error if the lease has holderIdentity set.
+
+        Example::
+
+            batch = await client.get_batch("b1234abcd12")
+            ready = [m for m in batch.members() if m.ready]
+        """
+        key = (namespace, batch_id)
+        batch = await AsyncSandboxBatch._attach(self, batch_id, namespace)
+        async with self._lock:
+            self._active_batches[key] = batch
+        return batch
+
+    def _unregister_batch(self, namespace: str, batch_id: str) -> None:
+        self._active_batches.pop((namespace, batch_id), None)
 
     async def delete_sandbox(self, claim_name: str, namespace: str = "default") -> None:
         """Stops the client side connection and deletes the Kubernetes resources."""

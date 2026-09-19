@@ -28,6 +28,7 @@ from .trace_manager import (
     create_tracer_manager, initialize_tracer, trace_span, trace
 )
 from .sandbox import Sandbox
+from .sandbox_batch import SandboxBatch
 from .models import (
     SandboxConnectionConfig,
     SandboxLocalTunnelConnectionConfig,
@@ -85,7 +86,10 @@ class SandboxClient(Generic[T]):
         
         # Tracks all the active client side connections to the created sandbox claims
         self._active_connection_sandboxes: Dict[Tuple[str, str], T] = {}
-        
+
+        # Tracks all the active batch handles.
+        self._active_batches: Dict[Tuple[str, str], SandboxBatch] = {}
+
         # Optional automatic cleanup of sandboxes on program termination
         if cleanup:
             atexit.register(self.delete_all)
@@ -282,6 +286,26 @@ class SandboxClient(Generic[T]):
             ['sandbox-claim-1234abcd', 'sandbox-claim-5678efgh']
         """
         return self.k8s_helper.list_sandbox_claims(namespace, label_selector=label_selector)
+
+    def get_batch(self, batch_id: str, namespace: str = "default") -> SandboxBatch:
+        """Attaches to an existing batch, taking over its Lease.
+
+        Resumes batch lease renewal and starts a label-scoped watch that keeps
+        ``members()`` up to date. Returns an error if the lease has holderIdentity set.
+
+        Example:
+
+            >>> client = SandboxClient()
+            >>> batch = client.get_batch("b1234abcd12")
+            >>> ready = [m for m in batch.members() if m.ready]
+        """
+        key = (namespace, batch_id)
+        batch = SandboxBatch._attach(self, batch_id, namespace)
+        self._active_batches[key] = batch
+        return batch
+
+    def _unregister_batch(self, namespace: str, batch_id: str) -> None:
+        self._active_batches.pop((namespace, batch_id), None)
 
     def delete_sandbox(self, claim_name: str, namespace: str = "default") -> None:
         """Stops the client side connection and deletes the Kubernetes resources.
