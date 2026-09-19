@@ -980,10 +980,6 @@ class TestAsyncK8sHelperApiClientInjection(unittest.IsolatedAsyncioTestCase):
 
 
 class TestAsyncK8sHelperWatchTimeout(unittest.IsolatedAsyncioTestCase):
-
-
-class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
-
     async def asyncSetUp(self):
         self.helper = AsyncK8sHelper()
         self.helper._initialized = True
@@ -1035,6 +1031,12 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
             watch_cls.assert_not_called()
 
 
+class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self.helper = AsyncK8sHelper()
+        self.helper._initialized = True
+        self.helper.custom_objects_api = MagicMock()
         self.helper.core_v1_api = MagicMock()
         self.helper.coordination_v1_api = MagicMock()
 

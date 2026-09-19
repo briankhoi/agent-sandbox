@@ -674,7 +674,6 @@ import logging
 logging.basicConfig(level=logging.INFO)
 ```
 
-
 ### 14. Batch claims
 
 `SandboxClient.get_batch()` attaches to an existing batch of `SandboxClaims` sharing an
