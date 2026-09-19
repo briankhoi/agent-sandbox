@@ -66,6 +66,7 @@ class AsyncK8sHelper:
             self._api_client = client.ApiClient()
             self.custom_objects_api = client.CustomObjectsApi(self._api_client)
             self.core_v1_api = client.CoreV1Api(self._api_client)
+            self.coordination_v1_api = client.CoordinationV1Api(self._api_client)
             self._initialized = True
 
     async def create_sandbox_claim(
@@ -501,6 +502,74 @@ class AsyncK8sHelper:
                             return ip_address
             finally:
                 await w.close()
+
+    async def list_sandbox_claim_objects(
+        self, namespace: str, label_selector: str
+    ) -> tuple[list[dict], str]:
+        """Lists full SandboxClaim objects matching a label selector.
+
+        Unlike ``list_sandbox_claims`` (names only, backs
+        ``list_all_sandboxes``), this returns the objects themselves so a
+        batch handle can derive ``Member`` snapshots from them. Also returns
+        the list's resourceVersion, so a watch can resume from it.
+        """
+        await self._ensure_initialized()
+
+        response = await self.custom_objects_api.list_namespaced_custom_object(
+            group=CLAIM_API_GROUP,
+            version=CLAIM_API_VERSION,
+            namespace=namespace,
+            plural=CLAIM_PLURAL_NAME,
+            label_selector=label_selector,
+        )
+        items = response.get("items", [])
+        resource_version = (response.get("metadata") or {}).get("resourceVersion", "0")
+        return items, resource_version
+
+    async def watch_sandbox_claims(
+        self, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
+    ):
+        """Yields raw watch events for SandboxClaims matching a label selector.
+
+        One watch attempt starting at ``resource_version``; the caller
+        (a batch handle's background watcher) owns reconnect/410 handling,
+        the same patterns ``_watch_claim`` uses for a single-claim wait.
+        """
+        await self._ensure_initialized()
+
+        w = watch.Watch()
+        try:
+            async for event in w.stream(
+                func=self.custom_objects_api.list_namespaced_custom_object,
+                namespace=namespace,
+                group=CLAIM_API_GROUP,
+                version=CLAIM_API_VERSION,
+                plural=CLAIM_PLURAL_NAME,
+                label_selector=label_selector,
+                resource_version=resource_version,
+                timeout_seconds=timeout_seconds,
+            ):
+                if event is not None:
+                    yield event
+        finally:
+            await w.close()
+
+    async def read_batch_lease(self, name: str, namespace: str):
+        """Reads a batch Lease, or ``None`` if it doesn't exist."""
+        await self._ensure_initialized()
+
+        try:
+            return await self.coordination_v1_api.read_namespaced_lease(name, namespace)
+        except client.ApiException as e:
+            if e.status == 404:
+                return None
+            raise
+
+    async def replace_batch_lease(self, name: str, namespace: str, body):
+        """Replaces a batch Lease using the resourceVersion on ``body``."""
+        await self._ensure_initialized()
+
+        return await self.coordination_v1_api.replace_namespaced_lease(name, namespace, body)
 
     async def close(self) -> None:
         """Closes the shared Kubernetes API client session."""

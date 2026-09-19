@@ -884,5 +884,77 @@ class TestAsyncK8sHelperWaitForGatewayIP(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ip, "192.168.1.1")
 
 
+class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self.helper = AsyncK8sHelper()
+        self.helper._initialized = True
+        self.helper.custom_objects_api = MagicMock()
+        self.helper.core_v1_api = MagicMock()
+        self.helper.coordination_v1_api = MagicMock()
+
+    async def test_list_sandbox_claim_objects_returns_items_and_resource_version(self):
+        self.helper.custom_objects_api.list_namespaced_custom_object = AsyncMock(
+            return_value={
+                "items": [{"metadata": {"name": "b1-0"}}],
+                "metadata": {"resourceVersion": "42"},
+            }
+        )
+
+        items, rv = await self.helper.list_sandbox_claim_objects(
+            "default", "agents.x-k8s.io/batch-id=b1"
+        )
+
+        self.assertEqual(items, [{"metadata": {"name": "b1-0"}}])
+        self.assertEqual(rv, "42")
+        call_kwargs = self.helper.custom_objects_api.list_namespaced_custom_object.call_args.kwargs
+        self.assertEqual(call_kwargs["label_selector"], "agents.x-k8s.io/batch-id=b1")
+
+    @patch("k8s_agent_sandbox.async_k8s_helper.watch.Watch")
+    async def test_watch_sandbox_claims_yields_events(self, mock_watch_class):
+        mock_watch = MagicMock()
+        mock_watch.close = AsyncMock()
+        event = {"type": "MODIFIED", "object": {"metadata": {"name": "b1-0"}}}
+
+        async def _stream(*args, **kwargs):
+            yield event
+
+        mock_watch.stream = _stream
+        mock_watch_class.return_value = mock_watch
+
+        events = [
+            e
+            async for e in self.helper.watch_sandbox_claims(
+                "default", "agents.x-k8s.io/batch-id=b1", "5", 30
+            )
+        ]
+
+        self.assertEqual(events, [event])
+        mock_watch.close.assert_awaited_once()
+
+    async def test_read_batch_lease_returns_none_on_404(self):
+        self.helper.coordination_v1_api.read_namespaced_lease = AsyncMock(
+            side_effect=client.ApiException(status=404)
+        )
+        self.assertIsNone(await self.helper.read_batch_lease("batch-b1", "default"))
+
+    async def test_read_batch_lease_reraises_non_404(self):
+        self.helper.coordination_v1_api.read_namespaced_lease = AsyncMock(
+            side_effect=client.ApiException(status=403)
+        )
+        with self.assertRaises(client.ApiException):
+            await self.helper.read_batch_lease("batch-b1", "default")
+
+    async def test_replace_batch_lease_forwards_body(self):
+        self.helper.coordination_v1_api.replace_namespaced_lease = AsyncMock()
+        lease = client.V1Lease(metadata=client.V1ObjectMeta(name="batch-b1"))
+
+        await self.helper.replace_batch_lease("batch-b1", "default", lease)
+
+        self.helper.coordination_v1_api.replace_namespaced_lease.assert_called_once_with(
+            "batch-b1", "default", lease
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
