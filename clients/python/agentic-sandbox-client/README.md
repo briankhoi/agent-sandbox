@@ -406,6 +406,75 @@ Latency guidance:
   for the `kubectl port-forward` startup; the SDK probes the local port every
   50ms while it comes up. Gateway/in-cluster modes do not have this step.
 
+### 10. Batch claims
+
+`SandboxClient.get_batch()` attaches to an existing batch of `SandboxClaims`
+that share a `agents.x-k8s.io/batch-id` label, and returns a `SandboxBatch`
+handle. Batches are created by `claim_batch` (a later addition to this SDK);
+`get_batch` is the re-attach path: a driver process that restarted, or a
+separate process inspecting a batch another driver created, can pick the
+batch back up.
+
+```python
+batch = client.get_batch("b1234abcd12", namespace="default")
+
+ready = [m for m in batch.members() if m.ready]
+for member in ready:
+    sandbox = batch.connect(member)
+    sandbox.commands.run("echo hello")
+
+batch.detach()
+```
+
+`get_batch` takes over the batch's `coordination.k8s.io/v1` Lease (named
+`batch-<id>`) as this handle's liveness heartbeat, and resumes renewing it in
+the background. It fails if the Lease is missing or stale (`BatchLeaseExpiredError`,
+so the handle never races a reaper that may already be deleting the batch's
+claims), or if it is live and held by a different process (`BatchInUseError`).
+A batch with no Lease and no labeled claims raises `BatchNotFoundError`.
+
+`SandboxBatch` (and its async twin `AsyncSandboxBatch`, from
+`AsyncSandboxClient.get_batch()`) exposes:
+
+- `batch_id`, `namespace`, `groups`, `size`: the batch's identity and the
+  `BatchGroup`s (one per warm pool) reconstructed from each claim's group
+  annotations.
+- `members(warmpool=None)`: a snapshot of every `Member` in the batch (or one
+  pool), sorted by ordinal. Includes terminal and lost members.
+- `connect(member)`: returns a connected `Sandbox`/`AsyncSandbox` for a ready
+  member. Unlike `get_sandbox`, this skips the name-resolution and existence
+  check, since a `Member`'s `sandbox_name` is already known from the batch's
+  watch cache; the connector still resolves the pod IP lazily on its first
+  request.
+- `err()`: returns the sticky error that stopped the batch's background
+  Lease renewal or watch (for example, `BatchLeaseExpiredError` once no
+  renewal has succeeded for the Lease's duration), or `None` while healthy.
+- `detach(grace=None)`: stops the background watch and Lease renewal, closes
+  cached sandbox connections, and releases this handle's hold on the Lease
+  so another `get_batch` call can take it over. `grace` (an `int` number of
+  seconds greater than 5, the clock-skew margin) controls how long the batch's
+  claims are still considered live after detaching; it defaults to the
+  handle's own Lease duration. `detach` is idempotent to call twice, but a
+  detached handle raises `BatchError` on further use.
+
+#### RBAC
+
+A batch driver needs, in the batch's namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-batch-driver
+rules:
+- apiGroups: ["extensions.agents.x-k8s.io"]
+  resources: ["sandboxclaims"]
+  verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create", "get", "update", "delete"]
+```
+
 ## Testing
 
 A test script is included to verify the full lifecycle (Creation -> Execution -> File I/O -> Cleanup).
