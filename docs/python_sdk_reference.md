@@ -173,6 +173,27 @@ for the given namespace.
   >>> print(client.list_all_sandboxes(namespace="default"))
   ['sandbox-claim-1234abcd', 'sandbox-claim-5678efgh']
 
+<a id="k8s_agent_sandbox.sandbox_client.SandboxClient.get_batch"></a>
+
+##### get\_batch
+
+```python
+def get_batch(batch_id: str, namespace: str = "default") -> SandboxBatch
+```
+
+Attaches to an existing batch, taking over its Lease.
+
+Resumes lease renewal and starts a label-scoped watch that keeps
+``members()`` current. See the "Batch claims" section of this
+package's README for the full batch-claim lifecycle.
+
+**Example**:
+
+  
+  >>> client = SandboxClient()
+  >>> batch = client.get_batch("b1234abcd12")
+  >>> ready = [m for m in batch.members() if m.ready]
+
 <a id="k8s_agent_sandbox.sandbox_client.SandboxClient.delete_sandbox"></a>
 
 ##### delete\_sandbox
@@ -496,4 +517,88 @@ Whether to enable OpenTelemetry tracing.
 ##### trace\_service\_name
 
 Service name used for traces.
+
+<a id="k8s_agent_sandbox.models.BatchGroup"></a>
+
+### BatchGroup Objects
+
+```python
+class BatchGroup(BaseModel)
+```
+
+One warm pool's share of a batch, and its own readiness threshold.
+
+<a id="k8s_agent_sandbox.models.BatchGroup.min_ready"></a>
+
+##### min\_ready
+
+Defaults to ``size``.
+
+<a id="k8s_agent_sandbox.models.Member"></a>
+
+### Member Objects
+
+```python
+class Member(BaseModel)
+```
+
+One claim in a batch, with its identity, its group, and current readiness.
+
+<a id="k8s_agent_sandbox.models.Member.warmpool"></a>
+
+##### warmpool
+
+The group this member belongs to.
+
+<a id="k8s_agent_sandbox.models.BatchEvent"></a>
+
+### BatchEvent Objects
+
+```python
+class BatchEvent(BaseModel)
+```
+
+A member Ready transition, or a batch-level event carrying no member.
+
+<a id="k8s_agent_sandbox.models.GroupReady"></a>
+
+### GroupReady Objects
+
+```python
+@dataclasses.dataclass(frozen=True)
+class GroupReady()
+```
+
+One group's own quorum outcome, yielded by ``iter_ready_groups()``.
+
+A plain dataclass rather than a pydantic model (AGENTS.md's convention
+for this SDK's data models): ``error`` holds a raw ``Exception``, which
+pydantic can only accept with ``arbitrary_types_allowed``.
+
+<a id="k8s_agent_sandbox.models.GroupReady.error"></a>
+
+##### error
+
+Set instead of members if unreachable.
+
+<a id="k8s_agent_sandbox.sandbox_batch"></a>
+
+## k8s\_agent\_sandbox.sandbox\_batch
+
+SandboxBatch: the sync handle for a claimed or re-attached batch.
+
+<a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch"></a>
+
+### SandboxBatch Objects
+
+```python
+class SandboxBatch()
+```
+
+A handle to an existing batch's claims, obtained via ``SandboxClient.get_batch``.
+
+Keeps a live cache of the batch's claims through one label-scoped watch
+(a background daemon thread), renews the batch Lease on another daemon
+thread, and exposes ``members()``, ``connect()``, ``err()``, and
+``detach()``.
 
