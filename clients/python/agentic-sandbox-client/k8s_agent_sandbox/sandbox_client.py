@@ -21,6 +21,7 @@ import uuid
 import atexit
 import sys
 import logging
+from collections.abc import Mapping, Sequence
 from typing import List, Dict, Tuple, TypeVar, Generic, Type
 
 # Import all tracing components from the trace_manager module
@@ -30,6 +31,7 @@ from .trace_manager import (
 from .sandbox import Sandbox
 from .sandbox_batch import SandboxBatch
 from .models import (
+    BatchGroup,
     SandboxConnectionConfig,
     SandboxLocalTunnelConnectionConfig,
     SandboxTracerConfig,
@@ -287,6 +289,78 @@ class SandboxClient(Generic[T]):
         """
         return self.k8s_helper.list_sandbox_claims(namespace, label_selector=label_selector)
 
+    @trace_span("claim_batch")
+    def claim_batch(
+        self,
+        groups: Sequence[BatchGroup],
+        *,
+        namespace: str = "default",
+        labels: Mapping[str, str] | None = None,
+        batch_id: str | None = None,
+        create_rps: float | None = None,
+        max_in_flight: int | None = None,
+        work_budget: int | None = None,
+        quorum_timeout: int | None = None,
+        lease_duration: int | None = None,
+    ) -> SandboxBatch:
+        """Creates a batch of SandboxClaims across one or more warm pools and returns its handle.
+
+        Checks that each group's SandboxWarmPool and its SandboxTemplate exist, creates the
+        batch's ``coordination.k8s.io/v1`` Lease (``batch-<id>``), starts the label-scoped watch
+        and Lease renewal, then creates the claims ``<id>-0`` to ``<id>-<N-1>`` in the background
+        and returns without waiting for them. Consume the members with ``events()`` or
+        ``iter_ready_groups()`` and tear the batch down with ``release()``.
+
+        Each claim is deleted by the controller at its ``shutdownTime``, its own create time plus
+        ``quorum_timeout + work_budget`` and a 600 s margin, as a backstop if ``release()`` never runs.
+
+        Args:
+            groups: One ``BatchGroup`` per warm pool, each with ``size > 0``; pools must be distinct.
+            namespace: Namespace for the claims and the Lease.
+            labels: Extra labels for every claim; must not set ``agents.x-k8s.io/batch-id``.
+            batch_id: Overrides the generated id; a DNS-1123 label starting with a letter,
+                at most 52 characters.
+            create_rps: Maximum claim creates started per second (default 50).
+            max_in_flight: Maximum concurrent claim creates (default 20).
+            work_budget: Expected working time after quorum, in seconds (int, default 3600).
+            quorum_timeout: Seconds each group has to reach ``min_ready`` (int, default 600).
+            lease_duration: Lease duration in seconds (int, default 60); must exceed 5.
+
+        Raises:
+            ValueError: an invalid argument, before anything is created.
+            SandboxWarmPoolNotFoundError: a group's warm pool does not exist.
+            SandboxTemplateNotFoundError: a group's warm pool names a template that does not exist.
+            BatchExistsError: the batch's Lease already exists.
+
+        Example:
+
+            >>> client = SandboxClient()
+            >>> batch = client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=3)])
+            >>> try:
+            ...     for event in batch.events():
+            ...         if event.type is BatchEventType.MEMBER_READY:
+            ...             batch.connect(event.member).commands.run("echo hello")
+            ... finally:
+            ...     batch.release()
+        """
+        annotations = self._trace_context_annotations()
+
+        batch = SandboxBatch._claim(
+            self,
+            groups,
+            namespace=namespace,
+            labels=labels,
+            batch_id=batch_id,
+            create_rps=create_rps,
+            max_in_flight=max_in_flight,
+            work_budget=work_budget,
+            quorum_timeout=quorum_timeout,
+            lease_duration=lease_duration,
+            claim_annotations=annotations,
+        )
+        self._active_batches[(namespace, batch.batch_id)] = batch
+        return batch
+
     def get_batch(self, batch_id: str, namespace: str = "default") -> SandboxBatch:
         """Attaches to an existing batch, taking over its Lease.
 
@@ -329,7 +403,8 @@ class SandboxClient(Generic[T]):
             
     def delete_all(self) -> None:
         """
-        Cleanup all tracked sandboxes managed by this client.
+        Cleanup all tracked sandboxes managed by this client, and release its tracked batches.
+        Detached batches are no longer tracked, so they are left alone.
         
         Example:
         
@@ -345,6 +420,24 @@ class SandboxClient(Generic[T]):
                 logging.error(
                     f"Cleanup failed for {claim_name} in namespace {ns}: {e}"
                 )
+        for (ns, batch_id), batch in list(self._active_batches.items()):
+            if batch._detached:
+                continue
+            try:
+                batch.release()
+            except Exception as e:
+                logging.error(
+                    f"Cleanup failed for batch {batch_id} in namespace {ns}: {e}"
+                )
+
+    def _trace_context_annotations(self) -> dict[str, str]:
+        """The current trace context as a claim annotation, when tracing is enabled."""
+        annotations = {}
+        if self.tracing_manager:
+            trace_context_str = self.tracing_manager.get_trace_context_json()
+            if trace_context_str:
+                annotations["opentelemetry.io/trace-context"] = trace_context_str
+        return annotations
 
     @trace_span("create_claim")
     def _create_claim(
@@ -366,11 +459,7 @@ class SandboxClient(Generic[T]):
                 span.set_attribute("sandbox.lifecycle.shutdown_time", lifecycle["shutdownTime"])
                 span.set_attribute("sandbox.lifecycle.shutdown_policy", lifecycle["shutdownPolicy"])
 
-        annotations = {}
-        if self.tracing_manager:
-            trace_context_str = self.tracing_manager.get_trace_context_json()
-            if trace_context_str:
-                annotations["opentelemetry.io/trace-context"] = trace_context_str
+        annotations = self._trace_context_annotations()
 
         return self.k8s_helper.create_sandbox_claim(
             claim_name,

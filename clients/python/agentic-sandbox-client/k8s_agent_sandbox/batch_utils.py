@@ -31,7 +31,13 @@ from .batch_state import (
     BATCH_DEFAULT_WORK_BUDGET_SECONDS,
     CLOCK_SKEW_MARGIN,
 )
-from .constants import BATCH_ID_LABEL
+from .constants import (
+    BATCH_ID_LABEL,
+    BATCH_LEASE_DURATION_ANNOTATION,
+    BATCH_QUORUM_TIMEOUT_ANNOTATION,
+    BATCH_WORK_BUDGET_ANNOTATION,
+    CREATED_BY_LABEL,
+)
 from .exceptions import BatchError
 from .models import BatchGroup
 from .pod_metadata import validate_labels
@@ -217,3 +223,24 @@ def validate_claim_batch_args(
         quorum_timeout=quorum_timeout,
         lease_duration=lease_duration,
     )
+
+
+def batch_lease_metadata(args: ClaimBatchArgs) -> tuple[dict[str, str], dict[str, str]]:
+    """Returns the labels and annotations of a new batch Lease.
+
+    ``get_batch`` and the reaper read these, so they are built in one place for both handles.
+    """
+    labels = {BATCH_ID_LABEL: args.batch_id, CREATED_BY_LABEL: "python-client"}
+    annotations = {
+        BATCH_LEASE_DURATION_ANNOTATION: str(args.lease_duration),
+        BATCH_WORK_BUDGET_ANNOTATION: str(args.work_budget),
+        BATCH_QUORUM_TIMEOUT_ANNOTATION: str(args.quorum_timeout),
+    }
+    return labels, annotations
+
+
+def warmpool_template_name(warmpool: Mapping) -> str | None:
+    """Returns the SandboxTemplate a SandboxWarmPool names, from ``spec.sandboxTemplateRef.name``
+    as the controller reads it.
+    """
+    return ((warmpool.get("spec") or {}).get("sandboxTemplateRef") or {}).get("name")

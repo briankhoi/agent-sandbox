@@ -24,6 +24,7 @@ import asyncio
 import logging
 import sys
 import uuid
+from collections.abc import Mapping, Sequence
 from types import TracebackType
 from typing import Generic, TypeVar
 
@@ -34,14 +35,16 @@ from .exceptions import SandboxNotFoundError
 from .k8s_helper import K8sHelper
 from .pod_metadata import build_pod_metadata, validate_labels
 from .utils import construct_sandbox_claim_lifecycle_spec
-from .models import SandboxConnectionConfig, SandboxTracerConfig
+from .constants import BATCH_ID_LABEL
+from .models import BatchGroup, SandboxConnectionConfig, SandboxTracerConfig
 from .trace_manager import async_trace_span, create_tracer_manager, initialize_tracer, trace
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=AsyncSandbox)
 
-# Bounds each per-claim delete issued by the atexit cleanup below. urllib3
+# Bounds each per-claim delete (and each batch deletecollection and Lease delete)
+# issued by the atexit cleanup below. urllib3
 # (used by the synchronous K8sHelper) has no default read timeout, so an
 # unresponsive apiserver would otherwise hang process exit indefinitely.
 _ATEXIT_DELETE_REQUEST_TIMEOUT_SECONDS = 300
@@ -160,6 +163,7 @@ class AsyncSandboxClient(Generic[T]):
             self._active_batches.clear()
         for batch in batches:
             try:
+                await batch._stop_creation()
                 await batch._stop_background_tasks()
             except Exception as e:
                 logger.error(f"Failed to stop batch '{batch.batch_id}' tasks: {e}")
@@ -375,6 +379,79 @@ class AsyncSandboxClient(Generic[T]):
         """
         return await self.k8s_helper.list_sandbox_claims(namespace, label_selector=label_selector)
 
+    @async_trace_span("claim_batch")
+    async def claim_batch(
+        self,
+        groups: Sequence[BatchGroup],
+        *,
+        namespace: str = "default",
+        labels: Mapping[str, str] | None = None,
+        batch_id: str | None = None,
+        create_rps: float | None = None,
+        max_in_flight: int | None = None,
+        work_budget: int | None = None,
+        quorum_timeout: int | None = None,
+        lease_duration: int | None = None,
+    ) -> AsyncSandboxBatch:
+        """Creates a batch of SandboxClaims across one or more warm pools and returns its handle.
+
+        Checks that each group's SandboxWarmPool and its SandboxTemplate exist, creates the
+        batch's ``coordination.k8s.io/v1`` Lease (``batch-<id>``), starts the label-scoped watch
+        and Lease renewal, then creates the claims ``<id>-0`` to ``<id>-<N-1>`` in the background
+        and returns without waiting for them. Consume the members with ``events()`` or
+        ``iter_ready_groups()`` and tear the batch down with ``release()``.
+
+        Each claim is deleted by the controller at its ``shutdownTime``, its own create time plus
+        ``quorum_timeout + work_budget`` and a 600 s margin, as a backstop if ``release()`` never runs.
+
+        Args:
+            groups: One ``BatchGroup`` per warm pool, each with ``size > 0``; pools must be distinct.
+            namespace: Namespace for the claims and the Lease.
+            labels: Extra labels for every claim; must not set ``agents.x-k8s.io/batch-id``.
+            batch_id: Overrides the generated id; a DNS-1123 label starting with a letter,
+                at most 52 characters.
+            create_rps: Maximum claim creates started per second (default 50).
+            max_in_flight: Maximum concurrent claim creates (default 20).
+            work_budget: Expected working time after quorum, in seconds (int, default 3600).
+            quorum_timeout: Seconds each group has to reach ``min_ready`` (int, default 600).
+            lease_duration: Lease duration in seconds (int, default 60); must exceed 5.
+
+        Raises:
+            ValueError: an invalid argument, before anything is created.
+            SandboxWarmPoolNotFoundError: a group's warm pool does not exist.
+            SandboxTemplateNotFoundError: a group's warm pool names a template that does not exist.
+            BatchExistsError: the batch's Lease already exists.
+
+        Example::
+
+            batch = await client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=3)])
+            try:
+                async for event in batch.events():
+                    if event.type is BatchEventType.MEMBER_READY:
+                        sandbox = await batch.connect(event.member)
+                        await sandbox.commands.run("echo hello")
+            finally:
+                await batch.release()
+        """
+        annotations = self._trace_context_annotations()
+
+        batch = await AsyncSandboxBatch._claim(
+            self,
+            groups,
+            namespace=namespace,
+            labels=labels,
+            batch_id=batch_id,
+            create_rps=create_rps,
+            max_in_flight=max_in_flight,
+            work_budget=work_budget,
+            quorum_timeout=quorum_timeout,
+            lease_duration=lease_duration,
+            claim_annotations=annotations,
+        )
+        async with self._lock:
+            self._active_batches[(namespace, batch.batch_id)] = batch
+        return batch
+
     async def get_batch(self, batch_id: str, namespace: str = "default") -> AsyncSandboxBatch:
         """Attaches to an existing batch, taking over its Lease.
 
@@ -413,15 +490,25 @@ class AsyncSandboxClient(Generic[T]):
             )
 
     async def delete_all(self) -> None:
-        """Cleanup all tracked sandboxes managed by this client."""
+        """Cleanup all tracked sandboxes managed by this client, and release its tracked batches.
+        Detached batches are no longer tracked, so they are left alone.
+        """
         async with self._lock:
             items = list(self._active_connection_sandboxes.items())
+            batches = list(self._active_batches.items())
 
         for (ns, claim_name), _ in items:
             try:
                 await self.delete_sandbox(claim_name, namespace=ns)
             except Exception as e:
                 logger.error(f"Cleanup failed for {claim_name} in namespace {ns}: {e}")
+        for (ns, batch_id), batch in batches:
+            if batch._detached:
+                continue
+            try:
+                await batch.release()
+            except Exception as e:
+                logger.error(f"Cleanup failed for batch {batch_id} in namespace {ns}: {e}")
 
     def _atexit_cleanup(self):
         """Best-effort atexit cleanup for claims and local sandbox resources.
@@ -432,13 +519,19 @@ class AsyncSandboxClient(Generic[T]):
         an atexit handler may run after async event-loop resources and the
         process-wide executor have started shutting down. Per-claim failures
         and top-level errors are reported to ``sys.stderr`` rather than raised.
+
+        Tracked batches are released the same way: one ``deletecollection`` on the batch label,
+        then the Lease delete. Their asyncio tasks are left alone, since the event loop may be gone.
         """
         try:
             claims = list(self._active_connection_sandboxes.keys())
             tracked = [
                 (key, self._active_connection_sandboxes[key]) for key in claims
             ]
-            if not tracked:
+            batches = [
+                batch for batch in self._active_batches.values() if not batch._detached
+            ]
+            if not tracked and not batches:
                 return
 
             for _, sandbox in tracked:
@@ -453,6 +546,25 @@ class AsyncSandboxClient(Generic[T]):
                         )
 
             helper = K8sHelper()
+            for batch in batches:
+                try:
+                    helper.delete_sandbox_claim_collection(
+                        batch.namespace,
+                        f"{BATCH_ID_LABEL}={batch.batch_id}",
+                        _request_timeout=_ATEXIT_DELETE_REQUEST_TIMEOUT_SECONDS,
+                    )
+                    helper.delete_batch_lease(
+                        batch._lease_name,
+                        batch.namespace,
+                        _request_timeout=_ATEXIT_DELETE_REQUEST_TIMEOUT_SECONDS,
+                    )
+                except Exception as e:
+                    if sys.stderr is not None:
+                        print(
+                            f"[agent-sandbox] Warning: failed to release batch "
+                            f"'{batch.batch_id}' in namespace '{batch.namespace}' during atexit cleanup: {e}",
+                            file=sys.stderr,
+                        )
             for ns, claim_name in (key for key, _ in tracked):
                 try:
                     helper.delete_sandbox_claim(
@@ -474,6 +586,15 @@ class AsyncSandboxClient(Generic[T]):
                     file=sys.stderr,
                 )
 
+    def _trace_context_annotations(self) -> dict[str, str]:
+        """The current trace context as a claim annotation, when tracing is enabled."""
+        annotations = {}
+        if self.tracing_manager:
+            trace_context_str = self.tracing_manager.get_trace_context_json()
+            if trace_context_str:
+                annotations["opentelemetry.io/trace-context"] = trace_context_str
+        return annotations
+
     @async_trace_span("create_claim")
     async def _create_claim(
         self,
@@ -494,11 +615,7 @@ class AsyncSandboxClient(Generic[T]):
                 span.set_attribute("sandbox.lifecycle.shutdown_time", lifecycle["shutdownTime"])
                 span.set_attribute("sandbox.lifecycle.shutdown_policy", lifecycle["shutdownPolicy"])
 
-        annotations = {}
-        if self.tracing_manager:
-            trace_context_str = self.tracing_manager.get_trace_context_json()
-            if trace_context_str:
-                annotations["opentelemetry.io/trace-context"] = trace_context_str
+        annotations = self._trace_context_annotations()
 
         return await self.k8s_helper.create_sandbox_claim(
             claim_name,
