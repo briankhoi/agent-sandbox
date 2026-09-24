@@ -19,7 +19,7 @@ from kubernetes import client
 import urllib3.exceptions
 from pydantic import ValidationError
 from k8s_agent_sandbox.k8s_helper import K8sHelper
-from k8s_agent_sandbox.exceptions import SandboxClaimFailedError, SandboxMetadataError, SandboxTemplateNotFoundError
+from k8s_agent_sandbox.exceptions import SandboxClaimFailedError, SandboxMetadataError, SandboxTemplateNotFoundError, SandboxWarmPoolNotFoundError
 from k8s_agent_sandbox.constants import CLIENT_REQUEST_TIME_ANNOTATION
 from k8s_agent_sandbox.models import SandboxClaimEnvVar
 
@@ -1103,6 +1103,127 @@ class TestK8sHelperBatchMethods(unittest.TestCase):
 
         mock_coord.replace_namespaced_lease.assert_called_once_with("batch-b1", "default", lease)
         self.assertIs(result, updated_lease)
+
+    def test_delete_batch_lease_forwards_timeout_and_ignores_404(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_coord = MagicMock()
+        mock_coord_cls.return_value = mock_coord
+
+        helper = K8sHelper()
+        helper.delete_batch_lease("batch-b1", "default", _request_timeout=7)
+        mock_coord.delete_namespaced_lease.assert_called_once_with(
+            "batch-b1", "default", _request_timeout=7
+        )
+
+        mock_coord.delete_namespaced_lease.side_effect = client.ApiException(status=404)
+        helper.delete_batch_lease("batch-b1", "default")  # Must not raise.
+
+    def test_delete_batch_lease_reraises_non_404(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_coord = MagicMock()
+        mock_coord_cls.return_value = mock_coord
+        mock_coord.delete_namespaced_lease.side_effect = client.ApiException(status=403)
+
+        helper = K8sHelper()
+        with self.assertRaises(client.ApiException):
+            helper.delete_batch_lease("batch-b1", "default")
+
+    def test_delete_sandbox_claim_collection_uses_label_selector(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+
+        helper = K8sHelper()
+        helper.delete_sandbox_claim_collection(
+            "default", "agents.x-k8s.io/batch-id=b1", _request_timeout=7
+        )
+
+        mock_api.delete_collection_namespaced_custom_object.assert_called_once_with(
+            group="extensions.agents.x-k8s.io",
+            version="v1beta1",
+            namespace="default",
+            plural="sandboxclaims",
+            label_selector="agents.x-k8s.io/batch-id=b1",
+            _request_timeout=7,
+        )
+
+
+    def test_get_sandbox_warmpool_requests_warmpool_resource(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_api.get_namespaced_custom_object.return_value = {"metadata": {"name": "x"}}
+
+        K8sHelper().get_sandbox_warmpool("pool-a", "ns")
+
+        mock_api.get_namespaced_custom_object.assert_called_once_with(
+            group="extensions.agents.x-k8s.io",
+            version="v1beta1",
+            namespace="ns",
+            plural="sandboxwarmpools",
+            name="pool-a",
+        )
+
+    def test_get_sandbox_template_requests_template_resource(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_api.get_namespaced_custom_object.return_value = {"metadata": {"name": "x"}}
+
+        K8sHelper().get_sandbox_template("tmpl-a", "ns")
+
+        mock_api.get_namespaced_custom_object.assert_called_once_with(
+            group="extensions.agents.x-k8s.io",
+            version="v1beta1",
+            namespace="ns",
+            plural="sandboxtemplates",
+            name="tmpl-a",
+        )
+
+    def test_get_sandbox_warmpool_404_raises_not_found(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_api.get_namespaced_custom_object.side_effect = client.ApiException(status=404)
+
+        with self.assertRaises(SandboxWarmPoolNotFoundError):
+            K8sHelper().get_sandbox_warmpool("pool-a", "ns")
+
+    def test_get_sandbox_template_404_raises_not_found(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_api.get_namespaced_custom_object.side_effect = client.ApiException(status=404)
+
+        with self.assertRaises(SandboxTemplateNotFoundError):
+            K8sHelper().get_sandbox_template("tmpl-a", "ns")
+
+    def test_get_sandbox_warmpool_other_errors_propagate(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_api.get_namespaced_custom_object.side_effect = client.ApiException(status=500)
+
+        with self.assertRaises(client.ApiException):
+            K8sHelper().get_sandbox_warmpool("pool-a", "ns")
+
+    def test_get_sandbox_template_other_errors_propagate(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_api.get_namespaced_custom_object.side_effect = client.ApiException(status=500)
+
+        with self.assertRaises(client.ApiException):
+            K8sHelper().get_sandbox_template("tmpl-a", "ns")
 
 
 if __name__ == '__main__':

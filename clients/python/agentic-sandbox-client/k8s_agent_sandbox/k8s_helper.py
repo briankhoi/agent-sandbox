@@ -29,6 +29,8 @@ from .constants import (
     CLAIM_API_GROUP,
     CLAIM_API_VERSION,
     CLAIM_PLURAL_NAME,
+    TEMPLATE_PLURAL_NAME,
+    WARMPOOL_PLURAL_NAME,
     TERMINAL_CLAIM_READY_REASONS,
     CLIENT_REQUEST_TIME_ANNOTATION,
     GATEWAY_API_GROUP,
@@ -478,7 +480,7 @@ class K8sHelper:
         self, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
     ):
         """Uses a single watch starting at ``resource_version`` to yield raw watch events for multiple
-        SandboxClaims matching a label selector. 
+        SandboxClaims matching a label selector.
         """
         w = watch.Watch()
         try:
@@ -511,3 +513,76 @@ class K8sHelper:
         # Uses replace (PUT) over PATCH to have the apiserver reject stale resourceVersion updates
         # to handle races and ensure two clients cannot simultaneously hold the same batch lease.
         return self.coordination_v1_api.replace_namespaced_lease(name, namespace, body)
+
+    def create_batch_lease(self, namespace: str, body):
+        """Creates a batch Lease, then returns the created object."""
+        return self.coordination_v1_api.create_namespaced_lease(namespace, body)
+
+    def delete_batch_lease(
+        self, name: str, namespace: str, _request_timeout: float | tuple[float, float] | None = None
+    ) -> None:
+        """Deletes a batch Lease; one that is already gone is not an error.
+
+        Args:
+            _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
+                pair) forwarded to the underlying urllib3 request.
+        """
+        try:
+            self.coordination_v1_api.delete_namespaced_lease(
+                name, namespace, _request_timeout=_request_timeout
+            )
+        except client.ApiException as e:
+            if e.status != 404:
+                raise
+
+    def delete_sandbox_claim_collection(
+        self, namespace: str, label_selector: str, _request_timeout: float | tuple[float, float] | None = None
+    ) -> None:
+        """Deletes every SandboxClaim matching a label selector with one ``deletecollection`` call.
+
+        Args:
+            _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
+                pair) forwarded to the underlying urllib3-based request.
+        """
+        self.custom_objects_api.delete_collection_namespaced_custom_object(
+            group=CLAIM_API_GROUP,
+            version=CLAIM_API_VERSION,
+            namespace=namespace,
+            plural=CLAIM_PLURAL_NAME,
+            label_selector=label_selector,
+            _request_timeout=_request_timeout,
+        )
+
+    def get_sandbox_warmpool(self, name: str, namespace: str) -> dict[str, Any]:
+        """Gets a SandboxWarmPool. Raises ``SandboxWarmPoolNotFoundError`` if it doesn't exist."""
+        try:
+            return self.custom_objects_api.get_namespaced_custom_object(
+                group=CLAIM_API_GROUP,
+                version=CLAIM_API_VERSION,
+                namespace=namespace,
+                plural=WARMPOOL_PLURAL_NAME,
+                name=name,
+            )
+        except client.ApiException as e:
+            if e.status == 404:
+                raise SandboxWarmPoolNotFoundError(
+                    f"SandboxWarmPool '{name}' not found in namespace '{namespace}'"
+                ) from e
+            raise
+
+    def get_sandbox_template(self, name: str, namespace: str) -> dict[str, Any]:
+        """Gets a SandboxTemplate. Raises ``SandboxTemplateNotFoundError`` if it doesn't exist."""
+        try:
+            return self.custom_objects_api.get_namespaced_custom_object(
+                group=CLAIM_API_GROUP,
+                version=CLAIM_API_VERSION,
+                namespace=namespace,
+                plural=TEMPLATE_PLURAL_NAME,
+                name=name,
+            )
+        except client.ApiException as e:
+            if e.status == 404:
+                raise SandboxTemplateNotFoundError(
+                    f"SandboxTemplate '{name}' not found in namespace '{namespace}'"
+                ) from e
+            raise

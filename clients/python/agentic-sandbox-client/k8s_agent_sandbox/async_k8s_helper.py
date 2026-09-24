@@ -24,6 +24,8 @@ from .constants import (
     CLAIM_API_GROUP,
     CLAIM_API_VERSION,
     CLAIM_PLURAL_NAME,
+    TEMPLATE_PLURAL_NAME,
+    WARMPOOL_PLURAL_NAME,
     CLIENT_REQUEST_TIME_ANNOTATION,
     GATEWAY_API_GROUP,
     GATEWAY_API_VERSION,
@@ -526,7 +528,7 @@ class AsyncK8sHelper:
         self, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
     ):
         """Uses a single watch starting at ``resource_version`` to yield raw watch events for multiple
-        SandboxClaims matching a label selector. 
+        SandboxClaims matching a label selector.
         """
         await self._ensure_initialized()
 
@@ -565,6 +567,72 @@ class AsyncK8sHelper:
         # Uses replace (PUT) over PATCH to have the apiserver reject stale resourceVersion updates
         # to handle races and ensure two clients cannot simultaneously hold the same batch lease.
         return await self.coordination_v1_api.replace_namespaced_lease(name, namespace, body)
+
+    async def create_batch_lease(self, namespace: str, body):
+        """Creates a batch Lease, then returns the created object."""
+        await self._ensure_initialized()
+
+        return await self.coordination_v1_api.create_namespaced_lease(namespace, body)
+
+    async def delete_batch_lease(self, name: str, namespace: str) -> None:
+        """Deletes a batch Lease. If the Lease does not exist, this does not error."""
+        await self._ensure_initialized()
+
+        try:
+            await self.coordination_v1_api.delete_namespaced_lease(name, namespace)
+        except client.ApiException as e:
+            if e.status != 404:
+                raise
+
+    async def delete_sandbox_claim_collection(self, namespace: str, label_selector: str) -> None:
+        """Deletes every SandboxClaim matching a label selector with one ``deletecollection`` call."""
+        await self._ensure_initialized()
+
+        await self.custom_objects_api.delete_collection_namespaced_custom_object(
+            group=CLAIM_API_GROUP,
+            version=CLAIM_API_VERSION,
+            namespace=namespace,
+            plural=CLAIM_PLURAL_NAME,
+            label_selector=label_selector,
+        )
+
+    async def get_sandbox_warmpool(self, name: str, namespace: str) -> dict[str, Any]:
+        """Gets a SandboxWarmPool. Raises ``SandboxWarmPoolNotFoundError`` if it doesn't exist."""
+        await self._ensure_initialized()
+
+        try:
+            return await self.custom_objects_api.get_namespaced_custom_object(
+                group=CLAIM_API_GROUP,
+                version=CLAIM_API_VERSION,
+                namespace=namespace,
+                plural=WARMPOOL_PLURAL_NAME,
+                name=name,
+            )
+        except client.ApiException as e:
+            if e.status == 404:
+                raise SandboxWarmPoolNotFoundError(
+                    f"SandboxWarmPool '{name}' not found in namespace '{namespace}'"
+                ) from e
+            raise
+
+    async def get_sandbox_template(self, name: str, namespace: str) -> dict[str, Any]:
+        """Gets a SandboxTemplate. Raises ``SandboxTemplateNotFoundError`` if it doesn't exist."""
+        await self._ensure_initialized()
+
+        try:
+            return await self.custom_objects_api.get_namespaced_custom_object(
+                group=CLAIM_API_GROUP,
+                version=CLAIM_API_VERSION,
+                namespace=namespace,
+                plural=TEMPLATE_PLURAL_NAME,
+                name=name,
+            )
+        except client.ApiException as e:
+            if e.status == 404:
+                raise SandboxTemplateNotFoundError(
+                    f"SandboxTemplate '{name}' not found in namespace '{namespace}'"
+                ) from e
+            raise
 
     async def close(self) -> None:
         """Closes the shared Kubernetes API client session."""

@@ -23,7 +23,7 @@ import aiohttp
 from kubernetes_asyncio import client
 
 from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
-from k8s_agent_sandbox.exceptions import SandboxMetadataError, SandboxTemplateNotFoundError
+from k8s_agent_sandbox.exceptions import SandboxMetadataError, SandboxTemplateNotFoundError, SandboxWarmPoolNotFoundError
 from k8s_agent_sandbox.constants import CLIENT_REQUEST_TIME_ANNOTATION
 
 
@@ -1016,6 +1016,94 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
             "batch-b1", "default", lease
         )
         self.assertIs(result, updated_lease)
+
+    async def test_delete_batch_lease_ignores_404(self):
+        self.helper.coordination_v1_api.delete_namespaced_lease = AsyncMock()
+        await self.helper.delete_batch_lease("batch-b1", "default")
+        self.helper.coordination_v1_api.delete_namespaced_lease.assert_called_once_with(
+            "batch-b1", "default"
+        )
+
+        self.helper.coordination_v1_api.delete_namespaced_lease = AsyncMock(
+            side_effect=client.ApiException(status=404)
+        )
+        await self.helper.delete_batch_lease("batch-b1", "default")  # Must not raise.
+
+    async def test_delete_batch_lease_reraises_non_404(self):
+        self.helper.coordination_v1_api.delete_namespaced_lease = AsyncMock(
+            side_effect=client.ApiException(status=403)
+        )
+        with self.assertRaises(client.ApiException):
+            await self.helper.delete_batch_lease("batch-b1", "default")
+
+    async def test_delete_sandbox_claim_collection_uses_label_selector(self):
+        self.helper.custom_objects_api.delete_collection_namespaced_custom_object = AsyncMock()
+
+        await self.helper.delete_sandbox_claim_collection("default", "agents.x-k8s.io/batch-id=b1")
+
+        self.helper.custom_objects_api.delete_collection_namespaced_custom_object.assert_called_once_with(
+            group="extensions.agents.x-k8s.io",
+            version="v1beta1",
+            namespace="default",
+            plural="sandboxclaims",
+            label_selector="agents.x-k8s.io/batch-id=b1",
+        )
+
+    async def test_get_sandbox_warmpool_requests_warmpool_resource(self):
+        get = AsyncMock(return_value={"metadata": {"name": "x"}})
+        self.helper.custom_objects_api.get_namespaced_custom_object = get
+
+        await self.helper.get_sandbox_warmpool("pool-a", "ns")
+
+        get.assert_called_once_with(
+            group="extensions.agents.x-k8s.io",
+            version="v1beta1",
+            namespace="ns",
+            plural="sandboxwarmpools",
+            name="pool-a",
+        )
+
+    async def test_get_sandbox_template_requests_template_resource(self):
+        get = AsyncMock(return_value={"metadata": {"name": "x"}})
+        self.helper.custom_objects_api.get_namespaced_custom_object = get
+
+        await self.helper.get_sandbox_template("tmpl-a", "ns")
+
+        get.assert_called_once_with(
+            group="extensions.agents.x-k8s.io",
+            version="v1beta1",
+            namespace="ns",
+            plural="sandboxtemplates",
+            name="tmpl-a",
+        )
+
+    async def test_get_sandbox_warmpool_404_raises_not_found(self):
+        self.helper.custom_objects_api.get_namespaced_custom_object = AsyncMock(
+            side_effect=client.ApiException(status=404)
+        )
+        with self.assertRaises(SandboxWarmPoolNotFoundError):
+            await self.helper.get_sandbox_warmpool("pool-a", "ns")
+
+    async def test_get_sandbox_template_404_raises_not_found(self):
+        self.helper.custom_objects_api.get_namespaced_custom_object = AsyncMock(
+            side_effect=client.ApiException(status=404)
+        )
+        with self.assertRaises(SandboxTemplateNotFoundError):
+            await self.helper.get_sandbox_template("tmpl-a", "ns")
+
+    async def test_get_sandbox_warmpool_other_errors_propagate(self):
+        self.helper.custom_objects_api.get_namespaced_custom_object = AsyncMock(
+            side_effect=client.ApiException(status=500)
+        )
+        with self.assertRaises(client.ApiException):
+            await self.helper.get_sandbox_warmpool("pool-a", "ns")
+
+    async def test_get_sandbox_template_other_errors_propagate(self):
+        self.helper.custom_objects_api.get_namespaced_custom_object = AsyncMock(
+            side_effect=client.ApiException(status=500)
+        )
+        with self.assertRaises(client.ApiException):
+            await self.helper.get_sandbox_template("tmpl-a", "ns")
 
 
 if __name__ == "__main__":
