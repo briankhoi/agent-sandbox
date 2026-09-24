@@ -29,10 +29,19 @@ from test.e2e.clients.python.test_e2e_python_sdk import (  # noqa: F401
 )
 
 from k8s_agent_sandbox import SandboxClient
-from k8s_agent_sandbox.exceptions import BatchNotFoundError
-from k8s_agent_sandbox.models import SandboxLocalTunnelConnectionConfig
+from k8s_agent_sandbox.exceptions import (
+    BatchNotFoundError,
+    SandboxWarmPoolNotFoundError,
+)
+from k8s_agent_sandbox.models import (
+    BatchEventType,
+    BatchGroup,
+    SandboxLocalTunnelConnectionConfig,
+)
 
 MEMBERS_READY_TIMEOUT_SECONDS = 120
+# Long enough for a warm pool's claims to become Ready, short enough to wait out in a test.
+BATCH_QUORUM_TIMEOUT_SECONDS = 90
 
 
 def _batch_manifest(batch_id: str, warmpool: str) -> str:
@@ -117,3 +126,116 @@ def test_get_batch_not_found_raises(tc, temp_namespace):
     client = SandboxClient()
     with pytest.raises(BatchNotFoundError):
         client.get_batch("bnonexistent1", namespace=temp_namespace)
+
+
+def _labeled_claims(tc, namespace, batch_id):
+    return tc.get_custom_objects_api().list_namespaced_custom_object(
+        group="extensions.agents.x-k8s.io",
+        version="v1beta1",
+        namespace=namespace,
+        plural="sandboxclaims",
+        label_selector=f"agents.x-k8s.io/batch-id={batch_id}",
+    )["items"]
+
+
+def _read_lease(tc, namespace, batch_id):
+    coordination_api = kubernetes.client.CoordinationV1Api(tc.get_api_client())
+    try:
+        return coordination_api.read_namespaced_lease(f"batch-{batch_id}", namespace)
+    except kubernetes.client.ApiException as e:
+        if e.status == 404:
+            return None
+        raise
+
+
+def test_claim_batch_events_then_release(tc, temp_namespace, sandbox_warmpool):
+    client = SandboxClient()
+    batch = client.claim_batch(
+        [BatchGroup(warmpool=sandbox_warmpool, size=3)],
+        namespace=temp_namespace,
+        quorum_timeout=BATCH_QUORUM_TIMEOUT_SECONDS,
+    )
+    try:
+        assert _read_lease(tc, temp_namespace, batch.batch_id) is not None
+        events = list(batch.events())
+        ready = [e.member.claim_name for e in events if e.type is BatchEventType.MEMBER_READY]
+        assert sorted(ready) == sorted(f"{batch.batch_id}-{i}" for i in range(3)), events
+    finally:
+        batch.release()
+
+    remaining = [
+        claim
+        for claim in _labeled_claims(tc, temp_namespace, batch.batch_id)
+        if not (claim.get("metadata") or {}).get("deletionTimestamp")
+    ]
+    assert remaining == []
+    assert _read_lease(tc, temp_namespace, batch.batch_id) is None
+
+
+def test_claim_batch_nonexistent_warmpool_is_rejected_before_anything_exists(
+    tc, temp_namespace, sandbox_warmpool
+):
+    client = SandboxClient()
+    batch_id = f"b{uuid.uuid4().hex[:10]}"
+    with pytest.raises(SandboxWarmPoolNotFoundError):
+        client.claim_batch(
+            [
+                BatchGroup(warmpool=sandbox_warmpool, size=1),
+                BatchGroup(warmpool="python-sdk-nonexistent-pool", size=1),
+            ],
+            namespace=temp_namespace,
+            batch_id=batch_id,
+        )
+    assert _labeled_claims(tc, temp_namespace, batch_id) == []
+    assert _read_lease(tc, temp_namespace, batch_id) is None
+
+
+def test_iter_ready_groups_yields_error_for_a_stuck_group_and_members_for_the_other(
+    tc, temp_namespace, sandbox_warmpool
+):
+    # The stuck pool exists, so claim_batch's precheck passes, but its image can never be
+    # pulled: its claim stays pending with no terminal reason until quorum_timeout.
+    tc.apply_manifest_text(
+        """apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: python-sdk-unpullable-template
+spec:
+  podTemplate:
+    spec:
+      containers:
+      - name: never-starts
+        image: kind.local/python-sdk-image-that-does-not-exist:none
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: python-sdk-stuck-pool
+spec:
+  replicas: 0
+  sandboxTemplateRef:
+    name: python-sdk-unpullable-template
+""",
+        namespace=temp_namespace,
+    )
+
+    client = SandboxClient()
+    batch = client.claim_batch(
+        [
+            BatchGroup(warmpool=sandbox_warmpool, size=2),
+            BatchGroup(warmpool="python-sdk-stuck-pool", size=1),
+        ],
+        namespace=temp_namespace,
+        quorum_timeout=BATCH_QUORUM_TIMEOUT_SECONDS,
+    )
+    try:
+        results = {group.warmpool: group for group in batch.iter_ready_groups()}
+    finally:
+        batch.release()
+
+    healthy = results[sandbox_warmpool]
+    assert healthy.error is None
+    assert len(healthy.members) == 2
+    stuck = results["python-sdk-stuck-pool"]
+    assert stuck.members == []
+    assert isinstance(stuck.error, TimeoutError)
