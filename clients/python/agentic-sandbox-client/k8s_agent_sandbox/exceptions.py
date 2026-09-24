@@ -95,3 +95,36 @@ class BatchLeaseExpiredError(BatchError):
 
 class BatchInUseError(BatchError):
     """``get_batch`` found a live Lease held by a different holder."""
+
+
+class BatchExistsError(BatchError):
+    """``claim_batch`` found the batch's Lease already exists (HTTP 409)."""
+
+
+class QuorumUnreachableError(BatchError):
+    """A group can no longer reach its ``min_ready``.
+
+    Yielded as ``GroupReady.error`` by ``iter_ready_groups()`` once
+    ``size - terminal - lost - create_failed - released < min_ready`` for the group.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        warmpool: str,
+        size: int,
+        min_ready: int,
+        terminal: int,
+        lost: int,
+        create_failed: int,
+        released: int,
+    ) -> None:
+        super().__init__(message)
+        self.warmpool = warmpool
+        self.size = size
+        self.min_ready = min_ready
+        self.terminal = terminal
+        self.lost = lost
+        self.create_failed = create_failed
+        self.released = released

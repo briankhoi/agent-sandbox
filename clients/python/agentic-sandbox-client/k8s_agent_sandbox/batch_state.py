@@ -37,6 +37,25 @@ from .models import BatchGroup, Member
 
 CLOCK_SKEW_MARGIN = 5
 BATCH_DEFAULT_LEASE_DURATION_SECONDS = 60
+BATCH_DEFAULT_QUORUM_TIMEOUT_SECONDS = 600
+BATCH_DEFAULT_WORK_BUDGET_SECONDS = 3600
+BATCH_DEFAULT_SHUTDOWN_MARGIN_SECONDS = 600
+BATCH_DEFAULT_CREATE_RPS = 50.0
+BATCH_DEFAULT_MAX_IN_FLIGHT = 20
+BATCH_CREATE_MAX_ATTEMPTS = 3
+# Jittered exponential backoff between create attempts on 429/5xx, used when the
+# response carries no Retry-After header. Retry-After is honored up to our set max.
+BATCH_CREATE_BACKOFF_BASE_SECONDS = 0.5
+BATCH_CREATE_BACKOFF_MAX_SECONDS = 10.0
+BATCH_CREATE_RETRY_AFTER_MAX_SECONDS = 60.0
+# release() re-lists after each deletecollection until only terminating claims remain,
+# since deletecollection is not atomic and an in-flight create can land after it.
+BATCH_RELEASE_MAX_DELETE_ROUNDS = 10
+BATCH_RELEASE_RELIST_INTERVAL_SECONDS = 0.5
+# Upper bound on how long the sync handle's release() and detach() each wait for creates already
+# sent to the apiserver, after stopping claim_batch's background creation. release() waits so its
+# deletecollection call can cover them, while detach() waits so no creates happen after it gives up the Lease.
+BATCH_STOP_CREATION_TIMEOUT_SECONDS = 30.0
 
 _BATCH_ID_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
 BATCH_ID_MAX_LENGTH = 52
