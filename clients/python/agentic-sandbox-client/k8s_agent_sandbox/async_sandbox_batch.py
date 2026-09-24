@@ -30,7 +30,7 @@ import aiohttp
 from kubernetes_asyncio import client
 from kubernetes_asyncio.client.exceptions import ApiException
 
-from . import batch_state
+from . import batch_state, batch_utils
 from .constants import BATCH_ID_LABEL, BATCH_LEASE_DURATION_ANNOTATION, BATCH_LEASE_NAME_PREFIX
 from .exceptions import (
     BatchError,
@@ -102,7 +102,7 @@ class AsyncSandboxBatch:
     @classmethod
     async def _attach(cls, client: "AsyncSandboxClient", batch_id: str, namespace: str) -> "AsyncSandboxBatch":
         """Attach to an existing batch and take over its Lease."""
-        batch_state.validate_batch_id(batch_id)
+        batch_utils.validate_batch_id(batch_id)
 
         lease_name = f"{BATCH_LEASE_NAME_PREFIX}{batch_id}"
         label_selector = f"{BATCH_ID_LABEL}={batch_id}"
@@ -116,7 +116,7 @@ class AsyncSandboxBatch:
         annotation = None
         if lease is not None:
             annotation = (lease.metadata.annotations or {}).get(BATCH_LEASE_DURATION_ANNOTATION)
-        duration = batch_state.parse_lease_duration_annotation(annotation)
+        duration = batch_utils.parse_lease_duration_annotation(annotation)
 
         now = datetime.now(UTC)
         spec_duration = lease.spec.lease_duration_seconds if lease is not None else None
@@ -140,7 +140,7 @@ class AsyncSandboxBatch:
         state = batch_state.BatchState(batch_id, groups)
         state.seed_from_claims(claim_items)
 
-        holder_identity = batch_state.generate_holder_identity()
+        holder_identity = batch_utils.generate_holder_identity()
         lease.spec.holder_identity = holder_identity
         lease.spec.renew_time = now
         lease.spec.lease_duration_seconds = duration
@@ -232,7 +232,7 @@ class AsyncSandboxBatch:
         the Lease still held. Call ``detach`` again to retry; steps that already completed are skipped.
         """
         if grace is not None:
-            batch_state.validate_lease_duration_value(grace)
+            batch_utils.validate_lease_duration_value(grace)
 
         # _detached prevents the caller from connecting to Sandboxes, while _lease_released signals that
         # detach fully completed (i.e. the previous steps and the Lease release write succeeded), so callers
