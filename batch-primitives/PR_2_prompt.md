@@ -9,7 +9,7 @@ You are implementing PR 2 of a 5-PR stack that adds batch claiming to the agent-
 
 Brian reviews the pushed code on GitHub. **Do not open a pull request.**
 
-Repo root: `/Users/brian/Desktop/comp_sci/google/agent-sandbox`
+Repo root: `/Users/brian/Desktop/comp_sci/google/agent-sandbox` on Brian's machine. A cloud session works in whatever directory its clone landed in; see "Cloud sessions: what changes" below, and read every absolute path in this prompt as relative to your own repo root.
 
 ## 0. Rules (non-negotiable)
 
@@ -42,10 +42,11 @@ Repo root: `/Users/brian/Desktop/comp_sci/google/agent-sandbox`
 
 ## Cloud sessions: what changes
 
-Skip this whole section if you are running on Brian's machine. If you are a cloud session, you are in a fresh Ubuntu VM holding a clone of `origin` (`briankhoi/agent-sandbox`) at one branch. There is no `upstream` remote, no git-town, no `EnterWorktree` tool, and none of Brian's untracked files. The deltas below replace the matching steps in section 1; from section 2 onward everything applies unchanged, except where noted.
+Decide first whether this applies to you: if `git remote get-url upstream` fails, or your repo root is not `/Users/brian/Desktop/comp_sci/google/agent-sandbox`, you are a cloud session and this section applies. Otherwise skip the whole section. As a cloud session you are in a fresh Ubuntu VM holding a clone of `origin` (`briankhoi/agent-sandbox`) at one branch. There is no `upstream` remote, no git-town, no `EnterWorktree` tool, and none of Brian's untracked files. The deltas below replace the matching steps in section 1; from section 2 onward everything applies unchanged, except where noted.
 
+- **Before anything else, make sure you actually have PR 1's branch.** Depending on how the session was started, the clone may be on the fork's default branch and may not carry every ref, so do not assume: `git fetch origin feat/batch-1-core:feat/batch-1-core` (a no-op if it is already there and already current).
 - **Section 1, steps 1, 4, 5, 6 (git-town and the worktree):** skip them. The VM is disposable, so work directly in the clone: `git switch -c feat/batch-2-cohorts feat/batch-1-core`. Brian registers the git-town stack parent himself after he pulls your branch.
-- **Section 1, step 2 (confirm PR 1's tip):** the session should already be checked out on `feat/batch-1-core`. Confirm `git log --oneline -1` is `4e9116a` and that `git rev-parse feat/batch-1-core~5` is `ce66bdc`, which is upstream `main` at the point PR 1 branched. Do not use `origin/main` as a base: the fork's `main` is behind upstream (`527d934`, an ancestor of `ce66bdc`). `ce66bdc` is reachable from the branch, so you have everything you need without `upstream`.
+- **Section 1, step 2 (confirm PR 1's tip):** confirm `git log --oneline -1 feat/batch-1-core` is `4e9116a` and that `git rev-parse feat/batch-1-core~5` is `ce66bdc`, which is upstream `main` at the point PR 1 branched. Do not use `origin/main` as a base: the fork's `main` is behind upstream (`527d934`, an ancestor of `ce66bdc`). `ce66bdc` is reachable from the branch, so you have everything you need without `upstream`.
 - **Section 1, step 3 (main drift):** skip it. You cannot see `upstream` from the VM. Brian checks for drift locally before merging.
 - **Section 1, step 7 (guard the untracked planning files):** there is nothing to guard, because the planning docs are committed on `origin/batch-primitives-notes` instead. Fetch that branch and read from it, never merge it: `git fetch origin batch-primitives-notes:batch-primitives-notes`. Your commits must add nothing under `batch-primitives/`; the scope checks in section 6 should catch it if they do.
 - **Section 2, items 1 and 2 (the proposal and the plan):** read both from `batch-primitives-notes`, not from `batch-claim-proposal` and not by absolute path: `git show batch-primitives-notes:batch-primitives/batch_claim_proposal.md` and `git show batch-primitives-notes:batch-primitives/python_sdk_batch_plan.md`. This prompt is on that branch too, at `batch-primitives/PR_2_prompt.md`; re-read it there if your context gets compacted.
@@ -98,7 +99,7 @@ Everywhere below, "the base" means `feat/batch-1-core`: diff and scope-check aga
 1. **The proposal** is the source of truth for behavior. It is committed on branch `batch-claim-proposal`, not on `main`:
    `git show batch-claim-proposal:batch-primitives/batch_claim_proposal.md`
    Read Batch Model, Membership, the Shutdown Backstop, Cleanup, and usage examples 2 and 3, which are the examples this PR makes work.
-2. **The implementation plan** is untracked and lives only in the main checkout. Read it by absolute path; do not copy it into the worktree:
+2. **The implementation plan** is untracked and lives only in the main checkout (a cloud session reads it from `batch-primitives-notes` instead, per the cloud section). Read it by absolute path; do not copy it into the worktree:
    `/Users/brian/Desktop/comp_sci/google/agent-sandbox/batch-primitives/python_sdk_batch_plan.md`
 
    Read these sections in full:
@@ -344,7 +345,7 @@ This repo has no Python linter configured (see `AGENTS.md`). Do not add one, and
 - for the latest commit, use `git commit --amend`;
 - for an earlier commit, use `git commit --fixup=<sha>` and then `git rebase --autosquash feat/batch-1-core`.
 
-The non-interactive `--autosquash` works on this machine's git 2.50.1. Do not use `-i`. Rebase onto `feat/batch-1-core`, never onto `main`, and never let a rebase rewrite PR 1's commits.
+The non-interactive `--autosquash` works on this machine's git 2.50.1. Do not use `-i`. If your git rejects `--autosquash` without `-i`, run `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash feat/batch-1-core`, which applies the same todo list without opening an editor. Rebase onto `feat/batch-1-core`, never onto `main`, and never let a rebase rewrite PR 1's commits.
 
 Each commit should leave the SDK unit tests passing. Suggested split:
 
@@ -375,7 +376,7 @@ Do not open a PR. Do not push again without Brian's explicit go-ahead.
 
 ## 8. Report back (then stop)
 
-- **Setup:** the `main` commit you synced to; the `feat/batch-1-core` commit you branched from; any drift you found in step 3; the name of the leftover branch `EnterWorktree` created; whether `git town set-parent` worked or you fell back to config.
+- **Setup:** the `main` commit you synced to; the `feat/batch-1-core` commit you branched from; any drift you found in step 3; the name of the leftover branch `EnterWorktree` created; whether `git town set-parent` worked or you fell back to config. A cloud session has none of the last three, so instead report `git --version`, `go version`, and anything the environment blocked.
 - **Commits:** the `git log --oneline feat/batch-1-core..HEAD` output and the pushed branch name, plus the GitHub URL: `https://github.com/briankhoi/agent-sandbox/tree/feat/batch-2-cohorts`.
 - **Files** created and modified, one line each.
 - **Results:** the tail of `make test-unit` with the pass/fail summary, the pytest count against PR 1's 616, the mypy line, the base-install check, and both scope checks. Say whether the e2e test ran.
