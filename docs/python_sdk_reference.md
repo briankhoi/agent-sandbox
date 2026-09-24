@@ -173,6 +173,69 @@ for the given namespace.
   >>> print(client.list_all_sandboxes(namespace="default"))
   ['sandbox-claim-1234abcd', 'sandbox-claim-5678efgh']
 
+<a id="k8s_agent_sandbox.sandbox_client.SandboxClient.claim_batch"></a>
+
+##### claim\_batch
+
+```python
+@trace_span("claim_batch")
+def claim_batch(groups: Sequence[BatchGroup],
+                *,
+                namespace: str = "default",
+                labels: Mapping[str, str] | None = None,
+                batch_id: str | None = None,
+                create_rps: float | None = None,
+                max_in_flight: int | None = None,
+                work_budget: int | None = None,
+                quorum_timeout: int | None = None,
+                lease_duration: int | None = None) -> SandboxBatch
+```
+
+Creates a batch of SandboxClaims across one or more warm pools and returns its handle.
+
+Checks that each group's SandboxWarmPool and its SandboxTemplate exist, creates the
+batch's ``coordination.k8s.io/v1`` Lease (``batch-<id>``), starts the label-scoped watch
+and Lease renewal, then creates the claims ``<id>-0`` to ``<id>-<N-1>`` in the background
+and returns without waiting for them. Consume the members with ``events()`` or
+``iter_ready_groups()`` and tear the batch down with ``release()``.
+
+Each claim is deleted by the controller at its ``shutdownTime``, its own create time plus
+``quorum_timeout + work_budget`` and a 600 s margin, as a backstop if ``release()`` never runs.
+
+**Arguments**:
+
+- `groups` - One ``BatchGroup`` per warm pool, each with ``size > 0``; pools must be distinct.
+- `namespace` - Namespace for the claims and the Lease.
+- `labels` - Extra labels for every claim; must not set ``agents.x-k8s.io/batch-id``.
+- `batch_id` - Overrides the generated id; a DNS-1123 label starting with a letter,
+  at most 52 characters.
+- `create_rps` - Maximum claim creates started per second (default 50).
+- `max_in_flight` - Maximum concurrent claim creates (default 20).
+- `work_budget` - Expected working time after quorum, in seconds (int, default 3600).
+- `quorum_timeout` - Seconds each group has to reach ``min_ready`` (int, default 600).
+- `lease_duration` - Lease duration in seconds (int, default 60); must exceed 5.
+  
+
+**Raises**:
+
+- `ValueError` - an invalid argument, before anything is created.
+- `SandboxWarmPoolNotFoundError` - a group's warm pool does not exist.
+- `SandboxTemplateNotFoundError` - a group's warm pool names a template that does not exist.
+- `BatchExistsError` - the batch's Lease already exists.
+  
+
+**Example**:
+
+  
+  >>> client = SandboxClient()
+  >>> batch = client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=3)])
+  >>> try:
+  ...     for event in batch.events():
+  ...         if event.type is BatchEventType.MEMBER_READY:
+  ...             batch.connect(event.member).commands.run("echo hello")
+  ... finally:
+  ...     batch.release()
+
 <a id="k8s_agent_sandbox.sandbox_client.SandboxClient.get_batch"></a>
 
 ##### get\_batch
@@ -218,7 +281,8 @@ Stops the client side connection and deletes the Kubernetes resources.
 def delete_all() -> None
 ```
 
-Cleanup all tracked sandboxes managed by this client.
+Cleanup all tracked sandboxes managed by this client, and release its tracked batches.
+Detached batches are no longer tracked, so they are left alone.
 
 **Example**:
 
@@ -593,11 +657,12 @@ Sync handle for using a claimed or re-attached sandbox batch.
 class SandboxBatch()
 ```
 
-A handle to an existing batch's claims, obtained via ``SandboxClient.get_batch``.
+A handle to a batch's claims, obtained via ``SandboxClient.claim_batch`` or ``SandboxClient.get_batch``.
 
 Keeps a live cache of the batch's claims through one label-scoped watch
 (a background daemon thread), renews the batch Lease on another daemon
-thread, and exposes methods for connecting to ready sandboxes and detaching from the batch.
+thread, and exposes methods for consuming, connecting to, and releasing the batch's sandboxes.
+A handle from ``claim_batch`` also creates the batch's claims on a third daemon thread.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.groups"></a>
 
@@ -669,4 +734,63 @@ Lease valid after detaching; if ``None``, we use the batch's original Lease dura
 
 If the Lease release fails, the error propagates and this handle stays in a detached state with
 the Lease still held. Call ``detach`` again to retry; steps that already completed are skipped.
+
+<a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.events"></a>
+
+##### events
+
+```python
+def events() -> Iterator[BatchEvent]
+```
+
+Streams the initial fill's member transitions: ``MEMBER_READY``, ``MEMBER_FAILED`` (a
+terminal claim or a failed create), and ``MEMBER_LOST``, plus ``LEASE_DEGRADED`` once per
+episode of failing Lease renewals.
+
+Each Ready member is handed out at most once by this handle. If ``iter_ready_groups()``
+was called first, each group's first ``min_ready`` Ready members are held back for it, and
+only the rest stream here; if ``events()`` is called first, ``iter_ready_groups()`` then
+raises ``BatchError``.
+
+The stream ends once the initial fill settles (no member can still arrive, or
+``quorum_timeout`` passed), or on ``release()``/``detach()``. Call it once and keep the
+iterator (``stream = batch.events()``) to stop and resume reading; a second ``events()``
+call raises ``BatchError``.
+
+<a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.iter_ready_groups"></a>
+
+##### iter\_ready\_groups
+
+```python
+def iter_ready_groups() -> Iterator[GroupReady]
+```
+
+Yields one ``GroupReady`` per group with ``size > 0``, as soon as that group's own
+quorum resolves, independently of the other groups:
+
+- ``min_ready`` Ready members (lowest ordinals first), handed out atomically;
+- or ``error=QuorumUnreachableError`` once too many members failed, were lost, or were
+  released for the group to reach ``min_ready``;
+- or ``error=TimeoutError`` if it resolved neither way within ``quorum_timeout``.
+
+Ready members beyond ``min_ready`` are streamed by ``events()``, as are a group's
+held-back members when it yields an error. Call this before calling ``events()``.
+Raises ``BatchError`` if ``events()`` was called first, on a second call, and from the
+iterator if the batch is released or detached while it waits.
+
+<a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.release"></a>
+
+##### release
+
+```python
+def release() -> None
+```
+
+Deletes the whole batch: stops creation, the watch and Lease renewal, closes cached
+sandbox connections, deletes every claim with the batch label, then deletes the Lease.
+
+Idempotent. If a deletion fails (e.g. a 403 because the driver Role lacks
+``deletecollection``), the error propagates and the Lease is left in place so a reaper
+can still clean up; ``events()`` and ``iter_ready_groups()`` end regardless, and calling
+``release()`` again retries the deletion.
 
