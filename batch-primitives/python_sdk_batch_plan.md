@@ -6,87 +6,44 @@ Base: `main` at `2d855f5` (upstream `kubernetes-sigs/agent-sandbox`). Every exis
 
 How an agent uses this file: read the proposal, then "Ground rules", "Module layout", "Shared contracts", "Decisions", and the section for your PR. Do not implement scope from other PRs.
 
-## As built: where PR 2 departs from this plan
+## As built
 
-> PR 2 is being rebuilt from `pr2_implementation_spec.md`. The PR 2 items below describe the old PR 2 and will be replaced.
+This plan was drafted before implementation and is partly stale. Where it and the code disagree, the code, this section, and `pr2_implementation_spec.md` are the source of truth. Later PRs should read this section first.
 
-This plan was drafted before implementation and is partly stale. Where it and the code on `feat/batch-2-cohorts` disagree, the code and this section are the source of truth. Later PRs should read this section first.
+### PR 2 (`feat/batch-2-cohorts` at `8e757e4`, on PR 1 `aad1e60`)
 
-1. **Quorum picks lowest ordinals, not earliest Ready.** `iter_ready_groups()` hands out the `min_ready` lowest-ordinal Ready members of a group. `BatchState` keeps no Ready-time sequence at all: `events()` emits in change order from one insertion-ordered stream (`_pending_changes`), with `LEASE_DEGRADED` queued into the same stream. Members already Ready when `get_batch` attaches are seeded in ordinal order, so OPEN-G's ordinal ordering still holds. When a group's verdict is an error, its held-back members enter the stream at that point, in ordinal order.
-2. **No per-ordinal create outcome table.** The plan's "pre-allocated, ordinal-indexed table" of create outcomes is not built; it was write-only in production. Create failures are visible as synthetic `CreateFailed` members in `members()`.
-3. **No watch-before-first-create gate.** Creation does not wait for the watch request to be issued. The watch resumes from the initial list's resourceVersion, so no status transition can be missed either way; `claim_batch` still starts the watch (`_start`) before it starts creation.
-4. **Create fail-fast only in quorum mode.** Cancelling a group's remaining creates (OPEN-S) applies only once `iter_ready_groups()` has been called; a stream-only batch keeps creating after a failed create. A group that crossed the threshold before `iter_ready_groups()` was called has its remaining creates cancelled when it is.
-5. **The dependency precheck skips on 403.** If the driver Role lacks `get` on `sandboxwarmpools` or `sandboxtemplates`, `claim_batch` logs a warning and skips that check instead of failing. A 404 still fails fast (OPEN-W).
-6. **Bounded wait for in-flight creates.** The sync handle's `release()`/`detach()` waits at most `BATCH_STOP_CREATION_TIMEOUT_SECONDS` (30 s) for creates already sent, since urllib3 has no read timeout; the async handle cancels them. A create that lands after `deletecollection` is caught by the re-list rounds or by its `shutdownTime`.
-7. **`get_batch` does not parse `batch-work-budget` yet (OPEN-E, deferred to PR 4).** `claim_batch` still writes both `batch-work-budget` and `batch-quorum-timeout` on the Lease. `get_batch` parses only `batch-quorum-timeout`, which sets a re-attached handle's fill deadline. In PR 2 a re-attached handle never creates claims, so it has no use for `work_budget`. **PR 4 must add the `batch-work-budget` parse back** (missing falls back to the default, present but not a positive integer raises `BatchError`) so that `acquire()`/`replace()` on a re-attached handle compute `shutdownTime` from the batch's own budget.
-8. **Numeric defaults live in `batch_state.py`.** `constants.py` holds only wire and cluster names; every tuning value (defaults, timeouts, retry, pacing, loop bounds, `CLOCK_SKEW_MARGIN`) is defined at the top of `batch_state.py`. Argument and annotation validation lives in `batch_utils.py`.
-9. **PR 1 revision (2026-09-26, `feat/batch-1-core` at `f4a4867`, rebased on upstream `68db683`).**
-   - Lease renewal requests carry `_request_timeout` equal to the renew interval (`max(1, lease_duration // 3)`, stored as `_renew_interval`). A hung apiserver therefore counts as a failed renewal: degraded, then `BatchLeaseExpiredError`. `read_batch_lease`/`replace_batch_lease` take an optional `_request_timeout`.
-   - `watch_sandbox_claims` requests bookmarks (`allow_watch_bookmarks=True`), so a quiet batch's watch resumes from a fresh resourceVersion instead of re-listing after a 410.
-   - Watch retries back off. `batch_state.is_retryable_status` (None/429/5xx) and `backoff_delay(attempt, base, cap, rand)` (equal jitter, exponent bounded) are shared helpers, with `BATCH_WATCH_BACKOFF_BASE_SECONDS = 0.5` and `BATCH_WATCH_BACKOFF_MAX_SECONDS = 30.0`. A `failures` counter resets on any event or a normal watch end.
-   - The 410 re-list now runs at the top of the watch loop behind a `relist` flag, inside the same `try`. A transport or unexpected error during the re-list is therefore retried or surfaced through `err()`; before, it killed the watch thread/task with `err()` still `None`.
-   - Takeover sets `acquireTime` and increments `leaseTransitions`, as client-go leader election does.
-   - `BatchEventType`, `BatchEvent` and `GroupReady` moved to PR 2.
-   - `get_batch` docstrings have a `Raises:` section and say that only a detached batch can be re-attached.
-   - `batch_utils.py` exists from PR 1 and holds the policy helpers: batch-id, holder-identity, and lease-duration validation; `is_lease_stale`; `is_retryable_status`; `backoff_delay`; and their constants (`CLOCK_SKEW_MARGIN`, `BATCH_DEFAULT_LEASE_DURATION_SECONDS`, the watch backoff values). `batch_state.py` is only claims → state (`parse_ordinal`, `reconstruct_groups`, `derive_member`, `BatchState`). This replaces item 8's "numeric defaults live in `batch_state.py`". `backoff_delay` stops doubling once the wait reaches `cap` (the exponent is derived from `cap / base`, with no magic bound).
-   - `BatchState` pieces with no PR 1 caller moved to PR 2: `try_dispatch`/`_dispatched`, `mark_released`/`_released`, `compute_next_ordinal`/`_next_ordinal`, and `_initial_fill`.
-   - The README RBAC Role lists only PR 1's verbs; each later PR adds the verbs it needs.
-   - `reconstruct_groups` raises `BatchError` for invalid group annotation values (non-integer, negative, `min_ready > size`); before, these leaked `ValueError`/pydantic `ValidationError` out of `get_batch`.
-   - The sync client has no batch registry: its `_active_batches`/`_unregister_batch` were never read. The async client keeps its registry for `close()`.
-   - Test audit (test-audit skill): 18 duplicate tests removed; PR 1 now adds 168 unit tests.
+Rebuilt on 2026-09-26 from `pr2_implementation_spec.md`, which holds the approved decisions (D1, M1–M4, Q1–Q7); the design is `pr2_design.md` §3, §4, and §7. The old PR 2 is archived on the fork as `archive/batch-2-cohorts-v1` (`df1c11d`). Six commits: models/constants/exceptions, helpers, `batch_state`/`batch_utils`, handles/clients/README, e2e, docs. Where it departs from the "PR 2" section below:
 
-## Pending: proposal A, a failed group is finished (approved, not yet implemented)
+1. **Quorum by Ready order, and a failed group is finished (OPEN-F with D1; proposal A).** A group yields its first `min_ready` members in the order they became Ready. In quorum mode a group's Ready members reach `events()` only after the group has yielded successfully; a group that fails (`QuorumUnreachableError` or `TimeoutError`) hands out none and gets no more creates. This replaces OPEN-S's create-failure threshold. Stream mode keeps creating and delivers everything.
+2. **Fill deadline** (Q6): `quorum_timeout` after the pacing slot of the batch's last create. A re-attached handle counts from attach, and a fill claim missing at attach counts as unable (`lost`).
+3. **Pacing**: `min(max_in_flight, size)` worker threads (sync) or tasks (async) share one pacing slot. There is no pacer class, producer, executor, or semaphore.
+4. **Request timeouts** on creates, the precheck, the Lease create, `release()`'s requests (90 s for deletecollection and the list, 30 s otherwise), and `detach()`'s Lease read and write. `release()`/`detach()`/async `close()` wait up to `BATCH_REQUEST_TIMEOUT_SECONDS + 1` for creates already sent, in both shells; the async shell cancels any left after that.
+5. **`release()`** runs deletecollection rounds with a consistent re-list (claims with a `deletionTimestamp` don't count), and deletes the Lease once none are left. A transient error moves on to the next round; it gives up after 3 rounds in a row without progress; a 403 raises at once.
+6. **Precheck** (M1, M2): `get` on warm pools and templates is required, so a 403 propagates (the README Role has the verbs); a warm pool that names no template raises `SandboxTemplateNotFoundError`.
+7. **`get_batch` parses only `batch-quorum-timeout` (OPEN-E, rest deferred to PR 4).** `claim_batch` writes both `batch-work-budget` and `batch-quorum-timeout` on the Lease. **PR 4 must add the `batch-work-budget` parse** (missing falls back to the default, present but not a positive integer raises `BatchError`) so that `acquire()`/`replace()` on a re-attached handle compute `shutdownTime` from the batch's own budget.
+8. **Tuning constants live in `batch_utils.py`**, next to PR 1's: the defaults, `BATCH_SHUTDOWN_MARGIN_SECONDS`, `BATCH_CREATE_ATTEMPTS`, the two request timeouts, `BATCH_RELEASE_MAX_IDLE_ROUNDS`, and the shared `BATCH_BACKOFF_*`. `batch_utils` also has `validate_claim_batch_args`, `create_error_outcome`, `retry_delay` (honors an integer `Retry-After`), `batch_lease_metadata`, and `parse_quorum_timeout_annotation`.
+9. **Client tracking** (Q2): both clients track every handle from `claim_batch` and `get_batch`; `delete_all()` and exit cleanup (sync atexit with `cleanup=True`, async `__aexit__`, async atexit through the sync `_delete_batch_objects`) release them; `detach()`/`release()` unregister.
+10. **Consumers** (Q3, Q5): calling `events()`/`iter_ready_groups()` again continues; only `iter_ready_groups()` after `events()` raises. Both end once `err()` is set.
+11. **`QuorumUnreachableError`** has `failed` (terminal members, including `CreateFailed`) and `lost` (deleted, or missing at re-attach). There is no separate `create_failed` or `released` count; PR 4 decides whether `release_member` needs one.
+12. **`create_sandbox_claim` has `log_level`** (Q1); the batch logs each create at DEBUG.
+13. **Details the spec left open:** `record_create_failure` ignores a claim the watch has already seen (an earlier attempt created it). `detach()` after `release()` raises `BatchError`, as the spec says; `pr2_design.md` §3's "no-op" wording is superseded.
 
-Status: approved by Brian on 2026-09-26. It is implemented as item R3 of `STALE_pr2_revision_prompt.md`, together with the other approved revisions (`pr1_revision_prompt.md` for PR 1). After it lands, move items 4 and the new behavior into "As built" above and delete this section.
+### PR 1
 
-State when written: `feat/batch-2-cohorts` at `df1c11d` (six commits on `feat/batch-1-core` at `0f7a03f`):
-`4ad064e` constants/exceptions, `ab4cc08` k8s helpers, `b77ddca` batch state (commit 3), `8295a30` claim_batch + handles (commit 4), `2498b41` e2e, `df1c11d` docs. Re-fetch before starting; Brian may have rebased.
-
-### Why
-
-Calling `iter_ready_groups()` means a group is only useful with `min_ready` members together. Today, when a group's verdict is an error, its held-back Ready members are released to `events()`, later-Ready members of that group stream too, and creation continues unless the error came from create failures. That turns a failed cohort into loose sandboxes the caller never asked for, and keeps spending API calls and pods on a group that has already failed.
-
-### Behavior (quorum mode only; stream-only mode is unchanged)
-
-Once a group has an error verdict (`QuorumUnreachableError` for any cause: terminal, lost, create-failed, released; or `TimeoutError`):
-
-1. **No more creates for that group.** Before each create the producer asks the state whether the claim's group has an error verdict, and skips it (`mark_create_cancelled`) if so. This replaces the create-failure-only threshold (OPEN-S), and late cancellation is automatic because `claim_groups_consumer()` already computes verdicts when quorum mode is fixed.
-2. **None of its members are handed out.** No `MEMBER_READY` on `events()` for that group: not the held-back ones, not ones that become Ready later. Its `MEMBER_FAILED` and `MEMBER_LOST` still stream (status, not hand-outs). Its members stay visible in `members()`.
-3. **Nothing is deleted.** Teardown stays the caller's `release()`.
-
-A group with a successful verdict is unchanged: its extras beyond `min_ready` stream on `events()`. Stream-only batches keep creating after failures and deliver every member.
-
-`events()` still closes as today: settled (or deadline) and, in quorum mode, every non-zero group has a verdict.
-
-### Code changes
-
-Commit 3 (`batch_state.py`):
-- Delete `_past_create_failure_threshold`; `mark_create_failed` returns `None` (drop the bool and its docstring paragraph about cancelling); `claim_groups_consumer()` returns `None` (drop the pools list and its docstring sentence).
-- Add a query the producer uses, e.g. `group_failed(pool) -> bool`: quorum mode and that group's verdict has an `error`.
-- `_set_verdict`: delete the block that re-marks held members as changed on an error verdict (and its comment).
-- `_is_held_for_quorum` becomes "withheld": in quorum mode a non-zero group's Ready members are withheld while it has no verdict **or** its verdict is an error. Rename to fit, e.g. `_is_withheld`.
-- `collect_events()` done check is unchanged.
-
-Commit 4 (`sandbox_batch.py`, `async_sandbox_batch.py`, README):
-- Delete `_cancelled_pools` and `_cancel_remaining_creates`; `iter_ready_groups()` no longer uses a return value from `claim_groups_consumer()`; `_create_one` no longer acts on `mark_create_failed`'s return.
-- `_skip_if_pool_cancelled` checks the state's `group_failed(pool)` under the lock instead of `_cancelled_pools`. Keep the info log once per group (log from the producer the first time it skips a group).
-- Docstrings: `events()` and `iter_ready_groups()` in both handles no longer say held-back members are released to `events()` on an error; say a failed group's members are not handed out and remain in `members()`.
-- README batch section: same wording change (the bullet that says "(and a group's held-back members, if the group yields an error)", and the fail-fast bullet, which becomes "once `iter_ready_groups()` has been called, a group that can no longer reach `min_ready` or times out gets no more creates and none of its members are handed out").
-
-### Tests to change (both handles unless noted)
-
-- State (`test_batch_state.py`): replace `test_create_failure_fail_fast_threshold`, `test_create_failures_never_ask_to_cancel_outside_quorum_mode`, `test_quorum_mode_cancels_groups_already_past_threshold`, `test_quorum_mode_with_no_failures_cancels_nothing` with tests of `group_failed()` (false outside quorum mode; true after unreachable and after timeout; false for a successful group). Flip `test_error_verdict_releases_held_members_to_events` to assert held members are **not** emitted and stay in `members()`; add: a member of a failed group that becomes Ready later is not emitted, while its `MEMBER_FAILED` is.
-- Handles: `TestPerGroupFailFast` keeps its shape (creates for the failed group stop; the healthy group still fills; no deletecollection; Lease kept). `TestFailFastConsumerMode.test_entering_quorum_mode_cancels_a_group_already_past_its_threshold` stays, now driven by the verdict. Add a case where the group fails by terminal claims (not create failures) and its remaining creates are skipped. `test_stream_only_batch_keeps_creating_after_a_create_failure` unchanged. Flip both `test_error_verdict_releases_held_members_to_events` to assert only the `MEMBER_FAILED` events stream.
-
-Report unit-suite counts before and after and explain every change in counts.
-
-### Workflow rules (from Brian)
-
-- Brian rewrote comments and docstrings to be concise: leave his wording alone; change a comment only where the code it describes changes, and then minimally.
-- Fold each change into the commit that owns it: `git commit --fixup=<sha>` then `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash origin/feat/batch-1-core`. No new commits, no trailers, all commits authored by Brian Nguyen <brianknguyen@google.com> (set `git config user.name/user.email` if needed). Do not touch `feat/batch-1-core`.
-- Verify before pushing: every PR 2 commit passes pytest and `mypy k8s_agent_sandbox` on its own (run from the package directory as `dev/tools/test-unit` does); pyflakes clean on changed files; `make generate-python-docs` with any change folded into the docs commit; `git log --format='%(trailers)'` empty.
-- Push with `git push --force-with-lease=feat/batch-2-cohorts:<fetched full sha> origin feat/batch-2-cohorts`, using the SHA from `git rev-parse origin/feat/batch-2-cohorts` right after fetching (never typed from memory).
-- Afterwards, update this doc: move the change into "As built" (it broadens OPEN-S to any error verdict and changes OPEN-F: no release of held members on error) and remove this section.
+**PR 1 revision (2026-09-26, `feat/batch-1-core`, rebased on upstream `68db683`; `f4a4867`, then `aad1e60` after the backoff rename below).**
+- Lease renewal requests carry `_request_timeout` equal to the renew interval (`max(1, lease_duration // 3)`, stored as `_renew_interval`). A hung apiserver therefore counts as a failed renewal: degraded, then `BatchLeaseExpiredError`. `read_batch_lease`/`replace_batch_lease` take an optional `_request_timeout`.
+- `watch_sandbox_claims` requests bookmarks (`allow_watch_bookmarks=True`), so a quiet batch's watch resumes from a fresh resourceVersion instead of re-listing after a 410.
+- Watch retries back off. `batch_utils.is_retryable_status` (None/429/5xx) and `backoff_delay(attempt, base, cap, rand)` (equal jitter, exponent bounded) are shared helpers, with `BATCH_BACKOFF_BASE_SECONDS = 0.5` and `BATCH_BACKOFF_MAX_SECONDS = 30.0` (renamed from `BATCH_WATCH_BACKOFF_*` in `aad1e60`, since PR 2's creates and release rounds share them). A `failures` counter resets on any event or a normal watch end.
+- The 410 re-list now runs at the top of the watch loop behind a `relist` flag, inside the same `try`. A transport or unexpected error during the re-list is therefore retried or surfaced through `err()`; before, it killed the watch thread/task with `err()` still `None`.
+- Takeover sets `acquireTime` and increments `leaseTransitions`, as client-go leader election does.
+- `BatchEventType`, `BatchEvent` and `GroupReady` moved to PR 2.
+- `get_batch` docstrings have a `Raises:` section and say that only a detached batch can be re-attached.
+- `batch_utils.py` exists from PR 1 and holds the policy helpers: batch-id, holder-identity, and lease-duration validation; `is_lease_stale`; `is_retryable_status`; `backoff_delay`; and their constants (`CLOCK_SKEW_MARGIN`, `BATCH_DEFAULT_LEASE_DURATION_SECONDS`, the backoff values). `batch_state.py` is only claims → state (`parse_ordinal`, `reconstruct_groups`, `derive_member`, `BatchState`). `backoff_delay` stops doubling once the wait reaches `cap` (the exponent is derived from `cap / base`, with no magic bound).
+- `BatchState` pieces with no PR 1 caller moved to PR 2: `try_dispatch`/`_dispatched`, `mark_released`/`_released`, `compute_next_ordinal`/`_next_ordinal`, and `_initial_fill`.
+- The README RBAC Role lists only PR 1's verbs; each later PR adds the verbs it needs.
+- `reconstruct_groups` raises `BatchError` for invalid group annotation values (non-integer, negative, `min_ready > size`); before, these leaked `ValueError`/pydantic `ValidationError` out of `get_batch`.
+- The sync client has no batch registry in PR 1: its `_active_batches`/`_unregister_batch` were never read. The async client keeps its registry for `close()`. PR 2 restores the sync registry.
+- Test audit (test-audit skill): 18 duplicate tests removed; PR 1 now adds 168 unit tests.
 
 ## Changes relative to the revised roadmap
 
@@ -456,6 +413,8 @@ The plan now differs from `batch_claim_proposal.md` in these places. The proposa
 **Acceptance:** the unit tests above pass in both shells; the parity checklist is complete (every public method exists on both classes with matching signatures, modulo `async`); the README has a "Batch claims" section covering `get_batch`, `members`, `connect`, and `detach`, plus the driver Role from the proposal's RBAC section; the reference docs are regenerated; the scope diff check is empty.
 
 ## PR 2: `claim_batch`, upfront cohorts, `events`, `iter_ready_groups`, `release`
+
+> Superseded: PR 2 was built from `pr2_implementation_spec.md`. This section is the original plan; see "As built" for where the code departs from it.
 
 **Goal.** Create a batch with one or more non-zero groups, create their claims in the background with pacing, and let callers consume them either as a stream (`events()`) or per group (`iter_ready_groups()`). `release()` tears everything down. After this PR, the proposal's usage examples 2 and 3 work end to end.
 

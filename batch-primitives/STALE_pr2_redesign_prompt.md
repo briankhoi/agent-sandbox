@@ -1,4 +1,4 @@
-> **Stale (2026-09-26): phases 1 and 2 are done. For the implementation, read `pr2_implementation_spec.md` instead of this file.**
+> **Stale (2026-09-26): all three phases are done; PR 2 was pushed as `feat/batch-2-cohorts` at `8e757e4`. See `pr2_implementation_spec.md` and the plan's "As built" section instead of this file.**
 
 # PR 2 redesign: prompt for the design session
 

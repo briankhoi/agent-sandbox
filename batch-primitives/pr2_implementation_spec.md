@@ -1,5 +1,7 @@
 # PR 2 implementation spec (approved by Brian, 2026-09-26)
 
+> **Implemented 2026-09-26 (phase 3 done):** PR 1 `feat/batch-1-core` at `aad1e60` (backoff rename), PR 2 `feat/batch-2-cohorts` at `8e757e4`, old PR 2 archived as `archive/batch-2-cohorts-v1`. Details the spec left open are listed in `python_sdk_batch_plan.md` "As built", PR 2 item 13.
+
 This is the spec for building PR 2 (`claim_batch`, `events`, `iter_ready_groups`, `release`) of the Python SDK batch stack. It is self-contained: it replaces `STALE_pr2_redesign_prompt.md` (whose phases 1 and 2 are done), and every other `STALE_*` file, so don't read those.
 
 **Where things are**
