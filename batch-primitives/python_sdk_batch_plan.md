@@ -8,7 +8,7 @@ How an agent uses this file: read the proposal, then "Ground rules", "Module lay
 
 ## As built: where PR 2 departs from this plan
 
-> PR 2 is being redesigned from scratch (`STALE_pr2_redesign_prompt.md`). The PR 2 items below describe the old PR 2 and will be replaced.
+> PR 2 is being rebuilt from `pr2_implementation_spec.md`. The PR 2 items below describe the old PR 2 and will be replaced.
 
 This plan was drafted before implementation and is partly stale. Where it and the code on `feat/batch-2-cohorts` disagree, the code and this section are the source of truth. Later PRs should read this section first.
 
