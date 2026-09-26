@@ -45,6 +45,8 @@ Checked on 2026-09-26: every CodeRabbit finding is already handled in `0f7a03f` 
 
 ## Deferred from PR 1: must come back in a later PR
 
+Planned for PR 2 (approved 2026-09-26; see `pr2_design.md` Q2). Mark resolved once PR 2 is pushed.
+
 - **Sync client batch tracking and cleanup.** PR 1 removed the sync `SandboxClient._active_batches` registry and `_unregister_batch` (and `SandboxBatch.detach()`'s call to it) because nothing read them yet. The async client kept its registry, since `AsyncSandboxClient.close()` stops tracked handles' background tasks.
   - **Where:** the PR that first adds client-level cleanup of batch handles. That is PR 2 if `claim_batch`/`release()` bring exit or close cleanup (e.g. an `atexit` hook, `delete_all`, or a sync `close()`); otherwise whichever later PR does.
   - **What:** add the sync registry back with parity to async:
@@ -54,6 +56,15 @@ Checked on 2026-09-26: every CodeRabbit finding is already handled in `0f7a03f` 
 
     Decide per path whether cleanup means stopping background loops only, as async `close()` does today, or releasing or detaching the batch.
   - **Tests:** one test that the cleanup path reaches every tracked handle, in both clients. Don't bring back PR 1's old registers/unregisters test, which only checked a dict.
+
+## Roadmap (Brian, 2026-09-26)
+
+- **PR 2:** `claim_batch`, `events`, `iter_ready_groups`, `release`, and client batch tracking and cleanup for both clients (resolves "Deferred from PR 1"). Spec: `pr2_design.md`, section "Approved design: implement this".
+- **PR 3:** `wait_for_quorum()`.
+- **PR 4:** dynamic scaling and replacement: `acquire`, `replace`, `release_member`, `release_not_ready`, and lazy `size=0` groups.
+- **PR 5:** connection pool sizing enforced against `max_in_flight`, plus performance tuning.
+- **Proposed PR 6 (cleanup):** the reaper (a stateless CronJob consuming the Lease contract; owns OPEN-V's margin). Possibly also `client.delete_batch(batch_id, namespace)` for a batch that can't be re-attached (see "Ideas raised but not planned"), since it would share the reaper's delete steps.
+- **Proposed PR 7:** examples and docs (`examples/<name>/`, runnable versions of the proposal's usage examples, the driver Role).
 
 ## Ideas raised but not planned
 
