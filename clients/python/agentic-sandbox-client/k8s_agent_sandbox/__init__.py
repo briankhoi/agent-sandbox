@@ -16,7 +16,7 @@ from .sandbox_client import SandboxClient
 from .models import SandboxdInClusterConnectionConfig
 from .sandbox_batch import SandboxBatch
 from .metrics_utils import get_metrics, print_metrics
-from .models import BatchGroup, Member
+from .models import BatchEvent, BatchEventType, BatchGroup, GroupReady, Member
 from .exceptions import (
     SandboxError,
     SandboxNotFoundError,
@@ -31,6 +31,8 @@ from .exceptions import (
     BatchNotFoundError,
     BatchLeaseExpiredError,
     BatchInUseError,
+    BatchExistsError,
+    QuorumUnreachableError,
 )
 
 
