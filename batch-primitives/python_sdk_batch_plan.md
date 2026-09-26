@@ -8,6 +8,8 @@ How an agent uses this file: read the proposal, then "Ground rules", "Module lay
 
 ## As built: where PR 2 departs from this plan
 
+> PR 2 is being redesigned from scratch (`pr2_redesign_prompt.md`). The PR 2 items below describe the old PR 2 and will be replaced.
+
 This plan was drafted before implementation and is partly stale. Where it and the code on `feat/batch-2-cohorts` disagree, the code and this section are the source of truth. Later PRs should read this section first.
 
 1. **Quorum picks lowest ordinals, not earliest Ready.** `iter_ready_groups()` hands out the `min_ready` lowest-ordinal Ready members of a group. `BatchState` keeps no Ready-time sequence at all: `events()` emits in change order from one insertion-ordered stream (`_pending_changes`), with `LEASE_DEGRADED` queued into the same stream. Members already Ready when `get_batch` attaches are seeded in ordinal order, so OPEN-G's ordinal ordering still holds. When a group's verdict is an error, its held-back members enter the stream at that point, in ordinal order.
@@ -18,7 +20,7 @@ This plan was drafted before implementation and is partly stale. Where it and th
 6. **Bounded wait for in-flight creates.** The sync handle's `release()`/`detach()` waits at most `BATCH_STOP_CREATION_TIMEOUT_SECONDS` (30 s) for creates already sent, since urllib3 has no read timeout; the async handle cancels them. A create that lands after `deletecollection` is caught by the re-list rounds or by its `shutdownTime`.
 7. **`get_batch` does not parse `batch-work-budget` yet (OPEN-E, deferred to PR 4).** `claim_batch` still writes both `batch-work-budget` and `batch-quorum-timeout` on the Lease. `get_batch` parses only `batch-quorum-timeout`, which sets a re-attached handle's fill deadline. In PR 2 a re-attached handle never creates claims, so it has no use for `work_budget`. **PR 4 must add the `batch-work-budget` parse back** (missing falls back to the default, present but not a positive integer raises `BatchError`) so that `acquire()`/`replace()` on a re-attached handle compute `shutdownTime` from the batch's own budget.
 8. **Numeric defaults live in `batch_state.py`.** `constants.py` holds only wire and cluster names; every tuning value (defaults, timeouts, retry, pacing, loop bounds, `CLOCK_SKEW_MARGIN`) is defined at the top of `batch_state.py`. Argument and annotation validation lives in `batch_utils.py`.
-9. **PR 1 revision (2026-09-26, `feat/batch-1-core` at `ee1a289`).**
+9. **PR 1 revision (2026-09-26, `feat/batch-1-core` at `fbf43fb`, rebased on upstream `68db683`).**
    - Lease renewal requests carry `_request_timeout` equal to the renew interval (`max(1, lease_duration // 3)`, stored as `_renew_interval`). A hung apiserver therefore counts as a failed renewal: degraded, then `BatchLeaseExpiredError`. `read_batch_lease`/`replace_batch_lease` take an optional `_request_timeout`.
    - `watch_sandbox_claims` requests bookmarks (`allow_watch_bookmarks=True`), so a quiet batch's watch resumes from a fresh resourceVersion instead of re-listing after a 410.
    - Watch retries back off. `batch_state.is_retryable_status` (None/429/5xx) and `backoff_delay(attempt, base, cap, rand)` (equal jitter, exponent bounded) are shared helpers, with `BATCH_WATCH_BACKOFF_BASE_SECONDS = 0.5` and `BATCH_WATCH_BACKOFF_MAX_SECONDS = 30.0`. A `failures` counter resets on any event or a normal watch end.
@@ -26,7 +28,7 @@ This plan was drafted before implementation and is partly stale. Where it and th
    - Takeover sets `acquireTime` and increments `leaseTransitions`, as client-go leader election does.
    - `BatchEventType`, `BatchEvent` and `GroupReady` moved to PR 2.
    - `get_batch` docstrings have a `Raises:` section and say that only a detached batch can be re-attached.
-   - Validation helpers (`validate_batch_id`, `generate_holder_identity`, lease-duration validation and parsing) moved to `batch_utils.py` in PR 1, unrefactored.
+   - `batch_utils.py` exists from PR 1 and holds the policy helpers: batch-id, holder-identity, and lease-duration validation; `is_lease_stale`; `is_retryable_status`; `backoff_delay`; and their constants (`CLOCK_SKEW_MARGIN`, `BATCH_DEFAULT_LEASE_DURATION_SECONDS`, the watch backoff values). `batch_state.py` is only claims → state (`parse_ordinal`, `reconstruct_groups`, `derive_member`, `BatchState`). This replaces item 8's "numeric defaults live in `batch_state.py`". `backoff_delay` stops doubling once the wait reaches `cap` (the exponent is derived from `cap / base`, with no magic bound).
    - `BatchState` pieces with no PR 1 caller moved to PR 2: `try_dispatch`/`_dispatched`, `mark_released`/`_released`, `compute_next_ordinal`/`_next_ordinal`, and `_initial_fill`.
    - The README RBAC Role lists only PR 1's verbs; each later PR adds the verbs it needs.
 

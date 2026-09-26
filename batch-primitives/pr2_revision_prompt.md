@@ -1,3 +1,5 @@
+> **Superseded (2026-09-26) by `pr2_redesign_prompt.md`. Do not use; the design session must not read this file.**
+
 # PR 2 revision: prompt for the implementing session
 
 Brian approved every change below on 2026-09-26. Implement them all on `feat/batch-2-cohorts`, **after** the PR 1 revision (`pr1_revision_prompt.md`, same folder) has been pushed. If that prompt's status line doesn't say "done", stop and ask Brian.

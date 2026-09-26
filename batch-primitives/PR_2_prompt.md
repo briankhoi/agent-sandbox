@@ -1,3 +1,5 @@
+> **Superseded (2026-09-26) by `pr2_redesign_prompt.md`. Do not use; the design session must not read this file.**
+
 # Kickoff: Python SDK batch claim, PR 2 (claim_batch, upfront cohorts, events, iter_ready_groups, release)
 
 You are implementing PR 2 of a 5-PR stack that adds batch claiming to the agent-sandbox Python SDK. PR 1 is written, reviewed, and pushed; it is the branch you stack on. The design and every decision for this PR are already settled in two documents. Your job is to:
