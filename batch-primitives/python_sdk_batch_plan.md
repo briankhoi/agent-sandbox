@@ -6,6 +6,19 @@ Base: `main` at `2d855f5` (upstream `kubernetes-sigs/agent-sandbox`). Every exis
 
 How an agent uses this file: read the proposal, then "Ground rules", "Module layout", "Shared contracts", "Decisions", and the section for your PR. Do not implement scope from other PRs.
 
+## As built: where PR 2 departs from this plan
+
+This plan was drafted before implementation and is partly stale. Where it and the code on `feat/batch-2-cohorts` disagree, the code and this section are the source of truth. Later PRs should read this section first.
+
+1. **Quorum picks lowest ordinals, not earliest Ready.** `iter_ready_groups()` hands out the `min_ready` lowest-ordinal Ready members of a group. `BatchState` keeps no Ready-time sequence at all: `events()` emits in change order from one insertion-ordered stream (`_pending_changes`), with `LEASE_DEGRADED` queued into the same stream. Members already Ready when `get_batch` attaches are seeded in ordinal order, so OPEN-G's ordinal ordering still holds. When a group's verdict is an error, its held-back members enter the stream at that point, in ordinal order.
+2. **No per-ordinal create outcome table.** The plan's "pre-allocated, ordinal-indexed table" of create outcomes is not built; it was write-only in production. Create failures are visible as synthetic `CreateFailed` members in `members()`.
+3. **No watch-before-first-create gate.** Creation does not wait for the watch request to be issued. The watch resumes from the initial list's resourceVersion, so no status transition can be missed either way; `claim_batch` still starts the watch (`_start`) before it starts creation.
+4. **Create fail-fast only in quorum mode.** Cancelling a group's remaining creates (OPEN-S) applies only once `iter_ready_groups()` has been called; a stream-only batch keeps creating after a failed create. A group that crossed the threshold before `iter_ready_groups()` was called has its remaining creates cancelled when it is.
+5. **The dependency precheck skips on 403.** If the driver Role lacks `get` on `sandboxwarmpools` or `sandboxtemplates`, `claim_batch` logs a warning and skips that check instead of failing. A 404 still fails fast (OPEN-W).
+6. **Bounded wait for in-flight creates.** The sync handle's `release()`/`detach()` waits at most `BATCH_STOP_CREATION_TIMEOUT_SECONDS` (30 s) for creates already sent, since urllib3 has no read timeout; the async handle cancels them. A create that lands after `deletecollection` is caught by the re-list rounds or by its `shutdownTime`.
+7. **`get_batch` does not parse `batch-work-budget` yet (OPEN-E, deferred to PR 4).** `claim_batch` still writes both `batch-work-budget` and `batch-quorum-timeout` on the Lease. `get_batch` parses only `batch-quorum-timeout`, which sets a re-attached handle's fill deadline. In PR 2 a re-attached handle never creates claims, so it has no use for `work_budget`. **PR 4 must add the `batch-work-budget` parse back** (missing falls back to the default, present but not a positive integer raises `BatchError`) so that `acquire()`/`replace()` on a re-attached handle compute `shutdownTime` from the batch's own budget.
+8. **Numeric defaults live in `batch_state.py`.** `constants.py` holds only wire and cluster names; every tuning value (defaults, timeouts, retry, pacing, loop bounds, `CLOCK_SKEW_MARGIN`) is defined at the top of `batch_state.py`. Argument and annotation validation lives in `batch_utils.py`.
+
 ## Changes relative to the revised roadmap
 
 The roadmap's grouping is kept. These items were missing from it or conflict with the proposal, and are placed as follows:
