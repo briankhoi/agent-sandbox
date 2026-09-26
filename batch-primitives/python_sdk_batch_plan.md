@@ -19,9 +19,9 @@ This plan was drafted before implementation and is partly stale. Where it and th
 7. **`get_batch` does not parse `batch-work-budget` yet (OPEN-E, deferred to PR 4).** `claim_batch` still writes both `batch-work-budget` and `batch-quorum-timeout` on the Lease. `get_batch` parses only `batch-quorum-timeout`, which sets a re-attached handle's fill deadline. In PR 2 a re-attached handle never creates claims, so it has no use for `work_budget`. **PR 4 must add the `batch-work-budget` parse back** (missing falls back to the default, present but not a positive integer raises `BatchError`) so that `acquire()`/`replace()` on a re-attached handle compute `shutdownTime` from the batch's own budget.
 8. **Numeric defaults live in `batch_state.py`.** `constants.py` holds only wire and cluster names; every tuning value (defaults, timeouts, retry, pacing, loop bounds, `CLOCK_SKEW_MARGIN`) is defined at the top of `batch_state.py`. Argument and annotation validation lives in `batch_utils.py`.
 
-## Pending: proposal A, a failed group is finished (proposed, awaiting Brian's approval)
+## Pending: proposal A, a failed group is finished (approved, not yet implemented)
 
-Status: proposed; Brian has not approved it yet. Implement only after he does. After it lands, move items 4 and the new behavior into "As built" above and delete this section.
+Status: approved by Brian on 2026-09-26. It is implemented as item R3 of `pr2_revision_prompt.md`, together with the other approved revisions (`pr1_revision_prompt.md` for PR 1). After it lands, move items 4 and the new behavior into "As built" above and delete this section.
 
 State when written: `feat/batch-2-cohorts` at `df1c11d` (six commits on `feat/batch-1-core` at `0f7a03f`):
 `4ad064e` constants/exceptions, `ab4cc08` k8s helpers, `b77ddca` batch state (commit 3), `8295a30` claim_batch + handles (commit 4), `2498b41` e2e, `df1c11d` docs. Re-fetch before starting; Brian may have rebased.
