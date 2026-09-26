@@ -59,7 +59,7 @@ Planned for PR 2 (approved 2026-09-26; see `pr2_design.md` Q2). Mark resolved on
 
 ## Roadmap (Brian, 2026-09-26)
 
-- **PR 2:** `claim_batch`, `events`, `iter_ready_groups`, `release`, and client batch tracking and cleanup for both clients (resolves "Deferred from PR 1"). Spec: `pr2_design.md`, section "Approved design: implement this".
+- **PR 2:** `claim_batch`, `events`, `iter_ready_groups`, `release`, and client batch tracking and cleanup for both clients (resolves "Deferred from PR 1"). Spec: `pr2_implementation_spec.md`.
 - **PR 3:** `wait_for_quorum()`.
 - **PR 4:** dynamic scaling and replacement: `acquire`, `replace`, `release_member`, `release_not_ready`, and lazy `size=0` groups.
 - **PR 5:** connection pool sizing enforced against `max_in_flight`, plus performance tuning.

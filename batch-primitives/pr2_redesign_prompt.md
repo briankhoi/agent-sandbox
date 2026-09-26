@@ -144,4 +144,4 @@ Brian may start a new session for this, pointing at this section and `pr2_design
   Ask Brian before creating or deleting a kind cluster for e2e.
 - **After pushing,** update `python_sdk_batch_plan.md` so it describes the new PR 2, and mark this prompt done.
 
-Status: phases 1 and 2 done, and the design was approved by Brian on 2026-09-26. Phase 3 implements the section "Approved design: implement this" at the end of `pr2_design.md`, which overrides this prompt's phase 3 list where they differ (it adds step 0, the PR 1 constant rename).
+Status: phases 1 and 2 done, and the design was approved by Brian on 2026-09-26. Phase 3 implements `pr2_implementation_spec.md`, which overrides this prompt's phase 3 list where they differ (it adds step 0, the PR 1 constant rename).
