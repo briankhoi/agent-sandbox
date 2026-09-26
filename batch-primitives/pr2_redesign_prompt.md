@@ -144,4 +144,4 @@ Brian may start a new session for this, pointing at this section and `pr2_design
   Ask Brian before creating or deleting a kind cluster for e2e.
 - **After pushing,** update `python_sdk_batch_plan.md` so it describes the new PR 2, and mark this prompt done.
 
-Status: not started.
+Status: phases 1 and 2 done (`pr2_design.md`, frozen at `3c0bb3a`, comparison at `fa5d8dd`); waiting for Brian's approval before phase 3.
