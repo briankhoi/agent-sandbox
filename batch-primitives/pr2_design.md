@@ -1,6 +1,6 @@
 # PR 2 design (clean room): `claim_batch`, `events`, `iter_ready_groups`, `release`
 
-Written 2026-09-26 by following `pr2_redesign_prompt.md`, phase 1. It builds on PR 1 at `feat/batch-1-core` `f4a4867` (on upstream `68db683`). I didn't read the old PR 2 (`feat/batch-2-cohorts`, `df1c11d`), `PR_2_prompt.md`, `pr2_revision_prompt.md`, or the forbidden parts of the plan before this design was committed.
+Written 2026-09-26 by following `STALE_pr2_redesign_prompt.md`, phase 1. It builds on PR 1 at `feat/batch-1-core` `f4a4867` (on upstream `68db683`). I didn't read the old PR 2 (`feat/batch-2-cohorts`, `df1c11d`), `STALE_PR_2_prompt.md`, `STALE_pr2_revision_prompt.md`, or the forbidden parts of the plan before this design was committed.
 
 One thing did get through: `review_carryover_notes.md` ("Rules to carry into PRs 3–5", which the prompt asks me to read) names a few old internals in passing: `_create_with_retry`, `parse_retry_after`, `BATCH_STOP_CREATION_TIMEOUT_SECONDS`, and "R4/R5". I didn't reuse any of those names or structures. Where this design needs the same idea (honoring `Retry-After`), it gets its own name and shape.
 
@@ -15,7 +15,7 @@ Sources:
 - **P:** the proposal, `batch_claim_proposal.md`, by section.
 - **C:** the plan's "Shared contracts".
 - **OPEN-x:** Brian's resolved decisions.
-- **AB:** the approved behavior list in `pr2_redesign_prompt.md`.
+- **AB:** the approved behavior list in `STALE_pr2_redesign_prompt.md`.
 - **GR:** the plan's ground rules.
 - **CN:** `review_carryover_notes.md`.
 
@@ -511,7 +511,7 @@ The alternative, OPEN-F as written, is also implementable in `_on_fill_change`: 
 
 Written after the freeze commit `3c0bb3a`, from `git diff 0f7a03f df1c11d`, the old PR 2 on the pre-revision PR 1. Anything that differs only because of PR 1's later revision is marked **PR 1**, and not judged here: the validation helpers moved to `batch_utils`, `is_lease_stale`, `parse_ordinal`, the event models, and its tests.
 
-The old code predates the approved list in `pr2_redesign_prompt.md`. It never picked up the pending revisions, so it lacks proposal A, the pacing-aware deadline, release retries, and request timeouts. That is a fact about timing, not a fault in the old design.
+The old code predates the approved list in `STALE_pr2_redesign_prompt.md`. It never picked up the pending revisions, so it lacks proposal A, the pacing-aware deadline, release retries, and request timeouts. That is a fact about timing, not a fault in the old design.
 
 Statuses in the table:
 - **In**: in the new design, perhaps under another name.

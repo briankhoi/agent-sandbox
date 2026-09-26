@@ -8,7 +8,7 @@ How an agent uses this file: read the proposal, then "Ground rules", "Module lay
 
 ## As built: where PR 2 departs from this plan
 
-> PR 2 is being redesigned from scratch (`pr2_redesign_prompt.md`). The PR 2 items below describe the old PR 2 and will be replaced.
+> PR 2 is being redesigned from scratch (`STALE_pr2_redesign_prompt.md`). The PR 2 items below describe the old PR 2 and will be replaced.
 
 This plan was drafted before implementation and is partly stale. Where it and the code on `feat/batch-2-cohorts` disagree, the code and this section are the source of truth. Later PRs should read this section first.
 
@@ -37,7 +37,7 @@ This plan was drafted before implementation and is partly stale. Where it and th
 
 ## Pending: proposal A, a failed group is finished (approved, not yet implemented)
 
-Status: approved by Brian on 2026-09-26. It is implemented as item R3 of `pr2_revision_prompt.md`, together with the other approved revisions (`pr1_revision_prompt.md` for PR 1). After it lands, move items 4 and the new behavior into "As built" above and delete this section.
+Status: approved by Brian on 2026-09-26. It is implemented as item R3 of `STALE_pr2_revision_prompt.md`, together with the other approved revisions (`pr1_revision_prompt.md` for PR 1). After it lands, move items 4 and the new behavior into "As built" above and delete this section.
 
 State when written: `feat/batch-2-cohorts` at `df1c11d` (six commits on `feat/batch-1-core` at `0f7a03f`):
 `4ad064e` constants/exceptions, `ab4cc08` k8s helpers, `b77ddca` batch state (commit 3), `8295a30` claim_batch + handles (commit 4), `2498b41` e2e, `df1c11d` docs. Re-fetch before starting; Brian may have rebased.

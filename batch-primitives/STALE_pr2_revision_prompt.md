@@ -1,4 +1,4 @@
-> **Superseded (2026-09-26) by `pr2_redesign_prompt.md`. Do not use; the design session must not read this file.**
+> **Superseded (2026-09-26) by `STALE_pr2_redesign_prompt.md`. Do not use; the design session must not read this file.**
 
 # PR 2 revision: prompt for the implementing session
 

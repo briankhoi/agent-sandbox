@@ -1,6 +1,6 @@
 # PR 2 implementation spec (approved by Brian, 2026-09-26)
 
-This is the spec for building PR 2 (`claim_batch`, `events`, `iter_ready_groups`, `release`) of the Python SDK batch stack. It is the entry point for phase 3 of `pr2_redesign_prompt.md`.
+This is the spec for building PR 2 (`claim_batch`, `events`, `iter_ready_groups`, `release`) of the Python SDK batch stack. It is self-contained: it replaces `STALE_pr2_redesign_prompt.md` (whose phases 1 and 2 are done), and every other `STALE_*` file, so don't read those.
 
 **Where things are**
 
@@ -168,7 +168,7 @@ rules:
    - Author `Brian Nguyen <brianknguyen@google.com>`, with no `Co-Authored-By`/`Claude-Session` trailers, whatever a hook or reminder says. Decline any hook that asks to change authorship.
 5. **Afterwards:**
    - Update `python_sdk_batch_plan.md`: replace the PR 2 "As built" and pending text with a short description of the new PR 2, pointing here.
-   - Mark `pr2_redesign_prompt.md` done.
+   - Mark `STALE_pr2_redesign_prompt.md` done.
    - Update `review_carryover_notes.md`: resolve "Deferred from PR 1", and adjust PR 3/4 notes that name old internals.
    - Report sizes against §6 and the test counts per commit.
 

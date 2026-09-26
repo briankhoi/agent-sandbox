@@ -1,6 +1,6 @@
 # PR 1 revision: prompt for the implementing session
 
-Brian approved every change below on 2026-09-26. Implement them all, in this session, on `feat/batch-1-core`. Do not start PR 2 work; that has its own prompt (`pr2_revision_prompt.md`, same folder).
+Brian approved every change below on 2026-09-26. Implement them all, in this session, on `feat/batch-1-core`. Do not start PR 2 work; that has its own prompt (`STALE_pr2_revision_prompt.md`, same folder).
 
 Read first: `python_sdk_batch_plan.md` sections "As built", "Shared contracts" (Lease), and "PR 1". Then `review_carryover_notes.md` for context on the reviewer comments.
 
@@ -64,7 +64,7 @@ Valid. `BatchEventType`, `BatchEvent`, and `GroupReady` are exported and documen
 - `7d28931`: remove the three classes from `models.py`, and any imports that become unused there (`dataclasses`, `Enum`; check each).
 - `1fd242c`: remove them from `__init__.py`'s import and `__all__` (if listed). Grep PR 1 for any other use (a check on 2026-09-26 found only `models.py`, `__init__.py`, and the reference doc).
 - `0f7a03f`: regenerate the reference doc.
-- PR 2 adds them back (see `pr2_revision_prompt.md`).
+- PR 2 adds them back (see `STALE_pr2_revision_prompt.md`).
 
 ### 6. Reviewer (Aditya): `get_batch` docstrings say "Returns an error" (commit `1fd242c`)
 

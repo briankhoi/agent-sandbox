@@ -1,6 +1,8 @@
+> **Stale (2026-09-26): phases 1 and 2 are done. For the implementation, read `pr2_implementation_spec.md` instead of this file.**
+
 # PR 2 redesign: prompt for the design session
 
-Brian's call (2026-09-26): the existing PR 2 on `feat/batch-2-cohorts` was planned and built by a weaker model and looks bloated: fields, classes, and machinery whose purpose isn't clear, about 2,300 source lines and 3,000 test lines. Don't patch it. Design PR 2 again from its requirements, on top of the revised PR 1, and only then compare the result with the old PR 2. This file supersedes `pr2_revision_prompt.md` and `PR_2_prompt.md`.
+Brian's call (2026-09-26): the existing PR 2 on `feat/batch-2-cohorts` was planned and built by a weaker model and looks bloated: fields, classes, and machinery whose purpose isn't clear, about 2,300 source lines and 3,000 test lines. Don't patch it. Design PR 2 again from its requirements, on top of the revised PR 1, and only then compare the result with the old PR 2. This file supersedes `STALE_pr2_revision_prompt.md` and `STALE_PR_2_prompt.md`.
 
 The work has three phases. **Stop after phase 2** and wait for Brian's approval. Phase 3 (implementation) needs his go-ahead, probably in a new session.
 
@@ -10,7 +12,7 @@ The work has three phases. **Stop after phase 2** and wait for Brian's approval.
 
 The point is to design without anchoring on the old solution.
 - The branch `feat/batch-2-cohorts` and its commits: no `git show`, `diff`, `log -p`, `checkout`, `grep`, or `worktree` on it, and none on `df1c11d` or its ancestors above `0f7a03f`.
-- `PR_2_prompt.md` and `pr2_revision_prompt.md`.
+- `STALE_PR_2_prompt.md` and `STALE_pr2_revision_prompt.md`.
 - In `python_sdk_batch_plan.md`: "As built", the "Code changes" and "Tests to change" parts of "Pending: proposal A", and the whole "PR 2" section.
 - The "PR 3", "PR 4", and "PR 5" sections of the plan may be skimmed only to learn which features later PRs add (so the design doesn't block them). Don't adopt their internal names or structures.
 
