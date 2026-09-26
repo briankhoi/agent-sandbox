@@ -43,6 +43,18 @@ Checked on 2026-09-26: every CodeRabbit finding is already handled in `0f7a03f` 
 - **PR 4 must parse `batch-work-budget` back in `get_batch`** ("As built" item 7), and `acquire` uses `is_retryable_status`/`backoff_delay` like the fill.
 - **PR 5 pool validation** (OPEN-I): the watch and renewal each hold a connection, so validate `pool >= max_in_flight + 2`.
 
+## Deferred from PR 1: must come back in a later PR
+
+- **Sync client batch tracking and cleanup.** PR 1 removed the sync `SandboxClient._active_batches` registry and `_unregister_batch` (and `SandboxBatch.detach()`'s call to it) because nothing read them yet. The async client kept its registry, since `AsyncSandboxClient.close()` stops tracked handles' background tasks.
+  - **Where:** the PR that first adds client-level cleanup of batch handles. That is PR 2 if `claim_batch`/`release()` bring exit or close cleanup (e.g. an `atexit` hook, `delete_all`, or a sync `close()`); otherwise whichever later PR does.
+  - **What:** add the sync registry back with parity to async:
+    - register in `get_batch`/`claim_batch`;
+    - unregister when a handle finishes (`detach()`/`release()`);
+    - make the client's cleanup path act on every tracked handle.
+
+    Decide per path whether cleanup means stopping background loops only, as async `close()` does today, or releasing or detaching the batch.
+  - **Tests:** one test that the cleanup path reaches every tracked handle, in both clients. Don't bring back PR 1's old registers/unregisters test, which only checked a dict.
+
 ## Ideas raised but not planned
 
 - **An SDK path to clean up a batch that can't be re-attached.** After a crash, `get_batch` raises, so the SDK has no way to delete a stale batch before the reaper or `shutdownTime` does; today that takes `kubectl delete sandboxclaims -l agents.x-k8s.io/batch-id=<id>` plus deleting the Lease. A `client.delete_batch(batch_id, namespace)` doing exactly the reaper's steps (label `deletecollection`, bounded re-list, then Lease delete, never adopting the Lease) wouldn't race the reaper, since both only delete. Worth raising with Brian when PR 6 (reaper) is planned, since the two would share code.

@@ -36,7 +36,7 @@ If you catch yourself about to look at the old PR 2 "just to check", don't; phas
    Changing PR 1 is allowed where it makes PR 2 simpler, but list every such change separately; PR 1 is under upstream review.
 
    PR 1 facts that matter for PR 2:
-   - Only the async client keeps a registry of batch handles (`_active_batches`, which `close()` uses). The sync client has none, because nothing in PR 1 needed it. If PR 2 needs one (e.g. for exit cleanup), PR 2 adds it.
+   - Only the async client keeps a registry of batch handles (`_active_batches`, which `close()` uses). The sync client has none, because nothing in PR 1 needed it. Client-level cleanup of batch handles must come back in both clients in whichever PR first needs it; see "Deferred from PR 1" in `review_carryover_notes.md`. The design says whether that is PR 2 (e.g. if `claim_batch`/`release()` bring exit or close cleanup) and, if not, which later PR.
    - `get_batch` raises `BatchError` for any invalid batch annotation, on the Lease or on the claims.
    - PR 1's tests were audited with `skills/test-audit/SKILL.md`, which removed 18 duplicates. PR 2's tests must follow the same bar: don't repeat a `batch_utils`/`batch_state` table at the handle level, and give each contract one owning test.
 
