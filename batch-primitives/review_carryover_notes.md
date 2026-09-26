@@ -6,9 +6,9 @@ These are lessons from the review of PR 1 (https://github.com/kubernetes-sigs/ag
 
 ### Aditya Shantanu
 
-1. **"A crashed holder's stale Lease can never be re-attached; is that intended?"** Yes, by design (OPEN-N, OPEN-C). The code is unchanged; the docstrings and README now say so (`pr1_revision_prompt.md` item 7). Reply to paste:
+1. **"A crashed holder's stale Lease can never be re-attached; is that intended?"** Yes, by design (OPEN-N, OPEN-C). The code is unchanged. The `get_batch` docstrings now say only a detached batch can be re-attached; at Brian's request, the README and docstrings don't mention the reaper or `shutdownTime`, which PR 1 doesn't have. Reply to paste:
 
-   > Intended. A crashed driver's batch is meant to be cleaned up rather than resumed. Once its Lease is stale, the reaper (a follow-up PR) may already be running `deletecollection` on it, so adopting it in `get_batch` could hand the caller a batch that's being deleted underneath it. That's why the stale check runs before the holder check, and why there's no `adopt_expired` override. Until the reaper lands, each claim's `shutdownTime` bounds the leak. Re-attaching is for planned handoff: `detach(grace)` clears `holderIdentity` and keeps the Lease live for `grace` seconds, and `get_batch` adopts it within that window. A crash while the Lease is still live gives `BatchInUseError`, since every handle has its own holder identity. I've added this to the `get_batch` docstrings and the README.
+   > Intended. A crashed driver's batch is meant to be cleaned up rather than resumed. Once its Lease is stale, a reaper (planned as a follow-up PR) may already be deleting it, so adopting it in `get_batch` could hand the caller a batch that's being deleted underneath it. That's why the stale check runs before the holder check. Re-attaching is for planned handoff: `detach(grace)` clears `holderIdentity` and keeps the Lease live for `grace` seconds, and `get_batch` adopts it within that window. A crash while the Lease is still live gives `BatchInUseError`, since every handle has its own holder identity. The `get_batch` docstrings now say only a detached batch can be re-attached.
 
 2. **"`BatchEvent`, `BatchEventType`, `GroupReady` are exported but nothing produces them."** Valid. They move to PR 2, where `events()`/`iter_ready_groups()` land (PR 1 item 5, PR 2 item R1). Reply:
 
@@ -25,12 +25,13 @@ Checked on 2026-09-26: every CodeRabbit finding is already handled in `0f7a03f` 
 
   > Keeping it a frozen dataclass: `error` holds a raw `Exception` (traceback and cause intact), which pydantic can only hold with `arbitrary_types_allowed`, i.e. without validating it, so a model would add nothing. The docstring notes the reason.
 
-- **Remove `deletecollection` from the driver Role.** Declined. `release()` (PR 2 of the stack) deletes the batch with one label-scoped `deletecollection`, which is the design in the proposal's Cleanup and RBAC sections, and OPEN-U makes a missing verb an error rather than a fallback. The README documents the Role the finished feature needs. Reply, if the thread is still open:
+- **Remove `deletecollection` from the driver Role.** Agreed (2026-09-26). The README Role now lists only PR 1's verbs (claims `get`/`list`/`watch`, leases `get`/`update`), and PR 2 adds the rest with `claim_batch`/`release()`. Reply, if the thread is still open:
 
-  > Keeping it: `release()`, added in the next PR of this stack, deletes the batch's claims with one label-scoped `deletecollection` (see the proposal's Cleanup and RBAC sections), so the driver Role needs the verb. The README documents the Role for the full batch API rather than only this PR's slice.
+  > Agreed. Trimmed the Role to the verbs this PR uses; the next PR adds `create`/`delete`/`deletecollection` along with `claim_batch()` and `release()`.
 
 ## Rules to carry into PRs 3–5
 
+- **A PR describes and contains only itself.** Comments, docstrings, README text, and RBAC verbs mention only what the PR has; a later feature appears only when the text says explicitly that it comes later. Likewise, no code (functions, fields, constants) whose only caller lands in a later PR: move it to the PR that calls it. Brian's rule, after the PR 1 review.
 - **Export only what the PR produces.** A public type, exception, or export lands in the PR whose code first returns or raises it: `TerminalMemberError` in PR 4, and nothing new for PR 3 unless `wait_for_quorum` needs it. Public SDK surface is hard to walk back.
 - **Docstrings say "Raises", and list what is raised.** Never "returns an error". Every public method that raises SDK exceptions gets a `Raises:` section in both clients/handles.
 - **Every request made from a background loop, or on a path the caller can't interrupt, gets a request timeout.** Neither Kubernetes client has a default read timeout. PR 1 added one to renewal. In PR 4, `acquire()`'s create and wait paths and `release_member`/`release_not_ready` deletes need a bound; `acquire` already has its own `timeout`, so derive the request timeout from it or bound it with `BATCH_STOP_CREATION_TIMEOUT_SECONDS`.
