@@ -506,3 +506,232 @@ The alternative, OPEN-F as written, is also implementable in `_on_fill_change`: 
 - **Q5. Iterators end on `err()`.** This follows the proposal's examples, which check `batch.err()` after the loop. With it, a lease-expired handle stops streaming even though its claims still exist. Brian to confirm.
 - **Q6. Fill deadline from the actual last slot, not the planned formula.** It equals `start + (N-1)/create_rps` when creation keeps pace, and is later when `max_in_flight` or slow responses hold creation back, so groups never time out before their claims exist. I'm treating this as a reading of the approved text ("from when pacing issues the batch's last create"), not a change.
 - **Q7. Default connection pool.** On small machines (`cpu_count * 5 < max_in_flight + 2`), urllib3 opens extra connections and logs "Connection pool is full" rather than failing. PR 5 adds validation. Should the README mention it in PR 2?
+
+## Comparison with the old PR 2
+
+Written after the freeze commit `3c0bb3a`, from `git diff 0f7a03f df1c11d`, the old PR 2 on the pre-revision PR 1. Anything that differs only because of PR 1's later revision is marked **PR 1**, and not judged here: the validation helpers moved to `batch_utils`, `is_lease_stale`, `parse_ordinal`, the event models, and its tests.
+
+The old code predates the approved list in `pr2_redesign_prompt.md`. It never picked up the pending revisions, so it lacks proposal A, the pacing-aware deadline, release retries, and request timeouts. That is a fact about timing, not a fault in the old design.
+
+Statuses in the table:
+- **In**: in the new design, perhaps under another name.
+- **Not needed**, with the reason.
+- **Missed**: a requirement the new design missed (see "Changes after comparison").
+- **Superseded**: implements a decision that the approved behavior later replaced.
+
+### Inventory
+
+#### `batch_state.py`
+
+| Old item | What it does | Status |
+| :-- | :-- | :-- |
+| `CLOCK_SKEW_MARGIN`, `BATCH_DEFAULT_LEASE_DURATION_SECONDS` | Lease constants. | PR 1 |
+| `BATCH_DEFAULT_QUORUM_TIMEOUT_SECONDS`, `…_WORK_BUDGET_…`, `…_SHUTDOWN_MARGIN_…`, `…_CREATE_RPS`, `…_MAX_IN_FLIGHT`, `BATCH_CREATE_MAX_ATTEMPTS` | Defaults. | In (§3, `batch_utils`) |
+| `BATCH_CREATE_BACKOFF_BASE_SECONDS`/`_MAX_SECONDS` (0.5/10) | Create-retry backoff. | Not needed: a second backoff policy. The new design reuses PR 1's `backoff_delay` and its constants (AB "Retry policy is shared"). |
+| `BATCH_CREATE_RETRY_AFTER_MAX_SECONDS` (60) | Cap on `Retry-After`. | In: `retry_delay` caps it, at the backoff maximum. |
+| `BATCH_RELEASE_MAX_DELETE_ROUNDS` (10), `BATCH_RELEASE_RELIST_INTERVAL_SECONDS` (0.5) | Fixed release rounds. | Not needed: replaced by "3 rounds without progress" plus `retry_delay`. A fixed 10 × 0.5 s can give up on a large batch that is still being deleted. |
+| `BATCH_STOP_CREATION_TIMEOUT_SECONDS` (30) | Bound on waiting for creates at release/detach. | Not needed: every create carries `BATCH_REQUEST_TIMEOUT_SECONDS`, so the wait is bounded by that. |
+| `CreateOutcome` enum + `classify_create_error` | The create-retry table. | In: `create_error_outcome` (strings, in `batch_utils`). |
+| `parse_retry_after`, `create_backoff_delay` | `Retry-After`, else jittered backoff. | In: merged into `retry_delay`. |
+| `CreatePacer` class (`reserve`, `_anchor`, `_count`) | Token bucket of capacity 1; slots are anchored to avoid float drift. | Not needed: one `_next_create_at` slot variable. Its reason is real but negligible: float drift over 50k additions of 0.02 s is far below a millisecond. |
+| `compute_next_ordinal`, `_next_ordinal` | Next ordinal after the fill. | Not needed in PR 2: only `acquire` (PR 4) uses it. |
+| `reconstruct_groups(…, batch_id)` ordered by lowest ordinal | Re-attached `groups` come back in `claim_batch` order. | Not needed: no requirement, since PR 1 orders by pool name. A small nicety; could be a PR 1 follow-up. |
+| `CREATE_FAILED_REASON` | `"CreateFailed"`. | In |
+| `ConsumerMode` enum | stream / quorum. | In (`_mode`). |
+| `_REASON_TERMINAL/_LOST/_CREATE_FAILED/_RELEASED` | Per-reason keys for the unreachability counts. | In as `_failed`/`_lost` counters. `released` is PR 4. |
+| `_GroupFill` dataclass | Per-group fill tracking. | In, as per-pool dicts on `BatchState`. |
+| `_GroupFill.ready_undispatched: set` | Ready, not handed out. | In (`_waiting`, ordered, which gives Ready order). |
+| `_GroupFill.cannot_arrive: dict[name, reason]` + `cannot_arrive_counts()` | Unable members by reason. `cannot_arrive_counts()` builds a `Counter` over the group on every call. | In as O(1) counters. The old version is O(group size) per create failure (see "Scale"). |
+| `_GroupFill.missing` | Claims missing at attach. | In (`count_missing_fill_as_unable`). |
+| `_GroupFill.verdict`, `reachable()` | The verdict, and size minus unable. | In |
+| `_LeaseDegraded` marker class | Orders `LEASE_DEGRADED` among lazily collected changes. | Not needed: events are queued when they happen. |
+| `BatchState._initial_fill: set` | Fill membership. | Not needed: `ordinal < size` and a known pool. |
+| `BatchState._released`, `mark_released` | Caller-released claims. | Not needed in PR 2: PR 4. |
+| `BatchState._dispatched`, `try_dispatch` | At-most-once. | In |
+| `BatchState._group_fills`, `_warmpool_of` | Pool lookup, including for claims planned but not yet seen. | In (`_group_by_pool`). `_warmpool_of` isn't needed, since `Member` carries its pool and planned claims aren't pre-registered. |
+| `BatchState._create_failed`; create-failed members ignore later watch updates | Freezes a synthetic member. | In, in a different form: the `_unable` latch keeps the count, and `members()` shows the real claim if it landed. |
+| `BatchState._unsettled: set` | Pending fill members. | In as counts (`_ready_count + len(_unable) + _skipped`). |
+| `BatchState._events_claimed` | A second `events()` raises. | Not in the new design (Q3). |
+| `BatchState._undelivered_verdicts` | Group results. | In (`_group_results`). |
+| `BatchState._pending_changes`, `_mark_changed`, `_reported` | A change log that `collect_events()` turns into events later. | Not needed: the new design decides each event at the transition. `_reported` becomes the `_unable` latch. |
+| `BatchState._fill_deadline`, `set_fill_deadline`, `pending_deadline`, `check_deadline` | The deadline, held in the state. | In, split: the shell holds the time, the state has `expire_fill()`. |
+| `BatchState._deadline_passed` | | In (`_fill_expired`). |
+| `BatchState._closed`, `close()`, `_raise_if_closed` | Ends the consumers on release/detach. | In, in the shells (`_detached`/`_released` checked in `_next`). |
+| `seed_from_claims` sorted by ordinal, `_ordinal_sort_key` | Ordinal order at attach (OPEN-G). | In |
+| `plan_initial_fill` | Pre-registers the planned names and returns the plan. | In as the shell's `_create_plan`, without pre-registering. |
+| `upsert_claim`/`mark_lost`/`resync_from_list` extensions | Hook fill accounting. | In (`_on_fill_change`). |
+| `mark_create_failed` (returns "cancel group") | Synthetic failure plus the OPEN-S threshold. | In as `record_create_failure`. The return value is superseded by `group_failed`. |
+| `mark_create_cancelled` | A skipped create leaves the fill. | In (`cancel_create`). |
+| `note_lease_degraded` | | In |
+| `_reclassify` | Re-derives one member's accounting. | In (`_on_fill_change`). |
+| `_evaluate_group` | The verdict; the cohort is the lowest ordinals. | In; the cohort is by Ready order (OPEN-F). |
+| `_set_verdict`, releasing held members to `events()` on an error | | Superseded (AB "A failed group is finished"). |
+| `_unreachable_error` | Builds the error with counts. | In |
+| `_past_create_failure_threshold` | OPEN-S. | Superseded (AB). |
+| `is_settled`, `_all_groups_have_verdicts` | | In (`fill_settled`, `groups_done`). `_all_groups_have_verdicts` is O(G) on every `collect_events` call. |
+| `claim_events_consumer`, `claim_groups_consumer` (returns pools to cancel) | Fix the mode; the second call raises. | In (`set_mode`); the cancel list is superseded, and "second call raises" is Q3. |
+| `_is_held_for_quorum` | Holds back until a verdict. | In (D1 has the same "until the verdict" semantics). The old README text says "first `min_ready`", but the code holds everything until the verdict, as D1 proposes. |
+| `collect_events`, `pop_group_verdicts` | Consumer reads. | In (`pop_event`/`events_done`, `pop_group_result`/`groups_done`). |
+
+#### `batch_utils.py` (beyond PR 1's moved helpers)
+
+| Old item | What it does | Status |
+| :-- | :-- | :-- |
+| `_BATCH_ID_ALPHABET`, `_GENERATED_BATCH_ID_RANDOM_LENGTH`, `generate_batch_id` | | In |
+| `_require_int`, `validate_positive_int` | | In, inside `validate_claim_batch_args`. |
+| `_parse_int_annotation`, `parse_positive_int_annotation(value, default, name)` | Generic annotation parser. | In as `parse_quorum_timeout_annotation`. The generic form is fine too; PR 4 would reuse it. |
+| `ClaimBatchArgs` (frozen dataclass), `validate_claim_batch_args` | | In |
+| `batch_lease_metadata(args)` | Builds the Lease labels and annotations in one place for both shells. | **Missed** (M3): the new design built the body in each shell. |
+| `warmpool_template_name` | Reads `spec.sandboxTemplateRef.name`. | In, plus the missing-ref case (M1). |
+
+#### `constants.py`, `exceptions.py`, `__init__.py`
+
+| Old item | Status |
+| :-- | :-- |
+| `WARMPOOL_PLURAL_NAME`, `TEMPLATE_PLURAL_NAME`, `BATCH_WORK_BUDGET_ANNOTATION`, `BATCH_QUORUM_TIMEOUT_ANNOTATION` | In |
+| `BatchExistsError` | In |
+| `QuorumUnreachableError` with `terminal`, `lost`, `create_failed`, `released` | In with `failed`, `lost`. `released` is PR 4. Create failures are folded into `failed`, since they're terminal members with reason `CreateFailed`. Split them again if Brian wants the proposal's three-way count. |
+| Exports `BatchExistsError`, `QuorumUnreachableError` | In |
+
+#### Helpers (`k8s_helper.py`, `async_k8s_helper.py`)
+
+| Old item | Status |
+| :-- | :-- |
+| `create_batch_lease` (no timeout) | In, with `_request_timeout` (R19). |
+| `delete_batch_lease` (sync has a timeout, async doesn't; 404 ignored) | In, with a timeout in both. |
+| `delete_sandbox_claim_collection` | In (`delete_sandbox_claims_by_label`). |
+| `get_sandbox_warmpool`/`get_sandbox_template` (raise the SDK's NotFound errors from the helper) | In (return `None` on 404; the caller raises). |
+| No `_request_timeout` on `create_sandbox_claim` or the list | Missing in old (R19); in the new design. |
+
+#### Handles (`sandbox_batch.py`, `async_sandbox_batch.py`)
+
+| Old item | What it does | Status |
+| :-- | :-- | :-- |
+| `_STOP_POLL_SECONDS` (0.1) | The producer polls for stop while waiting for a slot. | Not needed: no semaphore, since workers block on an interruptible `Event.wait`. |
+| `_CREATE_TRANSPORT_ERRORS` (adds `NewConnectionError`) | Transient create errors. | In (PR 1's set). Adding `NewConnectionError` is harmless; keep it if needed. |
+| `_get_for_precheck`, skipping the check on 403 with a warning | Precheck without requiring RBAC `get`. | **Missed** (M2): a real reason, since the proposal's Role lacks these verbs. |
+| `__init__` kwargs `work_budget`, `quorum_timeout`, `create_rps`, `max_in_flight`, `claim_labels`, `claim_annotations` | | In (`_create_spec`, `_quorum_timeout`). |
+| `__init__` kwarg `clock`, `_clock`; `_wait_for_stop` | Test seams. | Not needed: tests patch `time.monotonic` in the module (test-audit authoring gate 4). |
+| `_cond` | | In (`_changed`). |
+| `_create_stop`, `_create_thread`/`_create_task` (producer) | | In (`_stop_creating`, `_creators` workers). |
+| `_pacer`, `_in_flight_slots` (`BoundedSemaphore`/`asyncio.Semaphore`), `ThreadPoolExecutor` | Pacing and in-flight bound. | Not needed: `max_in_flight` workers sharing one slot variable. |
+| `_cancelled_pools`, `_cancel_remaining_creates`, `_skip_if_pool_cancelled` | OPEN-S cancel list. | Superseded: `state.group_failed()` checked before each create (AB). |
+| `_release_lock`, `_releasing`, `_release_done` | Serialize `release()`, and flags. | In as `_detached`/`_released`. Serializing isn't needed: two concurrent `release()`s both run idempotent deletes. |
+| `_claim` classmethod: validate, precheck, Lease, list, construct, `_start`, delete the Lease on failure, `_start_creation` | | In; the old one doesn't check for existing claims in the list result. |
+| `set_fill_deadline(now + quorum_timeout)` at construction | | Missing in old (AB "fill deadline covers pacing"); in the new design (§4.4). |
+| `_attach` reads `batch-quorum-timeout` | | In |
+| `_stop_background_threads` | Refactor of PR 1's stop. | In |
+| `_check_active` also checks `_releasing` | | In |
+| `detach` stops creation and closes the state | | In; the old one has no request timeouts on its Lease read/write (R19). |
+| `events` / `_event_stream`, `iter_ready_groups` / `_group_stream`, `_seconds_until_deadline`, async `_wait_for_change` | | In (`_next`). The old iterators don't end on `err()` (Q5). |
+| `release`, `_delete_claims` | Rounds, then the Lease. | In, with AB behavior the old one lacks: transient errors don't abort, the rounds are progress-aware, and requests have timeouts. |
+| `_close_cached_connections(reason)` | Shared by detach and release. | In (implementation detail). |
+| `_start_creation`, `_stop_creation`, `_run_creates` | Producer plus executor. Async `_stop_creation` **cancels** in-flight creates, while sync **waits** for them. | In as workers. The new design waits in both shells, so a sent create is answered before `deletecollection` (parity; Q4). |
+| `_create_one`, `_create_with_retry` | | In |
+| Watch and renewal notify points; `note_lease_degraded` on the degraded transition | | In |
+
+#### Clients
+
+| Old item | Status |
+| :-- | :-- |
+| `claim_batch` (both), with `@trace_span("claim_batch")` | In. The span is left out in §5 (no requirement); adding it is one decorator per client. |
+| `_trace_context_annotations()`, extracted and shared with `_create_claim` | In (implementation detail; adopt the extraction rather than copying five lines). |
+| Registration in `claim_batch` | In; the new design also registers `get_batch` in sync (the deferred note). |
+| `delete_all()` releases tracked batches, skipping detached ones | In |
+| Async `_atexit_cleanup`: one `deletecollection` plus a Lease delete per tracked batch | In, as the sync rounds function. |
+| Async `close()` stops creation | In |
+| Exit hooks wired through `delete_all()` (the old base's `__aexit__` called `delete_all()`) | Upstream has since moved `__aexit__` and the sync atexit to `_delete_automatic_sandboxes`, so the old wiring would no longer run on exit after a rebase. The new design wires `_delete_automatic_sandboxes`. |
+
+#### README, docs, e2e
+
+| Old item | Status |
+| :-- | :-- |
+| README section (+94 lines) | In (about 70; the new API has less to explain: no second-call rule, no threshold). |
+| RBAC adds `get` on `sandboxwarmpools`/`sandboxtemplates`, marked optional | In, marked optional if M2 is adopted. |
+| e2e `test_claim_batch_events_then_release` | In (#33, via `iter_ready_groups`). |
+| e2e `test_claim_batch_nonexistent_warmpool_is_rejected_before_anything_exists` | Not needed: #17 owns the precheck, and #33's happy path already proves the real plural names resolve. |
+| e2e `test_iter_ready_groups_yields_error_for_a_stuck_group_and_members_for_the_other` | Not needed: it waits out a real `quorum_timeout` to re-check what #10/#23 own. |
+
+#### Test groups (old sync handle; async mirrors it)
+
+| Old group (tests) | Status |
+| :-- | :-- |
+| `TestClaimBatchValidation` (4) | Not needed: repeats `TestValidateClaimBatchArgs` at the handle (CN: don't repeat a `batch_utils` table). |
+| `TestClaimBatchSequence` (5) | In (#15, #18). The two "failure deletes the Lease" tests are **missed** in the new plan (M4). |
+| `TestClaimBatchPrecheck` (7) | In (#17). The missing-template-ref and 403-skip cases are M1/M2. "Server errors propagate" isn't needed (generic propagation). |
+| `TestClaimBatchLease` (2) | In (#15). |
+| `TestAttachBudgetAnnotations` (3) | In (#5 table, #30 one representative). |
+| `TestCreateManifests` (2) | In (#16). |
+| `TestCreatePacing` (2) | In (#19). |
+| `TestCreateRetry` (8) | Not needed at the handle: the classification table is #3; wiring is #20 (one retry, one failure). |
+| `TestPerGroupFailFast` (1), `TestFailFastConsumerMode` (2) | In (#21, with a stream-mode subtest); the threshold catch-up is superseded. |
+| `TestEvents` (6) | In (#22, #23, #25; state #7, #11); "second consumer raises" is Q3. |
+| `TestIterReadyGroups` (7) | In (#9–#13, #23). "Held members released on error" is superseded (#10 asserts the opposite). "Dependency not found stays pending" duplicates PR 1's derivation table. |
+| `TestReattachedConsumers` (1) | In (#14, state level). |
+| `TestRelease` (9) | In (#24, #26, #27). "Hung create doesn't block release" is kept as a #26 subtest. |
+| `TestDetachEndsConsumers` (1) | In (#24). |
+| `TestExitHooks` (1) | In (#31). |
+| State: `TestCreateRetryClassification` (3), `TestCreatePacer` (2), `TestPlanInitialFill`, `TestReconstructGroupOrder` | Moved to #3/#4; the pacer tests aren't needed (no class); plan and order are covered by #16 or not needed. |
+| State: `TestGroupQuorum` (13), `TestConsumerMode` (4), `TestEventStream` (7), `TestReattachedState` (3), `TestDispatchInterleavings` (1) | In (#6–#14). Four threshold tests are superseded; "released counts as unable" is PR 4; "second consumer" is Q3. The interleaving invariant goes into #9. |
+| Utils: `TestGenerateBatchId`, `TestPositiveInt*` (5), `TestValidateClaimBatchArgs` (11) | In (#1, #2, #5), as subtests of one table each. |
+| Helpers: 9 sync (+ async) | In (#32, one table per file). |
+
+### Missed requirements (changes after comparison)
+
+These amend the frozen design above; the phase 1 text stays as written.
+
+- **M1. A warm pool that names no template.** If a `SandboxWarmPool` has no `spec.sandboxTemplateRef.name`, the precheck must raise `SandboxTemplateNotFoundError` instead of GETting a template with no name. Needed because OPEN-W's precheck exists to fail before anything is created, and such a pool can never produce a claim. +3 source lines, and a subtest in #17.
+- **M2. Precheck skips on 403, with a warning.** The proposal's driver Role, which operators may deploy as written, has no `get` on `sandboxwarmpools`/`sandboxtemplates`. With the frozen design, `claim_batch` would fail with 403 for them.
+
+  Adopt the old behavior: on 403, log a warning and skip that check. The README lists the two `get` verbs as recommended, and a missing dependency then surfaces as the group's `quorum_timeout`. This softens OPEN-W for Roles without those verbs, so it is **for Brian to confirm**. The alternative is the frozen behavior with the verbs required. +10 source lines, and a subtest in #17.
+- **M3. Build the Lease labels and annotations once**, in `batch_utils` (`new_batch_lease_metadata(args, holder, now)`, or fields on the resolved args). Needed because the reaper and `get_batch` depend on that wire contract, and the frozen design wrote it twice, in two shells that could drift. Net about 0 lines; #15 still asserts the body in both shells.
+- **M4. Test that a failure after the Lease is created deletes it.** The frozen API text specifies the behavior, but the test plan had no test for it. Add a subtest to #18 for a list failure.
+
+Revised estimate: about 1,290 source lines and about 1,550 test lines.
+
+### What the new design has that the old one lacks
+
+**Behavior** (mostly approved items the old code predates):
+- Request timeouts on creates, the Lease create, release's deletes and lists, and sync `detach`.
+- A fill deadline counted from the last create's pacing slot. The old deadline was construction time plus `quorum_timeout`, so at 50k claims (1,000 s of pacing) every group would time out before its claims existed.
+- `release()` survives transient errors, and its round budget follows progress rather than a fixed 10 × 0.5 s.
+- Proposal A: a failed group gets no creates and no hand-outs. The old code streams held members on an error verdict, and cancels only on create failures past a threshold.
+- Parity in stopping creation. Old async cancelled in-flight creates, which could land after `deletecollection`; old sync waited.
+- Cohort selection by Ready order, as OPEN-F says; the old code used the lowest ordinals.
+- Iterators end on `err()` (Q5).
+- The existing-claims check in `claim_batch`'s list.
+- Exit-hook wiring that matches current upstream.
+
+**Simplifications:**
+- No pacer class, producer thread, executor, or semaphore: `max_in_flight` workers.
+- No change log (`_pending_changes`, `_LeaseDegraded`, `_reported`): events are queued at the transition.
+- No `_initial_fill`/`_warmpool_of`/`_unsettled` sets: counts and an ordinal test.
+- No PR 4 state (`_released`, `mark_released`, `_next_ordinal`, the `released` count).
+- No OPEN-S threshold path (`_past_create_failure_threshold`, `_cancelled_pools`, `mark_create_failed`'s return, the catch-up in `claim_groups_consumer`).
+- No test seams in production code (`clock`, `_wait_for_stop`).
+
+**Scale:**
+- The old `cannot_arrive_counts()` builds a `Counter` over a group's unable members on every create failure. That's O(group size) each time, so O(N²) for a large group whose creates all fail, such as a 403 across 20k claims.
+- The old `_all_groups_have_verdicts()` is O(G) on every consumer wake, so O(G) per watch event in quorum mode. The proposal has G in the thousands.
+- The new core is O(1) per event.
+
+### Totals
+
+| | Old PR 2 (`0f7a03f..df1c11d`) | New design (estimate, after M1–M4) |
+| :-- | --: | --: |
+| Source (incl. README) | +2,255 / −153 | ~1,290 |
+| Tests (unit + e2e) | +3,094 / −68 | ~1,550 |
+| Regenerated docs | +127 | ~120 |
+
+About 100 of the old source lines, and a few hundred test lines, are helpers and tests relocated from `batch_state` to `batch_utils`, which PR 1's revision now owns. Even allowing for that, the old PR 2 is roughly 1.7× the new source and 2× the new tests.
+
+### Where the size came from, largest first
+
+1. **Tests repeated at every layer.** Validation was tested in `batch_utils` and again in each handle (4 + 4 tests). Create classification was tested in the state and again 8 times per handle. Quorum and settle cases were replayed in the state and both handles. This is about 1,000 test lines that the test-audit bar removes.
+2. **Several mechanisms for one concern.** Pacing and concurrency were a `CreatePacer` class, a producer thread or task, a `ThreadPoolExecutor` or task set, a semaphore, and stop polling. Event delivery was a change log turned into events later, with a marker class and a `_reported` set. Each mechanism is written twice, once per shell.
+3. **Machinery for decisions later replaced.** The OPEN-S threshold path and the release of held members on an error verdict each have code in the state, both shells, and tests.
+4. **Later PRs' state pulled forward.** The released set and count, next-ordinal, and `mark_released` (PR 4).
+5. **Test seams and harness.** An injectable `clock` and `_wait_for_stop`, plus a `_FakeClock` harness driving them.
+6. **Longer prose.** Docstrings that restate the README, and README rules that the smaller API no longer needs (second-call errors, the threshold).
+
+Pieces of the old PR 2 that exist for a real reason and are kept: dependency prechecks, including the 403 skip (M2) and the missing-template-ref case (M1); the shared Lease metadata builder (M3); deleting the Lease when `claim_batch` fails; the trace-context extraction; ordinal-ordered seeding; `BatchExistsError` on a Lease 409; and the create-retry table. The old PR 2 was not wrong in its main structure. It was mostly correct code with too many layers, and it hadn't caught up with the approved revisions.
