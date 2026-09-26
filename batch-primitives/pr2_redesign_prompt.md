@@ -24,7 +24,7 @@ If you catch yourself about to look at the old PR 2 "just to check", don't; phas
    - **"Shared contracts"**: the wire contracts are binding, because the reaper (PR 6) and re-attaching handles depend on them. That covers names, labels, annotations, the claim manifest, and the Lease. In-memory contracts (e.g. the dispatched set, how `Member` derivation is organised) describe the old design. Keep only what is user-visible.
    - **"Decisions (Brian) → Resolved"** are Brian's decisions and binding by default. Some of them drive a lot of machinery (e.g. OPEN-F consumer modes and hold-back, OPEN-H, OPEN-S). If you believe one should change to make PR 2 simpler, keep it in the design and propose the change separately under "Decision changes for Brian", with what it saves.
 3. `review_carryover_notes.md`, section "Rules to carry into PRs 3–5". These apply to PR 2 too. Ignore any old-PR-2 internal names it mentions.
-4. The revised PR 1 code on `feat/batch-1-core` (head `fbf43fb`, on upstream `68db683`) is the foundation you build on. Read all of it:
+4. The revised PR 1 code on `feat/batch-1-core` (head `f4a4867`, on upstream `68db683`; re-fetch, Brian may have revised it since) is the foundation you build on. Read all of it:
    - models, constants, and exceptions;
    - the helpers in `k8s_helper.py`/`async_k8s_helper.py`;
    - `batch_state.py` (claims → state);
@@ -34,6 +34,11 @@ If you catch yourself about to look at the old PR 2 "just to check", don't; phas
    - the tests.
 
    Changing PR 1 is allowed where it makes PR 2 simpler, but list every such change separately; PR 1 is under upstream review.
+
+   PR 1 facts that matter for PR 2:
+   - Only the async client keeps a registry of batch handles (`_active_batches`, which `close()` uses). The sync client has none, because nothing in PR 1 needed it. If PR 2 needs one (e.g. for exit cleanup), PR 2 adds it.
+   - `get_batch` raises `BatchError` for any invalid batch annotation, on the Lease or on the claims.
+   - PR 1's tests were audited with `skills/test-audit/SKILL.md`, which removed 18 duplicates. PR 2's tests must follow the same bar: don't repeat a `batch_utils`/`batch_state` table at the handle level, and give each contract one owning test.
 
 ### Approved behavior PR 2 must have
 
