@@ -19,6 +19,59 @@ This plan was drafted before implementation and is partly stale. Where it and th
 7. **`get_batch` does not parse `batch-work-budget` yet (OPEN-E, deferred to PR 4).** `claim_batch` still writes both `batch-work-budget` and `batch-quorum-timeout` on the Lease. `get_batch` parses only `batch-quorum-timeout`, which sets a re-attached handle's fill deadline. In PR 2 a re-attached handle never creates claims, so it has no use for `work_budget`. **PR 4 must add the `batch-work-budget` parse back** (missing falls back to the default, present but not a positive integer raises `BatchError`) so that `acquire()`/`replace()` on a re-attached handle compute `shutdownTime` from the batch's own budget.
 8. **Numeric defaults live in `batch_state.py`.** `constants.py` holds only wire and cluster names; every tuning value (defaults, timeouts, retry, pacing, loop bounds, `CLOCK_SKEW_MARGIN`) is defined at the top of `batch_state.py`. Argument and annotation validation lives in `batch_utils.py`.
 
+## Pending: proposal A, a failed group is finished (approved, not yet implemented)
+
+Status: approved by Brian; implement next. After it lands, move items 4 and the new behavior into "As built" above and delete this section.
+
+State when written: `feat/batch-2-cohorts` at `df1c11d` (six commits on `feat/batch-1-core` at `0f7a03f`):
+`4ad064e` constants/exceptions, `ab4cc08` k8s helpers, `b77ddca` batch state (commit 3), `8295a30` claim_batch + handles (commit 4), `2498b41` e2e, `df1c11d` docs. Re-fetch before starting; Brian may have rebased.
+
+### Why
+
+Calling `iter_ready_groups()` means a group is only useful with `min_ready` members together. Today, when a group's verdict is an error, its held-back Ready members are released to `events()`, later-Ready members of that group stream too, and creation continues unless the error came from create failures. That turns a failed cohort into loose sandboxes the caller never asked for, and keeps spending API calls and pods on a group that has already failed.
+
+### Behavior (quorum mode only; stream-only mode is unchanged)
+
+Once a group has an error verdict (`QuorumUnreachableError` for any cause: terminal, lost, create-failed, released; or `TimeoutError`):
+
+1. **No more creates for that group.** Before each create the producer asks the state whether the claim's group has an error verdict, and skips it (`mark_create_cancelled`) if so. This replaces the create-failure-only threshold (OPEN-S), and late cancellation is automatic because `claim_groups_consumer()` already computes verdicts when quorum mode is fixed.
+2. **None of its members are handed out.** No `MEMBER_READY` on `events()` for that group: not the held-back ones, not ones that become Ready later. Its `MEMBER_FAILED` and `MEMBER_LOST` still stream (status, not hand-outs). Its members stay visible in `members()`.
+3. **Nothing is deleted.** Teardown stays the caller's `release()`.
+
+A group with a successful verdict is unchanged: its extras beyond `min_ready` stream on `events()`. Stream-only batches keep creating after failures and deliver every member.
+
+`events()` still closes as today: settled (or deadline) and, in quorum mode, every non-zero group has a verdict.
+
+### Code changes
+
+Commit 3 (`batch_state.py`):
+- Delete `_past_create_failure_threshold`; `mark_create_failed` returns `None` (drop the bool and its docstring paragraph about cancelling); `claim_groups_consumer()` returns `None` (drop the pools list and its docstring sentence).
+- Add a query the producer uses, e.g. `group_failed(pool) -> bool`: quorum mode and that group's verdict has an `error`.
+- `_set_verdict`: delete the block that re-marks held members as changed on an error verdict (and its comment).
+- `_is_held_for_quorum` becomes "withheld": in quorum mode a non-zero group's Ready members are withheld while it has no verdict **or** its verdict is an error. Rename to fit, e.g. `_is_withheld`.
+- `collect_events()` done check is unchanged.
+
+Commit 4 (`sandbox_batch.py`, `async_sandbox_batch.py`, README):
+- Delete `_cancelled_pools` and `_cancel_remaining_creates`; `iter_ready_groups()` no longer uses a return value from `claim_groups_consumer()`; `_create_one` no longer acts on `mark_create_failed`'s return.
+- `_skip_if_pool_cancelled` checks the state's `group_failed(pool)` under the lock instead of `_cancelled_pools`. Keep the info log once per group (log from the producer the first time it skips a group).
+- Docstrings: `events()` and `iter_ready_groups()` in both handles no longer say held-back members are released to `events()` on an error; say a failed group's members are not handed out and remain in `members()`.
+- README batch section: same wording change (the bullet that says "(and a group's held-back members, if the group yields an error)", and the fail-fast bullet, which becomes "once `iter_ready_groups()` has been called, a group that can no longer reach `min_ready` or times out gets no more creates and none of its members are handed out").
+
+### Tests to change (both handles unless noted)
+
+- State (`test_batch_state.py`): replace `test_create_failure_fail_fast_threshold`, `test_create_failures_never_ask_to_cancel_outside_quorum_mode`, `test_quorum_mode_cancels_groups_already_past_threshold`, `test_quorum_mode_with_no_failures_cancels_nothing` with tests of `group_failed()` (false outside quorum mode; true after unreachable and after timeout; false for a successful group). Flip `test_error_verdict_releases_held_members_to_events` to assert held members are **not** emitted and stay in `members()`; add: a member of a failed group that becomes Ready later is not emitted, while its `MEMBER_FAILED` is.
+- Handles: `TestPerGroupFailFast` keeps its shape (creates for the failed group stop; the healthy group still fills; no deletecollection; Lease kept). `TestFailFastConsumerMode.test_entering_quorum_mode_cancels_a_group_already_past_its_threshold` stays, now driven by the verdict. Add a case where the group fails by terminal claims (not create failures) and its remaining creates are skipped. `test_stream_only_batch_keeps_creating_after_a_create_failure` unchanged. Flip both `test_error_verdict_releases_held_members_to_events` to assert only the `MEMBER_FAILED` events stream.
+
+Report unit-suite counts before and after and explain every change in counts.
+
+### Workflow rules (from Brian)
+
+- Brian rewrote comments and docstrings to be concise: leave his wording alone; change a comment only where the code it describes changes, and then minimally.
+- Fold each change into the commit that owns it: `git commit --fixup=<sha>` then `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash origin/feat/batch-1-core`. No new commits, no trailers, all commits authored by Brian Nguyen <brianknguyen@google.com> (set `git config user.name/user.email` if needed). Do not touch `feat/batch-1-core`.
+- Verify before pushing: every PR 2 commit passes pytest and `mypy k8s_agent_sandbox` on its own (run from the package directory as `dev/tools/test-unit` does); pyflakes clean on changed files; `make generate-python-docs` with any change folded into the docs commit; `git log --format='%(trailers)'` empty.
+- Push with `git push --force-with-lease=feat/batch-2-cohorts:<fetched full sha> origin feat/batch-2-cohorts`, using the SHA from `git rev-parse origin/feat/batch-2-cohorts` right after fetching (never typed from memory).
+- Afterwards, update this doc: move the change into "As built" (it broadens OPEN-S to any error verdict and changes OPEN-F: no release of held members on error) and remove this section.
+
 ## Changes relative to the revised roadmap
 
 The roadmap's grouping is kept. These items were missing from it or conflict with the proposal, and are placed as follows:
