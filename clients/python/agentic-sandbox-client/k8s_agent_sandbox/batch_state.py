@@ -19,6 +19,7 @@ Contains methods for modifying and re-populating a batch's state that operate on
 Kubernetes objects and thus do not perform any network I/O, threading, or locking of their own.
 """
 
+from collections import deque
 from collections.abc import Sequence
 from operator import itemgetter
 
@@ -27,8 +28,12 @@ from .constants import (
     BATCH_GROUP_SIZE_ANNOTATION,
     TERMINAL_CLAIM_READY_REASONS,
 )
-from .exceptions import BatchError
-from .models import BatchGroup, Member
+from .exceptions import BatchError, QuorumUnreachableError
+from .models import BatchEvent, BatchEventType, BatchGroup, GroupReady, Member
+
+CREATE_FAILED_REASON = "CreateFailed"
+STREAM_MODE = "stream"
+QUORUM_MODE = "quorum"
 
 
 def parse_ordinal(batch_id: str, claim_name: str) -> int | None:
@@ -133,7 +138,13 @@ def derive_member(claim_obj: dict) -> Member:
 
 
 class BatchState:
-    """The internal state of a batch handle, containing its members and metadata."""
+    """The internal state of a batch handle, containing its members and metadata.
+
+    Also does the fill accounting behind ``events()`` and ``iter_ready_groups()``. The fill is
+    the batch's initial claims, ordinals ``0..size-1``. Each transition of a fill member is
+    turned into queued events and group results as it happens, in O(1), so the handles only feed
+    in watch events and pop results.
+    """
 
     def __init__(self, batch_id: str, groups: Sequence[BatchGroup]) -> None:
         self.batch_id = batch_id
@@ -144,9 +155,37 @@ class BatchState:
         self._ordinals: dict[str, int] = {}
         self._error: Exception | None = None
 
+        self._group_by_pool: dict[str, BatchGroup] = {g.warmpool: g for g in self.groups}
+        self._mode: str | None = None
+        # Per pool, the Ready fill members not yet handed out. A dict is used as an ordered set,
+        # so the order is the order members became Ready.
+        self._waiting: dict[str, dict[str, None]] = {pool: {} for pool in self._group_by_pool}
+        self._dispatched: set[str] = set()
+        # Fill members that can no longer become Ready. A member is added once and never removed,
+        # so verdicts and the settle point only move forward even if a claim reappears.
+        self._unable: set[str] = set()
+        self._failed: dict[str, int] = dict.fromkeys(self._group_by_pool, 0)
+        self._lost: dict[str, int] = dict.fromkeys(self._group_by_pool, 0)
+        self._skipped = 0
+        self._missing = 0
+        self._ready_count = 0
+        self._verdicts: dict[str, GroupReady] = {}
+        self._events: deque[BatchEvent] = deque()
+        self._group_results: deque[GroupReady] = deque()
+        self._fill_expired = False
+
     def seed_from_claims(self, claim_objs: Sequence[dict]) -> None:
-        """Reconstructs state from the batch's existing claims."""
-        for claim_obj in claim_objs:
+        """Reconstructs state from the batch's existing claims.
+
+        Claims are applied in ordinal order, so members that are already Ready are handed out
+        lowest ordinal first.
+        """
+        def ordinal_key(claim_obj: dict) -> tuple[bool, int]:
+            name = (claim_obj.get("metadata") or {}).get("name", "")
+            ordinal = parse_ordinal(self.batch_id, name)
+            return (ordinal is None, ordinal or 0)
+
+        for claim_obj in sorted(claim_objs, key=ordinal_key):
             self.upsert_claim(claim_obj)
 
     def upsert_claim(self, claim_obj: dict) -> Member | None:
@@ -157,7 +196,9 @@ class BatchState:
         if ordinal is not None:
             self._ordinals[claim_name] = ordinal
         member = derive_member(claim_obj)
+        previous = self._members.get(claim_name)
         self._members[claim_name] = member
+        self._on_fill_change(claim_name, member, previous)
         return member
 
     def mark_lost(self, claim_name: str) -> Member | None:
@@ -170,6 +211,7 @@ class BatchState:
             update={"lost": True, "ready": False, "pod_ips": (), "service_fqdn": None}
         )
         self._members[claim_name] = lost_member
+        self._on_fill_change(claim_name, lost_member, existing)
         return lost_member
 
     def resync_from_list(self, claim_objs: Sequence[dict]) -> None:
@@ -204,3 +246,178 @@ class BatchState:
 
     def error(self) -> Exception | None:
         return self._error
+
+    def _is_fill(self, claim_name: str, member: Member) -> bool:
+        ordinal = self._ordinals.get(claim_name)
+        return ordinal is not None and ordinal < self.size and member.warmpool in self._group_by_pool
+
+    def _on_fill_change(self, claim_name: str, member: Member, previous: Member | None) -> None:
+        if not self._is_fill(claim_name, member):
+            return
+        pool = member.warmpool
+        was_counted = previous is not None and previous.ready and claim_name not in self._unable
+        if claim_name not in self._unable and (member.terminal or member.lost):
+            self._unable.add(claim_name)
+            if member.lost:
+                self._lost[pool] += 1
+            else:
+                self._failed[pool] += 1
+            self._waiting[pool].pop(claim_name, None)
+            event_type = BatchEventType.MEMBER_LOST if member.lost else BatchEventType.MEMBER_FAILED
+            self._events.append(BatchEvent(type=event_type, member=member))
+        elif claim_name not in self._unable and member.ready:
+            if claim_name not in self._dispatched:
+                self._route_ready(claim_name, pool)
+        elif not member.ready:
+            # A member handed out earlier stays handed out; one still waiting is dropped until
+            # it is Ready again.
+            self._waiting[pool].pop(claim_name, None)
+        is_counted = member.ready and claim_name not in self._unable
+        self._ready_count += int(is_counted) - int(was_counted)
+        if self._mode == QUORUM_MODE:
+            self._evaluate(pool)
+
+    def _route_ready(self, claim_name: str, pool: str) -> None:
+        verdict = self._verdicts.get(pool)
+        if self._mode == STREAM_MODE or (verdict is not None and verdict.error is None):
+            self._dispatch(claim_name)
+        elif verdict is None:
+            # In quorum mode, a group's Ready members are held until the group yields, so a
+            # group that fails never hands out any of its members.
+            self._waiting[pool][claim_name] = None
+
+    def _dispatch(self, claim_name: str) -> None:
+        self._dispatched.add(claim_name)
+        self._events.append(
+            BatchEvent(type=BatchEventType.MEMBER_READY, member=self._members[claim_name])
+        )
+
+    def _evaluate(self, pool: str) -> None:
+        if pool in self._verdicts:
+            return
+        group = self._group_by_pool[pool]
+        min_ready = group.min_ready or 0
+        waiting = self._waiting[pool]
+        if len(waiting) >= min_ready:
+            names = list(waiting)
+            waiting.clear()
+            cohort = names[:min_ready]
+            self._dispatched.update(cohort)
+            self._set_verdict(GroupReady(warmpool=pool, members=[self._members[n] for n in cohort]))
+            for name in names[min_ready:]:
+                self._dispatch(name)
+        elif group.size - self._failed[pool] - self._lost[pool] < min_ready:
+            waiting.clear()
+            self._set_verdict(GroupReady(warmpool=pool, error=QuorumUnreachableError(
+                warmpool=pool,
+                size=group.size,
+                min_ready=min_ready,
+                failed=self._failed[pool],
+                lost=self._lost[pool],
+            )))
+
+    def _set_verdict(self, result: GroupReady) -> None:
+        self._verdicts[result.warmpool] = result
+        self._group_results.append(result)
+
+    def _expire_undecided(self) -> None:
+        for pool in self._group_by_pool:
+            if pool not in self._verdicts:
+                self._waiting[pool].clear()
+                self._set_verdict(GroupReady(warmpool=pool, error=TimeoutError("Group quorum timed out")))
+
+    def set_mode(self, mode: str) -> None:
+        """Fixes how Ready members are handed out, on the first call of ``events()``
+        (``STREAM_MODE``) or ``iter_ready_groups()`` (``QUORUM_MODE``).
+
+        Raises:
+            BatchError: If ``iter_ready_groups()`` is called after ``events()`` fixed stream mode.
+        """
+        if self._mode == mode or (self._mode == QUORUM_MODE and mode == STREAM_MODE):
+            return
+        if self._mode == STREAM_MODE:
+            raise BatchError("iter_ready_groups() can't be used after events()")
+        self._mode = mode
+        if mode == STREAM_MODE:
+            for waiting in self._waiting.values():
+                for name in waiting:
+                    self._dispatch(name)
+                waiting.clear()
+        else:
+            for pool in self._group_by_pool:
+                self._evaluate(pool)
+            if self._fill_expired:
+                self._expire_undecided()
+
+    def record_create_failure(self, claim_name: str, warmpool: str, message: str) -> None:
+        """Records a claim whose create failed as a terminal member with reason ``CreateFailed``."""
+        if claim_name in self._members:
+            # The watch has already seen the claim, so an earlier attempt did create it.
+            return
+        ordinal = parse_ordinal(self.batch_id, claim_name)
+        if ordinal is not None:
+            self._ordinals[claim_name] = ordinal
+        member = Member(
+            claim_name=claim_name,
+            warmpool=warmpool,
+            terminal=True,
+            reason=CREATE_FAILED_REASON,
+            message=message,
+        )
+        self._members[claim_name] = member
+        self._on_fill_change(claim_name, member, None)
+
+    def cancel_create(self, warmpool: str) -> None:
+        """Counts a fill claim that won't be created because its group failed."""
+        self._skipped += 1
+
+    def group_failed(self, warmpool: str) -> bool:
+        """Whether the group's quorum failed, so its remaining claims shouldn't be created."""
+        verdict = self._verdicts.get(warmpool)
+        return self._mode == QUORUM_MODE and verdict is not None and verdict.error is not None
+
+    def expire_fill(self) -> bool:
+        """Ends the fill at its deadline: in quorum mode, every group without a verdict gets a
+        ``TimeoutError``. Members are left as they are.
+
+        Returns ``False`` if the fill had already expired, so callers only notify on a change.
+        """
+        if self._fill_expired:
+            return False
+        self._fill_expired = True
+        if self._mode == QUORUM_MODE:
+            self._expire_undecided()
+        return True
+
+    def count_missing_fill_as_unable(self) -> None:
+        """For a re-attached batch, counts each group's fill claims that don't exist as unable.
+        The previous handle stopped creating before it detached, so they never will.
+        """
+        seen: dict[str, int] = dict.fromkeys(self._group_by_pool, 0)
+        for name, member in self._members.items():
+            if self._is_fill(name, member):
+                seen[member.warmpool] += 1
+        for pool, group in self._group_by_pool.items():
+            missing = max(0, group.size - seen[pool])
+            self._lost[pool] += missing
+            self._missing += missing
+
+    def note_lease_degraded(self) -> None:
+        self._events.append(BatchEvent(type=BatchEventType.LEASE_DEGRADED))
+
+    def pop_event(self) -> BatchEvent | None:
+        return self._events.popleft() if self._events else None
+
+    def pop_group_result(self) -> GroupReady | None:
+        return self._group_results.popleft() if self._group_results else None
+
+    def fill_settled(self) -> bool:
+        """Whether every fill member is Ready or unable, or the fill deadline has passed."""
+        resolved = self._ready_count + len(self._unable) + self._skipped + self._missing
+        return self._fill_expired or resolved >= self.size
+
+    def events_done(self) -> bool:
+        return self.fill_settled() and not self._events
+
+    def groups_done(self) -> bool:
+        return len(self._verdicts) == len(self._group_by_pool) and not self._group_results

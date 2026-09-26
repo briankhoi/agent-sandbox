@@ -17,8 +17,8 @@ import unittest
 from pydantic import ValidationError
 
 from k8s_agent_sandbox import batch_state
-from k8s_agent_sandbox.exceptions import BatchError
-from k8s_agent_sandbox.models import BatchGroup
+from k8s_agent_sandbox.exceptions import BatchError, QuorumUnreachableError
+from k8s_agent_sandbox.models import BatchEventType, BatchGroup
 from k8s_agent_sandbox.constants import (
     TERMINAL_CLAIM_READY_REASONS,
 )
@@ -272,6 +272,205 @@ class TestErrorSticky(unittest.TestCase):
         state.note_error(ValueError("first"))
         state.note_error(ValueError("second"))
         self.assertEqual(str(state.error()), "first")
+
+
+_READY = [{"type": "Ready", "status": "True"}]
+_NOT_READY = [{"type": "Ready", "status": "False", "reason": "SandboxNotReady"}]
+_TERMINAL = [{"type": "Ready", "status": "False", "reason": sorted(TERMINAL_CLAIM_READY_REASONS)[0]}]
+
+
+def _ready(name, warmpool="pool-a"):
+    return _claim(name, warmpool, conditions=_READY, sandbox={"name": f"sbx-{name}"})
+
+
+def _pending(name, warmpool="pool-a"):
+    return _claim(name, warmpool, conditions=_NOT_READY)
+
+
+def _state(*groups, mode=None):
+    state = batch_state.BatchState("b1", list(groups))
+    if mode is not None:
+        state.set_mode(mode)
+    return state
+
+
+def _drain_events(state):
+    events = []
+    while (event := state.pop_event()) is not None:
+        events.append((event.type, event.member.claim_name if event.member else None))
+    return events
+
+
+def _drain_groups(state):
+    results = []
+    while (result := state.pop_group_result()) is not None:
+        results.append(result)
+    return results
+
+
+class TestStreamMode(unittest.TestCase):
+
+    def test_each_fill_member_is_ready_once_and_non_fill_claims_emit_nothing(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=2), mode=batch_state.STREAM_MODE)
+        state.upsert_claim(_ready("b1-0"))
+        state.upsert_claim(_pending("b1-0"))
+        state.upsert_claim(_ready("b1-0"))
+        state.upsert_claim(_ready("b1-2"))
+        state.upsert_claim(_ready("b1-1", warmpool="pool-z"))
+        self.assertEqual(_drain_events(state), [(BatchEventType.MEMBER_READY, "b1-0")])
+
+    def test_status_events(self):
+        failed, lost = BatchEventType.MEMBER_FAILED, BatchEventType.MEMBER_LOST
+        cases = {
+            "terminal": ([lambda s: s.upsert_claim(_claim("b1-0", conditions=_TERMINAL))], [(failed, "b1-0")]),
+            "lost": ([lambda s: s.upsert_claim(_pending("b1-0")), lambda s: s.mark_lost("b1-0")], [(lost, "b1-0")]),
+            "create failed": ([lambda s: s.record_create_failure("b1-0", "pool-a", "forbidden")], [(failed, "b1-0")]),
+            "terminal then deleted": ([
+                lambda s: s.upsert_claim(_claim("b1-0", conditions=_TERMINAL)),
+                lambda s: s.mark_lost("b1-0"),
+            ], [(failed, "b1-0")]),
+        }
+        for name, (steps, want) in cases.items():
+            with self.subTest(name):
+                state = _state(BatchGroup(warmpool="pool-a", size=1), mode=batch_state.STREAM_MODE)
+                for step in steps:
+                    step(state)
+                self.assertEqual(_drain_events(state), want)
+        state = _state(BatchGroup(warmpool="pool-a", size=1))
+        state.record_create_failure("b1-0", "pool-a", "forbidden")
+        member = state.get_member("b1-0")
+        self.assertEqual((member.terminal, member.reason, member.message), (True, "CreateFailed", "forbidden"))
+
+    def test_ready_members_seen_before_a_mode_are_delivered_when_stream_mode_is_set(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=2))
+        state.upsert_claim(_ready("b1-1"))
+        state.upsert_claim(_ready("b1-0"))
+        self.assertEqual(_drain_events(state), [])
+        state.set_mode(batch_state.STREAM_MODE)
+        self.assertEqual(
+            _drain_events(state),
+            [(BatchEventType.MEMBER_READY, "b1-1"), (BatchEventType.MEMBER_READY, "b1-0")],
+        )
+
+
+class TestQuorumMode(unittest.TestCase):
+
+    def test_success_yields_first_min_ready_by_ready_order_then_streams_the_rest_once(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=4, min_ready=2))
+        for name in ("b1-3", "b1-0", "b1-1"):
+            state.upsert_claim(_ready(name))
+        state.set_mode(batch_state.QUORUM_MODE)
+        [result] = _drain_groups(state)
+        self.assertIsNone(result.error)
+        self.assertEqual([m.claim_name for m in result.members], ["b1-3", "b1-0"])
+        self.assertEqual(_drain_events(state), [(BatchEventType.MEMBER_READY, "b1-1")])
+
+        state.upsert_claim(_ready("b1-2"))
+        self.assertEqual(_drain_events(state), [(BatchEventType.MEMBER_READY, "b1-2")])
+
+        # A cohort member flapping, and events() joining later, hand out nothing again.
+        state.upsert_claim(_pending("b1-3"))
+        state.upsert_claim(_ready("b1-3"))
+        state.set_mode(batch_state.STREAM_MODE)
+        self.assertEqual(_drain_events(state), [])
+        self.assertEqual(_drain_groups(state), [])
+
+    def test_nothing_is_handed_out_before_the_group_yields(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=3), mode=batch_state.QUORUM_MODE)
+        state.upsert_claim(_ready("b1-0"))
+        state.upsert_claim(_ready("b1-1"))
+        self.assertEqual(_drain_events(state), [])
+        self.assertEqual(_drain_groups(state), [])
+
+    def test_unreachable_group_is_finished_and_never_hands_out_members(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=3, min_ready=2), mode=batch_state.QUORUM_MODE)
+        # b1-2 is past the first min_ready ordinals, and is still held while the group has no verdict.
+        state.upsert_claim(_ready("b1-2"))
+        state.upsert_claim(_claim("b1-0", conditions=_TERMINAL))
+        self.assertEqual(_drain_groups(state), [])
+        state.upsert_claim(_pending("b1-1"))
+        state.mark_lost("b1-1")
+
+        [result] = _drain_groups(state)
+        self.assertIsInstance(result.error, QuorumUnreachableError)
+        self.assertEqual(
+            (result.error.size, result.error.min_ready, result.error.failed, result.error.lost),
+            (3, 2, 1, 1),
+        )
+        self.assertEqual(result.members, [])
+        self.assertTrue(state.group_failed("pool-a"))
+
+        state.upsert_claim(_pending("b1-2"))
+        state.upsert_claim(_ready("b1-2"))
+        self.assertEqual(
+            _drain_events(state),
+            [(BatchEventType.MEMBER_FAILED, "b1-0"), (BatchEventType.MEMBER_LOST, "b1-1")],
+        )
+        self.assertEqual([m.claim_name for m in state.members()], ["b1-0", "b1-1", "b1-2"])
+
+    def test_expire_fill_times_out_undecided_groups_only(self):
+        state = _state(
+            BatchGroup(warmpool="pool-a", size=1),
+            BatchGroup(warmpool="pool-b", size=1),
+            mode=batch_state.QUORUM_MODE,
+        )
+        state.upsert_claim(_ready("b1-0", warmpool="pool-a"))
+        state.upsert_claim(_pending("b1-1", warmpool="pool-b"))
+        self.assertFalse(state.fill_settled())
+        state.expire_fill()
+
+        results = {r.warmpool: r for r in _drain_groups(state)}
+        self.assertIsNone(results["pool-a"].error)
+        self.assertIsInstance(results["pool-b"].error, TimeoutError)
+        self.assertTrue(state.fill_settled())
+        self.assertTrue(state.groups_done())
+
+    def test_mode_rules(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=1), mode=batch_state.STREAM_MODE)
+        with self.assertRaises(BatchError):
+            state.set_mode(batch_state.QUORUM_MODE)
+
+        state = _state(BatchGroup(warmpool="pool-a", size=1), mode=batch_state.QUORUM_MODE)
+        state.set_mode(batch_state.STREAM_MODE)
+
+        state = _state(BatchGroup(warmpool="pool-a", size=2, min_ready=0), mode=batch_state.QUORUM_MODE)
+        [result] = _drain_groups(state)
+        self.assertEqual((result.members, result.error), ([], None))
+
+
+class TestSettle(unittest.TestCase):
+
+    def test_events_done_exactly_when_the_last_pending_member_resolves(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=3), mode=batch_state.STREAM_MODE)
+        state.upsert_claim(_ready("b1-0"))
+        state.record_create_failure("b1-1", "pool-a", "forbidden")
+        self.assertFalse(state.fill_settled())
+        state.cancel_create("pool-a")
+        self.assertTrue(state.fill_settled())
+        self.assertFalse(state.events_done())
+        _drain_events(state)
+        self.assertTrue(state.events_done())
+
+
+class TestReattachedFill(unittest.TestCase):
+
+    def test_seeding_hands_out_lower_ordinals_first(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=11, min_ready=1))
+        state.seed_from_claims([_ready("b1-10"), _ready("b1-2")])
+        state.set_mode(batch_state.STREAM_MODE)
+        self.assertEqual(
+            _drain_events(state),
+            [(BatchEventType.MEMBER_READY, "b1-2"), (BatchEventType.MEMBER_READY, "b1-10")],
+        )
+
+    def test_missing_fill_claims_count_as_unable(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=3, min_ready=2))
+        state.seed_from_claims([_ready("b1-0")])
+        state.count_missing_fill_as_unable()
+        self.assertTrue(state.fill_settled())
+        state.set_mode(batch_state.QUORUM_MODE)
+        [result] = _drain_groups(state)
+        self.assertIsInstance(result.error, QuorumUnreachableError)
 
 
 if __name__ == "__main__":
