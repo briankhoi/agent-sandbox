@@ -26,6 +26,13 @@ Paths below are under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`
 
 `git rebase --onto origin/feat/batch-1-core 0f7a03f feat/batch-2-cohorts` (the second argument is the **old** PR 1 head, so only PR 2's six commits are replayed). Expect conflicts where PR 1 changed code that PR 2 also edits: `batch_state.py`'s constants block and helpers, `_renew_once` (PR 1's request timeout next to PR 2's `note_lease_degraded`), the watch loops, `__init__.py`, both helpers, and the tests. Resolve each so that both changes survive. In `docs/python_sdk_reference.md`, take either side and regenerate it at the end. After every resolved commit, the suite must pass at that commit (see Verify).
 
+What the PR 1 revision actually changed (head `995e793`), beyond the plan above, that matters for this rebase:
+- **Watch loops were restructured.** A 410 now sets `relist = True`, and the re-list runs at the top of the next iteration inside the same `try`, so list errors share the watch's handlers. There is one `failures` counter with `_watch_backoff_delay(failures)` (a module-level helper in each handle). Where PR 2 adds code to the watch loop (e.g. emitting events or waking waiters after `resync_from_list`/`upsert_claim`/`mark_lost`), re-apply it onto the new shape instead of reviving the old nested re-list loop.
+- **Renewal** uses `self._renew_interval` (set in `__init__`) for both the loop sleep and the requests' `_request_timeout`. PR 2's `_renew_once` changes (e.g. `note_lease_degraded`) go next to it. If `claim_batch` builds the handle through a different path, make sure `_renew_interval` is still set.
+- **`test_sandbox_batch.py` lost unused imports.** `threading`, `unittest.mock.call` and `Member` were unused in PR 1. PR 2's tests use all three, so re-add them in `8295a30` if the rebase doesn't keep them. `test_async_sandbox_batch.py` imports were unchanged.
+- `backoff_delay` bounds its exponent at 32. That doesn't affect `create_backoff_delay`'s existing tests.
+- New PR 1 tests to keep passing after the rebase: `test_consecutive_failures_back_off_and_an_event_resets_the_delay` and `test_410_relist_transport_error_retries_then_reconciles` (both handles). They count `wait`/`sleep` calls exactly, so a PR 2 change that adds a wait to the watch loop must keep them accurate.
+
 Then, folded into the commits named:
 
 ## Changes

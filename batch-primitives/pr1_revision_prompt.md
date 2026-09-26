@@ -112,4 +112,4 @@ Run from `clients/python/agentic-sandbox-client`, the way `dev/tools/test-unit` 
 
 Then update this notes branch (`batch-primitives-notes`): in `python_sdk_batch_plan.md` "As built", add a PR 1 revision entry (renewal request timeout, bookmarks, watch backoff, takeover `acquireTime`/`leaseTransitions`, event types moved to PR 2), and mark this prompt's status line "done at `<new head sha>`". Push the notes branch as a fast-forward.
 
-Status: not started.
+Status: done at `995e793` (2026-09-26).

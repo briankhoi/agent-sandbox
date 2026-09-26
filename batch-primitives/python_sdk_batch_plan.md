@@ -18,6 +18,14 @@ This plan was drafted before implementation and is partly stale. Where it and th
 6. **Bounded wait for in-flight creates.** The sync handle's `release()`/`detach()` waits at most `BATCH_STOP_CREATION_TIMEOUT_SECONDS` (30 s) for creates already sent, since urllib3 has no read timeout; the async handle cancels them. A create that lands after `deletecollection` is caught by the re-list rounds or by its `shutdownTime`.
 7. **`get_batch` does not parse `batch-work-budget` yet (OPEN-E, deferred to PR 4).** `claim_batch` still writes both `batch-work-budget` and `batch-quorum-timeout` on the Lease. `get_batch` parses only `batch-quorum-timeout`, which sets a re-attached handle's fill deadline. In PR 2 a re-attached handle never creates claims, so it has no use for `work_budget`. **PR 4 must add the `batch-work-budget` parse back** (missing falls back to the default, present but not a positive integer raises `BatchError`) so that `acquire()`/`replace()` on a re-attached handle compute `shutdownTime` from the batch's own budget.
 8. **Numeric defaults live in `batch_state.py`.** `constants.py` holds only wire and cluster names; every tuning value (defaults, timeouts, retry, pacing, loop bounds, `CLOCK_SKEW_MARGIN`) is defined at the top of `batch_state.py`. Argument and annotation validation lives in `batch_utils.py`.
+9. **PR 1 revision (2026-09-26, `feat/batch-1-core` at `995e793`).**
+   - Lease renewal requests carry `_request_timeout` equal to the renew interval (`max(1, lease_duration // 3)`, stored as `_renew_interval`). A hung apiserver therefore counts as a failed renewal: degraded, then `BatchLeaseExpiredError`. `read_batch_lease`/`replace_batch_lease` take an optional `_request_timeout`.
+   - `watch_sandbox_claims` requests bookmarks (`allow_watch_bookmarks=True`), so a quiet batch's watch resumes from a fresh resourceVersion instead of re-listing after a 410.
+   - Watch retries back off. `batch_state.is_retryable_status` (None/429/5xx) and `backoff_delay(attempt, base, cap, rand)` (equal jitter, exponent bounded) are shared helpers, with `BATCH_WATCH_BACKOFF_BASE_SECONDS = 0.5` and `BATCH_WATCH_BACKOFF_MAX_SECONDS = 30.0`. A `failures` counter resets on any event or a normal watch end.
+   - The 410 re-list now runs at the top of the watch loop behind a `relist` flag, inside the same `try`. A transport or unexpected error during the re-list is therefore retried or surfaced through `err()`; before, it killed the watch thread/task with `err()` still `None`.
+   - Takeover sets `acquireTime` and increments `leaseTransitions`, as client-go leader election does.
+   - `BatchEventType`, `BatchEvent` and `GroupReady` moved to PR 2.
+   - `get_batch` docstrings have a `Raises:` section and say that only a detached batch can be re-attached.
 
 ## Pending: proposal A, a failed group is finished (approved, not yet implemented)
 
