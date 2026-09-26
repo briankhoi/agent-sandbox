@@ -80,7 +80,7 @@ These were approved by Brian after review. Design them in; don't reopen them.
    - what is written to the cluster (claim manifest, Lease annotations).
 5. **Deliberately left out,** and why.
 6. **Size estimate** per file (source and tests separately).
-7. **Test plan:** behaviors, each in both shells where it exists in both, plus the e2e smoke test.
+7. **Test plan:** behaviors, each in both shells where it exists in both, plus the e2e smoke test. Plan only tests that pass the value bar in `skills/test-audit/SKILL.md` (no implementation-coupled, low-value, or duplicate tests); the old PR 2's 3,000 test lines are part of what this redesign should shrink.
 8. **PR 1 changes needed,** if any, with reasons.
 9. **Decision changes for Brian,** if any, each with what it saves.
 10. **Open questions.**
