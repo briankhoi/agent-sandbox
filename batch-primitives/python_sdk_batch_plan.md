@@ -10,7 +10,7 @@ How an agent uses this file: read the proposal, then "Ground rules", "Module lay
 
 This plan was drafted before implementation and is partly stale. Where it and the code disagree, the code, this section, and `pr2_implementation_spec.md` are the source of truth. Later PRs should read this section first.
 
-### PR 2 (`feat/batch-2-cohorts` at `8e757e4`, on PR 1 `aad1e60`)
+### PR 2 (`feat/batch-2-cohorts` at `db7aa20`, on PR 1 `aad1e60`)
 
 Rebuilt on 2026-09-26 from `pr2_implementation_spec.md`, which holds the approved decisions (D1, M1–M4, Q1–Q7); the design is `pr2_design.md` §3, §4, and §7. The old PR 2 is archived on the fork as `archive/batch-2-cohorts-v1` (`df1c11d`). Six commits: models/constants/exceptions, helpers, `batch_state`/`batch_utils`, handles/clients/README, e2e, docs. Where it departs from the "PR 2" section below:
 
@@ -26,7 +26,13 @@ Rebuilt on 2026-09-26 from `pr2_implementation_spec.md`, which holds the approve
 10. **Consumers** (Q3, Q5): calling `events()`/`iter_ready_groups()` again continues; only `iter_ready_groups()` after `events()` raises. Both end once `err()` is set.
 11. **`QuorumUnreachableError`** has `failed` (terminal members, including `CreateFailed`) and `lost` (deleted, or missing at re-attach). There is no separate `create_failed` or `released` count; PR 4 decides whether `release_member` needs one.
 12. **`create_sandbox_claim` has `log_level`** (Q1); the batch logs each create at DEBUG.
-13. **Details the spec left open:** `record_create_failure` ignores a claim the watch has already seen (an earlier attempt created it). `detach()` after `release()` raises `BatchError`, as the spec says; `pr2_design.md` §3's "no-op" wording is superseded.
+13. **Changes from review (2026-09-28/29):**
+    - Seeding on re-attach no longer sorts by ordinal; this drops OPEN-G's ordinal-order rule. Members Ready before attach are handed out in the order the list returns them. `members()` is still sorted by ordinal (PR 1 contract).
+    - `batch_state.ConsumerMode` and `batch_utils.CreateOutcome` enums replace the mode and create-outcome strings.
+    - Renames in `BatchState`: `_group_outcomes` (was `_verdicts`), `_decide_group_outcome`, `_group_outcomes_to_yield`, `_events_to_yield`, `pop_group_outcome`, `_route_ready_member`, `record_skipped_create()` (was `cancel_create`). `_never_created` replaces `_skipped` and `_missing`.
+    - Helpers: `_get_extensions_object` (was `_get_claim_group_object`).
+    - Both watch loops share each shell's transient-error set with creates and release. The sync set adds `urllib3.MaxRetryError` (a failed connection), except when caused by an SSL error, matching the async side.
+14. **Details the spec left open:** `record_create_failure` ignores a claim the watch has already seen (an earlier attempt created it). `detach()` after `release()` raises `BatchError`, as the spec says; `pr2_design.md` §3's "no-op" wording is superseded.
 
 ### PR 1
 

@@ -42,6 +42,11 @@ Checked on 2026-09-26: every CodeRabbit finding is already handled in `0f7a03f` 
 - **The fill deadline counts from the last paced create** (PR 2, Q6). `wait_for_quorum(timeout=None)` in PR 3 should default to the same deadline, not to `now + quorum_timeout`.
 - **PR 4 must parse `batch-work-budget` back in `get_batch`** (plan "As built", PR 2 item 7), and `acquire` uses `is_retryable_status`/`backoff_delay` like the fill.
 - **PR 5 pool validation** (OPEN-I): the watch and renewal each hold a connection, so validate `pool >= max_in_flight + 2`.
+- **PR 5 performance ideas (measure before building).** Found while reviewing PR 2; none is needed for correctness.
+  - `members()` sorts every member by ordinal on each call, about 10 ms at 20k members, and the sync handle does it under the batch lock. Cache the sorted claim names and re-sort only when a new claim name appears (only during the fill), so later calls are a plain copy. Keep the "sorted by ordinal" contract; it is public API from PR 1.
+  - The handles call `notify_all()` after every watch event. Skipping it when nothing a consumer can see changed (no event queued, no group outcome, no change to the settle point) would save a wake-up per pending-to-pending update.
+  - Apply a burst of already-received watch events under one lock acquisition instead of one per event.
+  - `connect()` builds the `Sandbox` under the lock. That is fine today because `Sandbox`/`SandboxConnector` do no I/O in their constructors; if that changes, build it outside the lock and re-check the cache before inserting.
 
 ## Deferred from PR 1: must come back in a later PR
 
