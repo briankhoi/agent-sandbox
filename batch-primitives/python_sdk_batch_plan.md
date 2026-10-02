@@ -10,7 +10,7 @@ How an agent uses this file: read the proposal, then "Ground rules", "Module lay
 
 This plan was drafted before implementation and is partly stale. Where it and the code disagree, the code, this section, and `pr2_implementation_spec.md` are the source of truth. Later PRs should read this section first.
 
-### PR 2 (`feat/batch-2-cohorts` at `688189b`, on PR 1 `aad1e60`)
+### PR 2 (`feat/batch-2-cohorts` at `0418012`, on PR 1 `aad1e60`)
 
 Rebuilt on 2026-09-26 from `pr2_implementation_spec.md`, which holds the approved decisions (D1, M1–M4, Q1–Q7); the design is `pr2_design.md` §3, §4, and §7. The old PR 2 is archived on the fork as `archive/batch-2-cohorts-v1` (`df1c11d`). Six commits: models/constants/exceptions, helpers, `batch_state`/`batch_utils`, handles/clients/README, e2e, docs. Where it departs from the "PR 2" section below:
 
@@ -33,6 +33,7 @@ Rebuilt on 2026-09-26 from `pr2_implementation_spec.md`, which holds the approve
     - Helpers: `_get_extensions_object` (was `_get_claim_group_object`).
     - Both watch loops share each shell's transient-error set with creates and release. The sync set adds `urllib3.MaxRetryError` (a failed connection), except when caused by an SSL error, matching the async side.
     - Commit 4: `BATCH_CREATOR_STOP_GRACE_SECONDS` replaces the `+ 1` when waiting for creators to stop. Handle renames `_claim_shutdown_after_seconds` (was `_shutdown_after`) and `_expire_fill_if_due` (was `_expire_if_due`). `_delete_batch_objects` uses one `_is_transient_error` check per request instead of two except clauses.
+    - Commit 4 tests: shorter names, the setup-order test also records the precheck, the `max_in_flight` test drops its redundant in-flight counter, the events test no longer depends on which creator finishes first, and the err/release test is split in two.
 14. **Details the spec left open:** `record_create_failure` ignores a claim the watch has already seen (an earlier attempt created it). `detach()` after `release()` raises `BatchError`, as the spec says; `pr2_design.md` §3's "no-op" wording is superseded.
 
 ### PR 1
