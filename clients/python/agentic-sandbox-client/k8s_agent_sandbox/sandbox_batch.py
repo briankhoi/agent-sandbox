@@ -18,7 +18,8 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, TypeVar
 
 import urllib3.exceptions
 from kubernetes import client
@@ -32,6 +33,7 @@ from .constants import (
     BATCH_ID_LABEL,
     BATCH_LEASE_DURATION_ANNOTATION,
     BATCH_LEASE_NAME_PREFIX,
+    BATCH_QUORUM_TIMEOUT_ANNOTATION,
 )
 from .exceptions import (
     BatchError,
@@ -43,7 +45,7 @@ from .exceptions import (
     SandboxTemplateNotFoundError,
     SandboxWarmPoolNotFoundError,
 )
-from .models import BatchGroup, Member
+from .models import BatchEvent, BatchGroup, GroupReady, Member
 from .utils import construct_sandbox_claim_lifecycle_spec
 
 if TYPE_CHECKING:
@@ -82,6 +84,8 @@ def _is_transient_error(error: Exception) -> bool:
         return batch_utils.is_retryable_status(error.status)
     return _is_transport_error(error)
 
+_T = TypeVar("_T")
+
 
 def _watch_backoff_delay(failures: int) -> float:
     return batch_utils.backoff_delay(
@@ -111,6 +115,7 @@ class SandboxBatch:
         holder_identity: str,
         lease_duration: int,
         list_resource_version: str,
+        quorum_timeout: int = batch_utils.BATCH_DEFAULT_QUORUM_TIMEOUT_SECONDS,
     ) -> None:
         self._client = client
         self.batch_id = batch_id
@@ -133,6 +138,14 @@ class SandboxBatch:
         self._watch_thread: threading.Thread | None = None
         self._renew_thread: threading.Thread | None = None
 
+        # Notified on every change consumers wait for: watch events, create failures, errors,
+        # the fill deadline being set, and detach/release.
+        self._changed = threading.Condition(self._lock)
+        self._quorum_timeout = quorum_timeout
+        # Monotonic time at which the fill expires. After it, groups without an outcome time out
+        # and events() stops waiting for fill members that aren't Ready yet. Set once the last
+        # create's pacing slot is taken, or at attach for a re-attached batch.
+        self._fill_deadline: float | None = None
         self._released = False
         self._creators: list[threading.Thread] = []
         self._stop_creating = threading.Event()
@@ -236,6 +249,7 @@ class SandboxBatch:
             holder_identity=holder_identity,
             lease_duration=args.lease_duration,
             list_resource_version=list_rv,
+            quorum_timeout=args.quorum_timeout,
         )
         handle._create_plan = deque(
             (f"{args.batch_id}-{ordinal}", group)
@@ -280,9 +294,12 @@ class SandboxBatch:
             raise BatchNotFoundError(f"batch '{batch_id}' not found in namespace '{namespace}'")
 
         annotation = None
+        quorum_annotation = None
         if lease is not None:
             annotation = (lease.metadata.annotations or {}).get(BATCH_LEASE_DURATION_ANNOTATION)
+            quorum_annotation = (lease.metadata.annotations or {}).get(BATCH_QUORUM_TIMEOUT_ANNOTATION)
         duration = batch_utils.parse_lease_duration_annotation(annotation)
+        quorum_timeout = batch_utils.parse_quorum_timeout_annotation(quorum_annotation)
 
         now = batch_utils.lease_now()
         spec_duration = lease.spec.lease_duration_seconds if lease is not None else None
@@ -305,6 +322,7 @@ class SandboxBatch:
         groups = batch_state.reconstruct_groups(claim_items)
         state = batch_state.BatchState(batch_id, groups)
         state.seed_from_claims(claim_items)
+        state.count_missing_fill_as_unable()
 
         holder_identity = batch_utils.generate_holder_identity()
         lease.spec.holder_identity = holder_identity
@@ -332,7 +350,9 @@ class SandboxBatch:
             holder_identity=holder_identity,
             lease_duration=duration,
             list_resource_version=list_rv,
+            quorum_timeout=quorum_timeout,
         )
+        handle._fill_deadline = time.monotonic() + quorum_timeout
         handle._start()
         return handle
 
@@ -386,6 +406,70 @@ class SandboxBatch:
         with self._lock:
             return self._state.error()
 
+    def events(self) -> Iterator[BatchEvent]:
+        """Returns an iterator over the batch's events.
+
+        ``MEMBER_READY`` is yielded once per initial claim that becomes Ready, ``MEMBER_FAILED`` and
+        ``MEMBER_LOST`` once per initial claim that fails or is deleted, and ``LEASE_DEGRADED`` once
+        per episode of failing Lease renewals. If ``iter_ready_groups()`` was called first, a group's
+        members are yielded only after that group has yielded successfully in ``iter_ready_groups()``;
+        otherwise, a group that fails yields none. The iterator ends once every initial claim is Ready
+        or can't become Ready, if the quorum timeout has passed, or once ``err()`` is set. Calling
+        ``events()`` again continues where the previous iterator stopped.
+
+        Raises:
+            BatchError: If this handle has been detached or released, when called or while waiting.
+        """
+        with self._lock:
+            self._check_active()
+            self._state.set_mode(batch_state.ConsumerMode.STREAM)
+        return self._iterate(self._state.pop_event, self._state.events_done)
+
+    def iter_ready_groups(self) -> Iterator[GroupReady]:
+        """Returns an iterator that yields one ``GroupReady`` per group, as soon as its outcome is known.
+
+        A group yields its first ``min_ready`` Ready members, in the order they became Ready. It
+        fails with ``QuorumUnreachableError`` once too few of its members can still become Ready,
+        or with ``TimeoutError`` if it hasn't reached ``min_ready`` within the quorum timeout.
+        The iterator ends once every group has yielded, or once ``err()`` is set. Calling it again
+        continues with the groups that haven't yielded yet.
+
+        Raises:
+            BatchError: If ``events()`` was called first, or this handle has been detached or
+                released, when called or while waiting.
+        """
+        with self._lock:
+            self._check_active()
+            self._state.set_mode(batch_state.ConsumerMode.GROUP)
+        return self._iterate(self._state.pop_group_outcome, self._state.groups_done)
+
+    def _iterate(self, pop: Callable[[], _T | None], done: Callable[[], bool]) -> Iterator[_T]:
+        while (item := self._next(pop, done)) is not None:
+            yield item
+
+    def _next(self, pop: Callable[[], _T | None], done: Callable[[], bool]) -> _T | None:
+        with self._changed:
+            while True:
+                self._check_active()
+                self._expire_fill_if_due()
+                item = pop()
+                if item is not None:
+                    return item
+                if done() or self._state.error() is not None:
+                    return None
+                # Nothing to hand out yet, but returning None would end the iterator, so wait for
+                # a change. The wait also wakes at the fill deadline so pending members can expire.
+                timeout = None
+                if self._fill_deadline is not None:
+                    timeout = max(0.0, self._fill_deadline - time.monotonic())
+                self._changed.wait(timeout)
+
+    def _expire_fill_if_due(self) -> None:
+        # Called with the lock held.
+        if self._fill_deadline is not None and time.monotonic() >= self._fill_deadline:
+            if self._state.expire_fill():
+                self._changed.notify_all()
+
     def release(self) -> None:
         """Stops creating claims, stops the background watch and Lease renewal, closes cached
         sandbox connections, then deletes the batch's claims and finally its Lease. Idempotent.
@@ -408,6 +492,7 @@ class SandboxBatch:
             if self._lease_released:
                 raise BatchError(f"batch '{self.batch_id}' has been detached")
             self._detached = True
+            self._changed.notify_all()
 
         self._stop_background_threads()
         self._close_cached_connections("release")
@@ -469,6 +554,7 @@ class SandboxBatch:
             if self._lease_released:
                 return
             self._detached = True
+            self._changed.notify_all()
 
         self._stop_background_threads()
         self._close_cached_connections("detach")
@@ -523,6 +609,7 @@ class SandboxBatch:
                         return
                     with self._lock:
                         self._state.resync_from_list(items)
+                        self._changed.notify_all()
                     relist = False
                 for event in self._client.k8s_helper.watch_sandbox_claims(
                     self.namespace, label_selector, rv, _WATCH_TIMEOUT_SECONDS, _request_timeout=_WATCH_REQUEST_TIMEOUT
@@ -542,6 +629,7 @@ class SandboxBatch:
                             self._state.mark_lost((obj.get("metadata") or {}).get("name", ""))
                         elif event_type in ("ADDED", "MODIFIED"):
                             self._state.upsert_claim(obj)
+                        self._changed.notify_all()
                 # The watch ended at its timeout, which is not a failure.
                 failures = 0
             except client.ApiException as e:
@@ -562,6 +650,7 @@ class SandboxBatch:
                     return
                 with self._lock:
                     self._state.note_error(e)
+                    self._changed.notify_all()
                 return
             except Exception as e:
                 if _is_transport_error(e):
@@ -575,6 +664,7 @@ class SandboxBatch:
                     return
                 with self._lock:
                     self._state.note_error(e)
+                    self._changed.notify_all()
                 return
 
     def _renew_loop(self) -> None:
@@ -606,6 +696,7 @@ class SandboxBatch:
                             f"batch '{self.batch_id}' Lease '{self._lease_name}' no longer exists"
                         )
                     )
+                    self._changed.notify_all()
                 return False
             if lease.spec.holder_identity != self._holder_identity:
                 with self._lock:
@@ -615,6 +706,7 @@ class SandboxBatch:
                             f"(current holder: {lease.spec.holder_identity!r})"
                         )
                     )
+                    self._changed.notify_all()
                 return False
             lease.spec.holder_identity = self._holder_identity
             lease.spec.renew_time = batch_utils.lease_now()
@@ -627,6 +719,8 @@ class SandboxBatch:
                 if not self._renewal_degraded:
                     logging.info(f"Batch '{self.batch_id}' lease renewal degraded: {e}")
                     self._renewal_degraded = True
+                    self._state.note_lease_degraded()
+                    self._changed.notify_all()
                 # time.monotonic() is a clock that only ever moves forward, so unlike datetime.now(),
                 # it can't jump backward from an NTP correction or a system clock change.
                 if time.monotonic() - self._last_renew_success >= self._lease_duration:
@@ -636,6 +730,7 @@ class SandboxBatch:
                             f"for {self._lease_duration}s"
                         )
                     )
+                    self._changed.notify_all()
             return True
         with self._lock:
             self._last_renew_success = time.monotonic()
@@ -653,6 +748,12 @@ class SandboxBatch:
                 claim_name, group = self._create_plan.popleft()
                 slot = max(time.monotonic(), self._next_create_at)
                 self._next_create_at = slot + self._create_interval
+                # This worker took the last planned create, so the fill deadline is known now
+                if not self._create_plan:
+                    # Counted from when the last create is sent, so groups don't time out while
+                    # their claims are still waiting for a pacing slot.
+                    self._fill_deadline = slot + self._quorum_timeout
+                    self._changed.notify_all()
             if self._stop_creating.wait(max(0.0, slot - time.monotonic())):
                 return
             with self._lock:
@@ -660,6 +761,11 @@ class SandboxBatch:
                 # claims would be ones nobody can observe or keep alive.
                 if self._state.error() is not None:
                     return
+                self._expire_fill_if_due()
+                if self._state.group_failed(group.warmpool):
+                    self._state.record_skipped_create()
+                    self._changed.notify_all()
+                    continue
             self._create_one(claim_name, group)
 
     def _create_one(self, claim_name: str, group: BatchGroup) -> None:
@@ -694,6 +800,7 @@ class SandboxBatch:
                 logging.debug(f"Batch '{self.batch_id}' failed to create claim '{claim_name}': {e}")
                 with self._lock:
                     self._state.record_create_failure(claim_name, group.warmpool, str(e))
+                    self._changed.notify_all()
                 return
 
 
