@@ -12,7 +12,7 @@ This plan was drafted before implementation and is partly stale. Where it and th
 
 **Numbering.** The PR sections below this "As built" part use the original numbers. On 2026-10-02 the old PR 2 was split in two, so the current stack is PR 1 `get_batch`, PR 2 `claim_batch`/`release`, PR 3 `events`/`iter_ready_groups`, PR 4 `wait_for_quorum` (plan section "PR 3"), PR 5 dynamic groups (plan "PR 4"), PR 6 pool sizing and performance (plan "PR 5"), PR 7 the reaper (plan "PR 6"), PR 8 examples. `review_carryover_notes.md` "Roadmap" has the current list.
 
-### PR 4 (`feat/batch-4-group-quorum` at `810b554`, on PR 3 `8261ae3`)
+### PR 4 (`feat/batch-4-group-quorum` at `7aeb39b`, on PR 3 `4a4d3f3`)
 
 Built 2026-10-02 from `pr4_implementation_spec.md` (P1–P6 as recommended). Four commits: state, handles (with tests and README), e2e, docs. Where the code differs from the spec's suggested shape (behavior is as specified):
 
@@ -20,9 +20,10 @@ Built 2026-10-02 from `pr4_implementation_spec.md` (P1–P6 as recommended). Fou
 2. **`fail_quorum(error)` returns the decided result**, so the caller-deadline path in `wait_for_quorum` doesn't need a second read. It is a no-op once the quorum is decided, which covers a quorum reached between `_next` returning and the handle re-taking the lock.
 3. **The caller deadline goes through `_next`'s existing `done`**, and `_next` gains only an optional `deadline` for its wake-up. When `_next` returns `None`, `wait_for_quorum` raises the P5 `BatchError` if `err()` is set, otherwise fails the quorum with `TimeoutError("Batch quorum timed out")`.
 4. **O(1) per change.** `_check_quorum(pool)` checks only the changed group and keeps `_groups_short_of_quorum`; `set_mode(QUORUM)` checks every group once. The unreachability test is `_unreachable_error(pool)`, shared with `_decide_group_outcome`.
-5. **`set_mode` errors** read "`<method>` can't be used after `<method>`" from a `_CONSUMER_METHODS` map, and "wait_for_quorum() can only be called once".
-6. **Tests.** State: `TestQuorumMode` (four tests) plus the extended `test_mode_rules` table and a QUORUM subtest in the held-member test. Handles: `TestWaitForQuorum`, seven tests per shell. Each was mutation-checked. The timeout test matches the message "Batch quorum timed out", because the test's own 5-second guards (`future.result`, `asyncio.wait_for`) also raise the builtin `TimeoutError` on Python 3.11+. One mutation survives on purpose: holding a member after a failed quorum instead of dropping it is unobservable.
-7. **E2E** uses one group of size 3 with `min_ready` 2 against the 2-replica fixture pool; the third claim takes the controller's cold path (`sandboxclaim_controller.go`, "Cold path"). Not run yet (no kind cluster in the session).
+5. **Review round 1 (2026-10-02):** `_route_ready_member` and `set_mode` switch on the mode with `match`; `set_mode` checks an already fixed mode first (events() joins any mode, `iter_ready_groups()` continues, a second `wait_for_quorum()` raises). `BatchState._min_ready` holds each group's `min_ready` as an `int`, since `BatchGroup` already turns `None` into `size` and `or 0` only narrowed the type. `wait_for_quorum` returns exactly `min_ready` per group and queues the rest on `events()` at the same moment, which keeps the requested mixture at no extra latency.
+6. **`set_mode` errors** read "`<method>` can't be used after `<method>`" from a `_CONSUMER_METHODS` map, and "wait_for_quorum() can only be called once".
+7. **Tests.** State: `TestQuorumMode` (four tests) plus the extended `test_mode_rules` table and a QUORUM subtest in the held-member test. Handles: `TestWaitForQuorum`, six tests per shell (the second-call test was dropped after the audit, since `test_mode_rules` owns that rule). Each was mutation-checked. The timeout test matches the message "Batch quorum timed out", because the test's own 5-second guards (`future.result`, `asyncio.wait_for`) also raise the builtin `TimeoutError` on Python 3.11+. One mutation survives on purpose: holding a member after a failed quorum instead of dropping it is unobservable.
+8. **E2E** uses one group of size 3 with `min_ready` 2 against the 2-replica fixture pool; the third claim takes the controller's cold path (`sandboxclaim_controller.go`, "Cold path"). Not run yet (no kind cluster in the session).
 
 ### Split of the old PR 2 (2026-10-02)
 

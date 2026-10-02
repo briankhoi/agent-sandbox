@@ -1,6 +1,6 @@
 # PR 4 implementation spec (`wait_for_quorum`), approved by Brian 2026-10-02
 
-> **Implemented 2026-10-02** on `feat/batch-4-group-quorum` at `810b554`. `python_sdk_batch_plan.md` "As built", PR 4, lists where the code differs from the suggested shape.
+> **Implemented 2026-10-02** on `feat/batch-4-group-quorum` (now `7aeb39b`). `python_sdk_batch_plan.md` "As built", PR 4, lists where the code differs from the suggested shape.
 >
 > **Status:** approved 2026-10-02 as the PR 3 spec. Brian accepted every recommendation in P1–P6. Build step 0 (the P1 rename) is **already done**, and `ConsumerMode` is `STREAM`/`GROUP`. Start at build step 1.
 >
