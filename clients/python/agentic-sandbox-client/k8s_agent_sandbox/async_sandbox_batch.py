@@ -66,14 +66,6 @@ _TRANSPORT_ERRORS = (
 )
 
 
-def _watch_backoff_delay(failures: int) -> float:
-    return batch_utils.backoff_delay(
-        failures,
-        batch_utils.BATCH_BACKOFF_BASE_SECONDS,
-        batch_utils.BATCH_BACKOFF_MAX_SECONDS,
-    )
-
-
 class AsyncSandboxBatch:
     """An async handle to an existing batch's claims, obtained via ``AsyncSandboxClient.get_batch``.
 
@@ -409,7 +401,7 @@ class AsyncSandboxBatch:
                 if batch_utils.is_retryable_status(e.status):
                     # Likely transient: retry the re-list, or the watch from the last-seen resourceVersion.
                     failures += 1
-                    await asyncio.sleep(_watch_backoff_delay(failures))
+                    await asyncio.sleep(batch_utils.retry_delay(failures, e))
                     continue
                 # Response codes outside of this (e.g. 403, 404) are not recoverable
                 # by retrying, so we error then exit
@@ -423,15 +415,15 @@ class AsyncSandboxBatch:
                     # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
                     # is transient like a connection reset. Certificate and other TLS failures are not.
                     failures += 1
-                    await asyncio.sleep(_watch_backoff_delay(failures))
+                    await asyncio.sleep(batch_utils.retry_delay(failures, e))
                     continue
                 async with self._lock:
                     self._state.note_error(e)
                 return
-            except _TRANSPORT_ERRORS:
+            except _TRANSPORT_ERRORS as e:
                 # Likely transient network-level failure so retry
                 failures += 1
-                await asyncio.sleep(_watch_backoff_delay(failures))
+                await asyncio.sleep(batch_utils.retry_delay(failures, e))
                 continue
             except Exception as e:
                 # Anything else is not known to be transient either, so surface it via err().
