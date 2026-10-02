@@ -360,8 +360,9 @@ class SandboxClient(Generic[T]):
 
         Checks that every group's ``SandboxWarmPool`` and its ``SandboxTemplate`` exist, creates the
         batch Lease ``batch-<id>``, and starts the batch's watch. The claims ``<id>-0`` to
-        ``<id>-<size-1>`` are then created in the background, in group order. Use ``members()`` to
-        see them as they become Ready, and ``release()`` to delete the batch.
+        ``<id>-<size-1>`` are then created in the background, in group order. Use ``events()`` or
+        ``iter_ready_groups()`` to consume them as they become Ready, and ``release()`` to delete
+        the batch.
 
         Each claim's ``shutdownTime`` is its create time plus ``quorum_timeout`` plus ``work_budget``
         plus 600 seconds, so an abandoned batch is eventually deleted by the controller.
@@ -376,8 +377,8 @@ class SandboxClient(Generic[T]):
             max_in_flight: Maximum claim creates in flight at once. Defaults to 20.
             work_budget: Seconds the caller expects to work with the batch after it is Ready;
                 part of each claim's ``shutdownTime``. Defaults to 3600.
-            quorum_timeout: Seconds the caller allows for the batch's claims to become Ready;
-                part of each claim's ``shutdownTime``. Defaults to 600.
+            quorum_timeout: Seconds after the last claim create that a group may take to reach
+                ``min_ready``. Defaults to 600.
             lease_duration: Seconds the batch Lease stays valid without renewal. Defaults to 60.
 
         Raises:
@@ -391,11 +392,10 @@ class SandboxClient(Generic[T]):
         Example:
 
             >>> client = SandboxClient()
-            >>> batch = client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=4)])
-            >>> while not any(m.ready for m in batch.members()):
-            ...     time.sleep(1)
-            >>> member = next(m for m in batch.members() if m.ready)
-            >>> batch.connect(member).commands.run("echo hello")
+            >>> batch = client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=4, min_ready=2)])
+            >>> for group in batch.iter_ready_groups():
+            ...     if group.error is None:
+            ...         batch.connect(group.members[0]).commands.run("echo hello")
             >>> batch.release()
         """
         args = batch_utils.validate_claim_batch_args(
