@@ -835,9 +835,11 @@ Returns an iterator over the batch's events.
 ``MEMBER_LOST`` once per initial claim that fails or is deleted, and ``LEASE_DEGRADED`` once
 per episode of failing Lease renewals. If ``iter_ready_groups()`` was called first, a group's
 members are yielded only after that group has yielded successfully in ``iter_ready_groups()``;
-otherwise, a group that fails yields none. The iterator ends once every initial claim is Ready
-or can't become Ready, if the quorum timeout has passed, or once ``err()`` is set. Calling
-``events()`` again continues where the previous iterator stopped.
+otherwise, a group that fails yields none. If ``wait_for_quorum()`` was called first, members
+it doesn't return are yielded once the quorum is reached, and none are if it fails. The
+iterator ends once every initial claim is Ready or can't become Ready, if the quorum timeout
+has passed, or once ``err()`` is set. Calling ``events()`` again continues where the previous
+iterator stopped.
 
 **Raises**:
 
@@ -861,8 +863,37 @@ continues with the groups that haven't yielded yet.
 
 **Raises**:
 
-- `BatchError` - If ``events()`` was called first, or this handle has been detached or
-  released, when called or while waiting.
+- `BatchError` - If ``events()`` or ``wait_for_quorum()`` was called first, or this handle has
+  been detached or released, when called or while waiting.
+
+<a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.wait_for_quorum"></a>
+
+##### wait\_for\_quorum
+
+```python
+def wait_for_quorum(timeout: float | None = None) -> list[Member]
+```
+
+Waits until every group has ``min_ready`` Ready members, and returns them.
+
+The returned list has each group's first ``min_ready`` members, in the order they became
+Ready, with the groups in batch order. Members it doesn't return are yielded by ``events()``.
+If the quorum fails, no members are handed out and no more claims are created. Can be
+called only once per handle.
+
+**Arguments**:
+
+- `timeout` - Seconds to wait at most. The wait always ends at the quorum timeout.
+  
+
+**Raises**:
+
+- `QuorumUnreachableError` - If too few members of a group can still become Ready.
+- `TimeoutError` - If the quorum isn't reached within the quorum timeout or ``timeout``.
+- `BatchError` - If ``events()`` or ``iter_ready_groups()`` was called first, this method
+  was already called, ``err()`` is set while waiting, or this handle has been
+  detached or released, when called or while waiting.
+- `ValueError` - If ``timeout`` isn't a positive number.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.release"></a>
 
