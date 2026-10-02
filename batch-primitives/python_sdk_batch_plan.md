@@ -10,7 +10,7 @@ How an agent uses this file: read the proposal, then "Ground rules", "Module lay
 
 This plan was drafted before implementation and is partly stale. Where it and the code disagree, the code, this section, and `pr2_implementation_spec.md` are the source of truth. Later PRs should read this section first.
 
-### PR 2 (`feat/batch-2-cohorts` at `45574de`, on PR 1 `aad1e60`)
+### PR 2 (`feat/batch-2-cohorts` at `130bd0c`, on PR 1 `efce6a2`, both rebased on upstream `82d410e` on 2026-10-02)
 
 Rebuilt on 2026-09-26 from `pr2_implementation_spec.md`, which holds the approved decisions (D1, M1–M4, Q1–Q7); the design is `pr2_design.md` §3, §4, and §7. The old PR 2 is archived on the fork as `archive/batch-2-cohorts-v1` (`df1c11d`). Six commits: models/constants/exceptions, helpers, `batch_state`/`batch_utils`, handles/clients/README, e2e, docs. Where it departs from the "PR 2" section below:
 
@@ -567,6 +567,8 @@ Also: two groups, one on a nonexistent warm pool. `iter_ready_groups()` yields a
 **Acceptance:** tests pass in both shells; README documents stream and per-group consumption, including the OPEN-F ordering rule; reference docs regenerated; scope diff empty.
 
 ## PR 3: `wait_for_quorum`
+
+> **Superseded by `pr3_implementation_spec.md`** (2026-10-02), which updates this section for PR 2's group-outcome design. Where they differ, the spec wins.
 
 **Goal.** Add a global barrier: block until every non-zero group reaches `min_ready`, then return those members. The proposal's usage example 1 works after this PR.
 
