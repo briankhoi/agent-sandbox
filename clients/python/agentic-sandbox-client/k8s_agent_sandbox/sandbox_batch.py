@@ -413,9 +413,11 @@ class SandboxBatch:
         ``MEMBER_LOST`` once per initial claim that fails or is deleted, and ``LEASE_DEGRADED`` once
         per episode of failing Lease renewals. If ``iter_ready_groups()`` was called first, a group's
         members are yielded only after that group has yielded successfully in ``iter_ready_groups()``;
-        otherwise, a group that fails yields none. The iterator ends once every initial claim is Ready
-        or can't become Ready, if the quorum timeout has passed, or once ``err()`` is set. Calling
-        ``events()`` again continues where the previous iterator stopped.
+        otherwise, a group that fails yields none. If ``wait_for_quorum()`` was called first, members
+        it doesn't return are yielded once the quorum is reached, and none are if it fails. The
+        iterator ends once every initial claim is Ready or can't become Ready, if the quorum timeout
+        has passed, or once ``err()`` is set. Calling ``events()`` again continues where the previous
+        iterator stopped.
 
         Raises:
             BatchError: If this handle has been detached or released, when called or while waiting.
@@ -435,19 +437,63 @@ class SandboxBatch:
         continues with the groups that haven't yielded yet.
 
         Raises:
-            BatchError: If ``events()`` was called first, or this handle has been detached or
-                released, when called or while waiting.
+            BatchError: If ``events()`` or ``wait_for_quorum()`` was called first, or this handle has
+                been detached or released, when called or while waiting.
         """
         with self._lock:
             self._check_active()
             self._state.set_mode(batch_state.ConsumerMode.GROUP)
         return self._iterate(self._state.pop_group_outcome, self._state.groups_done)
 
+    def wait_for_quorum(self, timeout: float | None = None) -> list[Member]:
+        """Waits until every group has ``min_ready`` Ready members, and returns them.
+
+        The returned list has each group's first ``min_ready`` members, in the order they became
+        Ready, with the groups in batch order. Members it doesn't return are yielded by ``events()``.
+        If the quorum fails, no members are handed out and no more claims are created. Can be
+        called only once per handle.
+
+        Args:
+            timeout: Seconds to wait at most. The wait always ends at the quorum timeout.
+
+        Raises:
+            QuorumUnreachableError: If too few members of a group can still become Ready.
+            TimeoutError: If the quorum isn't reached within the quorum timeout or ``timeout``.
+            BatchError: If ``events()`` or ``iter_ready_groups()`` was called first, this method
+                was already called, ``err()`` is set while waiting, or this handle has been
+                detached or released, when called or while waiting.
+            ValueError: If ``timeout`` isn't a positive number.
+        """
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not timeout > 0
+        ):
+            raise ValueError(f"timeout must be a positive number, got {timeout!r}")
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._lock:
+            self._check_active()
+            self._state.set_mode(batch_state.ConsumerMode.QUORUM)
+        result = self._next(
+            self._state.quorum_result, lambda: deadline is not None and time.monotonic() >= deadline, deadline
+        )
+        if result is None:
+            with self._changed:
+                if (error := self._state.error()) is not None:
+                    raise BatchError(f"batch '{self.batch_id}' stopped while waiting for quorum") from error
+                # The caller's deadline passed, which ends the quorum like the fill deadline does.
+                result = self._state.fail_quorum(TimeoutError("Batch quorum timed out"))
+                self._changed.notify_all()
+        members, error = result
+        if error is not None:
+            raise error
+        return members
+
     def _iterate(self, pop: Callable[[], _T | None], done: Callable[[], bool]) -> Iterator[_T]:
         while (item := self._next(pop, done)) is not None:
             yield item
 
-    def _next(self, pop: Callable[[], _T | None], done: Callable[[], bool]) -> _T | None:
+    def _next(
+        self, pop: Callable[[], _T | None], done: Callable[[], bool], deadline: float | None = None
+    ) -> _T | None:
         with self._changed:
             while True:
                 self._check_active()
@@ -458,10 +504,13 @@ class SandboxBatch:
                 if done() or self._state.error() is not None:
                     return None
                 # Nothing to hand out yet, but returning None would end the iterator, so wait for
-                # a change. The wait also wakes at the fill deadline so pending members can expire.
+                # a change. The wait also wakes at the fill deadline so pending members can expire,
+                # and at the caller's deadline if there is one.
                 timeout = None
-                if self._fill_deadline is not None:
-                    timeout = max(0.0, self._fill_deadline - time.monotonic())
+                for wake_at in (self._fill_deadline, deadline):
+                    if wake_at is not None:
+                        remaining = max(0.0, wake_at - time.monotonic())
+                        timeout = remaining if timeout is None else min(timeout, remaining)
                 self._changed.wait(timeout)
 
     def _expire_fill_if_due(self) -> None:
