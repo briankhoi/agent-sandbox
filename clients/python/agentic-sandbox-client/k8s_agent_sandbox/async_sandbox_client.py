@@ -523,8 +523,8 @@ class AsyncSandboxClient(Generic[T]):
         ``<id>-<N-1>``, where ``N`` is the sum of the group sizes, are then created in the background
         until ``err()`` is set. Each group's claims get consecutive ordinals in group order, but each
         group's first ``min_ready`` claims are created first, interleaved across groups in proportion
-        to their sizes, and the rest follow. Use ``members()`` to see them as they become Ready, and
-        ``release()`` to delete the batch.
+        to their sizes, and the rest follow. Use ``events()`` or ``iter_ready_groups()`` to consume
+        them as they become Ready, and ``release()`` to delete the batch.
 
         Every claim gets the same ``shutdownTime``, the time of this call plus ``N / create_rps``
         seconds (rounded up) plus ``quorum_timeout`` plus ``work_budget`` plus 600 seconds, so an
@@ -546,8 +546,8 @@ class AsyncSandboxClient(Generic[T]):
             max_in_flight: Maximum claim creates in flight at once. Defaults to 20.
             work_budget: Seconds the caller expects to work with the batch after it is Ready;
                 part of each claim's ``shutdownTime``. Defaults to 3600.
-            quorum_timeout: Seconds the caller allows for the batch's claims to become Ready;
-                part of each claim's ``shutdownTime``. Defaults to 600.
+            quorum_timeout: Seconds after the last claim create that a group may take to reach
+                ``min_ready``. Defaults to 600.
             lease_duration: Seconds the batch Lease stays valid without renewal. Defaults to 60.
 
         Raises:
@@ -560,12 +560,11 @@ class AsyncSandboxClient(Generic[T]):
 
         Example::
 
-            batch = await client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=4)])
-            while not any(m.state is MemberState.READY for m in batch.members()):
-                await asyncio.sleep(1)
-            member = next(m for m in batch.members() if m.state is MemberState.READY)
-            sandbox = await batch.connect(member)
-            await sandbox.commands.run("echo hello")
+            batch = await client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=4, min_ready=2)])
+            async for group in batch.iter_ready_groups():
+                if group.error is None:
+                    sandbox = await batch.connect(group.members[0])
+                    await sandbox.commands.run("echo hello")
             await batch.release()
         """
         args = batch_utils.validate_claim_batch_args(
@@ -583,7 +582,8 @@ class AsyncSandboxClient(Generic[T]):
 
         Resumes batch lease renewal and starts a label-scoped watch that keeps
         ``members()`` up to date. Only a batch released with ``detach()`` can be re-attached,
-        within its grace window.
+        within its grace window. A group whose claims are all gone is unknown to the new handle,
+        so it isn't in ``groups`` and ``iter_ready_groups()`` doesn't yield it.
 
         The batch errors below are all ``BatchError``, so ``except BatchError`` handles a batch that
         can't be attached. ``ValueError`` means a bad batch id, and ``ApiException`` an API or
