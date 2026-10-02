@@ -10,7 +10,7 @@ How an agent uses this file: read the proposal, then "Ground rules", "Module lay
 
 This plan was drafted before implementation and is partly stale. Where it and the code disagree, the code, this section, and `pr2_implementation_spec.md` are the source of truth. Later PRs should read this section first.
 
-### PR 2 (`feat/batch-2-cohorts` at `0418012`, on PR 1 `aad1e60`)
+### PR 2 (`feat/batch-2-cohorts` at `45574de`, on PR 1 `aad1e60`)
 
 Rebuilt on 2026-09-26 from `pr2_implementation_spec.md`, which holds the approved decisions (D1, M1–M4, Q1–Q7); the design is `pr2_design.md` §3, §4, and §7. The old PR 2 is archived on the fork as `archive/batch-2-cohorts-v1` (`df1c11d`). Six commits: models/constants/exceptions, helpers, `batch_state`/`batch_utils`, handles/clients/README, e2e, docs. Where it departs from the "PR 2" section below:
 
