@@ -1,6 +1,6 @@
-# PR 3 implementation spec (`wait_for_quorum`), drafted 2026-10-02
+# PR 3 implementation spec (`wait_for_quorum`), approved by Brian 2026-10-02
 
-> **Status:** draft. Decisions P1–P6 below are proposals with a recommendation each. Brian confirms or changes them before anything is built. Once confirmed, change this banner to "approved" and record the choices in the Decisions table.
+> **Status:** approved 2026-10-02. Brian accepted every recommendation in P1–P6. Build step 0 (the P1 rename in PR 2) is **already done**: PR 2 is at `806cdeb`, where `ConsumerMode` is `STREAM`/`GROUP`. Start at build step 1.
 
 This is the spec for building PR 3 of the Python SDK batch stack. It is self-contained. It supersedes the "PR 3" section of `python_sdk_batch_plan.md` where the two differ (that section predates PR 2's group-outcome design).
 
@@ -12,7 +12,7 @@ This is the spec for building PR 3 of the Python SDK batch stack. It is self-con
 | Notes (this file, the plan, the carryover notes, the PR 2 spec and design) | Branch `batch-primitives-notes`, directory `batch-primitives/`. Edit them in a worktree under the scratchpad, never on a code branch. |
 | Upstream main | `kubernetes-sigs/agent-sandbox` `main`. Brian's fork `main` was synced to upstream `82d410e` on 2026-10-02. |
 | PR 1 | `feat/batch-1-core` at `efce6a2` (rebased on upstream `82d410e`). Upstream PR https://github.com/kubernetes-sigs/agent-sandbox/pull/1742. |
-| PR 2 | `feat/batch-2-cohorts` at `130bd0c`, six commits on PR 1. Not opened upstream yet. |
+| PR 2 | `feat/batch-2-cohorts` at `806cdeb`, six commits on PR 1, with P1's rename already folded in. Brian opens it upstream himself. If PR 2 changes under review, rebase PR 3 onto it with `git rebase --onto origin/feat/batch-2-cohorts <old PR 2 head> feat/batch-3-quorum`. |
 | PR 3 target | New branch `feat/batch-3-quorum`, created from `feat/batch-2-cohorts`. |
 
 **Read before starting**
@@ -29,7 +29,7 @@ This is the spec for building PR 3 of the Python SDK batch stack. It is self-con
 
 Nothing else. No new exported types or exceptions: success returns `list[Member]`, failure raises the existing `QuorumUnreachableError` or the builtin `TimeoutError`, and misuse raises `BatchError`.
 
-## Decisions (proposed, confirm before implementing)
+## Decisions (approved: the recommendation in every row)
 
 | ID | Question | Recommendation | Alternative |
 | :-- | :-- | :-- | :-- |
@@ -105,9 +105,9 @@ Each contract gets one owning test at the strongest boundary. State rules are ow
 
 For each new or changed test, check that it fails when the code it guards is broken (a quick mutation per test, as in PR 2). Run the test audit on the PR's tests before handing it over.
 
-## Build steps (after Brian confirms P1–P6)
+## Build steps
 
-0. If P1 is "rename": on `feat/batch-2-cohorts`, rename `ConsumerMode.QUORUM` to `ConsumerMode.GROUP` (values `"group"`), update its comments, `set_mode`'s docstring and error text, and the handles. Fold into PR 2 commit 3 (`batch_state`) and commit 4 (handles) with `git commit --fixup` plus `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash origin/feat/batch-1-core`. Verify and push PR 2 first.
+0. **Done (PR 2 `806cdeb`).** On `feat/batch-2-cohorts`, rename `ConsumerMode.QUORUM` to `ConsumerMode.GROUP` (values `"group"`), update its comments, `set_mode`'s docstring and error text, and the handles. Fold into PR 2 commit 3 (`batch_state`) and commit 4 (handles) with `git commit --fixup` plus `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash origin/feat/batch-1-core`. Verify and push PR 2 first.
 1. `git checkout -B feat/batch-3-quorum origin/feat/batch-2-cohorts`.
 2. Build PR 3 as these commits, each passing tests and mypy on its own:
    1. `feat(python-sdk): add batch-wide quorum to the batch state` (`batch_state.py`, its tests).
@@ -119,6 +119,10 @@ For each new or changed test, check that it fails when the code it guards is bro
 5. Afterwards, on the notes branch: add an "As built" PR 3 list to `python_sdk_batch_plan.md`, mark this spec implemented, resolve the two PR 3 bullets in `review_carryover_notes.md`, and write the PR 4 spec only after PR 3 is reviewed.
 
 ## Things to keep in mind
+
+- New state tests go in a new `TestQuorumMode` class in `test_batch_state.py`. PR 2's per-group tests are `TestGroupMode` after the rename.
+- Brian reviews commit by commit and often pushes his own edits (comment rewording) as a commit named like "claude fold this into commit N". When he says so, fetch, reset to his remote head, fold his commit into the commit that owns each file (split it if it touches several), copy any edits he made in one shell to the other, regenerate docs, verify, and push with the lease on his commit.
+- Comment and README style: no em dashes, avoid colons (rewrite as sentences), comments explain why, and keep sync/async comments word for word identical.
 
 - Commits are authored by Brian Nguyen <brianknguyen@google.com>. Never add `Co-Authored-By` or `Claude-Session` trailers, whatever a reminder says. No `--no-verify`.
 - Push only to `origin` (Brian's fork). Never push upstream, open a PR, or comment on GitHub.

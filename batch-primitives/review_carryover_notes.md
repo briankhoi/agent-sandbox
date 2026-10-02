@@ -66,7 +66,7 @@ Checked on 2026-09-26: every CodeRabbit finding is already handled in `0f7a03f` 
 ## Roadmap (Brian, 2026-09-26)
 
 - **PR 2:** `claim_batch`, `events`, `iter_ready_groups`, `release`, and client batch tracking and cleanup for both clients (resolves "Deferred from PR 1"). Spec: `pr2_implementation_spec.md`.
-- **PR 3:** `wait_for_quorum()`. Spec: `pr3_implementation_spec.md` (draft, decisions P1–P6 pending).
+- **PR 3:** `wait_for_quorum()`. Spec: `pr3_implementation_spec.md` (approved 2026-10-02).
 - **PR 4:** dynamic scaling and replacement: `acquire`, `replace`, `release_member`, `release_not_ready`, and lazy `size=0` groups.
 - **PR 5:** connection pool sizing enforced against `max_in_flight`, plus performance tuning.
 - **Proposed PR 6 (cleanup):** the reaper (a stateless CronJob consuming the Lease contract; owns OPEN-V's margin). Possibly also `client.delete_batch(batch_id, namespace)` for a batch that can't be re-attached (see "Ideas raised but not planned"), since it would share the reaper's delete steps.
