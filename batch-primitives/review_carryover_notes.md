@@ -1,4 +1,4 @@
-# Review carry-over notes (read before PRs 3–5)
+# Review carry-over notes (read before later PRs)
 
 These are lessons from the review of PR 1 (https://github.com/kubernetes-sigs/agent-sandbox/pull/1742) and from the design pass of 2026-09-26, recorded so that later PRs don't repeat the same mistakes. `python_sdk_batch_plan.md` is still the spec, and its "As built" section wins where the two differ.
 
@@ -13,6 +13,8 @@ These are lessons from the review of PR 1 (https://github.com/kubernetes-sigs/ag
 2. **"`BatchEvent`, `BatchEventType`, `GroupReady` are exported but nothing produces them."** Valid. They move to PR 2, where `events()`/`iter_ready_groups()` land (PR 1 item 5, PR 2 item R1). Reply:
 
    > Agreed. Moved them out of this PR; they're added with `events()`/`iter_ready_groups()` in the next PR of the stack.
+
+   Since the 2026-10-02 split, `events()`/`iter_ready_groups()` land in PR 3, not the next PR. If this reply is already posted, it's off by one PR; a short follow-up on the thread can correct it.
 
 3. **"'Returns an error' is inaccurate in `get_batch`."** Valid. Both clients now have a `Raises:` section (PR 1 item 6). Reply:
 
@@ -29,20 +31,20 @@ Checked on 2026-09-26: every CodeRabbit finding is already handled in `0f7a03f` 
 
   > Agreed. Trimmed the Role to the verbs this PR uses; the next PR adds `create`/`delete`/`deletecollection` along with `claim_batch()` and `release()`.
 
-## Rules to carry into PRs 3–5
+## Rules to carry into later PRs
 
 - **Tests follow `skills/test-audit/SKILL.md`.** Each contract gets one owning test at the strongest boundary. Don't repeat a `batch_utils` or `batch_state` table at the handle level; one representative value there checks the wiring. Don't add a test that exercises the same code path as an existing one with a different exception type or status. Run the audit on each PR before handing it over.
 - **A PR describes and contains only itself.** Comments, docstrings, README text, and RBAC verbs mention only what the PR has; a later feature appears only when the text says explicitly that it comes later. Likewise, no code (functions, fields, constants) whose only caller lands in a later PR: move it to the PR that calls it. Brian's rule, after the PR 1 review.
-- **Export only what the PR produces.** A public type, exception, or export lands in the PR whose code first returns or raises it: `TerminalMemberError` in PR 4, and nothing new for PR 3 unless `wait_for_quorum` needs it. Public SDK surface is hard to walk back.
+- **Export only what the PR produces.** A public type, exception, or export lands in the PR whose code first returns or raises it: `TerminalMemberError` in PR 5, and nothing new for PR 4 unless `wait_for_quorum` needs it. Public SDK surface is hard to walk back.
 - **Docstrings say "Raises", and list what is raised.** Never "returns an error". Every public method that raises SDK exceptions gets a `Raises:` section in both clients/handles.
-- **Every request made from a background loop, or on a path the caller can't interrupt, gets a request timeout.** Neither Kubernetes client has a default read timeout. PR 1 added one to renewal. In PR 4, `acquire()`'s create and wait paths and `release_member`/`release_not_ready` deletes need a bound; `acquire` already has its own `timeout`, so derive the request timeout from it or bound it with `BATCH_REQUEST_TIMEOUT_SECONDS` (PR 2).
+- **Every request made from a background loop, or on a path the caller can't interrupt, gets a request timeout.** Neither Kubernetes client has a default read timeout. PR 1 added one to renewal. In PR 5, `acquire()`'s create and wait paths and `release_member`/`release_not_ready` deletes need a bound; `acquire` already has its own `timeout`, so derive the request timeout from it or bound it with `BATCH_REQUEST_TIMEOUT_SECONDS` (PR 2).
 - **Transient-error policy is shared.** Use `batch_utils.is_retryable_status` and `backoff_delay` (PR 1) for any new retry loop, e.g. `acquire`'s create (reuse the handles' `_create_one` and `batch_utils.create_error_outcome`, PR 2), and `release_not_ready`'s per-claim deletes (404 is success there). Honor `Retry-After` through `batch_utils.retry_delay` (PR 2).
 - **Anything that scales with N must hold up at the proposal's stated scale (tens of thousands of claims).** Check each new timing against pacing time (`N / create_rps`), deletecollection time, and watch-cache aging, as PR 2's fill deadline and release rounds and PR 1's bookmark change did.
-- **Quorum-mode semantics after proposal A.** A group with an error verdict is finished: no creates, no hand-outs. PR 3's `wait_for_quorum()` failing with `QuorumUnreachableError`/`TimeoutError` should treat **every** group as finished the same way (no further creates, no `MEMBER_READY`). Decide whether that follows from the same `group_failed` check, or needs a batch-level "failed" flag, when PR 3 is planned. It is not specified yet.
-- **The fill deadline counts from the last paced create** (PR 2, Q6). `wait_for_quorum(timeout=None)` in PR 3 should default to the same deadline, not to `now + quorum_timeout`.
-- **PR 4 must parse `batch-work-budget` back in `get_batch`** (plan "As built", PR 2 item 7), and `acquire` uses `is_retryable_status`/`backoff_delay` like the fill.
-- **PR 5 pool validation** (OPEN-I): the watch and renewal each hold a connection, so validate `pool >= max_in_flight + 2`.
-- **PR 5 performance ideas (measure before building).** Found while reviewing PR 2; none is needed for correctness.
+- **Quorum-mode semantics after proposal A.** A group with an error verdict is finished: no creates, no hand-outs. PR 4's `wait_for_quorum()` failing with `QuorumUnreachableError`/`TimeoutError` should treat **every** group as finished the same way (no further creates, no `MEMBER_READY`). Decide whether that follows from the same `group_failed` check, or needs a batch-level "failed" flag, when PR 4 is planned. `pr4_implementation_spec.md` P2 answers it.
+- **The fill deadline counts from the last paced create** (PR 3, Q6). `wait_for_quorum(timeout=None)` in PR 4 should default to the same deadline, not to `now + quorum_timeout`.
+- **PR 5 must parse `batch-work-budget` back in `get_batch`** (plan "As built", PR 2 item 7), and `acquire` uses `is_retryable_status`/`backoff_delay` like the fill.
+- **PR 6 pool validation** (OPEN-I): the watch and renewal each hold a connection, so validate `pool >= max_in_flight + 2`.
+- **PR 6 performance ideas (measure before building).** Found while reviewing PR 2; none is needed for correctness.
   - `members()` sorts every member by ordinal on each call, about 10 ms at 20k members, and the sync handle does it under the batch lock. Cache the sorted claim names and re-sort only when a new claim name appears (only during the fill), so later calls are a plain copy. Keep the "sorted by ordinal" contract; it is public API from PR 1.
   - The handles call `notify_all()` after every watch event. Skipping it when nothing a consumer can see changed (no event queued, no group outcome, no change to the settle point) would save a wake-up per pending-to-pending update.
   - Apply a burst of already-received watch events under one lock acquisition instead of one per event.
@@ -63,16 +65,19 @@ Checked on 2026-09-26: every CodeRabbit finding is already handled in `0f7a03f` 
     Decide per path whether cleanup means stopping background loops only, as async `close()` does today, or releasing or detaching the batch.
   - **Tests:** one test that the cleanup path reaches every tracked handle, in both clients. Don't bring back PR 1's old registers/unregisters test, which only checked a dict.
 
-## Roadmap (Brian, 2026-09-26)
+## Roadmap (Brian, 2026-09-26; split and renumbered 2026-10-02)
 
-- **PR 2:** `claim_batch`, `events`, `iter_ready_groups`, `release`, and client batch tracking and cleanup for both clients (resolves "Deferred from PR 1"). Spec: `pr2_implementation_spec.md`.
-- **PR 3:** `wait_for_quorum()`. Spec: `pr3_implementation_spec.md` (approved 2026-10-02).
-- **PR 4:** dynamic scaling and replacement: `acquire`, `replace`, `release_member`, `release_not_ready`, and lazy `size=0` groups.
-- **PR 5:** connection pool sizing enforced against `max_in_flight`, plus performance tuning.
-- **Proposed PR 6 (cleanup):** the reaper (a stateless CronJob consuming the Lease contract; owns OPEN-V's margin). Possibly also `client.delete_batch(batch_id, namespace)` for a batch that can't be re-attached (see "Ideas raised but not planned"), since it would share the reaper's delete steps.
-- **Proposed PR 7:** examples and docs (`examples/<name>/`, runnable versions of the proposal's usage examples, the driver Role).
+On 2026-10-02 Brian split the old PR 2 (`feat/batch-2-cohorts`, now kept on the fork as `stale/batch-2-cohorts` at `806cdeb`) into PR 2 and PR 3, so every later PR moved up by one. Older notes (the plan's PR sections, `pr2_design.md`, `pr2_implementation_spec.md`) use the old numbers.
+
+- **PR 2 (`feat/batch-2-claim`):** `claim_batch`, `release`, and client batch tracking and cleanup for both clients (resolves "Deferred from PR 1"). A claimed batch exposes its members through `members()` only.
+- **PR 3 (`feat/batch-3-group-consumers`):** `events`, `iter_ready_groups`, the fill accounting, the fill deadline, `LEASE_DEGRADED`, and `get_batch` reading `batch-quorum-timeout`. Its tree equals the old PR 2. Spec for both: `pr2_implementation_spec.md`.
+- **PR 4 (`feat/batch-4-group-quorum`):** `wait_for_quorum()`. Spec: `pr4_implementation_spec.md` (approved 2026-10-02 as the PR 3 spec).
+- **PR 5:** dynamic scaling and replacement: `acquire`, `replace`, `release_member`, `release_not_ready`, and lazy `size=0` groups.
+- **PR 6:** connection pool sizing enforced against `max_in_flight`, plus performance tuning.
+- **Proposed PR 7 (cleanup):** the reaper (a stateless CronJob consuming the Lease contract; owns OPEN-V's margin). Possibly also `client.delete_batch(batch_id, namespace)` for a batch that can't be re-attached (see "Ideas raised but not planned"), since it would share the reaper's delete steps.
+- **Proposed PR 8:** examples and docs (`examples/<name>/`, runnable versions of the proposal's usage examples, the driver Role).
 
 ## Ideas raised but not planned
 
-- **An SDK path to clean up a batch that can't be re-attached.** After a crash, `get_batch` raises, so the SDK has no way to delete a stale batch before the reaper or `shutdownTime` does; today that takes `kubectl delete sandboxclaims -l agents.x-k8s.io/batch-id=<id>` plus deleting the Lease. A `client.delete_batch(batch_id, namespace)` doing exactly the reaper's steps (label `deletecollection`, bounded re-list, then Lease delete, never adopting the Lease) wouldn't race the reaper, since both only delete. Worth raising with Brian when PR 6 (reaper) is planned, since the two would share code.
+- **An SDK path to clean up a batch that can't be re-attached.** After a crash, `get_batch` raises, so the SDK has no way to delete a stale batch before the reaper or `shutdownTime` does; today that takes `kubectl delete sandboxclaims -l agents.x-k8s.io/batch-id=<id>` plus deleting the Lease. A `client.delete_batch(batch_id, namespace)` doing exactly the reaper's steps (label `deletecollection`, bounded re-list, then Lease delete, never adopting the Lease) wouldn't race the reaper, since both only delete. Worth raising with Brian when PR 7 (reaper) is planned, since the two would share code.
 - **A per-group fill deadline** (each group's clock starting at its own last paced create) instead of R4's batch-wide one. Declined for now as extra state for a small gain; revisit if groups are very unequal in size.

@@ -10,7 +10,20 @@ How an agent uses this file: read the proposal, then "Ground rules", "Module lay
 
 This plan was drafted before implementation and is partly stale. Where it and the code disagree, the code, this section, and `pr2_implementation_spec.md` are the source of truth. Later PRs should read this section first.
 
-### PR 2 (`feat/batch-2-cohorts` at `806cdeb`, on PR 1 `efce6a2`, both rebased on upstream `82d410e` on 2026-10-02)
+**Numbering.** The PR sections below this "As built" part use the original numbers. On 2026-10-02 the old PR 2 was split in two, so the current stack is PR 1 `get_batch`, PR 2 `claim_batch`/`release`, PR 3 `events`/`iter_ready_groups`, PR 4 `wait_for_quorum` (plan section "PR 3"), PR 5 dynamic groups (plan "PR 4"), PR 6 pool sizing and performance (plan "PR 5"), PR 7 the reaper (plan "PR 6"), PR 8 examples. `review_carryover_notes.md` "Roadmap" has the current list.
+
+### Split of the old PR 2 (2026-10-02)
+
+Brian asked for smaller PRs, each one feature: PR 1 shipped `get_batch` with only a read surface, and a claimed batch is usable the same way, by polling `members()` and calling `connect()`. The old PR 2 (`feat/batch-2-cohorts` at `806cdeb`, kept on the fork as `stale/batch-2-cohorts`) became:
+
+- **PR 2, `feat/batch-2-claim`**, six commits on PR 1: creation constants and `BatchExistsError`; the helpers (unchanged); `batch_utils` validation, defaults, and create retry, plus `BatchState.record_create_failure` (it only stores the `CreateFailed` member); the handles' `claim_batch` (`_claim`, creators) and `release()`, `detach()` stopping creators, the shared transient-error check in the watch, the clients' `claim_batch`, tracking, and cleanup, the README, and their tests; the e2e test (polls `members()`); docs.
+- **PR 3, `feat/batch-3-group-consumers`**, five commits on PR 2: `BatchEvent`/`BatchEventType`/`GroupReady` and `QuorumUnreachableError`; the fill accounting in `BatchState` and `parse_quorum_timeout_annotation`; `events()`/`iter_ready_groups()`, the `_changed` condition and its notify points, the fill deadline, group-failed create skipping, `LEASE_DEGRADED`, `get_batch` reading `batch-quorum-timeout` and counting missing fill claims, the README and docstring text for the consumers, and their tests; the e2e test switched to `iter_ready_groups()`; docs.
+- **PR 3's tree is byte-identical to `806cdeb`**, so none of the reviewed code or wording changed. PR 2 differs from that code only by what it leaves out, plus these new lines: the `claim_batch` docstring's "Use ``members()`` to see them as they become Ready", its `quorum_timeout` argument text ("Seconds the caller allows for the batch's claims to become Ready; part of each claim's ``shutdownTime``"), its example, which polls `members()`, the README example and one README paragraph saying `members()` shows `CreateFailed` members and that iterating as members become Ready is a later addition, the create-retry test reading the `CreateFailed` member from `members()` instead of `events()`, and the e2e test waiting on `members()`.
+- `quorum_timeout` stays in PR 2 because each claim's `shutdownTime` is `quorum_timeout + work_budget + margin` (proposal, Shutdown Backstop) and `claim_batch` writes it on the Lease. Only reading it back in `get_batch` moved to PR 3, where the fill deadline is its only reader.
+- PR 1 already logs the first failed renewal ("lease renewal degraded"), so PR 2 needs nothing for degraded renewal; PR 3 adds the `LEASE_DEGRADED` event.
+- The items below describe the old PR 2 and are now split between PRs 2 and 3 as above.
+
+### Old PR 2 (`feat/batch-2-cohorts` at `806cdeb`, now `stale/batch-2-cohorts`; on PR 1 `efce6a2`, both rebased on upstream `82d410e` on 2026-10-02)
 
 Rebuilt on 2026-09-26 from `pr2_implementation_spec.md`, which holds the approved decisions (D1, M1–M4, Q1–Q7); the design is `pr2_design.md` §3, §4, and §7. The old PR 2 is archived on the fork as `archive/batch-2-cohorts-v1` (`df1c11d`). Six commits: models/constants/exceptions, helpers, `batch_state`/`batch_utils`, handles/clients/README, e2e, docs. Where it departs from the "PR 2" section below:
 
@@ -28,7 +41,7 @@ Rebuilt on 2026-09-26 from `pr2_implementation_spec.md`, which holds the approve
 12. **`create_sandbox_claim` has `log_level`** (Q1); the batch logs each create at DEBUG.
 13. **Changes from review (2026-09-28 to 10-02):**
     - Seeding on re-attach no longer sorts by ordinal; this drops OPEN-G's ordinal-order rule. Members Ready before attach are handed out in the order the list returns them. `members()` is still sorted by ordinal (PR 1 contract).
-    - `batch_state.ConsumerMode` and `batch_utils.CreateOutcome` enums replace the mode and create-outcome strings. `ConsumerMode` is `STREAM`/`GROUP` (renamed from `QUORUM` on 2026-10-02 so PR 3's `wait_for_quorum` can take `QUORUM`, matching the proposal's `RolloutDispatch`).
+    - `batch_state.ConsumerMode` and `batch_utils.CreateOutcome` enums replace the mode and create-outcome strings. `ConsumerMode` is `STREAM`/`GROUP` (renamed from `QUORUM` on 2026-10-02 so `wait_for_quorum`, now PR 4, can take `QUORUM`, matching the proposal's `RolloutDispatch`).
     - Renames in `BatchState`: `_group_outcomes` (was `_verdicts`), `_decide_group_outcome`, `_group_outcomes_to_yield`, `_events_to_yield`, `pop_group_outcome`, `_route_ready_member`, `record_skipped_create()` (was `cancel_create`). `_never_created` replaces `_skipped` and `_missing`.
     - Helpers: `_get_extensions_object` (was `_get_claim_group_object`).
     - Both watch loops share each shell's transient-error set with creates and release. The sync set adds `urllib3.MaxRetryError` (a failed connection), except when caused by an SSL error, matching the async side.
@@ -568,7 +581,7 @@ Also: two groups, one on a nonexistent warm pool. `iter_ready_groups()` yields a
 
 ## PR 3: `wait_for_quorum`
 
-> **Superseded by `pr3_implementation_spec.md`** (2026-10-02), which updates this section for PR 2's group-outcome design. Where they differ, the spec wins.
+> **Superseded by `pr4_implementation_spec.md`** (2026-10-02; this is now PR 4), which updates this section for the group-outcome design. Where they differ, the spec wins.
 
 **Goal.** Add a global barrier: block until every non-zero group reaches `min_ready`, then return those members. The proposal's usage example 1 works after this PR.
 
