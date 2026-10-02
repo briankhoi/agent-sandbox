@@ -117,7 +117,7 @@ For each new or changed test, check that it fails when the code it guards is bro
    2. `feat(python-sdk): add wait_for_quorum to batch handles` (both handles, their tests, README).
    3. `test(python-sdk): add wait_for_quorum e2e test`.
    4. `docs(python-sdk): regenerate Python SDK reference for wait_for_quorum`.
-3. Verify every commit: `scratchpad/verify.sh origin/feat/batch-3-group-consumers` (pytest and mypy per commit in detached worktrees), pyflakes on changed files, `make generate-python-docs` with any diff folded into commit 4, author and trailer check, scope diff for `clients/go` and `examples/agent-sandbox-rl` empty, and `git merge-tree --write-tree origin/main HEAD` shows no conflicts with upstream main.
+3. Verify every commit: `scratchpad/verify.sh origin/feat/batch-3-group-consumers` (pytest and mypy per commit in detached worktrees; if the scratchpad no longer has it, the same loop is in `pr2_implementation_spec.md` step 3), pyflakes on changed files, `make generate-python-docs` with any diff folded into commit 4, author and trailer check, scope diff for `clients/go` and `examples/agent-sandbox-rl` empty, and `git merge-tree --write-tree origin/main HEAD` shows no conflicts with upstream main.
 4. Push: `git push -u origin feat/batch-4-group-quorum` (new branch). Later pushes use `--force-with-lease=<branch>:<sha from git rev-parse origin/<branch> right after fetch>`.
 5. Afterwards, on the notes branch: add an "As built" PR 4 list to `python_sdk_batch_plan.md`, mark this spec implemented, resolve the two `wait_for_quorum` bullets in `review_carryover_notes.md`, and write the PR 5 spec (dynamic groups) only after PR 4 is reviewed.
 
