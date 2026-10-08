@@ -102,7 +102,7 @@ Brian approved the recommended direction on 2026-10-08; the open decisions are l
 
 Both lifetimes compose with reuse inside a step: a group of `K` sandboxes can serve `G` rollouts, `G/K` each.
 
-**Changes from the proposal's RL section** (proposal edits not made yet):
+**Changes from the proposal's earlier RL section** (applied to the proposal on 2026-10-08):
 - Keep `rollout_wave`'s cohort-per-step model, its three dispatch modes, and "Adjacent Paradigms". Expose them through the pool instead of `fleet.run(wave=True, dispatch=...)`, since `run()` returns only when every task is done and can't stream.
 - `rollout_wave` composes with `recycle` instead of excluding it.
 - `min_ready < size` only when the trainer opts in, since a dropped rollout biases rewards.

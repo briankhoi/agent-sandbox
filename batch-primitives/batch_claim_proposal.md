@@ -504,92 +504,15 @@ For rolling mode, a worker ranges over its own group's channel and the producer 
 
 ### Agent Sandbox RL
 
-#### Upgrading Existing Evaluation Executors
+`agent-sandbox-rl` claims one sandbox per task through `fleet.acquire(task)` and releases it through `fleet.release(handle)`. Its `recycle=True` executor reuses a sandbox across an image's tasks, with a git restore in between, but only within one `fleet.run()` call, so each training step re-creates its warm pools and claims again. We add a batch-backed `SandboxPool` that the executors and trainer environments claim through. It has two lifetimes, chosen by how the trainer samples problems.
 
-In `fleet.run()`, agent-sandbox-rl uses an executor called once per window to execute tasks. The existing executors (`process_parallel` and `reuse_git_restore_sandbox`) manage claims individually through `fleet.acquire(task)` and `fleet.release(handle)`.
+#### Rollout Waves: Per-Step Cohorts
 
-For standard evaluation workloads (1 task per image), we introduce a `batch=True` flag on `fleet.run()`. This enables `BatchClaimer`, a drop-in adapter that replaces individual claim churn with a single batch per cluster, lazily expanding groups as worker threads demand them while keeping active cluster claims strictly bounded by concurrency limits. By replacing the individual claim handling logic with batch claiming, we collapse `N` claim watches into 1, and support automatic cleanup via the reaper and Lease.
+When each training step samples new problems (e.g. GRPO prompt batches), a step's sandboxes can't serve the next step, since each sandbox runs its own problem's image. The pool claims one batch per step, with one group per problem image sized to that problem's concurrent rollouts (`size=G`), and releases it when the step ends. All of a step's claims are created upfront under the batch's pacing, readiness comes from one watch, and the step's cleanup is one `deletecollection`.
 
-```python
-class BatchClaimer:
-    def __init__(self, fleet):
-        self._fleet = fleet
-        self._lock = threading.Lock()
-        self._batches = {}     # cluster name -> Batch
-        self._members = {}     # claim_name -> (Batch, Member)
+`min_ready` defaults to `size`. A trainer may set it lower to start a group without its stragglers, but then has to account for the rollouts it drops, since an untracked drop biases rewards.
 
-    def _batch_for(self, cluster):
-        with self._lock:
-            if cluster.name not in self._batches:
-                pools = {e.pool for e in self._fleet.plan_.by_cluster()[cluster.name]}
-                self._batches[cluster.name] = cluster.sandbox_client.claim_batch(
-                    groups=[BatchGroup(warmpool=p, size=0) for p in pools],
-                    namespace=cluster.namespace,
-                    labels=dict(self._fleet.config.labels),
-                    work_budget=self._fleet.config.work_budget,
-                )
-            return self._batches[cluster.name]
-
-    def acquire(self, task) -> SandboxHandle:
-        entry = self._fleet.plan_.for_image(task.image)
-        cluster = self._fleet.registry.get(entry.cluster)
-        b = self._batch_for(cluster)
-        member = b.acquire(entry.pool, timeout=self._fleet.config.ready_timeout)
-        handle = self._fleet.handle_for(cluster, member, task)
-        with self._lock:
-            self._members[handle.claim_name] = (b, member)
-        return handle
-
-    def release(self, handle: SandboxHandle) -> None:
-        with self._lock:
-            b, member = self._members.pop(handle.claim_name)
-        b.release_member(member)
-
-    def release_all(self) -> None:
-        """Backstop cleanup on exit via DeleteCollection."""
-        for b in self._batches.values():
-            b.release()
-```
-
-New `process_parallel`:
-```python
-def process_parallel(fleet, tasks, process_fn, concurrency, *, batch=False):
-    results = [None] * len(tasks)
-    claimer = BatchClaimer(fleet) if batch else fleet
-
-    def _one(task):
-        handle = claimer.acquire(task)
-        try:
-            return process_fn(task, handle)
-        finally:
-            claimer.release(handle)
-
-    try:
-        with ThreadPoolExecutor(max_workers=concurrency) as ex:
-            futs = {ex.submit(_one, t): i for i, t in enumerate(tasks)}
-            for f in as_completed(futs):
-                results[futs[f]] = f.result()
-        return results
-    finally:
-        if batch:
-            claimer.release_all()
-```
-
-Caller code (`batch=True`):
-```python
-# Evaluates sliding or pipelined windows with bounded cluster concurrency
-results = fleet.run(process_fn, strategy="pipelined", concurrency=40, batch=True)
-```
-
-We make similar changes for `reuse_git_restore_sandbox` and the async executor variants.
-
-#### Rollout Waves: Cohort-Based RL Execution
-
-For SWE-bench-style RL workloads where a training wave evaluates a cohort of G tasks across heterogeneous problem environments, we introduce the `rollout_wave` executor. Selected via `wave=True` on `fleet.run()` (mutually exclusive with `recycle=True`), it provides cohort-based batch allocation for rollout waves.
-
-While `BatchClaimer` expands lazily from `size=0` to bound active claims to worker concurrency, `rollout_wave` declares each pool's full cohort size (`size=G`) upfront. This creates all G `SandboxClaim` resources simultaneously, allowing parallel claim creation.
-
-`rollout_wave` supports three dispatch paradigms via `dispatch`:
+The pool supports three dispatch paradigms via `dispatch`:
 ```python
 class RolloutDispatch(str, Enum):
     QUORUM = "quorum"
@@ -600,22 +523,52 @@ class RolloutDispatch(str, Enum):
 - `RolloutDispatch.GROUP` (Pipelined Domain / Task Cohorts): Uses `batch.iter_ready_groups()` so each pool's cohort dispatches as soon as its own `min_ready` is met. Ideal for GRPO prompt-group sampling or multi-task PPO with domain-specific advantage normalization and gradient accumulation, preventing slow warm pools from blocking faster cohorts. If a pool hits a terminal failure (`group.error`), only that pool's cohort fails, while healthy groups continue.
 - `RolloutDispatch.STREAM` (Asynchronous Streaming Rollouts): Uses only `batch.events()` to receive Ready members individually, with no per-pool or per-batch gating at all (e.g. IMPALA/APPO actor loops or asynchronous replay buffers).
 
+The dispatch modes live on the pool, not on `fleet.run()`, because `run()` returns only once every task is done and so can't stream members to a trainer. They work together with recycling: a group of `K < G` sandboxes serves its `G` rollouts, `G/K` each, with a git restore between them.
+
 Caller code:
 ```python
-# Synchronous joint-batch RL (waits for fixed mixture ratio across all pools)
-results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.QUORUM, concurrency=64)
+pool = SandboxPool(fleet)
+for step_tasks in trainer.steps():                    # P problems x G rollouts each
+    # Synchronous joint-batch RL (waits for every group's min_ready)
+    results = pool.run_step(step_tasks, rollout_fn, dispatch=RolloutDispatch.QUORUM)
 
-# Pipelined domain / task cohorts (each pool dispatches its cohort as soon as its own min_ready is met)
-results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.GROUP, concurrency=64)
+    # Per-problem cohorts (each problem's rollouts start when its own sandboxes are Ready)
+    results = pool.run_step(step_tasks, rollout_fn, dispatch=RolloutDispatch.GROUP)
 
-# Asynchronous streaming rollouts (dispatches members individually via events() with no gating)
-results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.STREAM, concurrency=64)
+# Asynchronous streaming rollouts (each sandbox is handed out as soon as it is Ready)
+async for task, handle in apool.stream_step(step_tasks):
+    actors.submit(task, handle)
 ```
 
 **Adjacent Paradigms:** These group and dispatch primitives also can be used for other post-training and evaluation workflows without any additional changes:
 - RLVR: Verifier engines (test harnesses, formal proof checkers) execute under `GROUP` or `STREAM`, isolating verifier crashes or timeouts from the rest of the evaluation wave.
 - Best-of-N & DPO Sampling: Form prompt-level cohorts sized to N or 2 using `GROUP`, collecting independent solution sets per prompt without cross-task head-of-line blocking.
 - Synthetic Data & Distillation: Offline agent trajectory generation (recording multi-step shell commands, file edits, and tool observations) streams continuously via `STREAM` with no readiness barriers.
+
+#### Held Pools: Reuse Across Steps
+
+When the trainer repeats the same problems across steps (a small dataset, epochs over a fixed set, repeated evaluation passes), the pool keeps one batch claimed for the whole run. A rollout checks out an idle sandbox for its image and checks it back in, and the pool git-restores it in between (`GitRestoreReset`). A sandbox whose reset fails verification, or that reaches `max_reuses`, is released with `release_member` and replaced with `acquire` on the same warm pool. Claims then scale with peak concurrent rollouts rather than total episodes.
+
+```python
+pool = SandboxPool(fleet, hold=True)
+
+class FleetSWEEnv(SWEEnv):
+    def _initial_observation(self):
+        self._handle = pool.checkout(self._task())    # an idle, reset sandbox for this image
+        ...
+    def close(self):
+        pool.checkin(self._handle)                    # reset for reuse, or quarantine and replace
+```
+
+A held batch lives for the whole run, so its `work_budget` is set to the expected run length. Its claims' `shutdownTime` then lands after the run, and the reaper is the prompt cleanup path if the driver dies.
+
+#### Warm Pools Under a Batch
+
+After a batch's initial fill, the pool scales each of its warm pools down to a small buffer for replacements, since the controller would otherwise create a replacement pod for every member the batch holds. It never deletes a warm pool the batch claims from, since a claim against a missing warm pool doesn't become Ready.
+
+#### Evaluation Executors
+
+1:1 evaluation sweeps keep claiming per task in this change. A batch per window would collapse the window's readiness watches into one and add Lease cleanup, but it keeps the same creates and deletes, so it is left for a later change once measured.
 
 ### Scalability
 
