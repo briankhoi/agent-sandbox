@@ -96,7 +96,7 @@ Each run lists the batch Leases (O(B)) and every batch claim (O(N)) in each boun
 
 The reaper only needs each claim's labels, `creationTimestamp` and `deletionTimestamp`, so a metadata-only list (`PartialObjectMetadataList`) would cut the payload further. Measure before building it, since the Python client needs a raw `call_api` for it.
 
-`_delete_batch_objects` is not paginated yet. Thread A's review recommends paginating its lists in PR 6, after measuring. If the reaper lands before that, it inherits the unpaginated per-batch lists (one batch at a time, so bounded by batch size, not by N).
+`_delete_batch_objects` is not paginated yet. Thread A's review recommends paginating its lists in PR 7 (performance), after measuring. If the reaper lands before that, it inherits the unpaginated per-batch lists (one batch at a time, so bounded by batch size, not by N).
 
 #### Deployment and Artifacts
 
@@ -118,7 +118,7 @@ A kind e2e test checks three things: a SIGKILLed driver's batch is reaped after 
 
 #### Proposal Changes
 
-Edits to `batch_claim_proposal.md` so it matches this contract.
+Edits to `batch_claim_proposal.md` so it matches this contract. Applied to the proposal on 2026-10-08.
 
 1. **Liveness.** Append after "We use the Lease in conjunction with a new stateless reaper…":
 
