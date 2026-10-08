@@ -286,6 +286,35 @@ class TestAsyncK8sHelperResolveSandboxName(unittest.IsolatedAsyncioTestCase):
         self.assertIn("InvalidConfiguration", str(context.exception))
 
     @patch("k8s_agent_sandbox.async_k8s_helper.watch.Watch")
+    async def test_async_wait_for_claim_ready_finished_pod_fails_fast(self, mock_watch_class):
+        """A finished Pod (forwarded from the Sandbox) fails fast, since it never runs again."""
+        for reason in ("PodFailed", "PodSucceeded"):
+            with self.subTest(reason=reason):
+                mock_watch = MagicMock()
+                mock_watch.close = AsyncMock()
+                mock_event = {
+                    "type": "MODIFIED",
+                    "object": {
+                        "metadata": {"name": "test-claim"},
+                        "status": {
+                            "conditions": [
+                                {"type": "Ready", "status": "False", "reason": reason, "message": "Pod finished"}
+                            ]
+                        },
+                    },
+                }
+
+                async def mock_stream(*args, **kwargs):
+                    yield mock_event
+
+                mock_watch.stream = mock_stream
+                mock_watch_class.return_value = mock_watch
+
+                with self.assertRaises(SandboxClaimFailedError) as context:
+                    await self.helper.wait_for_claim_ready("test-claim", "default", timeout=5)
+                self.assertIn(reason, str(context.exception))
+
+    @patch("k8s_agent_sandbox.async_k8s_helper.watch.Watch")
     async def test_async_watch_resource_version_passthrough(self, mock_watch_class):
         """The ready-wait watch starts from the supplied resourceVersion
         ("0" by default) so it never forces a quorum etcd read."""

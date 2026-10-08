@@ -2463,6 +2463,31 @@ describe("SandboxClient (registry)", () => {
       expect(mockWatchFn).not.toHaveBeenCalled();
     });
 
+    it.each([
+      "PodFailed",
+      "PodSucceeded",
+    ])("GET path: throws SandboxClaimFailedError on a finished Pod (%s)", async (reason) => {
+      mockCreateNamespacedCustomObject.mockResolvedValueOnce({});
+      mockGetNamespacedCustomObject.mockResolvedValueOnce({
+        status: {
+          conditions: [
+            {
+              type: "Ready",
+              status: "False",
+              reason,
+              message: "Pod finished",
+            },
+          ],
+        },
+      });
+
+      const client = new SandboxClient();
+      await expect(
+        client.createSandbox("warmpool-finished-pod"),
+      ).rejects.toBeInstanceOf(SandboxClaimFailedError);
+      expect(mockWatchFn).not.toHaveBeenCalled();
+    });
+
     it("watch path: throws SandboxClaimFailedError on a terminal Ready=False reason", async () => {
       mockCreateNamespacedCustomObject.mockResolvedValueOnce({});
       mockGetNamespacedCustomObject.mockResolvedValueOnce({ status: {} });
