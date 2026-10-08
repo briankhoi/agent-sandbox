@@ -39,7 +39,7 @@ The reaper's safety argument needs the driver to have given up before the reaper
 
 The reaper considers a Lease stale when `now > renewTime + D + REAPER_SKEW_MARGIN`, with `now` taken from the reaper's own clock. The margin absorbs clock skew between the driver and the reaper. It is configurable, 30–60 s by default, and never below `CLOCK_SKEW_MARGIN`. The margin only ever adds waiting, because reaping early destroys running work while waiting only holds idle quota.
 
-A stale Lease is deleted only if its resourceVersion is unchanged since the reaper read it at least one `RenewInterval` earlier (see Execution). This is the clock-free check OPEN-V suggested, the same idea as client-go leader election's `observedTime`. It is the only protection against a healthy driver whose clock runs behind by more than the margin, since that driver writes a `renewTime` that already looks stale but keeps changing the resourceVersion every `RenewInterval`.
+A stale Lease is deleted only if its resourceVersion is unchanged since the reaper read it at least one `RenewInterval` earlier (see Execution). This is the same idea as client-go leader election's `observedTime`. It is the only protection against a healthy driver whose clock runs behind by more than the margin, since that driver writes a `renewTime` that already looks stale but keeps changing the resourceVersion every `RenewInterval`.
 
 This puts three thresholds in a deliberate order:
 1. `GetBatch` stops adopting a Lease at `renewTime + D − CLOCK_SKEW_MARGIN`.
@@ -128,7 +128,7 @@ Edits to `batch_claim_proposal.md` so it matches this contract.
 
    Line 97 changes under thread A's recommendation 2 (`lease_degraded()` instead of a `LeaseDegraded` event). That edit owns line 97, so this one doesn't touch it.
 2. **Cleanup path 2 (`:112`).** "the reaper issues the same label-scoped `deletecollection` to delete the claims, then delete the Lease" becomes "the reaper deletes the Lease, then issues the same label-scoped `deletecollection` to delete the claims".
-3. **`get_batch` signature (`:271`).** Remove `adopt_expired` (OPEN-N). It would let `GetBatch` adopt a batch the reaper is deleting, and the code never had it.
+3. **`get_batch` signature (`:271`).** Remove `adopt_expired`. It would let `GetBatch` adopt a batch the reaper is deleting, and the code never had it.
 4. **Diagram (`:141`).** "LeaseDuration + poll period" becomes "LeaseDuration + margin + RenewInterval + poll period".
 5. **Reaper RBAC (`:170-184`).** Lease verbs become `get`, `list`, `delete` (no `watch`, no `update`). Add one sentence that the ClusterRole is granted with a RoleBinding in each covered namespace, never a ClusterRoleBinding, because RBAC can't limit `deletecollection` to batch claims.
 6. **Scalability (`:681-682`).** Replace the reaper's "cache memory and watch event volume" bullet with "Each reaper run lists the batch Leases (O(B)) and the batch claims (O(N)) in each bound namespace, paged and from the apiserver's watch cache; it keeps no watch or cache between runs."
