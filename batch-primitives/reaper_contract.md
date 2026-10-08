@@ -33,7 +33,7 @@ The reaper's safety argument needs the driver to have given up before the reaper
 - **Expiry fires at a deadline, not at the end of a failed attempt.** Today expiry is checked only after a failed attempt (`:775`). Attempts are `RenewInterval` apart and each can take `RenewInterval` to time out, so expiry can fire about `5D/3` after the stored `renewTime`. Instead, the loop waits `min(RenewInterval, deadline − now)` and bounds each request by the time left, so expiry fires at `last_sent + D`.
 - **On expiry the driver stops renewing.** It records `BatchLeaseExpiredError` and returns from the renewal loop. Today it keeps renewing, so a renewal that later succeeds keeps the Lease fresh while `err()` says expired, and the batch is neither usable nor reapable.
 - **Creators already stop once `err()` is set** (PR 2, `_create_worker`). No change there.
-- **Degraded stays degraded.** Once renewal stops, the degraded state stays true, since only a successful renewal clears it. A test owns this once `lease_degraded()` exists (PR 3).
+- **Degraded stays degraded.** Once renewal stops, the degraded state stays true, since only a successful renewal clears it. A test owns this, alongside `lease_degraded()` (PR 1).
 
 #### Staleness and Clock Skew
 
