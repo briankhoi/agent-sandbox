@@ -215,6 +215,7 @@ The ClusterRole is granted with a RoleBinding in each namespace the reaper cover
 - Cleanup
     - `release`: Stop the informer and renewal, `deletecollection` the batch label, delete the Lease
     - `detach`: Stops the informer and renewal but leaves the claims alive for a later `get_batch`.
+    - `release_not_ready`: Deletes only the members that never reached `Ready`
 
 ### Python
 Helper/supporting classes:
@@ -314,6 +315,7 @@ class AsyncSandboxBatch:
     async def release_member(self, member: Member) -> None: ...
 
     async def release(self) -> None: ...
+    async def release_not_ready(self) -> None: ...
     async def detach(self, grace: int | None = None) -> None: ...
 
 # There will also be a SandboxBatch variant which is similar to above, but uses Iterator over AsyncIterator, contains no async functions, and returns a Sandbox type for connect()
@@ -543,7 +545,7 @@ class RolloutDispatch(str, Enum):
 - `RolloutDispatch.GROUP` (Pipelined Domain / Task Cohorts): Uses `batch.iter_ready_groups()` so each pool's cohort dispatches as soon as its own `min_ready` is met. Ideal for GRPO prompt-group sampling or multi-task PPO with domain-specific advantage normalization and gradient accumulation, preventing slow warm pools from blocking faster cohorts. If a pool hits a terminal failure (`group.error`), only that pool's cohort fails, while healthy groups continue.
 - `RolloutDispatch.STREAM` (Asynchronous Streaming Rollouts): Uses only `batch.events()` to receive Ready members individually, with no per-pool or per-batch gating at all (e.g. IMPALA/APPO actor loops or asynchronous replay buffers).
 
-The dispatch modes live on the pool, not on `fleet.run()`, because `run()` returns only once every task is done and so can't stream members to a trainer. They work together with recycling: a group of `K < G` sandboxes serves its `G` rollouts, `G/K` each, with a git restore between them.
+The dispatch modes live on the pool, and `fleet.run(wave=True, dispatch=...)` selects them for callers that run through `fleet.run()`. Handing members to a trainer as they become Ready (`stream_step`) goes through the pool directly, since `run()` returns only once every task is done. The modes work together with recycling: a group of `K < G` sandboxes serves its `G` rollouts, `G/K` each, with a git restore between them.
 
 Caller code:
 ```python
@@ -558,6 +560,18 @@ for step_tasks in trainer.steps():                    # P problems x G rollouts 
 # Asynchronous streaming rollouts (each sandbox is handed out as soon as it is Ready)
 async for task, handle in apool.stream_step(step_tasks):
     actors.submit(task, handle)
+```
+
+Through `fleet.run()`:
+```python
+# Synchronous joint-batch RL (waits for fixed mixture ratio across all pools)
+results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.QUORUM, concurrency=64)
+
+# Pipelined domain / task cohorts (each pool dispatches its cohort as soon as its own min_ready is met)
+results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.GROUP, concurrency=64)
+
+# Asynchronous streaming rollouts (dispatches members individually via events() with no gating)
+results = fleet.run(process_fn, strategy="sliding", wave=True, dispatch=RolloutDispatch.STREAM, concurrency=64)
 ```
 
 **Adjacent Paradigms:** These group and dispatch primitives also can be used for other post-training and evaluation workflows without any additional changes:
@@ -586,9 +600,84 @@ A held batch lives for the whole run, so its `work_budget` is set to the expecte
 
 After a batch's initial fill, the pool scales each of its warm pools down to a small buffer for replacements, since the controller would otherwise create a replacement pod for every member the batch holds. It never deletes a warm pool the batch claims from, since a claim against a missing warm pool doesn't become Ready.
 
-#### Evaluation Executors
+#### Upgrading Existing Evaluation Executors
 
-1:1 evaluation sweeps keep claiming per task in this change. A batch per window would collapse the window's readiness watches into one and add Lease cleanup, but it keeps the same creates and deletes, so it is left for a later change once measured.
+In `fleet.run()`, agent-sandbox-rl uses an executor called once per window to execute tasks. The existing executors (`process_parallel` and `reuse_git_restore_sandbox`) manage claims individually through `fleet.acquire(task)` and `fleet.release(handle)`.
+
+For standard evaluation workloads (1 task per image), we introduce a `batch=True` flag on `fleet.run()`. This enables `BatchClaimer`, a drop-in adapter that replaces individual claim churn with a single batch per cluster, lazily expanding groups as worker threads demand them while keeping active cluster claims strictly bounded by concurrency limits. By replacing the individual claim handling logic with batch claiming, we collapse `N` claim watches into 1, and support automatic cleanup via the reaper and Lease.
+
+```python
+class BatchClaimer:
+    def __init__(self, fleet):
+        self._fleet = fleet
+        self._lock = threading.Lock()
+        self._batches = {}     # cluster name -> Batch
+        self._members = {}     # claim_name -> (Batch, Member)
+
+    def _batch_for(self, cluster):
+        with self._lock:
+            if cluster.name not in self._batches:
+                pools = {e.pool for e in self._fleet.plan_.by_cluster()[cluster.name]}
+                self._batches[cluster.name] = cluster.sandbox_client.claim_batch(
+                    groups=[BatchGroup(warmpool=p, size=0) for p in pools],
+                    namespace=cluster.namespace,
+                    labels=dict(self._fleet.config.labels),
+                    work_budget=self._fleet.config.work_budget,
+                )
+            return self._batches[cluster.name]
+
+    def acquire(self, task) -> SandboxHandle:
+        entry = self._fleet.plan_.for_image(task.image)
+        cluster = self._fleet.registry.get(entry.cluster)
+        b = self._batch_for(cluster)
+        member = b.acquire(entry.pool, timeout=self._fleet.config.ready_timeout)
+        handle = self._fleet.handle_for(cluster, member, task)
+        with self._lock:
+            self._members[handle.claim_name] = (b, member)
+        return handle
+
+    def release(self, handle: SandboxHandle) -> None:
+        with self._lock:
+            b, member = self._members.pop(handle.claim_name)
+        b.release_member(member)
+
+    def release_all(self) -> None:
+        """Backstop cleanup on exit via DeleteCollection."""
+        for b in self._batches.values():
+            b.release()
+```
+
+New `process_parallel`:
+```python
+def process_parallel(fleet, tasks, process_fn, concurrency, *, batch=False):
+    results = [None] * len(tasks)
+    claimer = BatchClaimer(fleet) if batch else fleet
+
+    def _one(task):
+        handle = claimer.acquire(task)
+        try:
+            return process_fn(task, handle)
+        finally:
+            claimer.release(handle)
+
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as ex:
+            futs = {ex.submit(_one, t): i for i, t in enumerate(tasks)}
+            for f in as_completed(futs):
+                results[futs[f]] = f.result()
+        return results
+    finally:
+        if batch:
+            claimer.release_all()
+```
+
+Caller code (`batch=True`):
+```python
+# Evaluates sliding or pipelined windows with bounded cluster concurrency
+results = fleet.run(process_fn, strategy="pipelined", concurrency=40, batch=True)
+```
+
+We make similar changes for `reuse_git_restore_sandbox` and the async executor variants.
 
 ### Scalability
 
@@ -606,7 +695,7 @@ Through the use of batch claiming, we see improvements in control-plane connecti
 | Dimension | Current (`CreateSandbox` x N) | Batch Claim (`ClaimBatch`) |
 | :--- | :--- | :--- |
 | **Claim Creation** | N creates (Go: +N gets) | N creates |
-| **Sandbox Pod Checks** | N list calls (Go only) | 0 (mirrored onto claim status) |
+| **Sandbox Pod Checks** | N list calls (Go only) | 0 (mirrored onto claim status, and `connect()` seeds the pod IP) |
 | **Readiness Watches** | N (Go: 2N, Python: N) | 1 watch stream across all groups |
 | **Control-Plane Connections** | O(N) dialed/discarded (Python)<br>ceil(2N/100) streams (Go) | O(MaxInFlight), reused |
 | **Batch Deletion** | N individual `Delete` calls | **Fixed Cohort:** 1 deletecollection<br>**Rolling:** M individual deletes (where M >= N, the total replacements across the run) + 1 deletecollection  |

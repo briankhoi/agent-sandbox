@@ -83,9 +83,9 @@ Brian approved every recommendation in thread A2's review (`/mnt/project-files/t
 | PR 2 | One absolute `shutdownTime` for every fill claim: `start + ceil(N / create_rps) + quorum_timeout + work_budget + 600`. Create order: each group's first `min_ready` claims first, interleaved in proportion to size, then the rest. Lease annotation `agents.x-k8s.io/batch-size` (total fill size). Docstring says `work_budget` is a hard cap. |
 | PR 3 | `get_batch` reads `batch-size` and falls back to the sum of the rebuilt groups, fixing fill classification when a whole group has no claims (regression test in `test_batch_state.py`). A group with no surviving claims is still unknown to the new handle; the `get_batch` docstring says so. `BatchTimeoutError(BatchError, TimeoutError)` for group timeouts, and tests assert the class instead of matching the message text. `LEASE_DEGRADED` and `note_lease_degraded` are gone, and `BatchEvent.member` is required. `events()` docstring says it covers only the fill. |
 | PR 4 | `wait_for_quorum()` has no `timeout`; drop `test_invalid_timeout_raises_value_error_and_leaves_the_mode_unset`. A cancelled async `wait_for_quorum` fails the quorum with `BatchTimeoutError` under the lock, notifies, and re-raises (one test per shell). Quorum timeout raises `BatchTimeoutError`. |
-| PR 5 | `release_member`. In group mode, a group with an error outcome has its claims deleted in the background (per claim, no group label), including fill claims that turn Ready afterwards; `members()` keeps their last reason. |
-| PR 6 | `acquire` (any pool in the namespace, with the `claim_batch` precheck on a new pool; `timeout` defaults to the batch's `quorum_timeout`; raises `TerminalMemberError` or `BatchTimeoutError`). `detach()` writes `agents.x-k8s.io/batch-next-ordinal` on the Lease in the replace it already does, and `get_batch` continues from the larger of that and the highest listed ordinal plus one. An acquired claim's ordinal is at or above `batch-size`, which is what keeps it out of the fill; don't tell them apart by group annotations. No `replace`, no `release_not_ready`. |
-| Transport PR | Client pool sizing and the `pool >= max_in_flight + 2` check, and `connect()` seeding the `Sandbox` with the member's pod IP (a GET only after `invalidate_pod_ip()`). |
+| PR 5 | `release_member` and `release_not_ready()` (kept by the cut audit; one SDK method that checks readiness and marks members released under the lock, since a caller loop over `members()` races `events()`). In group mode, a group with an error outcome has its claims deleted in the background (per claim, no group label, no flag), including fill claims that turn Ready afterwards, reusing `release_member`'s delete path and retry policy with 404 as success; `members()` keeps their last `reason` and `message`. The README driver Role gains `delete` on sandboxclaims (PR 2's Role has only `create, get, list, watch, deletecollection`). |
+| PR 6 | `acquire` (any pool in the namespace, with the `claim_batch` precheck on a new pool; `timeout` defaults to the batch's `quorum_timeout`; raises `TerminalMemberError` or `BatchTimeoutError`). `detach()` writes `agents.x-k8s.io/batch-next-ordinal` on the Lease in the replace it already does, and `get_batch` continues from the larger of that and the highest listed ordinal plus one. An acquired claim's ordinal is at or above `batch-size`, which is what keeps it out of the fill; don't tell them apart by group annotations. Lazy `size=0` groups (kept by the cut audit): `claim_batch` accepts `size=0` (it rejects `size < 1` today, `batch_utils.py:216`), and the quorum consumers skip groups whose initial size is 0, as the proposal says (Events and Quorum); today's code yields an empty `GroupReady` for them. No `replace` (cut, Brian 2026-10-08). |
+| Transport PR | Client pool sizing and the `pool >= max_in_flight + 2` check, and `connect()` seeding the `Sandbox` with the member's pod IP (a GET only after `invalidate_pod_ip()`). The batch-wide data-plane connection pool (proposal, Transport and Connection Scaling), starting with a check of its premise: each connector builds its own `requests.Session` (`connector.py:653-666`) and `httpx.AsyncClient` (`async_connector.py:216`), so the cross-host eviction the proposal describes may not happen. |
 | PR 7 | Measure-first performance: claim-list pagination and a metadata-only list in `release()`, the ideas under "PR 7 performance ideas". |
 | Terminal-reasons fix | Separate upstream PR off `main`: add `PodFailed` and `PodSucceeded` to Python's `TERMINAL_CLAIM_READY_REASONS`, matching the Go SDK. The batch picks it up with no batch code. |
 
@@ -99,15 +99,16 @@ PRs 1 to 6 and PR 7 form the linear Python SDK stack. Siblings branch off the PR
 - **PR 2 (`feat/batch-2-claim`):** `claim_batch`, `release`, client tracking and cleanup, plus the PR 2 changes above.
 - **PR 3 (`feat/batch-3-group-consumers`):** `events`, `iter_ready_groups`, fill accounting and deadline, `get_batch` reading `batch-quorum-timeout` and `batch-size`.
 - **PR 4 (`feat/batch-4-group-quorum`):** `wait_for_quorum()`.
-- **PR 5:** `release_member` and failed-group cleanup.
-- **PR 6:** `acquire` and the next-ordinal annotation. Whether lazy `size=0` groups are still needed is open, since `acquire` already accepts any pool.
+- **PR 5:** `release_member`, `release_not_ready()` and failed-group cleanup.
+- **PR 6:** `acquire`, the next-ordinal annotation and lazy `size=0` groups.
 - **PR 7:** measure-first performance (list pagination, the ideas above).
 - **Reaper PR:** branch off PR 2, per `reaper_contract.md`. The driver-side changes it needs are in PR 1.
 - **Transport PR:** branch off PR 2.
 - **Pacing PR:** adaptive create pacing, branch off PR 2, after a measurement and Brian's approval of the design.
 - **Terminal-reasons fix:** off upstream `main`, independent of the stack.
 - **Examples and docs PR:** runnable versions of the proposal's usage examples, the driver Role, the reaper manifests. After PR 6 and the reaper.
-- **RL integration PR:** the batch-backed `SandboxPool` in `examples/agent-sandbox-rl/`, after PR 6 (it needs `acquire` and `release_member`). Then benchmark it against the current per-claim path. See "RL integration PR" below.
+- **RL integration PR:** the batch-backed `SandboxPool` in `examples/agent-sandbox-rl/`, after PR 6 (it needs `acquire` and `release_member`), with `fleet.run(wave=True, dispatch=...)` and `BatchClaimer` (both kept by the cut audit). Then benchmark it against the current per-claim path. See "RL integration PR" below.
+- **Go SDK:** after the Python SDK. The proposal designs it, and no Go work is planned before then.
 
 ## RL integration PR (Thread B review, 2026-10-08)
 
@@ -126,10 +127,10 @@ Brian approved the recommended direction on 2026-10-08; the open decisions are l
 Both lifetimes compose with reuse inside a step: a group of `K` sandboxes can serve `G` rollouts, `G/K` each.
 
 **Changes from the proposal's earlier RL section** (applied to the proposal on 2026-10-08):
-- Keep `rollout_wave`'s cohort-per-step model, its three dispatch modes, and "Adjacent Paradigms". Expose them through the pool instead of `fleet.run(wave=True, dispatch=...)`, since `run()` returns only when every task is done and can't stream.
+- Keep `rollout_wave`'s cohort-per-step model, its three dispatch modes, and "Adjacent Paradigms". Expose them through the pool, and also through `fleet.run(wave=True, dispatch=...)` (kept by the cut audit, since `fleet.run` calls a function per sandbox and is the README's RL entry point, `README.md:391`). Only `stream_step`, which hands members to a trainer, needs the pool directly, since `run()` returns only when every task is done.
 - `rollout_wave` composes with `recycle` instead of excluding it.
 - `min_ready < size` only when the trainer opts in, since a dropped rollout biases rewards.
-- `BatchClaimer` (`batch=True`, per-task `acquire` for eval) is not in this PR. It keeps N creates and N deletes, and it calls `fleet.handle_for` and `config.work_budget`, which don't exist. It's a candidate for a later eval PR once measured.
+- ~~`BatchClaimer` (`batch=True`, per-task `acquire` for eval) is not in this PR.~~ Kept by the cut audit (2026-10-08): the library already acquires and releases per task in five places (`strategies.py:48`, `async_fleet.py:221`, `adapters/openhands.py:104`, `recycle.py:310`, `:466`). It still needs `fleet.handle_for` and `config.work_budget`, which don't exist yet.
 
 **Rules for the PR.**
 - Scale pools down after the fill with `set_pool_replicas`, never `unwarm_image`. `unwarm_image` deletes the pool and template, which a later `acquire` needs.
@@ -145,6 +146,21 @@ Both lifetimes compose with reuse inside a step: a group of `K` sandboxes can se
 **Open decisions (Brian).**
 - Which lifetime first. That depends on whether the target trainers sample new problems each step. Thread B recommends the per-step cohort if they do.
 - `shutdownTime` for a held batch. `work_budget` has to cover the whole run, which makes the reaper the only prompt crash cleanup. The alternative is to rotate members before their deadline, but `Member` doesn't expose it. Thread B recommends `work_budget` set to the run length for now.
+- The independent RL check (`/mnt/project-files/rl-verify/rl_integration_verification.md` and `rl_workloads.md`) leaves its own questions open: prefetching the next step's images, splitting a step larger than capacity, QUORUM in the RL pool, and the SDK changes S1 to S4. Its "Brian's answers" section lists the thread's proposed defaults, which Brian never approved. Settle these with Brian before the RL integration PR.
+
+## Cut audit decisions (2026-10-08)
+
+The Design owner audited every removal or narrowing of a designed feature since Brian's last own edit of the proposal (`71a0a77`). The evidence for each item is in `/mnt/project-files/design/cut_audit.md` in the project files.
+
+Brian's words: "personally, i think we should remove adopt expired." (09:47) and, on the Design owner's list of cuts, "so i do agree with the list of stuff it recommended to cut." (09:53)
+
+- **Cut:** `replace`, `wait_for_quorum`'s `timeout` parameter, the `LEASE_DEGRADED` event (replaced by `lease_degraded()`), and `get_batch(adopt_expired=...)`. These match the approved table above.
+- **Kept:** `BatchClaimer` and `fleet.run(wave=True, dispatch=...)` (RL integration PR), lazy `size=0` groups (PR 6), and `release_not_ready()` (PR 5).
+- **Design owner recommendations, not yet answered explicitly by Brian:**
+  - Keep the rule that `wait_for_quorum()` and `iter_ready_groups()` can't follow `events()` (`batch_state.py:435-448`), and keep documenting it, since allowing the reverse order needs a second way to pick the mode.
+  - Keep `events()` closing at the fill deadline; `release_not_ready()` frees members that turn Ready after it.
+  - Add the batch-wide data-plane pool to the Transport PR and the Go SDK to the roadmap.
+- **Open:** whether to document that `PodFailed`/`PodSucceeded` look pending until the terminal-reasons fix lands (coverage gap 5). Recommended: skip it if that fix lands upstream first, otherwise say it in PR 3's `events()` docstring.
 
 ## Ideas raised but not planned
 
