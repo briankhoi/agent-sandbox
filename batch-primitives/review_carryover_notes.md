@@ -108,13 +108,13 @@ PRs 1 to 6 and PR 7 form the linear Python SDK stack. Siblings branch off the PR
 - **PR 4 (`feat/batch-4-group-quorum`):** `wait_for_quorum()`.
 - **PR 5:** `release_member`, `release_not_ready()` and failed-group cleanup.
 - **PR 6:** `acquire`, the next-ordinal annotation and lazy `size=0` groups. It starts once PR 5's state changes are reviewed, since both change the released and ownership state in `batch_state.py`.
-- **PR 7:** measure-first performance (list pagination, the ideas above).
+- **PR 7:** measure-first performance (list pagination, the ideas above). Since the RL benchmark comes last, PR 7 and the pacing PR measure with an SDK-only benchmark on kind (Design owner proposal).
 - **Reaper PR:** branch off PR 2, per `reaper_contract.md`. The driver-side changes it needs are in PR 1.
 - **Transport PR:** branch off PR 2.
 - **Pacing PR:** adaptive create pacing, branch off PR 2, after a measurement and Brian's approval of the design.
 - **Terminal-reasons fix:** off upstream `main`, independent of the stack.
 - **Examples and docs PR:** runnable versions of the proposal's usage examples, the driver Role, the reaper manifests. After PR 6 and the reaper.
-- **RL integration PR:** the batch-backed `SandboxPool` in `examples/agent-sandbox-rl/`, after PR 6 (it needs `acquire` and `release_member`), with `fleet.run(wave=True, dispatch=...)` and `BatchClaimer` (both kept by the cut audit). Then benchmark it against the current per-claim path. See "RL integration PR" below.
+- **RL integration PR:** last, after every other item in this roadmap except the Go SDK. Brian: "RL integration PR should be actually last, we should prob implement the items (aside from go sdk) in the work plan doc before startting it." (10:52) The batch-backed `SandboxPool` in `examples/agent-sandbox-rl/` (it needs `acquire` and `release_member`), with `fleet.run(wave=True, dispatch=...)` and `BatchClaimer` (both kept by the cut audit). Then benchmark it against the current per-claim path. See "RL integration PR" below.
 - **Go SDK:** after the Python SDK. The proposal designs it, and no Go work is planned before then.
 
 ## RL integration PR (Thread B review, 2026-10-08)
