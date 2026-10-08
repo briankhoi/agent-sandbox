@@ -82,7 +82,45 @@ On 2026-10-02 Brian split the old PR 2 (`feat/batch-2-cohorts`, now kept on the 
 - **PR 5:** dynamic scaling and replacement: `acquire`, `replace`, `release_member`, `release_not_ready`, and lazy `size=0` groups.
 - **PR 6:** connection pool sizing enforced against `max_in_flight`, plus performance tuning.
 - **Proposed PR 7 (cleanup):** the reaper (a stateless CronJob consuming the Lease contract; owns OPEN-V's margin). Possibly also `client.delete_batch(batch_id, namespace)` for a batch that can't be re-attached (see "Ideas raised but not planned"), since it would share the reaper's delete steps.
+- **RL integration PR (number set by the roadmap reorder):** a batch-backed `SandboxPool` in `examples/agent-sandbox-rl/`. It needs `acquire` and `release_member`, so it comes after dynamic groups. See "RL integration PR" below.
 - **Proposed PR 8:** examples and docs (`examples/<name>/`, runnable versions of the proposal's usage examples, the driver Role).
+
+## RL integration PR (Thread B review, 2026-10-08)
+
+Brian approved the recommended direction on 2026-10-08; the open decisions are listed at the end. The evidence (file and line references into the RL library at upstream `cd0761d`, the blog post's numbers) is in `/mnt/project-files/thread-b/rl_integration_direction.md` in the project files, not in this repo.
+
+**What the library does today.**
+- Each claim is a `create_sandbox` (one watch per claim) plus two Sandbox GETs for the pod name and IP, and each release is one delete. A claim from a warm pool makes the controller create a replacement pod.
+- `recycle=True` reuses one sandbox per image only within one `run()` call. The sync recycler runs an image's tasks one after another in that sandbox; the async one runs `shards_per_image` sandboxes in parallel. With `scale_on_hold`, the sync recycler deletes the image's pool and template after the first claim and re-creates them on every rotation and quarantine.
+- Every `run()` calls `setup()`, so a training step re-creates the pools recycle dropped, waits for them, and claims again.
+- The blog credits reuse for the claim churn cut (18,312 to 5,869) and warm pools, image streaming and controller rate controls for the latency gains. Batch claiming changes neither image hydration nor warm-pool timing.
+
+**Design: one `SandboxPool` (sync and async) per cluster, with two lifetimes.**
+1. **Per-step cohort**, for training that samples new problems each step (standard GRPO). Each step claims a batch with one group per problem image, `size` set to that image's concurrent rollouts and `min_ready` defaulting to `size`, and releases it when the step ends. Dispatch is the proposal's `rollout_wave` modes: `iter_ready_groups()` by default (a GRPO group starts when its own sandboxes are Ready), `wait_for_quorum()` for joint-batch steps, `events()` for streaming trainers. This is where quorum is used. A batch per step is cheap (one Lease) and keeps the quorum consumers on the initial fill, the only members they cover.
+2. **Held across steps**, for training that repeats problems. The batch stays claimed for the run, sandboxes are git-restored between episodes (`GitRestoreReset`), and quarantine and `max_reuses` rotation use `release_member` plus `acquire` on the same pool.
+
+Both lifetimes compose with reuse inside a step: a group of `K` sandboxes can serve `G` rollouts, `G/K` each.
+
+**Changes from the proposal's RL section** (proposal edits not made yet):
+- Keep `rollout_wave`'s cohort-per-step model, its three dispatch modes, and "Adjacent Paradigms". Expose them through the pool instead of `fleet.run(wave=True, dispatch=...)`, since `run()` returns only when every task is done and can't stream.
+- `rollout_wave` composes with `recycle` instead of excluding it.
+- `min_ready < size` only when the trainer opts in, since a dropped rollout biases rewards.
+- `BatchClaimer` (`batch=True`, per-task `acquire` for eval) is not in this PR. It keeps N creates and N deletes, and it calls `fleet.handle_for` and `config.work_budget`, which don't exist. It's a candidate for a later eval PR once measured.
+
+**Rules for the PR.**
+- Scale pools down after the fill with `set_pool_replicas`, never `unwarm_image`. `unwarm_image` deletes the pool and template, which a later `acquire` needs.
+- `Member` has no pod name, and claim status doesn't mirror it. The RL handle's router-free `exec` gets it once per member through `connect(member).get_pod_name()` (one GET). No SDK change.
+- Pass `fleet.config.labels` to `claim_batch`, so `reap(run_id=...)` and the circuit breaker still see batch claims. `teardown()` releases the pool's batches before its own sweep.
+- At 18k members per batch, the pool keeps its own index of idle members and never calls `members()` per checkout.
+
+**Inputs to the API review (Thread A).**
+- Dynamic groups need only `acquire` and `release_member` for RL. `acquire` keeps its own `timeout` (the pool passes `ready_timeout`).
+- A held batch outlives `events()` by hours, so a renewal problem has to be readable by polling (recommendation 2).
+- The pool catches `BatchError` around the quorum consumers, so a quorum timeout should be one (recommendation 3).
+
+**Open decisions (Brian).**
+- Which lifetime first. That depends on whether the target trainers sample new problems each step. Thread B recommends the per-step cohort if they do.
+- `shutdownTime` for a held batch. `work_budget` has to cover the whole run, which makes the reaper the only prompt crash cleanup. The alternative is to rotate members before their deadline, but `Member` doesn't expose it. Thread B recommends `work_budget` set to the run length for now.
 
 ## Ideas raised but not planned
 
