@@ -167,7 +167,7 @@ Brian's words: "personally, i think we should remove adopt expired." (09:47) and
   - Keep the rule that `wait_for_quorum()` and `iter_ready_groups()` can't follow `events()` (`batch_state.py:435-448`), and keep documenting it, since allowing the reverse order needs a second way to pick the mode.
   - Keep `events()` closing at the fill deadline. `release_not_ready()` deletes the fill members still pending at that point. A member that turned Ready after the deadline and was never streamed stays in `members()` until `release()` or `release_member()`.
   - Add the batch-wide data-plane pool to the Transport PR and the Go SDK to the roadmap.
-- **Open:** whether to document that `PodFailed`/`PodSucceeded` look pending until the terminal-reasons fix lands (coverage gap 5). Recommended: skip it if that fix lands upstream first, otherwise say it in PR 3's `events()` docstring.
+- **Decided (2026-10-08):** no interim note in PR 3's `events()` docstring that `PodFailed`/`PodSucceeded` look pending (coverage gap 5). Brian: "i think it is likely the fix will land before PR 3 is merged" (10:50). Revisit only if the terminal-reasons fix hasn't merged upstream when PR 3 is ready. The fix is on `fix/python-terminal-pod-reasons` (`8076401` when this was written).
 
 ## Ideas raised but not planned
 
