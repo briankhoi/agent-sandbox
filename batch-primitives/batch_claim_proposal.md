@@ -37,12 +37,13 @@ Non-goals:
 
 A batch organizes a set of claims around a singular batch id, and a shared cleanup path. It is composed of one or more `BatchGroups`, each naming a warmpool and how many `Sandboxes` to claim from it. Groups exist to allow for workloads which entail claiming many sandboxes across different images (e.g. eval harnesses).
 
-A `Batch` has five core properties:
+A `Batch` has six core properties:
 1. A randomly generated id with a leading letter so the id is a valid DNS label prefix for the Sandbox/Service names on a cold-started claim (a claim adopted from the warm pool keeps that Sandbox's own pre-generated name instead). The id is attached to each claim in the batch through the `agents.x-k8s.io/batch-id: <id>` label.
 2. A deterministic name for each claim following the format `<batch-id>-<ordinal>`, so a retried create is idempotent. Ordinals come from one counter for the whole batch rather than one per group.
 3. A `coordination.k8s.io/v1` Lease named `batch-<id>` in the same namespace as the claims, carrying the same batch-id label, which the driver renews while it is alive. Stale leases are later used for batch claim cleanup. `Detach` records the next unused ordinal on it (`agents.x-k8s.io/batch-next-ordinal`), so a handle that re-attaches never reuses one.
 4. The annotations `agents.x-k8s.io/batch-group-size` and `agents.x-k8s.io/batch-group-min-ready` written on each claim to record its batch group's original size and minimum-ready count so `GetBatch` can recover them. We choose to write them on the claims to avoid a single point of failure and accept the duplicated cost at scale as a tradeoff. For groups that are created with `size=0`, we omit writing these annotations and have the user recover them via `members(warmpool_name)` (see API reference tab); `GetBatch` also assumes they have an initial `size=0` and thus `min_ready=0`. Claims added later by `Acquire` carry no group annotations either, so `GetBatch` counts exactly the annotated claims as the initial fill, even when every claim of another group is gone.
-5. All of a batch's claims live in one namespace. The controller only resolves a claim's warmPoolRef within the same namespace, and K namespace batch support would lead to K `deletecollection` calls instead of one, and messier RBAC.
+5. The label `agents.x-k8s.io/batch-group: <hash>` on each initial-fill claim, whose value is a hash of the claim's pool name, since pool names can be longer than the 63-character limit on label values. It lets `ReleaseGroup` delete one group with a label-scoped `deletecollection`. The pool name itself is already on the claim in `spec.warmPoolRef.name`. Claims added by `Acquire` carry no group label, so `ReleaseGroup` frees only the group's initial fill.
+6. All of a batch's claims live in one namespace. The controller only resolves a claim's warmPoolRef within the same namespace, and K namespace batch support would lead to K `deletecollection` calls instead of one, and messier RBAC.
 
 `Batch` is designed as a handle following the same implemented pattern [KEP 359](../docs/keps/359-refactor-python-sdk/README.md) established for `Sandbox` in the Python SDK: obtained from a factory method (`ClaimBatch`/`GetBatch`), identified by a server-side id, re-attachable from a different process, and torn down by an explicit function (`Release`/`Detach`).
 
@@ -85,7 +86,7 @@ A batch provides three ways to consume ready claims: streaming them as they beco
 
 Because a group can be created lazily (i.e. `size=0` then claim members via `acquire()`), `WaitForQuorum` and `IterReadyGroups` only check readiness and return for groups with `(initial) size != 0`.
 
-`MinReady` is a group-level field that only affects `WaitForQuorum` and `IterReadyGroups`. If a caller uses neither, `MinReady` has no effect. We calculate group failure to fail fast via `size - terminalFailures - lost - createFailures < minReady`. We classify terminal reasons as ones that never resolve on their own (i.e. not transient errors), lost reasons as the claim being deleted from the batch, and create failures as non-retriable API errors (400, 403, 404, 422) and exhausted 429/5xx retries. Both `WaitForQuorum` and `IterReadyGroups` fail-fast, but with different scopes: `WaitForQuorum` fails the whole call if any single group becomes unreachable, while `IterReadyGroups` scopes the check to each group independently, so one unreachable group never affects groups that already met quorum or are still filling. An unreachable group's yield from `IterReadyGroups` carries an error and no members. A group, or the quorum, that hasn't reached `MinReady` by the fill deadline (`QuorumTimeout` after the last paced create) fails with `BatchTimeoutError`, which is both a `BatchError` and a `TimeoutError`. Cancelling a `WaitForQuorum` call fails the quorum the same way, since nothing could collect its members afterwards.
+`MinReady` is a group-level field that only affects `WaitForQuorum` and `IterReadyGroups`. If a caller uses neither, `MinReady` has no effect. We calculate group failure to fail fast via `size - terminalFailures - lost - createFailures - released < minReady`. We classify terminal reasons as ones that never resolve on their own (i.e. not transient errors), including a pod that has failed or exited, lost reasons as the claim being deleted from the batch by someone other than the caller, released as members the caller deleted with `ReleaseMember`, `ReleaseGroup` or `ReleaseNotReady`, and create failures as non-retriable API errors (400, 403, 404, 422) and exhausted 429/5xx retries. Both `WaitForQuorum` and `IterReadyGroups` fail-fast, but with different scopes: `WaitForQuorum` fails the whole call if any single group becomes unreachable, while `IterReadyGroups` scopes the check to each group independently, so one unreachable group never affects groups that already met quorum or are still filling. An unreachable group's yield from `IterReadyGroups` carries an error and no members. A group, or the quorum, that hasn't reached `MinReady` by the fill deadline (`QuorumTimeout` after the last paced create) fails with `BatchTimeoutError`, which is both a `BatchError` and a `TimeoutError`. Cancelling a `WaitForQuorum` call, or any other exception escaping it (e.g. a `KeyboardInterrupt` in the sync client), fails the quorum the same way, since nothing could collect its members afterwards.
 
 A group whose outcome is an error is finished. The batch creates no more of its claims and never hands out its members. The SDK doesn't delete them on its own, since only the caller knows whether it is done with them. The caller frees the group with `ReleaseGroup`, typically on the error yield from `IterReadyGroups`, or with `Release`. A caller that wants a partial cohort sets a lower `MinReady`. When `WaitForQuorum` fails, the whole batch is finished, no more claims are created, and the caller releases it.
 
@@ -93,19 +94,19 @@ To calculate quorum efficiently, we replace the existing behavior of having a wa
 
 Each informer event updates the batch's per-group counts in constant time, and a local `dispatched` set tracks the claims already handed out, so each claim is returned to the caller at most once. When `WaitForQuorum` resolves, it populates this set with the initial `MinReady` claims across every group and returns them synchronously; `IterReadyGroups` populates it one group's `MinReady` claims at a time, on each yield. Because both draw down the same `dispatched` set for the initial fill, a batch uses at most one of them to avoid races. Any remaining or late-arriving claims that reach Ready, for either model, are checked against then added to `dispatched` and streamed over `Events`, ensuring members returned to the caller are never duplicates.
 
-`Events` closes when the initial fill "settles", which we define as no initial-fill member being able to still arrive (i.e. either ready, terminal or lost). It also closes at the fill deadline, and when `Err` is set. `Events` covers only the initial fill, so a member that fails or is deleted after it closes shows up in `Members` and as failing commands, not as an event. This allows a caller to write `for event in batch.events()` as its dispatch loop and finish as soon as the work is done.
+`Events` closes when the initial fill "settles", which we define as no initial-fill member being able to still arrive (i.e. each is Ready, failed, lost, released, or was never created). It also closes at the fill deadline, and when `Err` is set. `Events` covers only the initial fill, so a member that fails or is deleted after it closes shows up in `Members` and as failing commands, not as an event. This allows a caller to write `for event in batch.events()` as its dispatch loop and finish as soon as the work is done.
 
 #### Liveness
 
 A `coordination.k8s.io/v1` Lease named `batch-<id>` is created before claim creation, and represents the batch's liveness state. While the driver is alive a background renewal loop (started automatically inside `ClaimBatch`) renews the Lease every `RenewInterval`.
 
-If renewal itself starts failing while the driver is alive (writes throttled or erroring), `LeaseDegraded()` reports true until a renewal succeeds again, so the caller can check it at any point, including long after `Events` has closed, and checkpoint in-progress work or abort the batch.
+If renewal itself starts failing while the driver is alive (writes throttled or erroring), `LeaseDegraded()` reports true until a renewal succeeds again (it also turns true when another holder takes over the Lease or the Lease is deleted), so the caller can check it at any point, including long after `Events` has closed, and checkpoint in-progress work or abort the batch.
 
 We use the Lease in conjunction with a new stateless reaper process (likely running as a CronJob) that we introduce, which is responsible for deleting the claims of any batch whose Lease has gone stale.
 
-The reaper runs every one to two minutes. In each namespace it is bound to, it lists the batch Leases and batch claims, and deletes the Lease and then the claims of any batch whose Lease has gone stale (Cleanup, path 2). It also deletes batch claims that have no Lease at all, once the newest of them is old enough that it can't belong to a batch that is still being created. Without the reaper, a driver that dies without running any code (`SIGKILL`, OOM kill, node preemption) never calls `Release`, and its claims hold their sandboxes until the Shutdown Backstop below.
+The reaper runs every one to two minutes and deletes the Lease and then the claims of any batch whose Lease has gone stale (Cleanup, path 2), as described under Reaper below. Without the reaper, a driver that dies without running any code (`SIGKILL`, OOM kill, node preemption) never calls `Release`, and its claims hold their sandboxes until the Shutdown Backstop below.
 
-The reaper waits rather than risk deleting live work. The driver renews the Lease every `RenewInterval`, a third of `LeaseDuration`. If no renewal succeeds for a full `LeaseDuration`, counted from when the last successful one was sent, the Lease is expired: the driver stops renewing and stops starting new claim creates, and `err()` reports `BatchLeaseExpiredError`. The reaper treats a Lease as stale only after `renewTime + LeaseDuration` plus its own clock-skew margin, so a driver that has lost its Lease has already stopped by the time the reaper acts, and `GetBatch` no longer re-attaches the batch. The reaper also deletes a Lease only if it hasn't changed since the reaper read it at least one `RenewInterval` earlier, so a healthy driver whose clock runs behind is never mistaken for a dead one. Because the reaper deletes the Lease before the claims, a driver or `GetBatch` that looks afterwards finds no Lease and reports `BatchLeaseExpiredError`. A detached batch needs no special case, because `Detach` sets the Lease to go stale once its grace period ends. `Release` stops renewing before it deletes and never writes the Lease, so a reaper that runs during a slow `Release` doesn't interfere with it.
+The reaper waits rather than risk deleting live work. The driver renews the Lease every `RenewInterval`, a third of `LeaseDuration`. If no renewal succeeds for a full `LeaseDuration`, counted from when the last successful one was sent, the Lease is expired: the driver stops renewing and stops starting new claim creates, and `err()` reports `BatchLeaseExpiredError`. The reaper treats a Lease as stale only after `renewTime + LeaseDuration` plus its own clock-skew margin, so a driver that has lost its Lease has already stopped by the time the reaper acts. A detached batch needs no special case, because `Detach` sets the Lease to go stale once its grace period ends. `Release` stops renewing before it deletes and never writes the Lease, so a reaper that runs during a slow `Release` doesn't interfere with it.
 
 #### Shutdown Backstop
 
@@ -117,9 +118,41 @@ The initial fill's claims share one `shutdownTime`, computed once when the batch
 
 There are three ways a batch is cleaned up:
 
-1. `Batch.Release()`, called explicitly or by the client's cleanup (in Python, `delete_all()` or the exit hook of a client created with `cleanup=True`), stops the informer and the renewal loop, makes a single call to the Kubernetes `deletecollection` API scoped to the batch's label, then deletes the Lease. As `deletecollection` is not atomic, `Release` re-lists by label and retries until the selector is empty.
+1. `Batch.Release()`, called explicitly or by the client's cleanup (in Python, `delete_all()` or the exit hook of a client created with `cleanup=True`), stops the informer and the renewal loop, makes a single call to the Kubernetes `deletecollection` API scoped to the batch's label, then deletes the Lease. As `deletecollection` is not atomic, `Release` re-lists by label and repeats the delete until no claim is left that isn't already being deleted, and raises after three rounds in a row that make no progress.
 2. Where the driver runs no code at all (`SIGKILL`, OOM kill, node preemption), the Lease is no longer renewed and the reaper deletes the Lease, then issues the same label-scoped `deletecollection` to delete the claims.
 3. The `shutdownTime` on the claim passes, and the claim is consequently deleted.
+
+#### Reaper
+
+The reaper is a stateless process that deletes the claims of batches whose driver is gone. It relies only on the Lease contract above. It reads a Lease's `renewTime`, `leaseDurationSeconds` (below, *D*) and resourceVersion, never writes a Lease, and only ever deletes. Until a reaper is deployed, each claim's `shutdownTime` is the only crash cleanup.
+
+**Scope.** The reaper takes an explicit list of namespaces, defaulting to its own, and never lists across the cluster. Since RBAC can't restrict `deletecollection` by label, it enforces its scope in code. It deletes claims only with the selector `agents.x-k8s.io/batch-id=<id>` for an id that passes batch-id validation, never with an empty selector, and touches only Leases named `batch-<id>` whose label matches. A 403 in one namespace is logged and the run moves on.
+
+**Staleness.** A Lease is stale when `now > renewTime + D + ReaperSkewMargin` by the reaper's clock. The margin (30 to 60 s by default, never below the SDK's own clock-skew margin) only ever adds waiting, because reaping early destroys running work while waiting only holds idle quota. This puts three thresholds in order:
+1. `GetBatch` stops re-attaching a batch at `renewTime + D - ClockSkewMargin`.
+2. A driver that can't renew declares itself expired and stops renewing *D* after it sent its last successful renewal, on its own monotonic clock.
+3. The reaper deletes only after `renewTime + D + ReaperSkewMargin`, and only if the Lease hasn't changed for one `RenewInterval`.
+
+As long as real clock skew stays below the margin, the driver has given up before the reaper deletes anything. Worst-case crash cleanup is `D + margin + RenewInterval + CronJob period`, plus deletion time.
+
+**Each run, per namespace:**
+1. List the batch claims, then the batch Leases. Claims go first because `ClaimBatch` creates its Lease before any claim, so a claim the first list sees has a Lease the second list also sees unless it is really gone.
+2. Pick the stale Leases and record their resourceVersions.
+3. Wait at least one `RenewInterval` from step 1 (one shared wait per namespace).
+4. Delete each stale Lease with a resourceVersion precondition from step 1. A 409 means a renewal, `Detach` or takeover happened, so the batch is skipped. A 404 means `Release` or another reaper deleted it, so go on.
+5. Delete the claims with the same label-scoped `deletecollection` rounds `Release` uses.
+
+Once the Lease is gone, a driver that wakes up and `GetBatch` both see `BatchLeaseExpiredError`, so neither can resume a batch being reaped. Two overlapping reapers are safe, since only one precondition delete succeeds and both only delete claims afterwards. A `Release` that overlaps a reaper is also safe, since both only delete and `Release` treats a missing Lease as success.
+
+**Claims without a Lease.** A claim with a batch-id label but no Lease never belongs to a batch still being created, since the Lease is created first and deleted last. Such claims come from a reaper that died between steps 4 and 5, a Lease deleted by hand, or a create that landed after `Release` or after the driver lost its Lease. The reaper sweeps them with the same rounds once the batch's newest claim is older than `unleased_grace` (for example 10 minutes), re-reading the Lease just before deleting. A stale Lease with no claims left is deleted alone, with the same confirmation.
+
+**Cost.** Each run lists the batch Leases (O(B)) and batch claims (O(N)) per namespace, paged and served from the apiserver's watch cache (`resourceVersion="0"`). A slightly old answer is harmless, since every delete is guarded by the precondition, the Lease re-read, or `unleased_grace`. Only the per-batch "no claims left" check uses a consistent read.
+
+**Deployment.** The reaper ships as a Python module in the SDK (`python -m k8s_agent_sandbox.batch_reaper`), so it shares the SDK's staleness check, batch-id validation and `Release`'s delete rounds instead of reimplementing them. `examples/batch-reaper/` holds a CronJob (every 1 to 2 minutes, `concurrencyPolicy: Forbid`), a ServiceAccount, the ClusterRole below, a RoleBinding template, and a README. It takes `--namespaces`, `--skew-margin`, `--unleased-grace` and `--dry-run`, logs one line per reaped batch, and exits non-zero on errors so failed runs show up as failed Jobs.
+
+**Open questions.**
+- Where the reaper lives and how its image is published. A Go binary under `cmd/` is the alternative, at the cost of a new image and release tooling changes.
+- Per-run namespaces. A reaper bound to a fixed namespace list doesn't cover a namespace created per run (as `agent-sandbox-rl`'s `run_isolation="namespace"` does) unless each run also binds the reaper there.
 
 ### Batch Lifecycle Diagram
 
@@ -204,19 +237,20 @@ The ClusterRole is granted with a RoleBinding in each namespace the reaper cover
 ### Core Batch Methods
 
 - `claim_batch`: Create a new batch, returning a `Batch` handle. Errors upon `min_ready` > `size`.
-- `get_batch`: Return a batch handle (no create) of an existing batch by id, resuming lease renewal. Only a detached batch can be re-attached, within its grace period
+- `get_batch`: Return a batch handle (no create) of an existing batch by id, resuming lease renewal. Only a detached batch can be re-attached, within its grace period. Groups come back in their original order, and `quorum_timeout` and `work_budget` are read back from the Lease
 - `wait_for_quorum`: Blocks until every group has `min_ready` Ready members and returns them, or raises once that can no longer happen or at the fill deadline. It takes no timeout of its own, since the batch's `quorum_timeout` already bounds it
 - `connect(member)`: Returns a connected `Sandbox` (same return type as `Client.GetSandbox`) for interactive use. In contrast to `GetSandbox`, because information is already stored in `Member`, it skips the API calls to get the Sandbox and claim details, seeds the connection with the member's pod IP, and connects to the `Sandbox` directly.
-- `acquire(warmpool)`: Adds a member to the batch from any pool in its namespace, not only the pools named at create time. Blocks until Ready and returns it, and raises if it fails terminally or isn't Ready within its `timeout`, which defaults to the batch's `quorum_timeout`
+- `acquire(warmpool)`: Adds a member to the batch from any pool in its namespace, not only the pools named at create time. Blocks until Ready and returns it, and raises if it fails terminally or isn't Ready within its `timeout`, which defaults to the batch's `quorum_timeout`. Its claim carries no group annotations or group label, so it is never part of the initial fill, and gets its own `shutdownTime` computed locally, with no extra API call
 - `release_member(member)`: Deletes one member's claim, with no successor
-- `release_group(warmpool)`: Deletes every claim of one group, pending ones included, with a label-scoped `deletecollection`. Its members are never handed out afterwards
+- `release_group(warmpool)`: Deletes every initial-fill claim of one group, pending ones included, with label-scoped `deletecollection` rounds like `release`, and deletes on sight a claim of the group whose create lands afterwards. Its members are never handed out afterwards. Works in any consumption mode
 - `events`: A live channel of the initial fill's member transitions, closed once the fill settles, at the fill deadline, or when `err` is set
 - `lease_degraded`: Whether Lease renewal is currently failing. It can be polled at any time, including after `events` has closed
 - `iter_ready_groups`: A live channel yielding once per group, as soon as that group's own `min_ready` is met or becomes unreachable, independent of other groups. Mutually exclusive with `wait_for_quorum` on the same batch
 - Cleanup
     - `release`: Stop the informer and renewal, `deletecollection` the batch label, delete the Lease
     - `detach`: Stops the informer and renewal but leaves the claims alive for a later `get_batch`.
-    - `release_not_ready`: Deletes only the members that never reached `Ready`
+    - `release_not_ready`: Ends the fill (creates not yet sent are skipped) and deletes every member that isn't Ready and was never handed out, except one an in-flight `acquire` is waiting on. Members are marked released before any delete, so one that turns Ready afterwards is never handed out. Released members count as unable to arrive, so calling it before a quorum consumer has decided can make a group or the quorum unreachable
+    - Members the caller releases (`release_member`, `release_group`, `release_not_ready`) are dropped from `members()`, failed ones included, and emit no `MEMBER_LOST`
 
 ### Python
 Helper/supporting classes:
@@ -263,6 +297,14 @@ class GroupReady:
 
 class BatchTimeoutError(BatchError, TimeoutError):
     """A group, the quorum, or an acquire wasn't Ready in time."""
+
+class QuorumUnreachableError(BatchError):
+    """A group can no longer reach min_ready."""
+    warmpool: str
+    size: int
+    min_ready: int
+    failed: int
+    lost: int
 ```
 
 Claim batch:
@@ -306,7 +348,7 @@ class AsyncSandboxBatch:
 
     async def wait_for_quorum(self) -> list[Member]: ...
     def iter_ready_groups(self) -> AsyncIterator[GroupReady]: ...         # mutually exclusive with wait_for_quorum
-    def members(self, warmpool: str | None = None) -> list[Member]: ...   # current snapshot
+    def members(self, warmpool: str | None = None) -> list[Member]: ...   # current snapshot, without released members
     def events(self) -> AsyncIterator[BatchEvent]: ...
     def err(self) -> Exception | None: ...
     def lease_degraded(self) -> bool: ...
@@ -740,7 +782,7 @@ We analyze batch resource costs at scale across 4 axes:
 - **Batch Size (N):**
   - **Informer Memory:** Scales as O(N), as the client stores every claim in local memory to track its readiness and status.
   - **Watch Event Volume:** Emits O(N) events over the batch lifecycle (claim creation, status phase changes, deletion).
-  - **List Cost:** Attaching with `GetBatch`, re-listing after a watch 410, and each `Release` round read every claim in the batch, O(N) per call. At tens of thousands of claims these lists are paged (`limit` and `continue`), and `Release` reads only metadata.
+  - **List Cost:** Attaching with `GetBatch`, re-listing after a watch 410, and each `Release` round read every claim in the batch, O(N) per call. At tens of thousands of claims these lists can be paged (`limit` and `continue`), and `Release` can read only metadata; we build each of these once a measurement shows it matters.
 - **Warm Pool Groups (G):**
   - Supporting G groups in a single batch consolidates multi-image rollouts into a single label-scoped watch and a single `Lease` per cluster, avoiding the overhead of managing G independent single-pool batches.
 - **Active Batches (B):**

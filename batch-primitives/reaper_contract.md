@@ -133,6 +133,8 @@ Edits to `batch_claim_proposal.md` so it matches this contract. Applied to the p
 5. **Reaper RBAC (`:170-184`).** Lease verbs become `get`, `list`, `delete` (no `watch`, no `update`). Add one sentence that the ClusterRole is granted with a RoleBinding in each covered namespace, never a ClusterRoleBinding, because RBAC can't limit `deletecollection` to batch claims.
 6. **Scalability (`:681-682`).** Replace the reaper's "cache memory and watch event volume" bullet with "Each reaper run lists the batch Leases (O(B)) and the batch claims (O(N)) in each bound namespace, paged and from the apiserver's watch cache; it keeps no watch or cache between runs."
 
+On 2026-10-13 the proposal also gained a "Reaper" section under Batch Lifecycle, condensed from this contract (scope, staleness, execution, unleased claims, cost, deployment, open questions), and the Liveness paragraphs were shortened to point to it.
+
 Everything else that mentions the reaper (`:18`, `:43`, `:103`, `:511`, `:691`, `:697-704`) is still accurate.
 
 #### Open Questions
