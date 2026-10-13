@@ -377,7 +377,7 @@ class K8sHelper:
 
     def delete_sandbox_claim(
         self, name: str, namespace: str, _request_timeout: float | tuple[float, float] | None = None,
-        *, expected_uid: str | None = None,
+        *, expected_uid: str | None = None, log_level: int = logging.INFO,
     ) -> None:
         """Deletes a SandboxClaim custom resource.
 
@@ -385,6 +385,7 @@ class K8sHelper:
             _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
                 pair) forwarded to the underlying urllib3-based request.
             expected_uid: If provided, delete only the Claim with this UID.
+            log_level: Log level for the logger during this function call.
         """
         delete_kwargs: dict[str, Any] = {}
         if expected_uid is not None:
@@ -401,7 +402,7 @@ class K8sHelper:
                 _request_timeout=_request_timeout,
                 **delete_kwargs,
             )
-            logging.info(f"Terminated SandboxClaim: {name}")
+            logging.log(log_level, f"Terminated SandboxClaim: {name}")
         except client.ApiException as e:
             if e.status != 404:
                 logging.error(f"Error terminating SandboxClaim {name}: {e}")
