@@ -87,7 +87,7 @@ Because a group can be created lazily (i.e. `size=0` then claim members via `acq
 
 `MinReady` is a group-level field that only affects `WaitForQuorum` and `IterReadyGroups`. If a caller uses neither, `MinReady` has no effect. We calculate group failure to fail fast via `size - terminalFailures - lost - createFailures < minReady`. We classify terminal reasons as ones that never resolve on their own (i.e. not transient errors), lost reasons as the claim being deleted from the batch, and create failures as non-retriable API errors (400, 403, 404, 422) and exhausted 429/5xx retries. Both `WaitForQuorum` and `IterReadyGroups` fail-fast, but with different scopes: `WaitForQuorum` fails the whole call if any single group becomes unreachable, while `IterReadyGroups` scopes the check to each group independently, so one unreachable group never affects groups that already met quorum or are still filling. An unreachable group's yield from `IterReadyGroups` carries an error and no members. A group, or the quorum, that hasn't reached `MinReady` by the fill deadline (`QuorumTimeout` after the last paced create) fails with `BatchTimeoutError`, which is both a `BatchError` and a `TimeoutError`. Cancelling a `WaitForQuorum` call fails the quorum the same way, since nothing could collect its members afterwards.
 
-A group whose outcome is an error is finished. The batch creates no more of its claims, and in `IterReadyGroups` mode it deletes the claims it already created, since none of them can be handed out and they would otherwise hold their sandboxes until `Release`. A caller that wants a partial cohort sets a lower `MinReady`. When `WaitForQuorum` fails, the whole batch is finished, no more claims are created, and the caller releases it.
+A group whose outcome is an error is finished. The batch creates no more of its claims and never hands out its members. The SDK doesn't delete them on its own, since only the caller knows whether it is done with them. The caller frees the group with `ReleaseGroup`, typically on the error yield from `IterReadyGroups`, or with `Release`. A caller that wants a partial cohort sets a lower `MinReady`. When `WaitForQuorum` fails, the whole batch is finished, no more claims are created, and the caller releases it.
 
 To calculate quorum efficiently, we replace the existing behavior of having a watch per claim with a single watch (informer) on the `SandboxClaims` collection, scoped to the batch's namespace and batch's id label to aggregate readiness for each claim in the batch. As the batch id label covers every group, adding groups adds no watches and the informer buckets each event by the claim's own `spec.warmPoolRef.name`.
 
@@ -209,6 +209,7 @@ The ClusterRole is granted with a RoleBinding in each namespace the reaper cover
 - `connect(member)`: Returns a connected `Sandbox` (same return type as `Client.GetSandbox`) for interactive use. In contrast to `GetSandbox`, because information is already stored in `Member`, it skips the API calls to get the Sandbox and claim details, seeds the connection with the member's pod IP, and connects to the `Sandbox` directly.
 - `acquire(warmpool)`: Adds a member to the batch from any pool in its namespace, not only the pools named at create time. Blocks until Ready and returns it, and raises if it fails terminally or isn't Ready within its `timeout`, which defaults to the batch's `quorum_timeout`
 - `release_member(member)`: Deletes one member's claim, with no successor
+- `release_group(warmpool)`: Deletes every claim of one group, pending ones included, with a label-scoped `deletecollection`. Its members are never handed out afterwards
 - `events`: A live channel of the initial fill's member transitions, closed once the fill settles, at the fill deadline, or when `err` is set
 - `lease_degraded`: Whether Lease renewal is currently failing. It can be polled at any time, including after `events` has closed
 - `iter_ready_groups`: A live channel yielding once per group, as soon as that group's own `min_ready` is met or becomes unreachable, independent of other groups. Mutually exclusive with `wait_for_quorum` on the same batch
@@ -313,6 +314,7 @@ class AsyncSandboxBatch:
     async def connect(self, member: Member) -> AsyncSandbox: ...
     async def acquire(self, warmpool: str, timeout: float | None = None) -> Member: ...
     async def release_member(self, member: Member) -> None: ...
+    async def release_group(self, warmpool: str) -> None: ...
 
     async def release(self) -> None: ...
     async def release_not_ready(self) -> None: ...
@@ -394,6 +396,7 @@ try:
         async for group in batch.iter_ready_groups():
             if group.error is not None:
                 group_errors.append(group.error)   # surfaced below, not dropped; other groups keep flowing
+                await batch.release_group(group.warmpool)   # free its sandboxes now, not at release()
                 continue
             for m in group.members:
                 tg.create_task(run_one(batch, m))
