@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from .sandbox import Sandbox
     from .sandbox_client import SandboxClient
 
+logger = logging.getLogger(__name__)
+
 # Timeout used by the apiserver to close the stream after this duration. This is used so the watcher
 # thread periodically rechecks for a stop request instead of blocking on the connection indefinitely.
 _WATCH_TIMEOUT_SECONDS = 30
@@ -307,7 +309,7 @@ class SandboxBatch:
             try:
                 sandbox.close_connection()
             except Exception as e:
-                logging.warning(
+                logger.warning(
                     f"Batch '{self.batch_id}' failed to close a cached sandbox connection "
                     f"during detach: {e}"
                 )
@@ -317,7 +319,7 @@ class SandboxBatch:
         )
         if lease is not None:
             if lease.spec.holder_identity != self._holder_identity:
-                logging.info(
+                logger.info(
                     f"Batch '{self.batch_id}' Lease is held by "
                     f"'{lease.spec.holder_identity}', not this handle; treating as released"
                 )
@@ -338,7 +340,7 @@ class SandboxBatch:
 
         with self._lock:
             self._lease_released = True
-        self._client._unregister_batch(self.namespace, self.batch_id)
+        self._client._unregister_batch(self)
 
     def _stop_background_threads(self) -> None:
         """Stops the watcher and lease renewal loop."""
@@ -445,7 +447,7 @@ class SandboxBatch:
     def _mark_renewal_degraded(self, reason: object) -> None:
         """Sets ``_renewal_degraded``, logging the first failure of each episode. Requires ``_lock``."""
         if not self._renewal_degraded:
-            logging.info(f"Batch '{self.batch_id}' lease renewal degraded: {reason}")
+            logger.info(f"Batch '{self.batch_id}' lease renewal degraded: {reason}")
             self._renewal_degraded = True
 
     def _renew_request_timeout(self) -> float:
