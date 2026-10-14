@@ -796,6 +796,11 @@ def connect(member: Member) -> "Sandbox"
 
 Returns a connected ``Sandbox`` for a ready member. If this handle is already connected
 to the Sandbox, it reuses the existing connection, otherwise it creates a new one and caches it for future calls.
+The connection starts from the pod IP the batch's watch reports, without reading the Sandbox.
+
+The batch closes a cached connection once its member stops being Ready or moves to another
+pod IP, since the old IP may go to another sandbox. Call ``connect`` again once the member
+is Ready to get a new one.
 
 Raises ``SandboxNotReadyError`` if the member isn't ready.
 

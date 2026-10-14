@@ -60,7 +60,7 @@ class Sandbox:
             namespace=self.namespace,
             connection_config=self.connection_config,
             k8s_helper=self.k8s_helper,
-            get_pod_ip=self.get_pod_ip,
+            get_pod_ip=self._resolve_pod_ip,
             get_pod_name=self.get_pod_name,
             get_service_fqdn=self.get_service_fqdn,
         )
@@ -78,6 +78,8 @@ class Sandbox:
         self._is_closed = False
         self._pod_name: str | None = None
         self._sandbox_name_hash: str | None = None
+        # Set by a batch's connect() to the pod IP its watch already saw.
+        self._seeded_pod_ip: str | None = None
         
     def get_pod_name(self) -> str:
         """Fetches the Sandbox object from Kubernetes and retrieves its current pod name."""
@@ -119,6 +121,15 @@ class Sandbox:
         status_data = sandbox_object.get("status") or {}
         pod_ips = status_data.get('podIPs', [])
         return select_pod_ip(pod_ips)
+
+    def _resolve_pod_ip(self) -> str | None:
+        """The connector's pod IP lookup. It uses a seeded pod IP once, so the first lookup skips a
+        Sandbox GET, and any later one, such as after the connector drops a failed IP, reads the
+        Sandbox again."""
+        seeded, self._seeded_pod_ip = self._seeded_pod_ip, None
+        if seeded is not None:
+            return seeded
+        return self.get_pod_ip()
 
     def get_service_fqdn(self) -> str | None:
         """Return the controller-reported Service FQDN, when available."""

@@ -29,6 +29,7 @@ from .constants import (
 )
 from .exceptions import BatchError
 from .models import BatchGroup, Member, MemberState
+from .utils import select_pod_ip
 
 CREATE_FAILED_REASON = "CreateFailed"
 
@@ -141,6 +142,17 @@ def derive_member(claim_obj: dict) -> Member:
         state=state,
         reason=reason,
         message=message,
+    )
+
+
+def still_reaches(member: Member | None, pod_ip: str | None) -> bool:
+    """Returns whether a connection made to ``member`` at ``pod_ip`` still reaches it. Once the
+    member stops being Ready or moves to another pod IP, the old IP may go to another sandbox,
+    even one in the same batch."""
+    return (
+        member is not None
+        and member.state is MemberState.READY
+        and select_pod_ip(member.pod_ips) == pod_ip
     )
 
 

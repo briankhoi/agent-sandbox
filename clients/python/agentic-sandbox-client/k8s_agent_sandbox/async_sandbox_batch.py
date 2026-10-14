@@ -51,7 +51,7 @@ from .exceptions import (
     SandboxWarmPoolNotFoundError,
 )
 from .models import BatchGroup, Member, MemberState
-from .utils import construct_sandbox_claim_lifecycle_spec
+from .utils import construct_sandbox_claim_lifecycle_spec, select_pod_ip
 
 if TYPE_CHECKING:
     from .async_sandbox import AsyncSandbox
@@ -129,7 +129,8 @@ class AsyncSandboxBatch:
         self._list_resource_version = list_resource_version
 
         self._lock = asyncio.Lock()
-        self._connected: dict[str, "AsyncSandbox"] = {}
+        # Each cached connection, with the pod IP it was made to.
+        self._connected: dict[str, tuple["AsyncSandbox", str | None]] = {}
         self._detached = False
         self._lease_released = False
         self._renewal_degraded = False
@@ -396,6 +397,11 @@ class AsyncSandboxBatch:
     async def connect(self, member: Member) -> "AsyncSandbox":
         """Returns a connected ``AsyncSandbox`` for a ready member. If this handle is already connected
         to the Sandbox, it reuses the existing connection, otherwise it creates a new one and caches it for future calls.
+        The connection starts from the pod IP the batch's watch reports, without reading the Sandbox.
+
+        The batch closes a cached connection once its member stops being Ready or moves to another
+        pod IP, since the old IP may go to another sandbox. Call ``connect`` again once the member
+        is Ready to get a new one.
 
         Raises ``SandboxNotReadyError`` if the member isn't ready.
         """
@@ -403,7 +409,7 @@ class AsyncSandboxBatch:
             self._check_active()
             cached = self._connected.get(member.claim_name)
             if cached is not None:
-                return cached
+                return cached[0]
             # No name resolution or existence check as the batch's watch cache already knows the member's sandbox_name
             current = self._state.get_member(member.claim_name)
             if current is None or current.state is not MemberState.READY:
@@ -418,7 +424,10 @@ class AsyncSandboxBatch:
                 tracer_config=self._client.tracer_config,
                 k8s_helper=self._client.k8s_helper,
             )
-            self._connected[member.claim_name] = sandbox
+            # The watch already has the pod IP, so the first request needs no Sandbox GET.
+            pod_ip = select_pod_ip(current.pod_ips)
+            sandbox._seeded_pod_ip = pod_ip
+            self._connected[member.claim_name] = (sandbox, pod_ip)
             return sandbox
 
     def err(self) -> Exception | None:
@@ -471,8 +480,23 @@ class AsyncSandboxBatch:
 
     async def _close_cached_connections(self, action: str) -> None:
         async with self._lock:
-            connected = list(self._connected.values())
+            connected = [sandbox for sandbox, _ in self._connected.values()]
             self._connected.clear()
+        await self._close_connections(connected, action)
+
+    def _pop_stale_connections(self, claim_names: list[str]) -> list["AsyncSandbox"]:
+        """Removes and returns the cached connections that no longer reach their member, so the
+        caller can close them outside ``_lock``. Requires ``_lock``."""
+        stale = []
+        for claim_name in claim_names:
+            cached = self._connected.get(claim_name)
+            if cached is not None and not batch_state.still_reaches(
+                self._state.get_member(claim_name), cached[1]
+            ):
+                stale.append(self._connected.pop(claim_name)[0])
+        return stale
+
+    async def _close_connections(self, connected: list["AsyncSandbox"], action: str) -> None:
         for sandbox in connected:
             try:
                 await sandbox.close_connection()
@@ -561,6 +585,8 @@ class AsyncSandboxBatch:
                     )
                     async with self._lock:
                         self._state.resync_from_list(items)
+                        stale = self._pop_stale_connections(list(self._connected))
+                    await self._close_connections(stale, "a re-list")
                     relist = False
                 async for event in self._client.k8s_helper.watch_sandbox_claims(
                     self.namespace, label_selector, rv, _WATCH_TIMEOUT_SECONDS, _request_timeout=_WATCH_REQUEST_TIMEOUT
@@ -573,11 +599,14 @@ class AsyncSandboxBatch:
                         rv = seen_rv
                     if event_type == "BOOKMARK":
                         continue
+                    claim_name = (obj.get("metadata") or {}).get("name", "")
                     async with self._lock:
                         if event_type == "DELETED":
-                            self._state.mark_lost((obj.get("metadata") or {}).get("name", ""))
+                            self._state.mark_lost(claim_name)
                         elif event_type in ("ADDED", "MODIFIED"):
                             self._state.upsert_claim(obj)
+                        stale = self._pop_stale_connections([claim_name])
+                    await self._close_connections(stale, "a watch event")
                 # The watch ended at its timeout, which is not a failure.
                 failures = 0
             except asyncio.CancelledError:
