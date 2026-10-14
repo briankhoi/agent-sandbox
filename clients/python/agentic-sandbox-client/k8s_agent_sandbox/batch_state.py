@@ -29,7 +29,7 @@ from .constants import (
     BATCH_GROUP_SIZE_ANNOTATION,
     TERMINAL_CLAIM_READY_REASONS,
 )
-from .exceptions import BatchError, BatchTimeoutError, QuorumUnreachableError
+from .exceptions import BatchError, BatchTimeoutError, QuorumUnreachableError, TerminalMemberError
 from .models import BatchEvent, BatchEventType, BatchGroup, GroupReady, Member, MemberState
 
 CREATE_FAILED_REASON = "CreateFailed"
@@ -171,12 +171,16 @@ class BatchState:
     ``iter_ready_groups()`` yield, and decides the quorum ``wait_for_quorum()`` returns, in O(1).
     """
 
-    def __init__(self, batch_id: str, groups: Sequence[BatchGroup]) -> None:
+    def __init__(self, batch_id: str, groups: Sequence[BatchGroup], next_ordinal: int = 0) -> None:
         self.batch_id = batch_id
         self.groups: list[BatchGroup] = list(groups)
         self.size = sum(g.size for g in self.groups)
 
         self._members: dict[str, Member] = {}
+        # Ordinals are never reused, since a released claim may still be terminating when its
+        # successor is created. The fill takes 0 to size - 1, and ``next_ordinal`` is the one a
+        # detached handle recorded.
+        self._next_ordinal = max(self.size, next_ordinal)
         # Claims of the initial fill. Ordinals can't tell them apart from later claims, since a
         # re-attached handle only knows the sizes of the groups that still have claims.
         self._fill_claims: set[str] = set()
@@ -230,6 +234,9 @@ class BatchState:
         claim_name = metadata.get("name", "")
         if claim_name in self._released:
             return None
+        ordinal = parse_ordinal(self.batch_id, claim_name)
+        if ordinal is not None:
+            self._next_ordinal = max(self._next_ordinal, ordinal + 1)
         annotations = metadata.get("annotations") or {}
         member = derive_member(claim_obj)
         previous = self._members.get(claim_name)
@@ -352,6 +359,45 @@ class BatchState:
         ]
         self._pending_deletes.update(names)
         return names
+
+    @property
+    def next_ordinal(self) -> int:
+        """The lowest ordinal no claim of the batch has taken."""
+        return self._next_ordinal
+
+    def take_claim_name(self) -> str:
+        """Returns a ``<batch-id>-<ordinal>`` claim name with the next unused ordinal."""
+        claim_name = f"{self.batch_id}-{self._next_ordinal}"
+        self._next_ordinal += 1
+        return claim_name
+
+    def acquired_member(self, claim_name: str) -> Member | None:
+        """Returns a claim added by ``acquire()`` once it is Ready, or ``None`` while it is pending.
+
+        Raises:
+            TerminalMemberError: If the claim failed, or was deleted, before it was Ready.
+        """
+        member = self._members.get(claim_name)
+        if member is None or member.state is MemberState.PENDING:
+            return None
+        if member.state is MemberState.READY:
+            return member
+        raise TerminalMemberError(member)
+
+    def drop_acquired(self, claim_name: str, created: bool) -> bool:
+        """Drops a claim that ``acquire()`` didn't get Ready, so it is never handed out and later
+        watch events for it are ignored. Returns whether its claim still needs deleting, which it
+        doesn't if it is already gone or its create failed.
+        """
+        self._released.add(claim_name)
+        member = self._members.pop(claim_name, None)
+        if not created:
+            return False
+        if member is None:
+            # The create succeeded, but the watch hasn't seen the claim yet.
+            self._pending_deletes.add(claim_name)
+            return True
+        return bool(self._take_deletes([member]))
 
     def note_deleted(self, claim_name: str) -> None:
         """Records that a released claim's delete succeeded."""

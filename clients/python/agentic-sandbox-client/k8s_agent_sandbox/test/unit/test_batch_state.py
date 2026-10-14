@@ -17,7 +17,7 @@ import unittest
 from pydantic import ValidationError
 
 from k8s_agent_sandbox import batch_state
-from k8s_agent_sandbox.exceptions import BatchError, BatchTimeoutError, QuorumUnreachableError
+from k8s_agent_sandbox.exceptions import BatchError, BatchTimeoutError, QuorumUnreachableError, TerminalMemberError
 from k8s_agent_sandbox.models import BatchEventType, BatchGroup, MemberState
 from k8s_agent_sandbox.constants import (
     BATCH_GROUP_MIN_READY_ANNOTATION,
@@ -699,6 +699,58 @@ class TestRelease(unittest.TestCase):
         self.assertEqual(outcomes["pool-a"].error.released, 1)  # Decided at the first release.
         self.assertEqual([m.claim_name for m in outcomes["pool-b"].members], ["b1-3"])
         self.assertTrue(state.fill_settled())
+
+
+class TestOrdinals(unittest.TestCase):
+
+    def test_claim_names_continue_past_the_fill_listed_claims_and_a_recorded_ordinal(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=2))
+        self.assertEqual(state.take_claim_name(), "b1-2")
+        state.upsert_claim(_ready("b1-5", fill=False))
+        self.assertEqual(state.take_claim_name(), "b1-6")
+        for recorded, want in ((9, ("b1-9", 10)), (1, ("b1-2", 3))):
+            reattached = batch_state.BatchState("b1", [BatchGroup(warmpool="pool-a", size=2)], recorded)
+            self.assertEqual((reattached.take_claim_name(), reattached.next_ordinal), want)
+
+
+class TestAcquired(unittest.TestCase):
+
+    def test_outcomes_drop_and_deletes(self):
+        cases = {
+            "ready": (_ready("b1-1", fill=False), "ready", ["b1-1"]),
+            "pending": (_claim("b1-1", conditions=_NOT_READY), None, ["b1-1"]),
+            "terminal": (_claim("b1-1", conditions=_TERMINAL), MemberState.FAILED, ["b1-1"]),
+            "lost": (_claim("b1-1", conditions=_NOT_READY), MemberState.LOST, []),
+            "not seen yet": (None, None, ["b1-1"]),
+        }
+        for name, (claim, outcome, deletes) in cases.items():
+            with self.subTest(name):
+                state = _state(BatchGroup(warmpool="pool-a", size=1, min_ready=1), mode=batch_state.ConsumerMode.GROUP)
+                if claim is not None:
+                    state.upsert_claim(claim)
+                if outcome is MemberState.LOST:
+                    state.mark_lost("b1-1")
+                if outcome in (MemberState.FAILED, MemberState.LOST):
+                    with self.assertRaises(TerminalMemberError) as raised:
+                        state.acquired_member("b1-1")
+                    self.assertEqual(raised.exception.member.state, outcome)
+                elif outcome == "ready":
+                    self.assertEqual(state.acquired_member("b1-1").state, MemberState.READY)
+                else:
+                    self.assertIsNone(state.acquired_member("b1-1"))
+                # An acquired claim in a fill pool is never part of the fill.
+                self.assertEqual((_drain_events(state), _drain_groups(state)), ([], []))
+
+                self.assertEqual(state.drop_acquired("b1-1", created=True), bool(deletes))
+                state.upsert_claim(_ready("b1-1", fill=False))
+                self.assertEqual(state.members(), [])
+                # A failed delete is retried by release_not_ready().
+                self.assertEqual(state.release_not_ready(), deletes)
+
+        state = _state(BatchGroup(warmpool="pool-a", size=1))
+        self.assertFalse(state.drop_acquired("b1-1", created=False))
+        state.upsert_claim(_ready("b1-1", fill=False))
+        self.assertEqual(state.members(), [])
 
 
 if __name__ == "__main__":

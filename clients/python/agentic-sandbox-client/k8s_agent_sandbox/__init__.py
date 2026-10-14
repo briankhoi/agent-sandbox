@@ -35,6 +35,7 @@ from .exceptions import (
     BatchExistsError,
     QuorumUnreachableError,
     BatchTimeoutError,
+    TerminalMemberError,
 )
 
 
