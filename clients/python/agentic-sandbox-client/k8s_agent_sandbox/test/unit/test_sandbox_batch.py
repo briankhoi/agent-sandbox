@@ -434,6 +434,44 @@ class TestWatcher(BaseBatchClientTest):
         handle._watch_loop()
         self.assertEqual(handle._state.get_member("b1-0").state, MemberState.LOST)
 
+    def test_connection_is_closed_once_its_members_pod_is_gone(self):
+        def claim(pod_ip="10.0.0.1", ready="True", reason=None):
+            return _claim(
+                "b1-0",
+                conditions=[{"type": "Ready", "status": ready, "reason": reason}],
+                sandbox={"name": "sbx-1", "podIPs": [pod_ip] if pod_ip else []},
+            )
+
+        cases = {
+            "same pod IP": ([{"type": "MODIFIED", "object": claim()}], False),
+            "new pod IP": ([{"type": "MODIFIED", "object": claim(pod_ip="10.0.0.2")}], True),
+            "not Ready on the same pod IP": ([{"type": "MODIFIED", "object": claim(ready="False")}], False),
+            "no pod IP": ([{"type": "MODIFIED", "object": claim(pod_ip=None, ready="False")}], True),
+            "failed": (
+                [{"type": "MODIFIED", "object": claim(ready="False", reason="ClaimExpired")}], True,
+            ),
+            "deleted": ([{"type": "DELETED", "object": claim()}], True),
+            "gone on re-list": (self._terminating_error(status=410), True),
+        }
+        for name, (first_watch, closed) in cases.items():
+            with self.subTest(name):
+                self.mock_sandbox_class.return_value = MagicMock()
+                handle = _make_handle(self.client)
+                handle._state.upsert_claim(claim())
+                sandbox = handle.connect(handle.members()[0])
+                self.mock_k8s_helper.watch_sandbox_claims.side_effect = [
+                    first_watch, self._terminating_error(),
+                ]
+                self.mock_k8s_helper.list_sandbox_claim_objects.return_value = ([], "9")
+                handle._watch_loop()
+                self.assertEqual(sandbox.close_connection.called, closed)
+                self.assertEqual("b1-0" in handle._connected, not closed)
+                # The 403 that ends the loop sets err(), which connect() would raise first.
+                handle._state._error = None
+                if handle._state.get_member("b1-0").state is not MemberState.READY:
+                    with self.assertRaises(SandboxNotReadyError):
+                        handle.connect(handle.members()[0])
+
     def test_410_relist_retries_503_then_succeeds_reconciling_lost_claim(self):
         handle = _make_handle(self.client)
         handle._state.upsert_claim(
@@ -809,7 +847,11 @@ class TestConnect(unittest.TestCase):
 
     def test_builds_sandbox_class_without_resolve_or_get_sandbox(self):
         self.handle._state.upsert_claim(
-            _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+            _claim(
+                "b1-0",
+                conditions=[{"type": "Ready", "status": "True"}],
+                sandbox={"name": "sbx-1", "podIPs": ["10.0.0.1"]},
+            )
         )
         member = self.handle.members()[0]
         sandbox = self.handle.connect(member)
@@ -825,6 +867,7 @@ class TestConnect(unittest.TestCase):
         self.mock_client.k8s_helper.resolve_sandbox_name.assert_not_called()
         self.mock_client.k8s_helper.get_sandbox.assert_not_called()
         self.assertIs(sandbox, self.mock_sandbox_instance)
+        self.assertEqual(sandbox._seeded_pod_ip, "10.0.0.1")
 
     def test_repeat_call_returns_same_handle(self):
         self.handle._state.upsert_claim(
@@ -930,7 +973,7 @@ class TestDetach(unittest.TestCase):
             holder_identity=self.handle._holder_identity
         )
         mock_sandbox = MagicMock()
-        self.handle._connected["b1-0"] = mock_sandbox
+        self.handle._connected["b1-0"] = (mock_sandbox, None)
 
         self.handle.detach()
 
@@ -986,7 +1029,7 @@ class TestDetach(unittest.TestCase):
         )
         bad_sandbox = MagicMock()
         bad_sandbox.close_connection.side_effect = RuntimeError("boom")
-        self.handle._connected["b1-0"] = bad_sandbox
+        self.handle._connected["b1-0"] = (bad_sandbox, None)
 
         with self.assertLogs("k8s_agent_sandbox.sandbox_batch", level="WARNING"):
             self.handle.detach()  # Must not raise.
