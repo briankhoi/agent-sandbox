@@ -1681,19 +1681,23 @@ class TestAcquire(BaseClaimBatchTest):
 
     def test_creates_a_claim_outside_the_fill_from_any_pool_and_returns_it_ready(self):
         helper = self.cluster.helper
-        batch = self.claim(labels={"team": "rl"}, quorum_timeout=90, work_budget=120)
+        # A size-0 group creates no claims.
+        groups = [BatchGroup(warmpool="pool-a", size=2), BatchGroup(warmpool="pool-b", size=0)]
+        batch = self.claim(groups, labels={"team": "rl"}, quorum_timeout=90, work_budget=120)
         _wait_until(lambda: len(batch.members()) == 2)
         _SteppingDatetime.calls = 0
         with patch("k8s_agent_sandbox.utils.datetime", _SteppingDatetime):
-            member = batch.acquire("pool-b")
+            member = batch.acquire("pool-c")
+        batch.acquire("pool-c")
         batch.acquire("pool-b")
-        batch.acquire("pool-a")
 
-        self.assertEqual((member.claim_name, member.warmpool, member.state), ("b1-2", "pool-b", MemberState.READY))
+        self.assertEqual((member.claim_name, member.warmpool, member.state), ("b1-2", "pool-c", MemberState.READY))
         # A pool that isn't one of the batch's groups is checked, once.
-        self.assertEqual([c.args[0] for c in helper.get_sandbox_warmpool.call_args_list], ["pool-a", "pool-b"])
+        self.assertEqual(
+            [c.args[0] for c in helper.get_sandbox_warmpool.call_args_list], ["pool-a", "pool-b", "pool-c"]
+        )
         create = helper.create_sandbox_claim.call_args_list[2]
-        self.assertEqual(create.args[:2], ("b1-2", "pool-b"))
+        self.assertEqual(create.args[:2], ("b1-2", "pool-c"))
         self.assertEqual(create.kwargs["labels"], {"team": "rl", BATCH_ID_LABEL: "b1"})
         self.assertEqual(create.kwargs["annotations"], {})
         # Its own shutdownTime, counted from its create.
