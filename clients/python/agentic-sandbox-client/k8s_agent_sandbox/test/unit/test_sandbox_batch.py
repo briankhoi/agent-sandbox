@@ -1125,6 +1125,7 @@ class _Cluster:
         h.list_sandbox_claim_objects.return_value = ([], "7")
         # No Lease to read, so release() creates one for its handle.
         h.read_batch_lease.return_value = None
+        h.api_pool_size.return_value = None
         h.watch_sandbox_claims.side_effect = self._watch
         h.create_sandbox_claim.side_effect = self._create
         h.delete_sandbox_claims_by_label.side_effect = lambda *a, **k: self.calls.append("deletecollection")
@@ -1308,10 +1309,12 @@ class TestClaimBatchSetup(BaseClaimBatchTest):
             "missing template": ("get_sandbox_template", None, SandboxTemplateNotFoundError),
             "warm pool names no template": ("get_sandbox_warmpool", {"spec": {}}, SandboxTemplateNotFoundError),
             "forbidden": ("get_sandbox_warmpool", k8s_client.ApiException(status=403), k8s_client.ApiException),
+            "connection pool below max_in_flight + 2": ("api_pool_size", 21, ValueError),
         }
         for name, (method, result, error) in cases.items():
             with self.subTest(name):
                 helper.reset_mock()
+                helper.api_pool_size.return_value = None
                 helper.get_sandbox_warmpool.return_value = {"spec": {"sandboxTemplateRef": {"name": "tmpl"}}}
                 helper.get_sandbox_template.return_value = {}
                 helper.get_sandbox_warmpool.side_effect = None
