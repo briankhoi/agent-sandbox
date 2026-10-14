@@ -57,6 +57,12 @@ _GENERATED_BATCH_ID_RANDOM_LENGTH = 11
 
 BATCH_DEFAULT_CREATE_RPS = 50.0
 BATCH_DEFAULT_MAX_IN_FLIGHT = 20
+# Kubernetes API connections a batch needs besides its max_in_flight creates. The watch holds one
+# for as long as it streams, and each Lease renewal needs one. When the pool is full, the async
+# client (aiohttp) queues a renewal behind the creates, which can let the Lease expire, and the
+# sync client (urllib3) opens and discards extra connections instead of reusing them. The sync
+# client renews through its own copy of the pool, so there the second one is spare.
+BATCH_POOL_HEADROOM = 2
 BATCH_DEFAULT_QUORUM_TIMEOUT_SECONDS = 600
 BATCH_DEFAULT_WORK_BUDGET_SECONDS = 3600
 # Added to each claim's shutdownTime
@@ -206,6 +212,23 @@ def _positive_int(name: str, value: object, default: int) -> int:
     if type(value) is not int or value <= 0:
         raise ValueError(f"{name} must be a positive int, got {value!r}")
     return value
+
+
+def check_pool_size(pool_size: int | None, max_in_flight: int) -> None:
+    """Checks that the Kubernetes API connection pool fits ``max_in_flight`` creates and
+    ``BATCH_POOL_HEADROOM`` more. ``None`` means the pool is unbounded.
+
+    Raises:
+        ValueError: If the pool is too small.
+    """
+    needed = max_in_flight + BATCH_POOL_HEADROOM
+    if pool_size is not None and pool_size < needed:
+        raise ValueError(
+            f"max_in_flight={max_in_flight} needs a Kubernetes API connection pool of at least "
+            f"{needed}, but the client's pool holds {pool_size}. Lower max_in_flight, or construct "
+            f"the client with pool_size={needed} or more (for an injected api_client, set "
+            f"connection_pool_maxsize on its configuration)"
+        )
 
 
 def validate_claim_batch_args(
