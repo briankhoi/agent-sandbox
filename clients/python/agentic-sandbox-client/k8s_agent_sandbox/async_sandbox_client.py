@@ -723,7 +723,7 @@ class AsyncSandboxClient(Generic[T]):
                 return
 
             # A batch's cached connections hold port-forward processes too.
-            batch_sandboxes = [sandbox for batch in batches for sandbox in batch._connected.values()]
+            batch_sandboxes = [sandbox for batch in batches for sandbox, _ in batch._connected.values()]
             for sandbox in [sandbox for _, sandbox in tracked] + batch_sandboxes:
                 try:
                     sandbox._close_for_atexit()
