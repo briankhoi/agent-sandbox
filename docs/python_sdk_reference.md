@@ -221,9 +221,11 @@ Nothing extends a claim's ``shutdownTime``, so a batch held for a whole run sets
 
 **Arguments**:
 
-- `groups` - One ``BatchGroup`` per warm pool, each with ``size`` at least 1.
+- `groups` - One ``BatchGroup`` per warm pool. A group with ``size`` 0 creates no claims
+  and gets its members from ``acquire()``, and the quorum consumers skip it.
 - `namespace` - Kubernetes namespace for the claims and the Lease.
-- `labels` - Optional labels for every claim.
+- `labels` - Optional labels for every claim. They are also set on the Lease, so a handle
+  from ``get_batch`` puts them on the claims it adds with ``acquire()``.
 - `batch_id` - Optional batch id; a DNS-1123 label starting with a letter, at most 52
   characters. Generated if omitted.
 - `create_rps` - Maximum claim creates started per second. Defaults to 50.
@@ -926,6 +928,54 @@ also fails if the wait ends with any other exception, such as a cancellation or
 - `BatchError` - If ``events()`` or ``iter_ready_groups()`` was called first, this method
   was already called, ``err()`` is set while waiting, or this handle has been
   detached or released, when called or while waiting.
+
+<a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.acquire"></a>
+
+##### acquire
+
+```python
+def acquire(warmpool: str, timeout: float | None = None) -> Member
+```
+
+Adds a member from ``warmpool`` to the batch, waits until it is Ready, and returns it.
+
+The pool can be any warm pool in the batch's namespace. A pool that isn't one of the batch's
+groups is checked once per handle, like ``claim_batch`` checks its pools. The claim takes the
+next unused ordinal and carries no group annotations or group label, so it is never one of
+the initial claims. ``events()``, ``iter_ready_groups()``, ``wait_for_quorum()``,
+``release_group()`` and ``release_not_ready()`` leave it alone. Its ``shutdownTime`` is the
+time of its create plus ``quorum_timeout`` plus ``work_budget`` plus 600 seconds, and its
+create is retried and paced like the initial claims'.
+
+If it raises, including on a cancellation, the member is dropped from ``members()`` and its
+claim is deleted, unless the claim is already gone or its create failed. A failed delete is
+retried by ``release_not_ready()`` and ``release()``. It never creates a second claim, so
+call it again to try again. A member it returned that fails later shows in ``members()``
+like any other, and ``release_member`` frees it.
+
+``TerminalMemberError`` and ``BatchTimeoutError`` are both ``BatchError``, so
+``except BatchError`` handles every runtime failure. The other errors mean a bad argument
+or a missing pool or template.
+
+**Arguments**:
+
+- `warmpool` - The warm pool to claim the member from.
+- `timeout` - Seconds to wait for the member to be Ready. Defaults to the batch's
+  ``quorum_timeout``.
+  
+
+**Raises**:
+
+- `ValueError` - If ``timeout`` isn't a positive finite number.
+- `SandboxWarmPoolNotFoundError` - If the warm pool doesn't exist.
+- `SandboxTemplateNotFoundError` - If the warm pool's template doesn't exist, or it names none.
+- `TerminalMemberError` - If the create fails (the member is ``FAILED`` with reason
+  ``CreateFailed``), the member fails terminally, or someone else deletes its claim
+  (the member is ``LOST``) before it is Ready.
+- `BatchTimeoutError` - If the member isn't Ready within ``timeout``. A create or create retry
+  that ``create_rps`` pacing can't start within it isn't sent.
+- `BatchError` - If this handle has been detached or released, or
+  ``err()`` is set, when called or while waiting.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.release_member"></a>
 
