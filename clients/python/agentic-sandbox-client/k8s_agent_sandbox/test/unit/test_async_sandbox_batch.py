@@ -48,7 +48,7 @@ from k8s_agent_sandbox.exceptions import (
     BatchNotFoundError,
     SandboxNotReadyError,
 )
-from k8s_agent_sandbox.models import BatchGroup, SandboxDirectConnectionConfig
+from k8s_agent_sandbox.models import BatchGroup, MemberState, SandboxDirectConnectionConfig
 
 
 def _lease(
@@ -488,7 +488,7 @@ class TestWatcher(BaseAsyncBatchClientTest):
         )
         self.mock_k8s_helper.list_sandbox_claim_objects = AsyncMock(return_value=([], "9"))
         await handle._watch_loop()
-        self.assertTrue(handle._state.get_member("b1-0").lost)
+        self.assertEqual(handle._state.get_member("b1-0").state, MemberState.LOST)
 
     async def test_410_relist_retries_503_then_succeeds_reconciling_lost_claim(self):
         handle = _make_handle(self.client)
@@ -506,7 +506,7 @@ class TestWatcher(BaseAsyncBatchClientTest):
         )
         with self.assertRaises(asyncio.CancelledError):
             await handle._watch_loop()
-        self.assertTrue(handle._state.get_member("b1-0").lost)
+        self.assertEqual(handle._state.get_member("b1-0").state, MemberState.LOST)
         self.assertIsNone(handle.err())
         list_calls = self.mock_k8s_helper.list_sandbox_claim_objects.call_args_list
         self.assertEqual(len(list_calls), 2)
@@ -633,7 +633,7 @@ class TestWatcher(BaseAsyncBatchClientTest):
         )
         with self.assertRaises(asyncio.CancelledError):
             await handle._watch_loop()
-        self.assertTrue(handle._state.get_member("b1-0").lost)
+        self.assertEqual(handle._state.get_member("b1-0").state, MemberState.LOST)
         self.assertIsNone(handle.err())
         self.assertEqual(len(self.mock_k8s_helper.list_sandbox_claim_objects.call_args_list), 2)
 
@@ -812,7 +812,7 @@ class TestMembers(unittest.TestCase):
         handle._state.upsert_claim(
             _claim("b1-0", warmpool="pool-a", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
         )
-        self.assertFalse(first.ready)
+        self.assertEqual(first.state, MemberState.PENDING)
 
     def test_members_and_err_are_plain_not_coroutine_functions(self):
         self.assertFalse(inspect.iscoroutinefunction(AsyncSandboxBatch.members))
@@ -862,14 +862,23 @@ class TestConnect(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SandboxNotReadyError):
             await self.handle.connect(member)
 
-    async def test_lost_member_raises(self):
-        self.handle._state.upsert_claim(
-            _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
-        )
-        member = self.handle.members()[0]
-        self.handle._state.mark_lost("b1-0")
-        with self.assertRaises(SandboxNotReadyError):
-            await self.handle.connect(member)
+    async def test_member_no_longer_ready_raises_even_when_cached(self):
+        failed = {"type": "Ready", "status": "False", "reason": "ClaimExpired"}
+        updates = {
+            MemberState.PENDING: lambda: self.handle._state.upsert_claim(_claim("b1-0", conditions=[])),
+            MemberState.FAILED: lambda: self.handle._state.upsert_claim(_claim("b1-0", conditions=[failed])),
+            MemberState.LOST: lambda: self.handle._state.mark_lost("b1-0"),
+        }
+        for state, update in updates.items():
+            with self.subTest(state=state):
+                self.handle._state.upsert_claim(
+                    _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+                )
+                member = self.handle.members()[0]
+                await self.handle.connect(member)
+                update()
+                with self.assertRaises(SandboxNotReadyError):
+                    await self.handle.connect(member)
 
     async def test_connect_after_err_raises_even_when_cached(self):
         self.handle._state.upsert_claim(

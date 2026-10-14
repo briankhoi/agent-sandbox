@@ -33,7 +33,7 @@ from .exceptions import (
     BatchNotFoundError,
     SandboxNotReadyError,
 )
-from .models import BatchGroup, Member
+from .models import BatchGroup, Member, MemberState
 
 if TYPE_CHECKING:
     from .sandbox import Sandbox
@@ -232,23 +232,23 @@ class SandboxBatch:
         """Returns a connected ``Sandbox`` for a ready member. If this handle is already connected
         to the Sandbox, it reuses the existing connection, otherwise it creates a new one and caches it for future calls.
 
-        Raises ``SandboxNotReadyError`` if the member isn't ready, and ``BatchError`` once
-        ``err()`` is set, since the Lease may be lost and the cache can no longer vouch for the
-        member.
+        Raises ``SandboxNotReadyError`` if the member isn't ready, even while its connection is
+        cached, and ``BatchError`` once ``err()`` is set, since the Lease may be lost and the cache
+        can no longer vouch for the member.
         """
         with self._lock:
             self._check_active()
             if (error := self._state.error()) is not None:
                 raise BatchError(f"batch '{self.batch_id}' has stopped") from error
-            cached = self._connected.get(member.claim_name)
-            if cached is not None:
-                return cached
             # No name resolution or existence check as the batch's watch cache already knows the member's sandbox_name
             current = self._state.get_member(member.claim_name)
-            if current is None or not current.ready:
+            if current is None or current.state is not MemberState.READY:
                 raise SandboxNotReadyError(
                     f"batch member '{member.claim_name}' is not ready"
                 )
+            cached = self._connected.get(member.claim_name)
+            if cached is not None:
+                return cached
             sandbox = self._client.sandbox_class(
                 claim_name=member.claim_name,
                 sandbox_id=current.sandbox_name,
