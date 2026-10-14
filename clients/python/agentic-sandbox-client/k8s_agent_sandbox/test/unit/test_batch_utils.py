@@ -198,6 +198,23 @@ class TestValidateClaimBatchArgs(unittest.TestCase):
         batch_utils.validate_batch_id(args.batch_id)
 
 
+class TestCheckPoolSize(unittest.TestCase):
+
+    def test_pool_must_hold_max_in_flight_plus_the_watch_and_renewal(self):
+        cases = {
+            "unbounded": (None, False),
+            "max_in_flight + 2": (22, False),
+            "max_in_flight + 1": (21, True),
+        }
+        for name, (pool_size, raises) in cases.items():
+            with self.subTest(name):
+                if raises:
+                    with self.assertRaises(ValueError):
+                        batch_utils.check_pool_size(pool_size, 20)
+                else:
+                    batch_utils.check_pool_size(pool_size, 20)
+
+
 class TestGenerateBatchId(unittest.TestCase):
 
     def test_generated_id_is_valid_and_random(self):
