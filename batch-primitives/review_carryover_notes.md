@@ -103,14 +103,14 @@ Also: the final per-commit check's `git merge-tree` runs against upstream `main`
 PRs 1 to 6 and PR 7 form the linear Python SDK stack. Siblings branch off the PR they need and don't renumber the stack. Older notes (`pr2_design.md`, `pr2_implementation_spec.md`) use the numbers from before the 2026-10-02 split, and notes written before 2026-10-08 call dynamic groups "PR 5" and performance "PR 6".
 
 - **PR 1 (`feat/batch-1-core`):** `get_batch`, `members`, `connect`, `err`, `detach`, plus the PR 1 changes above. Upstream https://github.com/kubernetes-sigs/agent-sandbox/pull/1742.
-- **PR 2 (`feat/batch-2-claim`):** `claim_batch`, `release`, client tracking and cleanup, plus the PR 2 changes above.
+- **PR 2 (`feat/batch-2-claim`):** `claim_batch`, `release`, client tracking and cleanup, plus the PR 2 changes above. `release()` gives up after three delete rounds in a row with no progress (`503a5068`), approved by Brian: "#46 is approved" (2026-10-14 22:10).
 - **PR 3 (`feat/batch-3-group-consumers`):** `events`, `iter_ready_groups`, fill accounting and deadline, `get_batch` reading `batch-quorum-timeout`.
 - **PR 4 (`feat/batch-4-group-quorum`):** `wait_for_quorum()`.
 - **PR 5:** `release_member`, `release_not_ready()` and `release_group()`.
 - **PR 6:** `acquire`, the next-ordinal annotation and lazy `size=0` groups. It starts once PR 5's state changes are reviewed, since both change the released and ownership state in `batch_state.py`.
 - **PR 7:** measure-first performance (list pagination, the ideas above). Since the RL benchmark comes last, PR 7 and the pacing PR measure with an SDK-only benchmark on kind (Design owner proposal).
-- **Reaper PR:** branch off PR 2, per `reaper_contract.md`. The driver-side changes it needs are in PR 1.
-- **Transport PR:** branch off PR 2.
+- **Reaper PR:** branch off PR 2, per `reaper_contract.md`. The driver-side changes it needs are in PR 1. Approved by Brian: "i approve of reaper in design owner" (2026-10-14 22:10).
+- **Transport PR:** branch off PR 2. The batch-wide data-plane pool is approved by Brian, gated on the other transport questions: "#43 approved; but dont start until we resolve the transport PR matters" (2026-10-14 22:10).
 - **Pacing PR:** adaptive create pacing, branch off PR 2, after a measurement and Brian's approval of the design.
 - **Terminal-reasons fix:** off upstream `main`, independent of the stack.
 - **Examples and docs PR:** runnable versions of the proposal's usage examples, the driver Role, the reaper manifests. After PR 6 and the reaper.
