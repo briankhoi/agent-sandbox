@@ -50,7 +50,7 @@ from .exceptions import (
     TerminalMemberError,
 )
 from .models import BatchEvent, BatchGroup, GroupReady, Member, MemberState
-from .utils import construct_sandbox_claim_lifecycle_spec
+from .utils import construct_sandbox_claim_lifecycle_spec, select_pod_ip
 
 if TYPE_CHECKING:
     from .sandbox import Sandbox
@@ -141,7 +141,8 @@ class SandboxBatch:
         self._list_resource_version = list_resource_version
 
         self._lock = threading.Lock()
-        self._connected: dict[str, "Sandbox"] = {}
+        # Each cached connection, with the pod IP it was made to.
+        self._connected: dict[str, tuple["Sandbox", str | None]] = {}
         self._detached = False
         self._lease_released = False
         self._watch_stop = threading.Event()
@@ -404,6 +405,12 @@ class SandboxBatch:
     def connect(self, member: Member) -> "Sandbox":
         """Returns a connected ``Sandbox`` for a ready member. If this handle is already connected
         to the Sandbox, it reuses the existing connection, otherwise it creates a new one and caches it for future calls.
+        The connection starts from the pod IP the batch's watch reports, without reading the Sandbox.
+
+        The batch closes a cached connection once the member's pod is gone, meaning the member is
+        lost or failed or the watch reports another pod IP for it, since the old IP may go to another
+        sandbox. Call ``connect`` again once the member is Ready to get a new one. A member that is
+        only not Ready keeps its connection.
 
         Raises ``SandboxNotReadyError`` if the member isn't ready, even while its connection is
         cached, and ``BatchError`` once ``err()`` is set, since the Lease may be lost and the cache
@@ -421,7 +428,7 @@ class SandboxBatch:
                 )
             cached = self._connected.get(member.claim_name)
             if cached is not None:
-                return cached
+                return cached[0]
             sandbox: Sandbox = self._client.sandbox_class(
                 claim_name=member.claim_name,
                 sandbox_id=current.sandbox_name,
@@ -430,7 +437,10 @@ class SandboxBatch:
                 tracer_config=self._client.tracer_config,
                 k8s_helper=self._client.k8s_helper,
             )
-            self._connected[member.claim_name] = sandbox
+            # The watch already has the pod IP, so the first request needs no Sandbox GET.
+            pod_ip = select_pod_ip(current.pod_ips)
+            sandbox._seeded_pod_ip = pod_ip
+            self._connected[member.claim_name] = (sandbox, pod_ip)
             return sandbox
 
     def err(self) -> Exception | None:
@@ -906,10 +916,27 @@ class SandboxBatch:
         """Closes the cached connections to the given claims' sandboxes, or to every sandbox."""
         with self._lock:
             if claim_names is None:
-                connected = list(self._connected.values())
+                connected = [sandbox for sandbox, _ in self._connected.values()]
                 self._connected.clear()
             else:
-                connected = [s for name in claim_names if (s := self._connected.pop(name, None)) is not None]
+                connected = [
+                    entry[0] for name in claim_names if (entry := self._connected.pop(name, None)) is not None
+                ]
+        self._close_connections(connected, action)
+
+    def _pop_stale_connections(self, claim_names: list[str]) -> list["Sandbox"]:
+        """Removes and returns the cached connections that no longer reach their member, so the
+        caller can close them outside ``_lock``. Requires ``_lock``."""
+        stale = []
+        for claim_name in claim_names:
+            cached = self._connected.get(claim_name)
+            if cached is not None and not batch_state.still_reaches(
+                self._state.get_member(claim_name), cached[1]
+            ):
+                stale.append(self._connected.pop(claim_name)[0])
+        return stale
+
+    def _close_connections(self, connected: list["Sandbox"], action: str) -> None:
         for sandbox in connected:
             try:
                 sandbox.close_connection()
@@ -1019,6 +1046,8 @@ class SandboxBatch:
                     with self._lock:
                         self._state.resync_from_list(items)
                         self._changed.notify_all()
+                        stale = self._pop_stale_connections(list(self._connected))
+                    self._close_connections(stale, "a re-list")
                     relist = False
                 watch_started = time.monotonic()
                 got_event = False
@@ -1036,12 +1065,15 @@ class SandboxBatch:
                         rv = seen_rv
                     if event_type == "BOOKMARK":
                         continue
+                    claim_name = (obj.get("metadata") or {}).get("name", "")
                     with self._lock:
                         if event_type == "DELETED":
-                            self._state.mark_lost((obj.get("metadata") or {}).get("name", ""))
+                            self._state.mark_lost(claim_name)
                         elif event_type in ("ADDED", "MODIFIED"):
                             self._state.upsert_claim(obj)
                         self._changed.notify_all()
+                        stale = self._pop_stale_connections([claim_name])
+                    self._close_connections(stale, "a watch event")
                 if (
                     not got_event
                     and time.monotonic() - watch_started < _SHORT_WATCH_SECONDS
