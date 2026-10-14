@@ -32,6 +32,7 @@ from .constants import (
 )
 from .exceptions import BatchError, BatchTimeoutError, QuorumUnreachableError, TerminalMemberError
 from .models import BatchEvent, BatchEventType, BatchGroup, GroupReady, Member, MemberState
+from .utils import select_pod_ip
 
 CREATE_FAILED_REASON = "CreateFailed"
 
@@ -168,6 +169,20 @@ def derive_member(claim_obj: dict[str, Any]) -> Member:
         state=state,
         reason=reason,
         message=message,
+    )
+
+
+def still_reaches(member: Member | None, sandbox_name: str | None, pod_ip: str | None) -> bool:
+    """Returns whether a connection made to ``member``'s sandbox ``sandbox_name`` at ``pod_ip`` still
+    reaches it. Once the member's pod is gone, which shows as a lost or failed member or a changed or
+    missing pod IP, the old IP may go to another sandbox, even one in the same batch. A claim whose
+    sandbox was deleted can also be bound to a new sandbox, which may get the same pod IP. A member
+    that is only not Ready keeps its pod and its IP, so its connection still reaches it."""
+    return (
+        member is not None
+        and member.state in (MemberState.READY, MemberState.PENDING)
+        and member.sandbox_name == sandbox_name
+        and select_pod_ip(member.pod_ips) == pod_ip
     )
 
 
