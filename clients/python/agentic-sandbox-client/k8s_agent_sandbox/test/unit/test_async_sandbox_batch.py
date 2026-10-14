@@ -1351,6 +1351,7 @@ class _Cluster:
         h.get_sandbox_template = AsyncMock(return_value={"metadata": {"name": "tmpl"}})
         h.create_batch_lease = AsyncMock(return_value=_lease())
         h.list_sandbox_claim_objects = AsyncMock(return_value=([], "7"))
+        h.api_pool_size = AsyncMock(return_value=None)
         h.watch_sandbox_claims = MagicMock(side_effect=self._watch)
         h.create_sandbox_claim = AsyncMock(side_effect=self._create)
         h.delete_sandbox_claims_by_label = AsyncMock(side_effect=lambda *a, **k: self.calls.append("deletecollection"))
@@ -1553,9 +1554,11 @@ class TestClaimBatchSetup(BaseClaimBatchTest):
             "missing template": ("get_sandbox_template", None, SandboxTemplateNotFoundError),
             "warm pool names no template": ("get_sandbox_warmpool", {"spec": {}}, SandboxTemplateNotFoundError),
             "forbidden": ("get_sandbox_warmpool", k8s_client.ApiException(status=403), k8s_client.ApiException),
+            "connection pool below max_in_flight + 2": ("api_pool_size", 21, ValueError),
         }
         for name, (method, result, error) in cases.items():
             with self.subTest(name):
+                helper.api_pool_size = AsyncMock(return_value=None)
                 helper.get_sandbox_warmpool = AsyncMock(return_value={"spec": {"sandboxTemplateRef": {"name": "tmpl"}}})
                 helper.get_sandbox_template = AsyncMock(return_value={})
                 helper.create_batch_lease.reset_mock()
