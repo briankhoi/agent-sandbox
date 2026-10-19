@@ -66,7 +66,7 @@ Each run, per namespace:
 
 1. **Discover.** List the batch Leases (see "Cost per Run" for how). The reaper doesn't list claims to find work, because claims without a Lease are the garbage collector's (see "Claims Without a Lease").
 2. **Pick candidates.** A Lease is a candidate when it is stale by the test above. Record the resourceVersion read in step 1.
-3. **Confirm.** Wait until at least one `RenewInterval` (from that Lease's *D*) has passed since step 1. Candidates in a namespace share one wait, the longest one needed.
+3. **Confirm.** Wait until at least one `RenewInterval` (from that Lease's *D*) has passed since step 1. All candidates in a run share one wait, the longest one needed, so a run lasts about as long whatever the number of namespaces.
 4. **Delete the Lease first**, with a resourceVersion precondition set to the value from step 1. A 409 means someone wrote the Lease in the meantime (a renewal, `Detach`, or a takeover), so the batch is skipped for this run. A 404 means someone else (`Release`, another reaper) deleted it, so go on to step 5.
 5. **Delete the claims.** Issue label-scoped `deletecollection` rounds, re-listing with a consistent read until no claim is left that isn't already being deleted. These are the same steps `Release` uses, so the reaper calls `_delete_batch_objects` (PR 2), whose final Lease delete treats the already-deleted Lease as success. The garbage collector would delete these claims anyway once the Lease is gone; this step is the fast path.
 
@@ -111,7 +111,7 @@ Each run lists only the batch Leases (O(B)) in each bound namespace, and keeps n
 
 The reaper ships as a Python module in the SDK, run as `python -m k8s_agent_sandbox.batch_reaper`. That way it shares the SDK's batch-id validation and `Release`'s delete rounds instead of reimplementing the contract. Its staleness check is its own, since it adds the skew margin, while the SDK's `is_lease_stale` is the attach-side check that subtracts it; the reaper PR says so in `is_lease_stale`'s docstring. The alternative is a Go binary under `cmd/`, which costs a new image and changes to release tooling. Either way it needs a published image, because installing the package on every CronJob run is too slow and fragile for production. Until that image exists, the example uses a stock Python image with a pinned install. Where it lives and how the image is published need an upstream discussion first (AGENTS.md: no new top-level directories without one).
 
-The artifacts live in `examples/batch-reaper/`:
+The SDK README documents the ClusterRole and how to run the reaper. The examples PR adds the deployable artifacts in `examples/batch-reaper/`:
 - the CronJob, ServiceAccount, ClusterRole and a RoleBinding template;
 - a README.
 

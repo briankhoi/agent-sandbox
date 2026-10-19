@@ -15,7 +15,7 @@ Currently, work that involves claiming N `Sandboxes` as a batch, most notably in
 
 ## Proposal
 
-This proposal introduces `ClaimBatch`, a method that claims N sandboxes as a single batch and returns a `Batch` handle for interacting with them. The SDK gains new methods and operators grant drivers one Role; they also optionally deploy one stateless reaper CronJob with another Role.
+This proposal introduces `ClaimBatch`, a method that claims N sandboxes as a single batch and returns a `Batch` handle for interacting with them. The SDK gains new methods and operators grant drivers one Role; they also optionally deploy one stateless reaper CronJob with a ClusterRole, granted by a RoleBinding in each namespace it covers.
 
 Goals:
 - Support as a first-class feature in the SDKs. For Python, have async/sync parity and modify the `agent-sandbox-rl` library to use the feature instead.
@@ -61,7 +61,7 @@ Note that this is pacing only for the client; server-side is through `--sandbox-
 
 For the Go SDK, these caps are inert until the default QPS/Burst settings on `rest.Config` are overridden (otherwise, caps are bounded by min(default, cap)).
 
-Similarly for the Python SDK, the bound is the shared `ApiClient`'s connection pool size. Callers can raise it by injecting a pre-configured `ApiClient` with a larger pool ([#1509](https://github.com/kubernetes-sigs/agent-sandbox/pull/1509)). We talk more about this in the "Transport & Connection Scaling" section in the Scalability tab.
+Similarly for the Python SDK, the bound is the shared `ApiClient`'s connection pool size. Callers raise it with the client's `pool_size` argument, or by injecting a pre-configured `ApiClient` with a larger pool ([#1509](https://github.com/kubernetes-sigs/agent-sandbox/pull/1509)). We talk more about this in the "Transport & Connection Scaling" section in the Scalability tab.
 
 #### Membership
 
@@ -110,11 +110,11 @@ Each informer event updates the batch's per-group counts in constant time, and a
 
 A `coordination.k8s.io/v1` Lease named `batch-<id>` is created before claim creation, and represents the batch's liveness state. While the driver is alive a background renewal loop (started automatically inside `ClaimBatch`) renews the Lease every `RenewInterval`.
 
-If renewal itself starts failing while the driver is alive (writes throttled or erroring), `LeaseDegraded()` reports true until a renewal succeeds again (it also turns true when another holder takes over the Lease or the Lease is deleted), so the caller can check it at any point, including long after `Events` has closed, and checkpoint in-progress work or abort the batch.
+If renewal itself starts failing while the driver is alive (writes throttled or erroring), `LeaseDegraded()` reports true until a renewal succeeds again. Once renewal stops for good, because the Lease expired, another holder took it over or it was deleted, it stays true and `Err` reports why. The caller can check it at any point, including long after `Events` has closed, and checkpoint in-progress work or abort the batch.
 
-We use the Lease in conjunction with a new stateless reaper process (likely running as a CronJob) that we introduce, which is responsible for deleting the claims of any batch whose Lease has gone stale.
+We use the Lease in conjunction with a new stateless reaper process (likely running as a CronJob) that we introduce, which is responsible for deleting the Lease of any batch whose Lease has gone stale. Every claim is owned by the Lease (Batch Model, property 3), so deleting the Lease is what gets the claims deleted.
 
-The reaper runs every one to two minutes and deletes the Lease and then the claims of any batch whose Lease has gone stale (Cleanup, path 2), as described under Reaper below. Without the reaper, a driver that dies without running any code (`SIGKILL`, OOM kill, node preemption) never calls `Release`, and its claims hold their sandboxes until the Shutdown Backstop below.
+The reaper runs every one to two minutes and deletes the Lease of any batch whose Lease has gone stale (Cleanup, path 2), as described under Reaper below. Kubernetes' garbage collector then deletes the claims, and the reaper also deletes them right away with the batch's label, since the collector is slow on a large batch. Without the reaper, a driver that dies without running any code (`SIGKILL`, OOM kill, node preemption) never calls `Release`, and its claims hold their sandboxes until the Shutdown Backstop below.
 
 The reaper waits rather than risk deleting live work. The driver renews the Lease every `RenewInterval`, a third of `LeaseDuration`. If no renewal succeeds for a full `LeaseDuration`, counted from when the last successful one was sent, the Lease is expired: the driver stops renewing and stops starting new claim creates, and `err()` reports `BatchLeaseExpiredError`. The reaper treats a Lease as stale only after `renewTime + LeaseDuration` plus its own clock-skew margin, so a driver that has lost its Lease has already stopped by the time the reaper acts. A detached batch needs no special case, because `Detach` sets the Lease to go stale once its grace period ends. `Release` stops renewing before it deletes and never writes the Lease, so a reaper that runs during a slow `Release` doesn't interfere with it.
 
@@ -129,13 +129,13 @@ The initial fill's claims share one `shutdownTime`, computed once when the batch
 There are four ways a batch is cleaned up:
 
 1. `Batch.Release()`, called explicitly or by the client's cleanup (in Python, `delete_all()` or the exit hook of a client created with `cleanup=True`), stops the informer and the renewal loop, makes a single call to the Kubernetes `deletecollection` API scoped to the batch's label, then deletes the Lease. As `deletecollection` is not atomic, `Release` re-lists by label and repeats the delete until no claim is left that isn't already being deleted, and raises after three rounds in a row that make no progress.
-2. Where the driver runs no code at all (`SIGKILL`, OOM kill, node preemption), the Lease is no longer renewed and the reaper deletes the Lease, then issues the same label-scoped `deletecollection` to delete the claims.
+2. Where the driver runs no code at all (`SIGKILL`, OOM kill, node preemption), the Lease is no longer renewed and the reaper deletes the Lease, which hands the claims to garbage collection (path 3). It then issues the same label-scoped `deletecollection` as `Release` to delete them sooner.
 3. Garbage collection. Whenever the Lease is deleted, by `Release`, the reaper or a person, Kubernetes deletes the claims that own-reference it. This is the guarantee; the label-scoped deletes in paths 1 and 2 stay as the fast path, since the garbage collector deletes far more slowly than `deletecollection`. A Lease deleted with `--cascade=orphan` leaves its claims to path 4.
 4. The `shutdownTime` on the claim passes, and the claim is consequently deleted.
 
 #### Reaper
 
-The reaper is a stateless process that deletes the claims of batches whose driver is gone. It relies only on the Lease contract above. It reads a Lease's `renewTime`, `leaseDurationSeconds` (below, *D*) and resourceVersion, never writes a Lease, and only ever deletes. Until a reaper is deployed, each claim's `shutdownTime` is the only crash cleanup.
+The reaper is a stateless process that cleans up batches whose driver is gone. Its job is to delete each stale Lease; the claims' owner references then make the garbage collector delete the claims, and the reaper deletes them itself as well, because that is faster. It relies only on the Lease contract above. It reads a Lease's `renewTime`, `leaseDurationSeconds` (below, *D*) and resourceVersion, never writes a Lease, and only ever deletes. Until a reaper is deployed, each claim's `shutdownTime` is the only crash cleanup.
 
 **Scope.** The reaper takes an explicit list of namespaces, defaulting to its own, and never lists across the cluster. Since RBAC can't restrict `deletecollection` by label, it enforces its scope in code. It deletes claims only with the selector `agents.x-k8s.io/batch-id=<id>` for an id that passes batch-id validation, never with an empty selector, and touches only Leases named `batch-<id>` whose label matches. A 403 in one namespace is logged and the run moves on.
 
@@ -149,7 +149,7 @@ As long as real clock skew stays below the margin, the driver has given up befor
 **Each run, per namespace:**
 1. List the batch Leases.
 2. Pick the stale Leases and record their resourceVersions.
-3. Wait at least one `RenewInterval` from step 1 (one shared wait per namespace).
+3. Wait at least one `RenewInterval` from step 1 (one shared wait for the whole run, the longest any stale Lease needs).
 4. Delete each stale Lease with a resourceVersion precondition from step 1. A 409 means a renewal, `Detach` or takeover happened, so the batch is skipped. A 404 means `Release` or another reaper deleted it, so go on.
 5. Delete the claims with the same label-scoped `deletecollection` rounds `Release` uses. Garbage collection would delete them anyway once the Lease is gone; this is the fast path.
 
@@ -159,7 +159,7 @@ Once the Lease is gone, a driver that wakes up and `GetBatch` both see `BatchLea
 
 **Cost.** Each run lists only the batch Leases (O(B)) per namespace, paged and served from the apiserver's watch cache (`resourceVersion="0"`). A slightly old answer is harmless, since every Lease delete is guarded by the precondition. Claims are read only for a batch being reaped, by its delete rounds, which use a consistent read.
 
-**Deployment.** The reaper ships as a Python module in the SDK (`python -m k8s_agent_sandbox.batch_reaper`), so it shares the SDK's batch-id validation and `Release`'s delete rounds instead of reimplementing them. Its staleness check adds the skew margin, unlike `GetBatch`'s, which subtracts it. `examples/batch-reaper/` holds a CronJob (every 1 to 2 minutes, `concurrencyPolicy: Forbid`), a ServiceAccount, the ClusterRole below, a RoleBinding template, and a README. It takes `--namespaces`, `--skew-margin` and `--dry-run`, logs one line per reaped batch, and exits non-zero on errors so failed runs show up as failed Jobs.
+**Deployment.** The reaper ships as a Python module in the SDK (`python -m k8s_agent_sandbox.batch_reaper`), so it shares the SDK's batch-id validation and `Release`'s delete rounds instead of reimplementing them. Its staleness check adds the skew margin, unlike `GetBatch`'s, which subtracts it. It takes `--namespaces` (defaulting to its own), `--skew-margin` (60 s by default) and `--dry-run`, runs once, logs one line per reaped batch, and exits non-zero on errors so failed runs show up as failed Jobs. The SDK README documents the ClusterRole below and how to run it. A later examples PR adds `examples/batch-reaper/` with a CronJob (every 1 to 2 minutes, `concurrencyPolicy: Forbid`, `activeDeadlineSeconds` covering the wait), a ServiceAccount, a RoleBinding template and a README.
 
 **Open questions.**
 - Where the reaper lives and how its image is published. A Go binary under `cmd/` is the alternative, at the cost of a new image and release tooling changes.
@@ -191,9 +191,11 @@ flowchart TD
 
     subgraph CrashSafety["If the driver dies"]
       NoRenew["Lease stops<br/>being renewed"]
-      Reaper["Reaper CronJob sees<br/>a stale Lease and<br/>deletecollections<br/>the batch label<br/>(bound: LeaseDuration<br/>+ margin + RenewInterval<br/>+ poll period)"]
+      Reaper["Reaper CronJob sees<br/>a stale Lease, deletes it,<br/>then deletecollections<br/>the batch label<br/>(bound: LeaseDuration<br/>+ margin + RenewInterval<br/>+ poll period)"]
+      GC["Garbage collector<br/>deletes claims whose<br/>owner Lease is gone"]
       Cap["Backstop:<br/>controller deletes<br/>each claim at its<br/>shutdownTime"]
       NoRenew --> Reaper
+      Reaper --> GC
       NoRenew --> Cap
     end
 
@@ -248,9 +250,9 @@ The ClusterRole is granted with a RoleBinding in each namespace the reaper cover
 ### Core Batch Methods
 
 - `claim_batch`: Create a new batch, returning a `Batch` handle. Errors upon `min_ready` > `size`.
-- `get_batch`: Return a batch handle (no create) of an existing batch by id, resuming lease renewal. Only a detached batch can be re-attached, within its grace period. Groups come back in their original order, and `quorum_timeout` and `work_budget` are read back from the Lease
+- `get_batch`: Return a batch handle (no create) of an existing batch by id, resuming lease renewal. Only a detached batch can be re-attached, within its grace period. Groups come back in their original order, and `quorum_timeout`, `work_budget`, `create_rps`, the caller's labels and the next unused ordinal are read back from the Lease. A group whose claims are all gone, including a `size=0` group with no members, is unknown to the new handle
 - `wait_for_quorum`: Blocks until every group has `min_ready` Ready members and returns them, or raises once that can no longer happen or at the fill deadline. It takes no timeout of its own, since the batch's `quorum_timeout` already bounds it
-- `connect(member)`: Returns a connected `Sandbox` (same return type as `Client.GetSandbox`) for interactive use. In contrast to `GetSandbox`, because information is already stored in `Member`, it skips the API calls to get the Sandbox and claim details, seeds the connection with the member's pod IP, and connects to the `Sandbox` directly.
+- `connect(member)`: Returns a connected `Sandbox` (same return type as `Client.GetSandbox`) for interactive use. In contrast to `GetSandbox`, because information is already stored in `Member`, it skips the API calls to get the Sandbox and claim details, seeds the connection with the member's pod IP, and connects to the `Sandbox` directly. The batch closes a cached connection once the member's pod is gone (the member is lost or failed, or the watch reports a different or no pod IP), since the old IP may be reassigned to another sandbox. A member that is only not Ready keeps its connection, and `connect` refuses it until it is Ready again.
 - `acquire(warmpool)`: Adds a member to the batch from any pool in its namespace, not only the pools named at create time. Blocks until Ready and returns it, and raises if it fails terminally or isn't Ready within its `timeout`, which defaults to the batch's `quorum_timeout`. Its claim carries the group label but no group annotations, so `release_group` frees it but it is never part of the initial fill, and gets its own `shutdownTime` computed locally, with no extra API call. If it raises, including on cancellation, it deletes the claim it created
 - `release_member(member)`: Deletes one member's claim, with no successor
 - `release_group(warmpool)`: Deletes every claim the batch holds from one pool, initial-fill and acquired alike, pending ones included (an `acquire` still waiting on that pool raises `BatchError`), for any pool the batch has used, with label-scoped `deletecollection` rounds like `release`, and deletes on sight a claim of the group whose create lands afterwards. Its members are never handed out afterwards. Works in any consumption mode. A member whose create failed is never deleted by name by any release method, since that name may belong to another client's claim
@@ -325,8 +327,9 @@ class TerminalMemberError(BatchError):
 
 Claim batch:
 ```python
-# most optional args will have some default value later TBD
 class AsyncSandboxClient:
+    def __init__(self, ..., pool_size: int | None = None): ...   # Kubernetes API connection pool; can't be combined with api_client
+
     async def claim_batch(
         self,
         groups: Sequence[BatchGroup],               # one entry for a single-pool batch
@@ -336,13 +339,13 @@ class AsyncSandboxClient:
         batch_id: str | None = None,                # to allow overrides
 
         # --- pacing and connection reuse ---
-        create_rps: float | None = None,
-        max_in_flight: int | None = None,
+        create_rps: float | None = None,            # defaults to 50
+        max_in_flight: int | None = None,           # defaults to 20; the API pool must hold max_in_flight + 2
 
         # --- time ---
-        work_budget: int | None = None,             # expected post-quorum working time
-        quorum_timeout: int | None = None,
-        lease_duration: int | None = None,
+        work_budget: int | None = None,             # expected post-quorum working time, defaults to 3600 s
+        quorum_timeout: int | None = None,          # defaults to 600 s
+        lease_duration: int | None = None,          # defaults to 60 s
     ) -> "AsyncSandboxBatch": ...
 
     async def get_batch(
@@ -768,7 +771,6 @@ Note that for deletion, although batch uses a single `deletecollection` call, th
 Under the current individual claim approach, both SDKs hit connection bottlenecks well before N gets large due to unmanaged defaults:
 - **Control-Plane Watch Saturation:** Long-lived readiness watches for each individual claim exhaust client connection budgets. The Python SDK [defaults](
 https://github.com/kubernetes-client/python/blob/master/kubernetes/client/configuration.py#L334-L337) to a `connection_pool_maxsize` of `cpu_count() * 5` and sets `block=False` so new requests/watches dial a new connection, incurring connection setup overhead. Meanwhile, the Go SDK has a 100 concurrent stream HTTP/2 cap and relies on the `client-go` defaults of  `QPS: 5` and `Burst: 10`, causing client-side queuing during create bursts.
-- **Data-Plane Host Eviction:** Existing SDK connectors use conservative default connection limits (e.g., Python sync capping cached host pools at 10), causing active socket eviction when communicating across hundreds of distinct sandbox pod IPs.
 
 Batch claiming helps free up connections through mechanisms such as eliminating per-claim readiness checks and instead, using a single informer. To further support connection scalability, we propose the following transport changes:
 
@@ -776,20 +778,13 @@ Batch claiming helps free up connections through mechanisms such as eliminating 
 Because clients are instantiated before batch parameters are known, connection budgets cannot be dynamically resized at claim time. Instead, both SDKs adopt a construction-time configuration with runtime validation model:
 - Python: 
   - Add an explicit `pool_size: int | None = None` parameter to `SandboxClient()` / `AsyncSandboxClient()` to configure `connection_pool_maxsize`.
-  - At runtime, `ClaimBatch` validates that `connection_pool_maxsize >= max_in_flight + 2`, since the watch and the Lease renewal each hold a connection (accounting for custom injected `api_client`s via [#1509](https://github.com/kubernetes-sigs/agent-sandbox/pull/1509) as well). If undersized, it raises an error instructing the caller to either lower `max_in_flight` or construct `SandboxClient` with a sufficient `pool_size`.
+  - At runtime, `ClaimBatch` validates that `connection_pool_maxsize >= max_in_flight + 2`, since the watch and the Lease renewal each hold a connection (accounting for custom injected `api_client`s via [#1509](https://github.com/kubernetes-sigs/agent-sandbox/pull/1509) as well). If undersized, it raises an error instructing the caller to either lower `max_in_flight` or construct `SandboxClient` with a sufficient `pool_size`. `pool_size` can't be combined with an injected `api_client`, whose pool is already built; such callers set `connection_pool_maxsize` on its configuration. With the sync client's default of 5 connections per CPU, default settings raise on a machine with 4 or fewer CPUs.
 - Go: 
   - `NewK8sHelper` already accepts a custom `*rest.Config`, so callers supply a config with elevated `QPS`/`Burst`. We also apply transport sharding (mirroring agent-sandbox-controller's [established pattern](https://github.com/kubernetes-sigs/agent-sandbox/blob/527d9346fe1d237dea5c003f3c720531c7bab1df/cmd/agent-sandbox-controller/transport.go#L32-L61)).
   - `ClaimBatch` validates that `Burst >= max_in_flight`.
 
 **Data Plane (Sandbox Endpoints):**
-Existing SDK connectors use unmanaged pool defaults that evict active sockets when connecting to many sandbox endpoints:
-  - *Python sync (`requests` library):* Defaults to [pool_connections=10](https://github.com/psf/requests/blob/dae7ef63b4df6eded86637f251fc4e3a06c3b479/src/requests/adapters.py#L80), evicting the least-recently-used host's entire pool once a batch exceeds 10 distinct pod IPs.
-  - *Python async (`httpx`):* Uses [max_connections=100 and max_keepalive_connections=20](https://github.com/encode/httpx/blob/b5addb64f0161ff6bfe94c124ef76f6a1fba5254/httpx/_config.py#L247) across all origins, throttling concurrency across larger cohorts.
-  - *Go (`http.Transport`):* Sets [MaxIdleConns: 100 and MaxIdleConnsPerHost: 10](https://github.com/kubernetes-sigs/agent-sandbox/blob/527d9346fe1d237dea5c003f3c720531c7bab1df/clients/go/sandbox/connector.go#L114-L115), closing idle sockets as concurrent endpoints outgrow the cache.
-
-To fix this, we have `batch.connect()` share a single connection pool across the entire batch with capacity sized to batch concurrency N (via `pool_connections` in Python sync, `max_connections` / `max_keepalive_connections` in Python async, and `MaxIdleConns` in Go) to maintain persistent connections to each unique sandbox IP and avoid socket churn between steps.
-
-We accept the tradeoff that a N sized connection pool would result in more resource usage (N file descriptors and additional memory usage in the kernel's socket buffers), to avoid the much steeper cost of connection thrashing (repeated TCP/TLS handshakes across multi-turn agent steps, latency spikes, and ephemeral port exhaustion from lingering TIME_WAIT sockets).
+We don't add a batch-wide data-plane connection pool. Each `Sandbox` connector already has its own HTTP session (`requests.Session` in Python sync, `httpx.AsyncClient` in Python async) that talks to one sandbox, so sandboxes can't evict each other's connections, and a connection to one sandbox can't serve another. `batch.connect()` caches one `Sandbox` per member, so repeated calls across steps reuse its keep-alive connections. The in-cluster pod-IP modes use plain HTTP, so there is no TLS handshake to save. The one case where sandboxes share a host is Gateway or router mode; a benchmark can show whether a shared pool would help there. The Go SDK's connector is checked the same way when it gains batch claims.
 
 #### Batch Scaling
 
@@ -818,7 +813,7 @@ As batch claim is implemented as a client-side feature, we investigate the bottl
 In contrast to these scaling issues from client-side batching, a dedicated server-side batch CRD would instead offload claim dispatch, aggregation, and lifecycle tracking to cluster-local controllers. This would mean:
 - The client issues a single batch create request for N claims. While total creations remain unchanged as work shifts to the controller, this significantly reduces cross-network round-trips for external drivers and allows claim fan-out to run under higher in-cluster APF priority tiers.
 - The client's watch would only be on a single `SandboxBatch` object for readiness, rather than a single watch on N claims
-- For in-cluster runner jobs, a CRD can bind claims to the running Job/Pod via `ownerReferences` so Kubernetes garbage collection automatically cleans up the claims (and their underlying sandboxes) upon driver termination, eliminating the need for a Lease and background reaper.
+- For in-cluster runner jobs, a CRD can bind claims to the running Job/Pod via `ownerReferences` so Kubernetes garbage collection automatically cleans up the claims (and their underlying sandboxes) upon driver termination, eliminating the need for a Lease and background reaper. (Today the claims' owner is the batch Lease, so garbage collection only acts once the reaper or `Release` deletes it.)
 
 Due to these benefits, we should re-evaluate implementing batch claiming server-side in the future when client-side request latency, memory overhead, or the cost of maintaining reaper and Lease become operational bottlenecks.
 
