@@ -14,6 +14,7 @@
 """Unit tests for the sync SandboxBatch handle and SandboxClient.get_batch."""
 
 import ssl
+import threading
 import time
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -922,13 +923,13 @@ class TestDetach(unittest.TestCase):
         self.handle.detach()
 
         mock_sandbox.close_connection.assert_called_once()
-        self.mock_client._unregister_batch.assert_called_once_with("default", "b1")
+        self.mock_client._unregister_batch.assert_called_once_with(self.handle)
         self.assertEqual(self.handle._connected, {})
 
         self.handle.detach()  # Second call: no exception, and does nothing.
 
         mock_sandbox.close_connection.assert_called_once()
-        self.mock_client._unregister_batch.assert_called_once_with("default", "b1")
+        self.mock_client._unregister_batch.assert_called_once_with(self.handle)
         self.mock_client.k8s_helper.read_batch_lease.assert_called_once()
         self.mock_client.k8s_helper.replace_batch_lease.assert_called_once()
 
@@ -1009,7 +1010,7 @@ class TestStart(unittest.TestCase):
 @patch.object(SandboxBatch, "_start", lambda self: None)
 class TestClientBatchCleanup(BaseBatchClientTest):
 
-    def test_cleanup_stops_every_tracked_batch(self):
+    def test_cleanup_stops_every_tracked_batch_and_closes_its_connections(self):
         for cleanup in ("delete_all", "_delete_automatic_sandboxes"):
             with self.subTest(cleanup):
                 # get_batch writes its holder into the Lease it read, so each attach reads a fresh one.
@@ -1020,11 +1021,74 @@ class TestClientBatchCleanup(BaseBatchClientTest):
                 first = self.client.get_batch("b1")
                 second = self.client.get_batch("b2")
                 self.assertEqual(set(self.client._active_batches.values()), {first, second})
+                cached = MagicMock()
+                first._connected["b1-0"] = cached
 
-                with patch.object(SandboxBatch, "_stop_background_threads", autospec=True) as stop:
+                # A failed stop must still leave the cached connection closed.
+                with patch.object(
+                    SandboxBatch, "_stop_background_threads", autospec=True, side_effect=RuntimeError("stop failed")
+                ) as stop:
                     getattr(self.client, cleanup)()
                 self.assertEqual({c.args[0] for c in stop.call_args_list}, {first, second})
                 self.assertEqual(self.client._active_batches, {})
+                cached.close_connection.assert_called_once()
+                with self.assertRaises(BatchError):
+                    first.connect(MagicMock())
+
+    def test_a_connection_that_fails_to_close_is_retried_by_the_next_cleanup(self):
+        handle = _make_handle(self.client)
+        cached = MagicMock()
+        cached.close_connection.side_effect = [RuntimeError("close failed"), None]
+        handle._connected["b1-0"] = cached
+        self.client._active_batches[("default", "b1")] = handle
+
+        self.client.delete_all()
+        self.assertEqual(handle._connected, {"b1-0": cached})
+        self.assertEqual(self.client._active_batches, {("default", "b1"): handle})
+
+        self.client.delete_all()
+        self.assertEqual(cached.close_connection.call_count, 2)
+        self.assertEqual(handle._connected, {})
+        self.assertEqual(self.client._active_batches, {})
+
+    def test_unregistering_an_old_handle_keeps_a_newer_one_registered(self):
+        old_handle = MagicMock(namespace="default", batch_id="b1")
+        new_handle = MagicMock(namespace="default", batch_id="b1")
+        self.client._active_batches[("default", "b1")] = new_handle
+
+        self.client._unregister_batch(old_handle)
+
+        self.assertEqual(self.client._active_batches, {("default", "b1"): new_handle})
+
+    def test_a_handle_registered_during_unregister_or_cleanup_stays_registered(self):
+        client = self.client
+        new_handle = MagicMock(namespace="default", batch_id="b1")
+        threads = []
+
+        def register_concurrently():
+            # Without the registry lock, get_batch registers new_handle before this call returns.
+            thread = threading.Thread(target=client.get_batch, args=("b1",))
+            thread.start()
+            thread.join(timeout=0.2)
+            threads.append(thread)
+
+        class RacingDict(dict):
+            def get(self, *args):
+                value = super().get(*args)
+                register_concurrently()
+                return value
+
+        for cleanup in ("unregister", "delete_all"):
+            with self.subTest(cleanup):
+                old_handle = MagicMock(namespace="default", batch_id="b1", _connected={})
+                client._active_batches = RacingDict({("default", "b1"): old_handle})
+                with patch.object(SandboxBatch, "_attach", return_value=new_handle):
+                    if cleanup == "unregister":
+                        client._unregister_batch(old_handle)
+                    else:
+                        client.delete_all()
+                    threads.pop().join()
+                self.assertEqual(client._active_batches, {("default", "b1"): new_handle})
 
 
 if __name__ == "__main__":
