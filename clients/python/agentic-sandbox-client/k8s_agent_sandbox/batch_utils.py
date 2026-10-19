@@ -166,6 +166,23 @@ def is_lease_stale(
     return now > renew_time + timedelta(seconds=lease_duration_seconds - skew_margin)
 
 
+def lease_owner_reference(lease) -> dict[str, str]:
+    """Returns the ownerReference that points a batch claim at its batch Lease, so the garbage
+    collector deletes the claim once the Lease is gone.
+
+    It must carry the UID of the Lease as the apiserver returned it, since a reference to a UID that
+    doesn't exist counts as a missing owner. It sets neither ``controller`` nor
+    ``blockOwnerDeletion``, so creating claims needs no permission on the Lease beyond what the
+    batch already has.
+    """
+    return {
+        "apiVersion": "coordination.k8s.io/v1",
+        "kind": "Lease",
+        "name": lease.metadata.name,
+        "uid": lease.metadata.uid,
+    }
+
+
 def lease_now() -> datetime:
     """Returns the current time for a Lease's ``renewTime`` or ``acquireTime``.
 
