@@ -40,7 +40,7 @@ A batch organizes a set of claims around a singular batch id, and a shared clean
 A `Batch` has six core properties:
 1. A randomly generated id with a leading letter so the id is a valid DNS label prefix for the Sandbox/Service names on a cold-started claim (a claim adopted from the warm pool keeps that Sandbox's own pre-generated name instead). The id is attached to each claim in the batch through the `agents.x-k8s.io/batch-id: <id>` label.
 2. A deterministic name for each claim following the format `<batch-id>-<ordinal>`, so a retried create is idempotent. Ordinals come from one counter for the whole batch rather than one per group.
-3. A `coordination.k8s.io/v1` Lease named `batch-<id>` in the same namespace as the claims, carrying the same batch-id label, which the driver renews while it is alive. Stale leases are later used for batch claim cleanup. `Detach` records the next unused ordinal on it (`agents.x-k8s.io/batch-next-ordinal`), so a handle that re-attaches never reuses one. The Lease also carries the caller's labels and the batch's `QuorumTimeout`, `WorkBudget` and `CreateRPS` as annotations, so a re-attached handle's `Acquire` creates claims with the same labels, pacing and `shutdownTime` rule.
+3. A `coordination.k8s.io/v1` Lease named `batch-<id>` in the same namespace as the claims, carrying the same batch-id label, which the driver renews while it is alive. Every claim of the batch carries an `ownerReference` to this Lease (a plain reference, with no `controller` or `blockOwnerDeletion` flag, so the driver needs no extra RBAC), using the Lease UID from the create or attach response. Kubernetes' garbage collector then deletes a batch's claims whenever its Lease is deleted, by any path, and a claim whose owner UID doesn't exist is deleted too. Nothing may recreate a Lease for existing claims, since the new Lease would have a different UID. Stale leases are later used for batch claim cleanup. `Detach` records the next unused ordinal on it (`agents.x-k8s.io/batch-next-ordinal`), so a handle that re-attaches never reuses one. The Lease also carries the caller's labels and the batch's `QuorumTimeout`, `WorkBudget` and `CreateRPS` as annotations, so a re-attached handle's `Acquire` creates claims with the same labels, pacing and `shutdownTime` rule.
 4. The annotations `agents.x-k8s.io/batch-group-size` and `agents.x-k8s.io/batch-group-min-ready` written on each claim to record its batch group's original size and minimum-ready count so `GetBatch` can recover them. We choose to write them on the claims to avoid a single point of failure and accept the duplicated cost at scale as a tradeoff. For groups that are created with `size=0`, we omit writing these annotations and have the user recover them via `members(warmpool_name)` (see API reference tab); `GetBatch` also assumes they have an initial `size=0` and thus `min_ready=0`. Claims added later by `Acquire` carry no group annotations either, so `GetBatch` counts exactly the annotated claims as the initial fill, even when every claim of another group is gone.
 5. The label `agents.x-k8s.io/batch-group: <hash>` on each initial-fill claim, whose value is the first 16 hex characters of the SHA-256 of the claim's pool name, since pool names can be longer than the 63-character limit on label values. A 64-bit hash makes it practically impossible for two pools of one batch to share a value, which would let `ReleaseGroup` delete the wrong group, and every SDK computes the same value. It lets `ReleaseGroup` delete one group with a label-scoped `deletecollection`. The pool name itself is already on the claim in `spec.warmPoolRef.name`. Claims added by `Acquire` carry no group label, so `ReleaseGroup` frees only the group's initial fill.
 6. All of a batch's claims live in one namespace. The controller only resolves a claim's warmPoolRef within the same namespace, and K namespace batch support would lead to K `deletecollection` calls instead of one, and messier RBAC.
@@ -126,11 +126,12 @@ The initial fill's claims share one `shutdownTime`, computed once when the batch
 
 #### Cleanup
 
-There are three ways a batch is cleaned up:
+There are four ways a batch is cleaned up:
 
 1. `Batch.Release()`, called explicitly or by the client's cleanup (in Python, `delete_all()` or the exit hook of a client created with `cleanup=True`), stops the informer and the renewal loop, makes a single call to the Kubernetes `deletecollection` API scoped to the batch's label, then deletes the Lease. As `deletecollection` is not atomic, `Release` re-lists by label and repeats the delete until no claim is left that isn't already being deleted, and raises after three rounds in a row that make no progress.
 2. Where the driver runs no code at all (`SIGKILL`, OOM kill, node preemption), the Lease is no longer renewed and the reaper deletes the Lease, then issues the same label-scoped `deletecollection` to delete the claims.
-3. The `shutdownTime` on the claim passes, and the claim is consequently deleted.
+3. Garbage collection. Whenever the Lease is deleted, by `Release`, the reaper or a person, Kubernetes deletes the claims that own-reference it. This is the guarantee; the label-scoped deletes in paths 1 and 2 stay as the fast path, since the garbage collector deletes far more slowly than `deletecollection`. A Lease deleted with `--cascade=orphan` leaves its claims to path 4.
+4. The `shutdownTime` on the claim passes, and the claim is consequently deleted.
 
 #### Reaper
 
@@ -146,19 +147,19 @@ The reaper is a stateless process that deletes the claims of batches whose drive
 As long as real clock skew stays below the margin, the driver has given up before the reaper deletes anything. Worst-case crash cleanup is `D + margin + RenewInterval + CronJob period`, plus deletion time.
 
 **Each run, per namespace:**
-1. List the batch claims, then the batch Leases. Claims go first because `ClaimBatch` creates its Lease before any claim, so a claim the first list sees has a Lease the second list also sees unless it is really gone.
+1. List the batch Leases.
 2. Pick the stale Leases and record their resourceVersions.
 3. Wait at least one `RenewInterval` from step 1 (one shared wait per namespace).
 4. Delete each stale Lease with a resourceVersion precondition from step 1. A 409 means a renewal, `Detach` or takeover happened, so the batch is skipped. A 404 means `Release` or another reaper deleted it, so go on.
-5. Delete the claims with the same label-scoped `deletecollection` rounds `Release` uses.
+5. Delete the claims with the same label-scoped `deletecollection` rounds `Release` uses. Garbage collection would delete them anyway once the Lease is gone; this is the fast path.
 
 Once the Lease is gone, a driver that wakes up and `GetBatch` both see `BatchLeaseExpiredError`, so neither can resume a batch being reaped. Two overlapping reapers are safe, since only one precondition delete succeeds and both only delete claims afterwards. A `Release` that overlaps a reaper is also safe, since both only delete and `Release` treats a missing Lease as success.
 
-**Claims without a Lease.** A claim with a batch-id label but no Lease never belongs to a batch still being created, since the Lease is created first and deleted last. Such claims come from a reaper that died between steps 4 and 5, a Lease deleted by hand, or a create that landed after `Release` or after the driver lost its Lease. The reaper sweeps them with the same rounds once the batch's newest claim is older than `unleased_grace` (for example 10 minutes), re-reading the Lease just before deleting. A stale Lease with no claims left is deleted alone, with the same confirmation.
+**Claims without a Lease.** These come from a reaper that died between steps 4 and 5, a Lease deleted by hand, or a create that landed after `Release` or after the driver lost its Lease. Each one's owner is gone, so the garbage collector deletes it, and the reaper needs no sweep for them. A stale Lease with no claims left is deleted the same way as any other.
 
-**Cost.** Each run lists the batch Leases (O(B)) and batch claims (O(N)) per namespace, paged and served from the apiserver's watch cache (`resourceVersion="0"`). A slightly old answer is harmless, since every delete is guarded by the precondition, the Lease re-read, or `unleased_grace`. Only the per-batch "no claims left" check uses a consistent read.
+**Cost.** Each run lists only the batch Leases (O(B)) per namespace, paged and served from the apiserver's watch cache (`resourceVersion="0"`). A slightly old answer is harmless, since every Lease delete is guarded by the precondition. Claims are read only for a batch being reaped, by its delete rounds, which use a consistent read.
 
-**Deployment.** The reaper ships as a Python module in the SDK (`python -m k8s_agent_sandbox.batch_reaper`), so it shares the SDK's staleness check, batch-id validation and `Release`'s delete rounds instead of reimplementing them. `examples/batch-reaper/` holds a CronJob (every 1 to 2 minutes, `concurrencyPolicy: Forbid`), a ServiceAccount, the ClusterRole below, a RoleBinding template, and a README. It takes `--namespaces`, `--skew-margin`, `--unleased-grace` and `--dry-run`, logs one line per reaped batch, and exits non-zero on errors so failed runs show up as failed Jobs.
+**Deployment.** The reaper ships as a Python module in the SDK (`python -m k8s_agent_sandbox.batch_reaper`), so it shares the SDK's batch-id validation and `Release`'s delete rounds instead of reimplementing them. Its staleness check adds the skew margin, unlike `GetBatch`'s, which subtracts it. `examples/batch-reaper/` holds a CronJob (every 1 to 2 minutes, `concurrencyPolicy: Forbid`), a ServiceAccount, the ClusterRole below, a RoleBinding template, and a README. It takes `--namespaces`, `--skew-margin` and `--dry-run`, logs one line per reaped batch, and exits non-zero on errors so failed runs show up as failed Jobs.
 
 **Open questions.**
 - Where the reaper lives and how its image is published. A Go binary under `cmd/` is the alternative, at the cost of a new image and release tooling changes.
@@ -802,7 +803,7 @@ We analyze batch resource costs at scale across 4 axes:
   - Supporting G groups in a single batch consolidates multi-image rollouts into a single label-scoped watch and a single `Lease` per cluster, avoiding the overhead of managing G independent single-pool batches.
 - **Active Batches (B):**
   - Background reaper overhead scales with O(B) as it tracks 1 Lease per active batch.
-  - Each reaper run lists the batch Leases (O(B)) and the batch claims (O(N)) in each bound namespace, paged and from the apiserver's watch cache; it keeps no watch or cache between runs.
+  - Each reaper run lists only the batch Leases (O(B)) in each bound namespace, from the apiserver's watch cache, and reads claims only while deleting a stale batch; it keeps no watch or cache between runs.
 - **Batch Lifetime (Time):**
   - The write overhead of lease renewal should effectively be O(1) over time, as a batch emits only 1 write to the batch's single Lease object per `RenewInterval`.
 

@@ -109,7 +109,7 @@ PRs 1 to 6 and PR 7 form the linear Python SDK stack. Siblings branch off the PR
 - **PR 5:** `release_member`, `release_not_ready()` and `release_group()`.
 - **PR 6:** `acquire`, the next-ordinal annotation and lazy `size=0` groups. It starts once PR 5's state changes are reviewed, since both change the released and ownership state in `batch_state.py`.
 - **PR 7:** measure-first performance (list pagination, the ideas above). Since the RL benchmark comes last, PR 7 and the pacing PR measure with an SDK-only benchmark on kind (Design owner proposal).
-- **Reaper PR:** branch off PR 2, per `reaper_contract.md`. The driver-side changes it needs are in PR 1. Approved by Brian: "i approve of reaper in design owner" (2026-10-14 22:10).
+- **Reaper PR:** on top of the linear stack, per `reaper_contract.md`. It also adds the claims' `ownerReference` to the batch Lease in `claim_batch` and `acquire`, which replaces the unleased-claim sweep. The driver-side changes it needs are in PR 1. Approved by Brian: "i approve of reaper in design owner" (2026-10-14 22:10); owner reference: "for the independent ownerref review, since it found no rebuttal, i approve the decision" (2026-10-19 12:32).
 - **Transport PR:** branch off PR 2. The batch-wide data-plane pool is approved by Brian, gated on the other transport questions: "#43 approved; but dont start until we resolve the transport PR matters" (2026-10-14 22:10).
 - **Pacing PR:** adaptive create pacing, branch off PR 2, after a measurement and Brian's approval of the design.
 - **Terminal-reasons fix:** off upstream `main`, independent of the stack.
