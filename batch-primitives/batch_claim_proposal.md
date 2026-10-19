@@ -178,15 +178,19 @@ flowchart TD
     Create["Paced claim creation<br/>across all groups, via<br/>rate-limiting and<br/>concurrency limits"]
     Claims[("N SandboxClaims created<br/>with labels, annotations,<br/>a group's warmPoolRef,<br/>and a shutdownTime")]
     Aggregate["Aggregate readiness<br/>over one watch stream"]
-    Quorum["Quorum reached<br/>(every group's MinReady):<br/>caller unblocks"]
+    Quorum["Hand out Ready members,<br/>one consumer mode:<br/>WaitForQuorum (every group),<br/>IterReadyGroups (per group),<br/>or Events only"]
     Work["Caller uses the ready<br/>sandboxes for its task"]
     LateReady["Late-ready members keep<br/>arriving (sent through<br/>the event stream)"]
+    Swap["Membership changes:<br/>ReleaseMember, Acquire,<br/>ReleaseGroup,<br/>ReleaseNotReady"]
     Release["Release:<br/>stop informer<br/>and renewal,<br/>deletecollection,<br/>then delete the Lease"]
-    Renew["Driver renews the Lease<br/>every RenewInterval"]
+    Detach["Detach: stop informer<br/>and renewal, keep claims;<br/>GetBatch re-attaches<br/>within the grace period"]
+    Renew["Driver renews the Lease<br/>every RenewInterval;<br/>LeaseDegraded and Err<br/>report failures"]
 
     Start --> Mint --> Lease --> Watch --> Create --> Claims
     Claims --> Aggregate --> Quorum --> Work --> Release
     Quorum -.-> LateReady -.-> Work
+    Work -.-> Swap -.-> Work
+    Work -.-> Detach
     Lease --> Renew
 
     subgraph CrashSafety["If the driver dies"]
@@ -759,9 +763,9 @@ Through the use of batch claiming, we see improvements in control-plane connecti
 | Dimension | Current (`CreateSandbox` x N) | Batch Claim (`ClaimBatch`) |
 | :--- | :--- | :--- |
 | **Claim Creation** | N creates (Go: +N gets) | N creates |
-| **Sandbox Pod Checks** | N list calls (Go only) | 0 (mirrored onto claim status, and `connect()` seeds the pod IP) |
+| **Sandbox Pod Checks** | Go: N list calls<br>Python: N Sandbox GETs on first connect (pod-IP modes) | 0 (mirrored onto claim status, and `connect()` seeds the pod IP) |
 | **Readiness Watches** | N (Go: 2N, Python: N) | 1 watch stream across all groups |
-| **Control-Plane Connections** | O(N) dialed/discarded (Python)<br>ceil(2N/100) streams (Go) | O(MaxInFlight), reused |
+| **Control-Plane Connections** | O(N) dialed/discarded (Python)<br>ceil(2N/100) streams (Go) | O(MaxInFlight + 2), reused (the creates, the watch and the Lease renewal) |
 | **Batch Deletion** | N individual `Delete` calls | **Fixed Cohort:** 1 deletecollection<br>**Rolling:** M individual deletes (where M >= N, the total replacements across the run) + 1 deletecollection  |
 
 Note that for deletion, although batch uses a single `deletecollection` call, this does not minimize the amount of deletions overall, as the work is now migrated to the controller.
