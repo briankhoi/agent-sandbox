@@ -995,7 +995,7 @@ class TestStart(unittest.TestCase):
 @patch.object(SandboxBatch, "_start", lambda self: None)
 class TestClientBatchCleanup(BaseBatchClientTest):
 
-    def test_cleanup_stops_every_tracked_batch(self):
+    def test_cleanup_stops_every_tracked_batch_and_closes_its_connections(self):
         for cleanup in ("delete_all", "_delete_automatic_sandboxes"):
             with self.subTest(cleanup):
                 # get_batch writes its holder into the Lease it read, so each attach reads a fresh one.
@@ -1006,11 +1006,14 @@ class TestClientBatchCleanup(BaseBatchClientTest):
                 first = self.client.get_batch("b1")
                 second = self.client.get_batch("b2")
                 self.assertEqual(set(self.client._active_batches.values()), {first, second})
+                cached = MagicMock()
+                first._connected["b1-0"] = cached
 
                 with patch.object(SandboxBatch, "_stop_background_threads", autospec=True) as stop:
                     getattr(self.client, cleanup)()
                 self.assertEqual({c.args[0] for c in stop.call_args_list}, {first, second})
                 self.assertEqual(self.client._active_batches, {})
+                cached.close_connection.assert_called_once()
 
     def test_unregistering_an_old_handle_keeps_a_newer_one_registered(self):
         old_handle = MagicMock(namespace="default", batch_id="b1")

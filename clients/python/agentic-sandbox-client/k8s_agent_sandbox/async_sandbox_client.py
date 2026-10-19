@@ -225,14 +225,21 @@ class AsyncSandboxClient(Generic[T]):
                     logger.error(f"Failed to close sandbox connection: {e}")
                 else:
                     self._active_connection_sandboxes.pop(key, None)
+        await self._stop_batches()
+        await self.k8s_helper.close()
+
+    async def _stop_batches(self) -> None:
+        # Without this, a dropped handle's tasks would keep renewing its Lease for the life of the
+        # event loop, so the batch would never go stale.
+        async with self._lock:
             batches = list(self._active_batches.values())
             self._active_batches.clear()
         for batch in batches:
             try:
                 await batch._stop_background_tasks()
+                await batch._close_cached_connections("client cleanup")
             except Exception as e:
                 logger.error(f"Failed to stop batch '{batch.batch_id}' tasks: {e}")
-        await self.k8s_helper.close()
 
     async def create_sandbox(
         self,
@@ -549,7 +556,8 @@ class AsyncSandboxClient(Generic[T]):
             )
 
     async def delete_all(self) -> None:
-        """Cleanup all tracked sandboxes managed by this client."""
+        """Cleanup all tracked sandboxes managed by this client, and stop every tracked batch's
+        background watch and Lease renewal and close its cached sandbox connections."""
         async with self._lock:
             items = list(self._active_connection_sandboxes.items())
 
@@ -558,6 +566,7 @@ class AsyncSandboxClient(Generic[T]):
                 await self.delete_sandbox(claim_name, namespace=ns)
             except Exception as e:
                 logger.error(f"Cleanup failed for {claim_name} in namespace {ns}: {e}")
+        await self._stop_batches()
 
     async def _delete_automatic_sandboxes(self) -> None:
         async with self._lock:
@@ -583,10 +592,13 @@ class AsyncSandboxClient(Generic[T]):
             tracked = [
                 (key, self._active_connection_sandboxes[key]) for key in claims
             ]
-            if not tracked:
+            batches = list(self._active_batches.values())
+            if not tracked and not batches:
                 return
 
-            for _, sandbox in tracked:
+            # A batch's cached connections hold port-forward processes too.
+            batch_sandboxes = [sandbox for batch in batches for sandbox in batch._connected.values()]
+            for sandbox in [sandbox for _, sandbox in tracked] + batch_sandboxes:
                 try:
                     sandbox._close_for_atexit()
                 except Exception as e:
@@ -596,6 +608,8 @@ class AsyncSandboxClient(Generic[T]):
                             f"connection during atexit cleanup: {e}",
                             file=sys.stderr,
                         )
+            if not tracked:
+                return
 
             atexit_api_client = None
             if self._injected_api_client is not None:

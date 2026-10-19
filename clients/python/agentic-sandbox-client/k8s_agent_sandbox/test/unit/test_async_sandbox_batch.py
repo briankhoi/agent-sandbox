@@ -1044,16 +1044,31 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
 
 class TestClientClose(BaseAsyncBatchClientTest):
 
-    async def test_close_stops_tracked_batches_tasks(self):
+    async def test_cleanup_stops_tracked_batches_and_closes_their_connections(self):
         self.mock_k8s_helper.close = AsyncMock()
+        for cleanup in ("close", "delete_all"):
+            with self.subTest(cleanup):
+                handle = _make_handle(self.client)
+                handle._stop_background_tasks = AsyncMock()
+                cached = MagicMock(close_connection=AsyncMock())
+                handle._connected["b1-0"] = cached
+                self.client._active_batches[("default", "b1")] = handle
+
+                await getattr(self.client, cleanup)()
+
+                handle._stop_background_tasks.assert_called_once()
+                cached.close_connection.assert_awaited_once()
+                self.assertEqual(self.client._active_batches, {})
+
+    def test_atexit_closes_batch_connections(self):
         handle = _make_handle(self.client)
-        handle._stop_background_tasks = AsyncMock()
+        cached = MagicMock()
+        handle._connected["b1-0"] = cached
         self.client._active_batches[("default", "b1")] = handle
 
-        await self.client.close()
+        self.client._atexit_cleanup()
 
-        handle._stop_background_tasks.assert_called_once()
-        self.assertEqual(self.client._active_batches, {})
+        cached._close_for_atexit.assert_called_once()
 
     def test_unregistering_an_old_handle_keeps_a_newer_one_registered(self):
         old_handle = MagicMock(namespace="default", batch_id="b1")

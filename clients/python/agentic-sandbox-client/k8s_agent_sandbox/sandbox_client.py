@@ -405,7 +405,7 @@ class SandboxClient(Generic[T]):
     def delete_all(self) -> None:
         """
         Cleanup all tracked sandboxes managed by this client, and stop every tracked batch's
-        background watch and Lease renewal.
+        background watch and Lease renewal and close its cached sandbox connections.
         
         Example:
         
@@ -443,6 +443,7 @@ class SandboxClient(Generic[T]):
         for batch in batches:
             try:
                 batch._stop_background_threads()
+                batch._close_cached_connections("client cleanup")
             except Exception as e:
                 logging.error(f"Failed to stop batch '{batch.batch_id}' threads: {e}")
 
