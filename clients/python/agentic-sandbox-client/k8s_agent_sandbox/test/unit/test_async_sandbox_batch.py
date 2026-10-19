@@ -15,6 +15,7 @@
 """Unit tests for the async AsyncSandboxBatch handle and AsyncSandboxClient.get_batch."""
 
 import asyncio
+import contextlib
 import inspect
 import ssl
 import time
@@ -984,13 +985,13 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
         await self.handle.detach()
 
         mock_sandbox.close_connection.assert_called_once()
-        self.mock_client._unregister_batch.assert_called_once_with("default", "b1")
+        self.mock_client._unregister_batch.assert_called_once_with(self.handle)
         self.assertEqual(self.handle._connected, {})
 
         await self.handle.detach()
 
         mock_sandbox.close_connection.assert_called_once()
-        self.mock_client._unregister_batch.assert_called_once_with("default", "b1")
+        self.mock_client._unregister_batch.assert_called_once_with(self.handle)
         self.mock_client.k8s_helper.read_batch_lease.assert_called_once()
         self.mock_client.k8s_helper.replace_batch_lease.assert_called_once()
 
@@ -1011,7 +1012,7 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
         self.mock_client.k8s_helper.replace_batch_lease.side_effect = None
         await self.handle.detach()  # Retry: completes the release.
         self.assertTrue(self.handle._lease_released)
-        self.mock_client._unregister_batch.assert_called_once_with("default", "b1")
+        self.mock_client._unregister_batch.assert_called_once_with(self.handle)
 
     async def test_close_connection_failure_still_releases_lease(self):
         self.mock_client.k8s_helper.read_batch_lease = AsyncMock(
@@ -1026,7 +1027,7 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
             await self.handle.detach()  # Must not raise.
 
         self.mock_client.k8s_helper.replace_batch_lease.assert_called_once()
-        self.mock_client._unregister_batch.assert_called_once_with("default", "b1")
+        self.mock_client._unregister_batch.assert_called_once_with(self.handle)
 
     async def test_foreign_holder_lease_is_left_untouched(self):
         self.mock_client.k8s_helper.read_batch_lease = AsyncMock(
@@ -1037,7 +1038,7 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
         await self.handle.detach()  # Must not raise.
 
         self.mock_client.k8s_helper.replace_batch_lease.assert_not_called()
-        self.mock_client._unregister_batch.assert_called_once_with("default", "b1")
+        self.mock_client._unregister_batch.assert_called_once_with(self.handle)
 
     async def test_connect_after_detach_raises(self):
         self.mock_client.k8s_helper.read_batch_lease = AsyncMock(return_value=_lease())
@@ -1066,16 +1067,62 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
 
 class TestClientClose(BaseAsyncBatchClientTest):
 
-    async def test_close_stops_tracked_batches_tasks(self):
+    async def test_cleanup_stops_tracked_batches_and_closes_their_connections(self):
         self.mock_k8s_helper.close = AsyncMock()
+        for cleanup in ("close", "delete_all"):
+            with self.subTest(cleanup):
+                handle = _make_handle(self.client)
+                # A failed stop must still leave the cached connection closed.
+                handle._stop_background_tasks = AsyncMock(side_effect=RuntimeError("stop failed"))
+                cached = MagicMock(close_connection=AsyncMock())
+                handle._connected["b1-0"] = cached
+                self.client._active_batches[("default", "b1")] = handle
+
+                await getattr(self.client, cleanup)()
+
+                handle._stop_background_tasks.assert_awaited_once()
+                cached.close_connection.assert_awaited_once()
+                self.assertEqual(self.client._active_batches, {})
+                with self.assertRaises(BatchError):
+                    await handle.connect(MagicMock())
+
+    async def test_a_connection_that_fails_to_close_is_retried_by_the_next_cleanup(self):
+        self.mock_k8s_helper.close = AsyncMock()
+        for error in (RuntimeError("close failed"), asyncio.CancelledError()):
+            with self.subTest(type(error).__name__):
+                handle = _make_handle(self.client)
+                cached = MagicMock(close_connection=AsyncMock(side_effect=[error, None]))
+                handle._connected["b1-0"] = cached
+                self.client._active_batches[("default", "b1")] = handle
+
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.client.close()
+                self.assertEqual(handle._connected, {"b1-0": cached})
+                self.assertEqual(self.client._active_batches, {("default", "b1"): handle})
+
+                await self.client.close()
+                self.assertEqual(cached.close_connection.await_count, 2)
+                self.assertEqual(handle._connected, {})
+                self.assertEqual(self.client._active_batches, {})
+
+    def test_atexit_closes_batch_connections(self):
         handle = _make_handle(self.client)
-        handle._stop_background_tasks = AsyncMock()
+        cached = MagicMock()
+        handle._connected["b1-0"] = cached
         self.client._active_batches[("default", "b1")] = handle
 
-        await self.client.close()
+        self.client._atexit_cleanup()
 
-        handle._stop_background_tasks.assert_called_once()
-        self.assertEqual(self.client._active_batches, {})
+        cached._close_for_atexit.assert_called_once()
+
+    def test_unregistering_an_old_handle_keeps_a_newer_one_registered(self):
+        old_handle = MagicMock(namespace="default", batch_id="b1")
+        new_handle = MagicMock(namespace="default", batch_id="b1")
+        self.client._active_batches[("default", "b1")] = new_handle
+
+        self.client._unregister_batch(old_handle)
+
+        self.assertEqual(self.client._active_batches, {("default", "b1"): new_handle})
 
 
 if __name__ == "__main__":
