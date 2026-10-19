@@ -118,12 +118,18 @@ def derive_member(claim_obj: dict[str, Any]) -> Member:
         elif ready_condition.get("status") == "False" and reason in TERMINAL_CLAIM_READY_REASONS:
             state = MemberState.FAILED
 
+    # The controller stops reconciling a terminating claim, so its Ready condition goes stale.
+    # Treat it as already deleted, the same way mark_lost does, so the DELETED event changes nothing.
+    terminating = metadata.get("deletionTimestamp") is not None
+    if terminating and state is not MemberState.FAILED:
+        state = MemberState.LOST
+
     return Member(
         claim_name=metadata.get("name", ""),
         sandbox_name=sandbox_name,
         warmpool=(spec.get("warmPoolRef") or {}).get("name", ""),
-        pod_ips=tuple(sandbox_status.get("podIPs") or []),
-        service_fqdn=sandbox_status.get("serviceFQDN"),
+        pod_ips=() if terminating else tuple(sandbox_status.get("podIPs") or []),
+        service_fqdn=None if terminating else sandbox_status.get("serviceFQDN"),
         state=state,
         reason=reason,
         message=message,
