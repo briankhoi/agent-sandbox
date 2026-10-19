@@ -123,6 +123,7 @@ class K8sHelper:
         volume_claim_templates: list[dict[str, Any]] | None = None,
         pod_metadata: AdditionalPodMetadata | dict[str, Any] | None = None,
         env: dict[str, str] | None = None,
+        owner_references: list[dict[str, Any]] | None = None,
         *,
         log_level: int = logging.INFO,
         _request_timeout: float | tuple[float, float] | None = None,
@@ -135,6 +136,8 @@ class K8sHelper:
                 ``spec.additionalPodMetadata`` so the labels and annotations
                 propagate onto the running Sandbox Pod (as opposed to
                 ``labels``, which only land on the SandboxClaim object).
+            owner_references: Optional ``metadata.ownerReferences`` for the claim, so the
+                garbage collector deletes it once its owner is gone.
             log_level: Log level for the logger during this function call.
             _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
                 pair) forwarded to the underlying urllib3 request.
@@ -143,7 +146,7 @@ class K8sHelper:
         if CLIENT_REQUEST_TIME_ANNOTATION not in updated_annotations:
             updated_annotations[CLIENT_REQUEST_TIME_ANNOTATION] = datetime.now(UTC).isoformat()
 
-        metadata = {
+        metadata: dict[str, Any] = {
             "name": name,
             "annotations": updated_annotations,
             "labels": {
@@ -151,6 +154,8 @@ class K8sHelper:
                 CREATED_BY_LABEL: "python-client",
             }
         }
+        if owner_references:
+            metadata["ownerReferences"] = owner_references
 
         spec: dict[str, Any] = {
             "warmPoolRef": {
