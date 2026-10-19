@@ -235,10 +235,14 @@ class AsyncSandboxBatch:
         """Returns a connected ``AsyncSandbox`` for a ready member. If this handle is already connected
         to the Sandbox, it reuses the existing connection, otherwise it creates a new one and caches it for future calls.
 
-        Raises ``SandboxNotReadyError`` if the member isn't ready.
+        Raises ``SandboxNotReadyError`` if the member isn't ready, and ``BatchError`` once
+        ``err()`` is set, since the Lease may be lost and the cache can no longer vouch for the
+        member.
         """
         async with self._lock:
             self._check_active()
+            if (error := self._state.error()) is not None:
+                raise BatchError(f"batch '{self.batch_id}' has stopped") from error
             cached = self._connected.get(member.claim_name)
             if cached is not None:
                 return cached
