@@ -433,7 +433,7 @@ class SandboxClient(Generic[T]):
                 else:
                     self.delete_sandbox(claim_name, namespace)
             except Exception as e:
-                logging.error(f"Cleanup failed for {claim_name} in namespace {namespace}: {e}")
+                logger.error(f"Cleanup failed for {claim_name} in namespace {namespace}: {e}")
         self._stop_batches()
 
     def _stop_batches(self) -> None:
@@ -445,7 +445,7 @@ class SandboxClient(Generic[T]):
             try:
                 batch._stop_background_threads()
             except Exception as e:
-                logging.error(f"Failed to stop batch '{batch.batch_id}' threads: {e}")
+                logger.error(f"Failed to stop batch '{batch.batch_id}' threads: {e}")
 
     @trace_span("create_claim")
     def _create_claim(

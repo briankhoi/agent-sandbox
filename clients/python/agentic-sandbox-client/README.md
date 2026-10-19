@@ -674,7 +674,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 ```
 
-### 14. Batch claims
+### 15. Batch claims
 
 `SandboxClient.get_batch()` attaches to an existing batch of `SandboxClaims` sharing an
 `agents.x-k8s.io/batch-id` label, returning a `SandboxBatch` handle. The claims can be spread across
