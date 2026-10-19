@@ -718,7 +718,7 @@ class TestRenewal(BaseBatchClientTest):
             _lease(holder_identity=handle._holder_identity),
         ]
         self.assertFalse(handle.lease_degraded())
-        with self.assertLogs(level="INFO") as ctx:
+        with self.assertLogs("k8s_agent_sandbox.sandbox_batch", level="INFO") as ctx:
             handle._renew_once()
         self.assertTrue(any("degraded" in msg for msg in ctx.output))
         self.assertTrue(handle.lease_degraded())
@@ -908,13 +908,13 @@ class TestDetach(unittest.TestCase):
         self.handle.detach()
 
         mock_sandbox.close_connection.assert_called_once()
-        self.mock_client._unregister_batch.assert_called_once_with("default", "b1")
+        self.mock_client._unregister_batch.assert_called_once_with(self.handle)
         self.assertEqual(self.handle._connected, {})
 
         self.handle.detach()  # Second call: no exception, and does nothing.
 
         mock_sandbox.close_connection.assert_called_once()
-        self.mock_client._unregister_batch.assert_called_once_with("default", "b1")
+        self.mock_client._unregister_batch.assert_called_once_with(self.handle)
         self.mock_client.k8s_helper.read_batch_lease.assert_called_once()
         self.mock_client.k8s_helper.replace_batch_lease.assert_called_once()
 
@@ -941,7 +941,7 @@ class TestDetach(unittest.TestCase):
         bad_sandbox.close_connection.side_effect = RuntimeError("boom")
         self.handle._connected["b1-0"] = bad_sandbox
 
-        with self.assertLogs(level="WARNING"):
+        with self.assertLogs("k8s_agent_sandbox.sandbox_batch", level="WARNING"):
             self.handle.detach()  # Must not raise.
 
         self.mock_client.k8s_helper.replace_batch_lease.assert_called_once()
@@ -995,7 +995,7 @@ class TestStart(unittest.TestCase):
 @patch.object(SandboxBatch, "_start", lambda self: None)
 class TestClientBatchCleanup(BaseBatchClientTest):
 
-    def test_cleanup_stops_every_tracked_batch(self):
+    def test_cleanup_stops_every_tracked_batch_and_closes_its_connections(self):
         for cleanup in ("delete_all", "_delete_automatic_sandboxes"):
             with self.subTest(cleanup):
                 # get_batch writes its holder into the Lease it read, so each attach reads a fresh one.
@@ -1006,11 +1006,23 @@ class TestClientBatchCleanup(BaseBatchClientTest):
                 first = self.client.get_batch("b1")
                 second = self.client.get_batch("b2")
                 self.assertEqual(set(self.client._active_batches.values()), {first, second})
+                cached = MagicMock()
+                first._connected["b1-0"] = cached
 
                 with patch.object(SandboxBatch, "_stop_background_threads", autospec=True) as stop:
                     getattr(self.client, cleanup)()
                 self.assertEqual({c.args[0] for c in stop.call_args_list}, {first, second})
                 self.assertEqual(self.client._active_batches, {})
+                cached.close_connection.assert_called_once()
+
+    def test_unregistering_an_old_handle_keeps_a_newer_one_registered(self):
+        old_handle = MagicMock(namespace="default", batch_id="b1")
+        new_handle = MagicMock(namespace="default", batch_id="b1")
+        self.client._active_batches[("default", "b1")] = new_handle
+
+        self.client._unregister_batch(old_handle)
+
+        self.assertEqual(self.client._active_batches, {("default", "b1"): new_handle})
 
 
 if __name__ == "__main__":
