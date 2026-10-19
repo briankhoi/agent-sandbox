@@ -369,12 +369,23 @@ class AsyncSandboxBatch:
                 # Refresh the Lease so it doesn't expire immediately after we release it,
                 # giving other clients a chance to acquire it.
                 lease.spec.lease_duration_seconds = self._detach_grace
-                await self._client.k8s_helper.replace_batch_lease(
-                    self._lease_name,
-                    self.namespace,
-                    lease,
-                    _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
-                )
+                try:
+                    await self._client.k8s_helper.replace_batch_lease(
+                        self._lease_name,
+                        self.namespace,
+                        lease,
+                        _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+                    )
+                except ApiException as e:
+                    if e.status != 409:
+                        raise
+                    # The Lease changed since the read above, most likely because a concurrent
+                    # detach() of this handle released it first. Only a Lease still held here is a failure.
+                    current = await self._client.k8s_helper.read_batch_lease(
+                        self._lease_name, self.namespace, _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
+                    )
+                    if current is not None and current.spec.holder_identity == self._holder_identity:
+                        raise
 
         async with self._lock:
             self._lease_released = True
