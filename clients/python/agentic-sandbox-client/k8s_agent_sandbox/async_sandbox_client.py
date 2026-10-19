@@ -698,6 +698,8 @@ class AsyncSandboxClient(Generic[T]):
                             f"connection during atexit cleanup: {e}",
                             file=sys.stderr,
                         )
+            if not tracked:
+                return
 
             atexit_api_client = None
             if self._injected_api_client is not None:

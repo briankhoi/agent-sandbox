@@ -1048,19 +1048,21 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
 
 class TestClientClose(BaseAsyncBatchClientTest):
 
-    async def test_close_stops_tracked_batches_and_closes_their_connections(self):
+    async def test_cleanup_stops_tracked_batches_and_closes_their_connections(self):
         self.mock_k8s_helper.close = AsyncMock()
-        handle = _make_handle(self.client)
-        handle._stop_background_tasks = AsyncMock()
-        cached = MagicMock(close_connection=AsyncMock())
-        handle._connected["b1-0"] = cached
-        self.client._active_batches[("default", "b1")] = handle
+        for cleanup in ("close", "delete_all"):
+            with self.subTest(cleanup):
+                handle = _make_handle(self.client)
+                handle._stop_background_tasks = AsyncMock()
+                cached = MagicMock(close_connection=AsyncMock())
+                handle._connected["b1-0"] = cached
+                self.client._active_batches[("default", "b1")] = handle
 
-        await self.client.close()
+                await getattr(self.client, cleanup)()
 
-        handle._stop_background_tasks.assert_called_once()
-        cached.close_connection.assert_awaited_once()
-        self.assertEqual(self.client._active_batches, {})
+                handle._stop_background_tasks.assert_called_once()
+                cached.close_connection.assert_awaited_once()
+                self.assertEqual(self.client._active_batches, {})
 
     def test_atexit_closes_batch_connections(self):
         handle = _make_handle(self.client)
@@ -1068,9 +1070,7 @@ class TestClientClose(BaseAsyncBatchClientTest):
         handle._connected["b1-0"] = cached
         self.client._active_batches[("default", "b1")] = handle
 
-        with patch("k8s_agent_sandbox.async_sandbox_client.K8sHelper"), \
-             patch("k8s_agent_sandbox.async_sandbox_client._delete_batch_objects_sync"):
-            self.client._atexit_cleanup()
+        self.client._atexit_cleanup()
 
         cached._close_for_atexit.assert_called_once()
 
