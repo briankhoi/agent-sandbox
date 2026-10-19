@@ -386,8 +386,11 @@ class SandboxClient(Generic[T]):
         self._active_batches[(namespace, batch_id)] = batch
         return batch
 
-    def _unregister_batch(self, namespace: str, batch_id: str) -> None:
-        self._active_batches.pop((namespace, batch_id), None)
+    def _unregister_batch(self, batch: SandboxBatch) -> None:
+        key = (batch.namespace, batch.batch_id)
+        # get_batch may have registered a newer handle for the same batch since.
+        if self._active_batches.get(key) is batch:
+            del self._active_batches[key]
 
     def delete_sandbox(self, claim_name: str, namespace: str = "default") -> None:
         """Stops the client side connection and deletes the Kubernetes resources.
@@ -412,7 +415,7 @@ class SandboxClient(Generic[T]):
     def delete_all(self) -> None:
         """
         Cleanup all tracked sandboxes managed by this client, and stop every tracked batch's
-        background watch and Lease renewal.
+        background watch and Lease renewal and close its cached sandbox connections.
         
         Example:
         
@@ -450,6 +453,7 @@ class SandboxClient(Generic[T]):
         for batch in batches:
             try:
                 batch._stop_background_threads()
+                batch._close_cached_connections("client cleanup")
             except Exception as e:
                 logger.error(f"Failed to stop batch '{batch.batch_id}' threads: {e}")
 
