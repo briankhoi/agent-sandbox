@@ -81,6 +81,24 @@ class TestDeriveMember(unittest.TestCase):
         self.assertEqual(member.pod_ips, ("10.0.0.1",))
         self.assertEqual(member.service_fqdn, "sbx-1.svc")
 
+    def test_terminating_claim_counts_as_deleted(self):
+        ready = {"type": "Ready", "status": "True"}
+        failed = {"type": "Ready", "status": "False", "reason": "ClaimExpired"}
+        for condition, expected in ((ready, MemberState.LOST), (failed, MemberState.FAILED)):
+            with self.subTest(expected=expected):
+                claim = _claim(
+                    "b1-0",
+                    conditions=[condition],
+                    sandbox={"name": "sbx-1", "podIPs": ["10.0.0.1"], "serviceFQDN": "sbx-1.svc"},
+                    deletion_timestamp="2026-10-19T00:00:00Z",
+                )
+                member = batch_state.derive_member(claim)
+                self.assertEqual(member.state, expected)
+                # The DELETED event that follows leaves the member as it is.
+                state = batch_state.BatchState("b1", [])
+                state.upsert_claim(claim)
+                self.assertEqual(state.mark_lost("b1-0"), member)
+
     def test_ready_without_sandbox_name_is_not_ready(self):
         member = batch_state.derive_member(
             _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}])
