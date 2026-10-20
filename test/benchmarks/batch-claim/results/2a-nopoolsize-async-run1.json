@@ -1,0 +1,71 @@
+{
+ "default_pool_size": 100,
+ "raised": "ValueError: max_in_flight=100 needs a Kubernetes API connection pool of at least 102, but the client's pool holds 100. Lower max_in_flight, or construct the client with pool_size=102 or more (for an injected api_client, set connection_pool_maxsize on its configuration)",
+ "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/lib/python3.14/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+tip.44fb487",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/bin/python",
+ "python_version": "3.14.3",
+ "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+ "settings": {
+  "create_rps": 1000,
+  "max_in_flight": 100,
+  "pool_size": null,
+  "lease_duration": 6,
+  "quorum_timeout": 600,
+  "work_budget": 3600,
+  "concurrency": null,
+  "baseline_pool": null
+ },
+ "effective_pool_size": 100,
+ "rss_peak_mb": 108.59375,
+ "ru_maxrss_mb": 109.875,
+ "rss_series_mb": [
+  [
+   0.0,
+   108.59375
+  ]
+ ],
+ "api_conns_peak": 0,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 0,
+ "requests_total": {},
+ "sampler_cpu_s": 2.5959000000000003e-05,
+ "driver_exit": 0,
+ "run_wall_s": 0.6193777909502387,
+ "apiserver": {},
+ "cleanup": {},
+ "apiserver_watch_peak": 2.0,
+ "apiserver_watch_idle": 2.0,
+ "scenario": "2a",
+ "variant": "nopoolsize",
+ "shell": "async",
+ "run": 1,
+ "spec": {
+  "scenario": "2a",
+  "variant": "nopoolsize",
+  "shell": "async",
+  "location": "host",
+  "code": "tip",
+  "kind": "poolcheck",
+  "groups": [
+   [
+    "unsched-pool",
+    5000
+   ]
+  ],
+  "max_in_flight": 100,
+  "create_rps": 1000,
+  "lease_duration": 6,
+  "hold_min_s": 20,
+  "pool_size": null
+ },
+ "driver_location": "host",
+ "code": "tip",
+ "code_sha": "44fb487f361e3d60eb4690fafc6db9fa04d4fa92",
+ "finished_at": "2026-10-20T02:13:37"
+}

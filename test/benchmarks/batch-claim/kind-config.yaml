@@ -1,0 +1,33 @@
+# deploy-kind's cluster config (dev/tools/create-kind-cluster) plus a higher
+# kubelet maxPods, a per-node pod CIDR big enough for it (the default /24
+# caps a node near 254 pods), and the repo mounted into the node so a driver
+# pod can install the SDK from source.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraMounts:
+  - hostPath: /Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim
+    containerPath: /src
+    readOnly: true
+  kubeadmConfigPatches:
+  - |
+    # kind v0.31 renders kubeadm v1beta3, so a v1beta4 patch (as in
+    # create-kind-cluster) matches nothing and is silently dropped.
+    kind: ClusterConfiguration
+    apiVersion: kubeadm.k8s.io/v1beta3
+    apiServer:
+      extraArgs:
+        enable-admission-plugins: "NodeRestriction,OwnerReferencesPermissionEnforcement"
+    controllerManager:
+      extraArgs:
+        node-cidr-mask-size: "22"
+  - |
+    kind: KubeletConfiguration
+    maxPods: 400
+    logging:
+      verbosity: 8
+containerdConfigPatches:
+- |-
+  [debug]
+    level = "debug"

@@ -1,0 +1,69 @@
+[16:18:40] === step 3 start
+[16:18:40] bench.py candidate
+candidate=None final=False winners=[] queue=['batch-rps1000-mif50'] reason=no safe default wins clearly
+[16:18:40] bench.py suite --only 3a2
+[16:30:11] bench.py errored --supersede
+[16:30:11] bench.py suite --only 3a2
+[16:30:14] bench.py errored
+[16:30:14] bench.py candidate
+candidate=None final=True winners=[] queue=['batch-rps1000-mif50'] reason=no safe default wins clearly
+[16:30:14] bench.py suite --only 3a2
+[16:30:16] bench.py errored --supersede
+[16:30:16] bench.py suite --only 3a2
+[16:30:17] bench.py errored
+[16:30:17] bench.py candidate
+candidate=None final=True winners=[] queue=['batch-rps1000-mif50'] reason=no safe default wins clearly
+[16:30:18] === step 3 end
+## 2026-10 rerun steps
+
+- Step 0 (1a reruns): 6/6 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 5 rerun after a superseded attempt
+- Step 2 (3s): 48/48 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 3 (3a2): 9/9 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 4 (6v2): 0/24 done, 24 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 5 (memdiag): 0/2 done, 2 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 6 (1d): 0/3 done, 3 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+[16:30:18] === step 4 start
+[16:30:18] bench.py candidate
+candidate=None final=True winners=[] queue=['batch-rps1000-mif50'] reason=no safe default wins clearly
+[16:30:18] bench.py suite --only 6v2a 6v2b 6v2c 6v2-baseline-pool1000
+[17:02:43] bench.py errored --supersede
+[17:02:43] bench.py suite --only 6v2a 6v2b 6v2c 6v2-baseline-pool1000
+[17:02:47] bench.py errored
+[17:02:47] === step 4 end
+## 2026-10 rerun steps
+
+- Step 0 (1a reruns): 6/6 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 5 rerun after a superseded attempt
+- Step 2 (3s): 48/48 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 3 (3a2): 9/9 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 4 (6v2): 12/24 done, 0 pending, 12 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 5 (memdiag): 0/2 done, 2 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 6 (1d): 0/3 done, 3 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+[17:02:47] === step 5 start
+[17:02:47] bench.py suite --only 6v2-memdiag 6v2-baseline-async
+[17:08:16] bench.py errored --supersede
+[17:08:16] bench.py suite --only 6v2-memdiag 6v2-baseline-async
+[17:08:19] bench.py errored
+[17:08:19] === step 5 end
+## 2026-10 rerun steps
+
+- Step 0 (1a reruns): 6/6 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 5 rerun after a superseded attempt
+- Step 2 (3s): 48/48 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 3 (3a2): 9/9 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 4 (6v2): 12/24 done, 0 pending, 12 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 5 (memdiag): 2/2 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 6 (1d): 0/3 done, 3 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+[17:08:19] === step 6 start
+[17:08:19] bench.py suite --only 1d
+[17:16:21] bench.py errored --supersede
+[17:16:21] bench.py suite --only 1d
+[17:16:24] bench.py errored
+[17:16:24] === step 6 end
+## 2026-10 rerun steps
+
+- Step 0 (1a reruns): 6/6 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 5 rerun after a superseded attempt
+- Step 2 (3s): 48/48 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 3 (3a2): 9/9 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 4 (6v2): 12/24 done, 0 pending, 12 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 5 (memdiag): 2/2 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 6 (1d): 3/3 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+[17:16:24] pipeline done: 3 4 5 6

@@ -1,0 +1,843 @@
+{
+ "rollouts": 600,
+ "rollout_errors": 0,
+ "rollout_error_samples": [],
+ "rolling_wall_s": 159.45779063399823,
+ "rollouts_per_min": 225.76507461231807,
+ "acquire_ms": {
+  "n": 600,
+  "first": 31.616141000995412,
+  "p50": 75.18017150141532,
+  "p90": 594.1093923989698,
+  "p99": 1721.0007202654372,
+  "last": 2454.0063140011625
+ },
+ "rolling_cpu_s": 26.70023715999999,
+ "rolling_cpu_cores": 0.16744391762761068,
+ "requests_rolling": {
+  "watch sandboxclaims": 5,
+  "create sandboxclaims": 600,
+  "delete sandboxclaims": 600,
+  "update leases": 7
+ },
+ "requests_per_rollout": 2.02,
+ "members_at_end": 0,
+ "memdiag": {
+  "points": [
+   {
+    "rollouts": 100,
+    "tasks": 45,
+    "rss_mb": 220.296875,
+    "traced_mb": 11.461026191711426
+   },
+   {
+    "rollouts": 600,
+    "tasks": 3,
+    "rss_mb": 305.46484375,
+    "traced_mb": 11.348172187805176
+   }
+  ],
+  "top_traceback_growth": [
+   {
+    "size_diff_kb": -66.2421875,
+    "count_diff": -319,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/pydantic/main.py:280",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/batch_state.py:161",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/batch_state.py:265",
+     "/src/test/benchmarks/batch-claim/bench.py:490",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:1031"
+    ]
+   },
+   {
+    "size_diff_kb": 36.5078125,
+    "count_diff": 461,
+    "frames_innermost_first": [
+     "/src/test/benchmarks/batch-claim/bench.py:443",
+     "/src/test/benchmarks/batch-claim/bench.py:379",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:1282",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:658",
+     "/src/test/benchmarks/batch-claim/bench.py:1433"
+    ]
+   },
+   {
+    "size_diff_kb": 25.6611328125,
+    "count_diff": 461,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/batch_state.py:405",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:638",
+     "/src/test/benchmarks/batch-claim/bench.py:1433",
+     "/usr/local/lib/python3.12/asyncio/events.py:88",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:1999"
+    ]
+   },
+   {
+    "size_diff_kb": 24.0,
+    "count_diff": 0,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/batch_state.py:315",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/batch_state.py:344",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:722",
+     "/src/test/benchmarks/batch-claim/bench.py:1438",
+     "/usr/local/lib/python3.12/asyncio/events.py:88"
+    ]
+   },
+   {
+    "size_diff_kb": 20.328125,
+    "count_diff": 462,
+    "frames_innermost_first": [
+     "/src/test/benchmarks/batch-claim/bench.py:478",
+     "/src/test/benchmarks/batch-claim/bench.py:492",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:1031",
+     "/usr/local/lib/python3.12/asyncio/events.py:88",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:1999"
+    ]
+   },
+   {
+    "size_diff_kb": -18.0078125,
+    "count_diff": -360,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/httpx/_models.py:157",
+     "/opt/venv/lib/python3.12/site-packages/httpx/_client.py:307",
+     "/opt/venv/lib/python3.12/site-packages/httpx/_client.py:210",
+     "/opt/venv/lib/python3.12/site-packages/httpx/_client.py:1376",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_connector.py:216"
+    ]
+   },
+   {
+    "size_diff_kb": 15.01171875,
+    "count_diff": 323,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/utils.py:98",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:654",
+     "/src/test/benchmarks/batch-claim/bench.py:1433",
+     "/usr/local/lib/python3.12/asyncio/events.py:88",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:1999"
+    ]
+   },
+   {
+    "size_diff_kb": 14.921875,
+    "count_diff": 462,
+    "frames_innermost_first": [
+     "/src/test/benchmarks/batch-claim/bench.py:1434",
+     "/usr/local/lib/python3.12/asyncio/events.py:88",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:1999",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:645",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:678"
+    ]
+   },
+   {
+    "size_diff_kb": -11.5625,
+    "count_diff": -80,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox.py:69",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:445",
+     "/src/test/benchmarks/batch-claim/bench.py:1435",
+     "/usr/local/lib/python3.12/asyncio/events.py:88",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:1999"
+    ]
+   },
+   {
+    "size_diff_kb": 10.8046875,
+    "count_diff": 461,
+    "frames_innermost_first": [
+     "/src/test/benchmarks/batch-claim/bench.py:379",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:1282",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:658",
+     "/src/test/benchmarks/batch-claim/bench.py:1433",
+     "/usr/local/lib/python3.12/asyncio/events.py:88"
+    ]
+   },
+   {
+    "size_diff_kb": 10.8046875,
+    "count_diff": 461,
+    "frames_innermost_first": [
+     "/src/test/benchmarks/batch-claim/bench.py:373",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:1282",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:658",
+     "/src/test/benchmarks/batch-claim/bench.py:1433",
+     "/usr/local/lib/python3.12/asyncio/events.py:88"
+    ]
+   },
+   {
+    "size_diff_kb": -10.640625,
+    "count_diff": -113,
+    "frames_innermost_first": [
+     "/usr/local/lib/python3.12/_weakrefset.py:39",
+     "/opt/venv/lib/python3.12/site-packages/grpc/aio/_channel.py:417",
+     "/opt/venv/lib/python3.12/site-packages/grpc/aio/_channel.py:649",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_connector.py:546",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/commands/async_command_executor.py:139"
+    ]
+   },
+   {
+    "size_diff_kb": 9.765625,
+    "count_diff": 25,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/aiohttp/client_reqrep.py:1271",
+     "/opt/venv/lib/python3.12/site-packages/aiohttp/client_reqrep.py:1107",
+     "/opt/venv/lib/python3.12/site-packages/aiohttp/client.py:819",
+     "/opt/venv/lib/python3.12/site-packages/kubernetes_asyncio/client/rest.py:239",
+     "/opt/venv/lib/python3.12/site-packages/kubernetes_asyncio/client/api_client.py:185"
+    ]
+   },
+   {
+    "size_diff_kb": -8.71875,
+    "count_diff": -36,
+    "frames_innermost_first": [
+     "/src/test/benchmarks/batch-claim/bench.py:1437",
+     "/usr/local/lib/python3.12/asyncio/events.py:88",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:1999",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:645",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:678"
+    ]
+   },
+   {
+    "size_diff_kb": 8.5458984375,
+    "count_diff": 149,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/psutil/_common.py:692",
+     "/opt/venv/lib/python3.12/site-packages/psutil/_pslinux.py:835",
+     "/opt/venv/lib/python3.12/site-packages/psutil/_pslinux.py:926",
+     "/opt/venv/lib/python3.12/site-packages/psutil/_pslinux.py:2247",
+     "/opt/venv/lib/python3.12/site-packages/psutil/_pslinux.py:1593"
+    ]
+   },
+   {
+    "size_diff_kb": -8.125,
+    "count_diff": -80,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:445",
+     "/src/test/benchmarks/batch-claim/bench.py:1435",
+     "/usr/local/lib/python3.12/asyncio/events.py:88",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:1999",
+     "/usr/local/lib/python3.12/asyncio/base_events.py:645"
+    ]
+   },
+   {
+    "size_diff_kb": -8.015625,
+    "count_diff": -38,
+    "frames_innermost_first": [
+     "/usr/local/lib/python3.12/_weakrefset.py:49",
+     "/opt/venv/lib/python3.12/site-packages/grpc/aio/_channel.py:417",
+     "/opt/venv/lib/python3.12/site-packages/grpc/aio/_channel.py:649",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_connector.py:546",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/commands/async_command_executor.py:139"
+    ]
+   },
+   {
+    "size_diff_kb": -8.015625,
+    "count_diff": -38,
+    "frames_innermost_first": [
+     "/usr/local/lib/python3.12/_weakrefset.py:38",
+     "/opt/venv/lib/python3.12/site-packages/grpc/aio/_channel.py:417",
+     "/opt/venv/lib/python3.12/site-packages/grpc/aio/_channel.py:649",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_connector.py:546",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/commands/async_command_executor.py:139"
+    ]
+   },
+   {
+    "size_diff_kb": -7.8125,
+    "count_diff": -80,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/httpx/_transports/default.py:300",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_connector.py:215",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox.py:69",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/async_sandbox_batch.py:445",
+     "/src/test/benchmarks/batch-claim/bench.py:1435"
+    ]
+   },
+   {
+    "size_diff_kb": -7.78125,
+    "count_diff": -78,
+    "frames_innermost_first": [
+     "/opt/venv/lib/python3.12/site-packages/grpc/aio/_channel.py:542",
+     "/opt/venv/lib/python3.12/site-packages/grpc/aio/_channel.py:583",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/_proto/process/v1/process_pb2_grpc.py:32",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/commands/async_command_executor.py:140",
+     "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/commands/async_command_executor.py:82"
+    ]
+   }
+  ],
+  "top_type_growth": [
+   {
+    "type": "TimerHandle",
+    "count_diff": 5,
+    "count_at_end": 62
+   },
+   {
+    "type": "Pattern",
+    "count_diff": 1,
+    "count_at_end": 222
+   },
+   {
+    "type": "builtin_method",
+    "count_diff": 1,
+    "count_at_end": 18
+   },
+   {
+    "type": "defaultdict",
+    "count_diff": 0,
+    "count_at_end": 44
+   },
+   {
+    "type": "list_iterator",
+    "count_diff": 0,
+    "count_at_end": 1
+   },
+   {
+    "type": "wrapper_descriptor",
+    "count_diff": 0,
+    "count_at_end": 1672
+   },
+   {
+    "type": "method_descriptor",
+    "count_diff": 0,
+    "count_at_end": 1658
+   },
+   {
+    "type": "classmethod_descriptor",
+    "count_diff": 0,
+    "count_at_end": 67
+   },
+   {
+    "type": "getset_descriptor",
+    "count_diff": 0,
+    "count_at_end": 4355
+   },
+   {
+    "type": "member_descriptor",
+    "count_diff": 0,
+    "count_at_end": 1061
+   },
+   {
+    "type": "staticmethod",
+    "count_diff": 0,
+    "count_at_end": 362
+   },
+   {
+    "type": "type",
+    "count_diff": 0,
+    "count_at_end": 3228
+   },
+   {
+    "type": "frozenset",
+    "count_diff": 0,
+    "count_at_end": 914
+   },
+   {
+    "type": "SimpleNamespace",
+    "count_diff": 0,
+    "count_at_end": 18
+   },
+   {
+    "type": "module",
+    "count_diff": 0,
+    "count_at_end": 1624
+   },
+   {
+    "type": "ModuleSpec",
+    "count_diff": 0,
+    "count_at_end": 1619
+   },
+   {
+    "type": "_WeakValueDictionary",
+    "count_diff": 0,
+    "count_at_end": 1
+   },
+   {
+    "type": "property",
+    "count_diff": 0,
+    "count_at_end": 4171
+   },
+   {
+    "type": "classmethod",
+    "count_diff": 0,
+    "count_at_end": 515
+   },
+   {
+    "type": "FileFinder",
+    "count_diff": 0,
+    "count_at_end": 116
+   }
+  ]
+ },
+ "release_s": 0.0195526139868889,
+ "sdk_file": "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+tip",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/opt/venv/bin/python",
+ "python_version": "3.12.15",
+ "platform": "Linux-6.17.8-orbstack-00308-g8f9c941121b1-aarch64-with-glibc2.41",
+ "settings": {
+  "create_rps": 50,
+  "max_in_flight": 20,
+  "pool_size": 22,
+  "lease_duration": 60,
+  "quorum_timeout": 600,
+  "work_budget": 3600,
+  "concurrency": 40,
+  "baseline_pool": null
+ },
+ "effective_pool_size": 22,
+ "rss_peak_mb": 344.046875,
+ "ru_maxrss_mb": 342.6328125,
+ "rss_series_mb": [
+  [
+   0.0,
+   94.1796875
+  ],
+  [
+   10.1,
+   158.03125
+  ],
+  [
+   20.1,
+   179.5078125
+  ],
+  [
+   30.1,
+   207.28515625
+  ],
+  [
+   40.0,
+   225.78515625
+  ],
+  [
+   50.1,
+   225.9609375
+  ],
+  [
+   60.0,
+   236.734375
+  ],
+  [
+   70.1,
+   239.42578125
+  ],
+  [
+   80.0,
+   243.75
+  ],
+  [
+   90.0,
+   272.109375
+  ],
+  [
+   100.0,
+   291.21484375
+  ],
+  [
+   110.1,
+   286.640625
+  ],
+  [
+   120.1,
+   286.76171875
+  ],
+  [
+   130.0,
+   307.26171875
+  ],
+  [
+   140.1,
+   313.41796875
+  ],
+  [
+   150.0,
+   313.515625
+  ],
+  [
+   160.3,
+   305.3125
+  ]
+ ],
+ "api_conns_peak": 22,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 1,
+ "requests_total": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 2,
+  "watch sandboxclaims": 6,
+  "create sandboxclaims": 600,
+  "delete sandboxclaims": 600,
+  "update leases": 8,
+  "deletecollection sandboxclaims": 1,
+  "delete leases": 1
+ },
+ "sampler_cpu_s": 20.74539661600001,
+ "driver_exit": 0,
+ "run_wall_s": 168.11945891589858,
+ "apiserver": {
+  "start->rolled": {
+   "post sandboxclaims duration le=5": 600,
+   "post sandboxclaims duration le=8": 600,
+   "requests PUT sandboxclaims": 600,
+   "post sandboxclaims duration le=10": 600,
+   "requests GET sandboxclaims": 0,
+   "post sandboxclaims duration le=0.005": 250,
+   "post sandboxclaims duration _sum": 4.939132958003029,
+   "requests GET sandboxes": 600,
+   "post sandboxclaims duration le=0.6": 600,
+   "post sandboxclaims duration le=2": 600,
+   "requests POST sandboxes": 600,
+   "post sandboxclaims duration le=1.25": 600,
+   "post sandboxclaims duration le=15": 600,
+   "post sandboxclaims duration le=30": 600,
+   "requests DELETE sandboxes": 600,
+   "post sandboxclaims duration le=6": 600,
+   "flowcontrol_rejected": 0,
+   "post sandboxclaims duration _count": 600,
+   "post sandboxclaims duration le=45": 600,
+   "requests DELETE leases": 0,
+   "429s": 0,
+   "post sandboxclaims duration le=0.2": 597,
+   "requests PATCH sandboxes": 3517,
+   "post sandboxclaims duration le=0.05": 594,
+   "post sandboxclaims duration le=60": 600,
+   "post sandboxclaims duration le=+Inf": 600,
+   "requests PUT leases": 289,
+   "requests POST leases": 0,
+   "requests PATCH sandboxclaims": 2067,
+   "requests LIST sandboxclaims": 0,
+   "requests DELETE sandboxclaims": 600,
+   "post sandboxclaims duration le=0.1": 597,
+   "post sandboxclaims duration le=4": 600,
+   "post sandboxclaims duration le=1": 600,
+   "post sandboxclaims duration le=0.8": 600,
+   "post sandboxclaims duration le=1.5": 600,
+   "requests WATCH leases": 2,
+   "post sandboxclaims duration le=20": 600,
+   "requests LIST sandboxes": 37,
+   "post sandboxclaims duration le=0.4": 600,
+   "requests GET leases": 0,
+   "requests_all": 27535.0,
+   "post sandboxclaims duration le=0.025": 585,
+   "requests POST sandboxclaims": 600,
+   "requests LIST leases": 0,
+   "post sandboxclaims duration le=3": 600,
+   "requests WATCH sandboxclaims": 6,
+   "requests WATCH sandboxes": 1
+  },
+  "rolled->released": {
+   "post sandboxclaims duration le=5": 0,
+   "post sandboxclaims duration le=8": 0,
+   "requests PUT sandboxclaims": 0,
+   "post sandboxclaims duration le=10": 0,
+   "requests GET sandboxclaims": 0,
+   "post sandboxclaims duration le=0.005": 0,
+   "post sandboxclaims duration _sum": 0.0,
+   "requests GET sandboxes": 0,
+   "post sandboxclaims duration le=0.6": 0,
+   "post sandboxclaims duration le=2": 0,
+   "requests POST sandboxes": 0,
+   "post sandboxclaims duration le=1.25": 0,
+   "post sandboxclaims duration le=15": 0,
+   "post sandboxclaims duration le=30": 0,
+   "requests DELETE sandboxes": 0,
+   "post sandboxclaims duration le=6": 0,
+   "flowcontrol_rejected": 0,
+   "post sandboxclaims duration _count": 0,
+   "post sandboxclaims duration le=45": 0,
+   "requests DELETE leases": 1,
+   "429s": 0,
+   "post sandboxclaims duration le=0.2": 0,
+   "requests PATCH sandboxes": 0,
+   "post sandboxclaims duration le=0.05": 0,
+   "post sandboxclaims duration le=60": 0,
+   "post sandboxclaims duration le=+Inf": 0,
+   "requests PUT leases": 0,
+   "requests POST leases": 0,
+   "requests PATCH sandboxclaims": 0,
+   "requests LIST sandboxclaims": 3,
+   "requests DELETE sandboxclaims": 1,
+   "post sandboxclaims duration le=0.1": 0,
+   "post sandboxclaims duration le=4": 0,
+   "post sandboxclaims duration le=1": 0,
+   "post sandboxclaims duration le=0.8": 0,
+   "post sandboxclaims duration le=1.5": 0,
+   "requests WATCH leases": 0,
+   "post sandboxclaims duration le=20": 0,
+   "requests LIST sandboxes": 1,
+   "post sandboxclaims duration le=0.4": 0,
+   "requests GET leases": 0,
+   "requests_all": 9.0,
+   "post sandboxclaims duration le=0.025": 0,
+   "requests POST sandboxclaims": 0,
+   "requests LIST leases": 0,
+   "post sandboxclaims duration le=3": 0,
+   "requests WATCH sandboxclaims": 1,
+   "requests WATCH sandboxes": 0
+  },
+  "total": {
+   "post sandboxclaims duration le=5": 600,
+   "post sandboxclaims duration le=8": 600,
+   "requests PUT sandboxclaims": 600,
+   "post sandboxclaims duration le=10": 600,
+   "requests GET sandboxclaims": 0,
+   "post sandboxclaims duration le=0.005": 250,
+   "post sandboxclaims duration _sum": 4.939132958003029,
+   "requests GET sandboxes": 600,
+   "post sandboxclaims duration le=0.6": 600,
+   "post sandboxclaims duration le=2": 600,
+   "requests POST sandboxes": 600,
+   "post sandboxclaims duration le=1.25": 600,
+   "post sandboxclaims duration le=15": 600,
+   "post sandboxclaims duration le=30": 600,
+   "requests DELETE sandboxes": 600,
+   "post sandboxclaims duration le=6": 600,
+   "flowcontrol_rejected": 0,
+   "post sandboxclaims duration _count": 600,
+   "post sandboxclaims duration le=45": 600,
+   "requests DELETE leases": 1,
+   "429s": 0,
+   "post sandboxclaims duration le=0.2": 597,
+   "requests PATCH sandboxes": 3517,
+   "post sandboxclaims duration le=0.05": 594,
+   "post sandboxclaims duration le=60": 600,
+   "post sandboxclaims duration le=+Inf": 600,
+   "requests PUT leases": 289,
+   "requests POST leases": 0,
+   "requests PATCH sandboxclaims": 2067,
+   "requests LIST sandboxclaims": 3,
+   "requests DELETE sandboxclaims": 601,
+   "post sandboxclaims duration le=0.1": 597,
+   "post sandboxclaims duration le=4": 600,
+   "post sandboxclaims duration le=1": 600,
+   "post sandboxclaims duration le=0.8": 600,
+   "post sandboxclaims duration le=1.5": 600,
+   "requests WATCH leases": 2,
+   "post sandboxclaims duration le=20": 600,
+   "requests LIST sandboxes": 38,
+   "post sandboxclaims duration le=0.4": 600,
+   "requests GET leases": 0,
+   "requests_all": 27544.0,
+   "post sandboxclaims duration le=0.025": 585,
+   "requests POST sandboxclaims": 600,
+   "requests LIST leases": 0,
+   "post sandboxclaims duration le=3": 600,
+   "requests WATCH sandboxclaims": 7,
+   "requests WATCH sandboxes": 1
+  }
+ },
+ "cleanup": {
+  "release": {
+   "mode": "pods",
+   "selector": null,
+   "claims_at_start": 0,
+   "pods_at_start": 0,
+   "claims_gone_s": 0.001629207981750369,
+   "pods_left_at_claims_gone": 0,
+   "pods_gone_s": 0.02524783299304545
+  }
+ },
+ "apiserver_watch_peak": 3.0,
+ "apiserver_watch_idle": 2.0,
+ "cluster_pods_peak": 211,
+ "apiserver_post_claims": {
+  "count": 600,
+  "mean_s": 0.008231888263338382,
+  "p99_le_s": 0.05
+ },
+ "warm_ready_series": [
+  [
+   0.1,
+   120
+  ],
+  [
+   4.7,
+   89
+  ],
+  [
+   9.2,
+   120
+  ],
+  [
+   13.6,
+   94
+  ],
+  [
+   18.1,
+   120
+  ],
+  [
+   22.5,
+   114
+  ],
+  [
+   27.2,
+   108
+  ],
+  [
+   31.6,
+   120
+  ],
+  [
+   36.0,
+   120
+  ],
+  [
+   41.0,
+   120
+  ],
+  [
+   45.7,
+   120
+  ],
+  [
+   50.2,
+   120
+  ],
+  [
+   54.6,
+   114
+  ],
+  [
+   59.1,
+   119
+  ],
+  [
+   63.7,
+   115
+  ],
+  [
+   68.2,
+   100
+  ],
+  [
+   72.7,
+   118
+  ],
+  [
+   77.3,
+   114
+  ],
+  [
+   81.8,
+   120
+  ],
+  [
+   86.1,
+   120
+  ],
+  [
+   90.7,
+   120
+  ],
+  [
+   95.0,
+   113
+  ],
+  [
+   99.6,
+   110
+  ],
+  [
+   104.2,
+   118
+  ],
+  [
+   108.9,
+   110
+  ],
+  [
+   113.5,
+   114
+  ],
+  [
+   118.0,
+   116
+  ],
+  [
+   122.6,
+   120
+  ],
+  [
+   127.1,
+   120
+  ],
+  [
+   131.6,
+   120
+  ],
+  [
+   136.0,
+   117
+  ],
+  [
+   140.3,
+   111
+  ],
+  [
+   144.8,
+   118
+  ],
+  [
+   149.4,
+   112
+  ],
+  [
+   153.8,
+   120
+  ],
+  [
+   158.1,
+   120
+  ],
+  [
+   162.5,
+   120
+  ],
+  [
+   166.9,
+   120
+  ]
+ ],
+ "warm_ready_min": 89,
+ "starved": false,
+ "scenario": "6v2",
+ "variant": "memdiag",
+ "shell": "async",
+ "run": 1,
+ "spec": {
+  "scenario": "6v2",
+  "variant": "memdiag",
+  "shell": "async",
+  "location": "pod",
+  "code": "tip",
+  "rollouts": 600,
+  "hold_s": 10,
+  "concurrency": 40,
+  "warm_series_pool": "warm-pool",
+  "warm_interval_s": 4,
+  "kind": "rolling",
+  "groups": [
+   [
+    "warm-pool",
+    0
+   ]
+  ],
+  "create_rps": 50,
+  "max_in_flight": 20,
+  "pool_size": 22,
+  "memdiag_at": [
+   100,
+   600
+  ]
+ },
+ "driver_location": "pod",
+ "code": "tip",
+ "code_sha": "44fb487f361e3d60eb4690fafc6db9fa04d4fa92",
+ "code_tree": "8a7adc54a27eb8291289c6fb166c34c69ea47143",
+ "tip_branch_sha": "600a880d8ab479403ec8c57c8883a5eebee512bf",
+ "controller_image": "kind.local/agent-sandbox-controller:bench",
+ "controller_image_id": "sha256:1cdd9b021600b9081bb0c26274b4e7f5b9d2b1149b84124809bb8a4771768d59",
+ "controller_pod": "agent-sandbox-controller-7b6488bc95-9f295",
+ "finished_at": "2026-10-20T17:05:38"
+}

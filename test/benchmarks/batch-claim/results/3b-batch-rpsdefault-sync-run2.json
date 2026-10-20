@@ -1,0 +1,162 @@
+{
+ "quorum_count": 160,
+ "all_ready_s": 3.24217647200021,
+ "ready_cpu_s": 0.29398766400000004,
+ "member_ready_s": {
+  "n": 160,
+  "first": 0.036696054001367884,
+  "p50": 1.6497541800008548,
+  "p90": 2.917175730301278,
+  "p99": 3.2215075255308148,
+  "last": 3.2421373470006074
+ },
+ "create_attempts": 160,
+ "creates_ok": 160,
+ "creates_retried": 0,
+ "create_429s": 0,
+ "create_error_statuses": [],
+ "create_p50_ms": 8.160338000379852,
+ "create_p99_ms": 346.0626531208617,
+ "create_max_ms": 383.30596100058756,
+ "create_peak_in_flight": 19,
+ "fill_sent_s": 3.195687937000912,
+ "fill_acked_s": 3.2007868440014136,
+ "creates_per_s": 49.98770858479864,
+ "lease_writes": 1,
+ "renewal_latency_ms": null,
+ "renewal_gap_max_s": null,
+ "renew_interval_s": 20,
+ "requests_until_ready": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 1,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 160
+ },
+ "release_s": 0.7015075909985171,
+ "sdk_file": "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+tip",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/opt/venv/bin/python",
+ "python_version": "3.12.15",
+ "platform": "Linux-6.17.8-orbstack-00308-g8f9c941121b1-aarch64-with-glibc2.41",
+ "settings": {
+  "create_rps": 50.0,
+  "max_in_flight": 20,
+  "pool_size": 22,
+  "lease_duration": 60,
+  "quorum_timeout": 600,
+  "work_budget": 3600,
+  "concurrency": null,
+  "baseline_pool": null
+ },
+ "effective_pool_size": 22,
+ "rss_peak_mb": 121.59375,
+ "ru_maxrss_mb": 121.09375,
+ "rss_series_mb": [
+  [
+   0.0,
+   92.45703125
+  ]
+ ],
+ "api_conns_peak": 21,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 1,
+ "requests_total": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 2,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 160,
+  "deletecollection sandboxclaims": 1,
+  "delete leases": 1
+ },
+ "sampler_cpu_s": 0.05580037700000001,
+ "driver_exit": 0,
+ "run_wall_s": 28.675023749936372,
+ "apiserver": {
+  "start->ready": {
+   "requests_all": 3328,
+   "requests PATCH sandboxes": 785,
+   "requests PUT leases": 7,
+   "requests LIST sandboxclaims": 1,
+   "requests PATCH sandboxclaims": 561,
+   "requests PUT sandboxclaims": 160,
+   "requests POST sandboxes": 160,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 160
+  },
+  "ready->released": {
+   "requests_all": 161,
+   "requests LIST sandboxes": 1,
+   "requests DELETE sandboxes": 11,
+   "requests GET sandboxes": 25,
+   "requests PATCH sandboxes": 5,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 3,
+   "requests WATCH sandboxclaims": 1,
+   "requests DELETE sandboxclaims": 1,
+   "requests LIST sandboxclaims": 3
+  },
+  "total": {
+   "requests_all": 3489,
+   "requests LIST sandboxes": 1,
+   "requests DELETE sandboxes": 11,
+   "requests GET sandboxes": 25,
+   "requests PATCH sandboxes": 790,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 10,
+   "requests WATCH sandboxclaims": 1,
+   "requests DELETE sandboxclaims": 1,
+   "requests LIST sandboxclaims": 4,
+   "requests PATCH sandboxclaims": 561,
+   "requests PUT sandboxclaims": 160,
+   "requests POST sandboxes": 160,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 160
+  }
+ },
+ "cleanup": {
+  "release": {
+   "mode": "pods",
+   "selector": null,
+   "claims_at_start": 160,
+   "pods_at_start": 160,
+   "claims_gone_s": 1.05061687505804,
+   "pods_left_at_claims_gone": 160,
+   "pods_gone_s": 24.120711124967784
+  }
+ },
+ "apiserver_watch_peak": 3.0,
+ "apiserver_watch_idle": 2.0,
+ "scenario": "3b",
+ "variant": "batch-rpsdefault",
+ "shell": "sync",
+ "run": 2,
+ "spec": {
+  "scenario": "3b",
+  "variant": "batch-rpsdefault",
+  "shell": "sync",
+  "location": "pod",
+  "code": "tip",
+  "kind": "ready",
+  "groups": [
+   [
+    "warm-pool",
+    160
+   ]
+  ],
+  "create_rps": null,
+  "pool_size": 22
+ },
+ "driver_location": "pod",
+ "code": "tip",
+ "code_sha": "44fb487f361e3d60eb4690fafc6db9fa04d4fa92",
+ "finished_at": "2026-10-19T23:43:05"
+}

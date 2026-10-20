@@ -1,0 +1,271 @@
+{
+ "rollouts": 1000,
+ "rollout_errors": 0,
+ "rollout_error_samples": [],
+ "rolling_wall_s": 138.77706788399882,
+ "rollouts_per_min": 432.348088303414,
+ "acquire_ms": {
+  "n": 1000,
+  "first": 21.98037600101088,
+  "p50": 581.8081440002061,
+  "p90": 25323.78886289989,
+  "p99": 34611.152541489646,
+  "last": 39453.398690999165
+ },
+ "rolling_cpu_s": 9.130848695,
+ "rolling_cpu_cores": 0.0657950829645162,
+ "requests_rolling": {
+  "watch sandboxclaims": 4,
+  "create sandboxclaims": 1000,
+  "delete sandboxclaims": 1000,
+  "update leases": 6
+ },
+ "requests_per_rollout": 2.01,
+ "members_at_end": 0,
+ "release_s": 0.010433892999571981,
+ "sdk_file": "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+tip",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/opt/venv/bin/python",
+ "python_version": "3.12.15",
+ "platform": "Linux-6.17.8-orbstack-00308-g8f9c941121b1-aarch64-with-glibc2.41",
+ "settings": {
+  "create_rps": 50.0,
+  "max_in_flight": 20,
+  "pool_size": 22,
+  "lease_duration": 60,
+  "quorum_timeout": 600,
+  "work_budget": 3600,
+  "concurrency": 100,
+  "baseline_pool": null
+ },
+ "effective_pool_size": 22,
+ "rss_peak_mb": 152.02734375,
+ "ru_maxrss_mb": 150.8984375,
+ "rss_series_mb": [
+  [
+   0.0,
+   92.64453125
+  ],
+  [
+   10.1,
+   146.4609375
+  ],
+  [
+   20.0,
+   147.6640625
+  ],
+  [
+   30.1,
+   147.87109375
+  ],
+  [
+   40.0,
+   149.875
+  ],
+  [
+   50.0,
+   151.59765625
+  ],
+  [
+   60.0,
+   151.91015625
+  ],
+  [
+   70.1,
+   150.296875
+  ],
+  [
+   80.0,
+   151.2109375
+  ],
+  [
+   90.1,
+   151.96875
+  ],
+  [
+   100.1,
+   152.0
+  ],
+  [
+   110.0,
+   148.859375
+  ],
+  [
+   120.1,
+   147.3671875
+  ],
+  [
+   130.1,
+   145.8515625
+  ],
+  [
+   140.1,
+   145.62890625
+  ]
+ ],
+ "api_conns_peak": 16,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 1,
+ "requests_total": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 2,
+  "watch sandboxclaims": 5,
+  "create sandboxclaims": 1000,
+  "delete sandboxclaims": 1000,
+  "update leases": 6,
+  "deletecollection sandboxclaims": 1,
+  "delete leases": 1
+ },
+ "sampler_cpu_s": 2.401607932000001,
+ "driver_exit": 0,
+ "run_wall_s": 140.61359195783734,
+ "apiserver": {
+  "start->rolled": {
+   "requests_all": 39498,
+   "requests WATCH sandboxes": 2,
+   "requests LIST sandboxes": 13,
+   "requests DELETE sandboxes": 1001,
+   "requests GET sandboxes": 1001,
+   "requests PATCH sandboxes": 5109,
+   "requests WATCH leases": 1,
+   "requests PUT leases": 238,
+   "requests WATCH sandboxclaims": 5,
+   "requests DELETE sandboxclaims": 1000,
+   "requests PATCH sandboxclaims": 4185,
+   "requests PUT sandboxclaims": 693,
+   "requests POST sandboxes": 1002,
+   "requests POST sandboxclaims": 1000
+  },
+  "rolled->released": {
+   "requests_all": 12,
+   "requests LIST sandboxes": 1,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 3,
+   "requests DELETE sandboxclaims": 1,
+   "requests LIST sandboxclaims": 3
+  },
+  "total": {
+   "requests_all": 39510,
+   "requests WATCH sandboxes": 2,
+   "requests LIST sandboxes": 14,
+   "requests DELETE sandboxes": 1001,
+   "requests GET sandboxes": 1001,
+   "requests PATCH sandboxes": 5109,
+   "requests WATCH leases": 1,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 241,
+   "requests WATCH sandboxclaims": 5,
+   "requests DELETE sandboxclaims": 1001,
+   "requests LIST sandboxclaims": 3,
+   "requests PATCH sandboxclaims": 4185,
+   "requests PUT sandboxclaims": 693,
+   "requests POST sandboxes": 1002,
+   "requests POST sandboxclaims": 1000
+  }
+ },
+ "cleanup": {
+  "release": {
+   "mode": "pods",
+   "selector": null,
+   "claims_at_start": 0,
+   "pods_at_start": 0,
+   "claims_gone_s": 0.001699667191132903,
+   "pods_left_at_claims_gone": 0,
+   "pods_gone_s": 0.01877650013193488
+  }
+ },
+ "apiserver_watch_peak": 3.0,
+ "apiserver_watch_idle": 2.0,
+ "warm_ready_series": [
+  [
+   0.1,
+   100
+  ],
+  [
+   10.5,
+   2
+  ],
+  [
+   21.0,
+   4
+  ],
+  [
+   31.1,
+   49
+  ],
+  [
+   40.0,
+   23
+  ],
+  [
+   50.5,
+   0
+  ],
+  [
+   60.9,
+   3
+  ],
+  [
+   70.8,
+   6
+  ],
+  [
+   80.9,
+   0
+  ],
+  [
+   90.0,
+   0
+  ],
+  [
+   101.1,
+   3
+  ],
+  [
+   110.3,
+   2
+  ],
+  [
+   120.1,
+   26
+  ],
+  [
+   130.9,
+   80
+  ]
+ ],
+ "scenario": "6a",
+ "variant": "batch-rpsdefault",
+ "shell": "sync",
+ "run": 1,
+ "spec": {
+  "scenario": "6a",
+  "variant": "batch-rpsdefault",
+  "shell": "sync",
+  "location": "pod",
+  "code": "tip",
+  "rollouts": 1000,
+  "hold_s": 5,
+  "concurrency": 100,
+  "warm_series_pool": "warm-pool",
+  "kind": "rolling",
+  "groups": [
+   [
+    "warm-pool",
+    0
+   ]
+  ],
+  "pool_size": 22
+ },
+ "driver_location": "pod",
+ "code": "tip",
+ "code_sha": "44fb487f361e3d60eb4690fafc6db9fa04d4fa92",
+ "finished_at": "2026-10-19T23:57:52"
+}

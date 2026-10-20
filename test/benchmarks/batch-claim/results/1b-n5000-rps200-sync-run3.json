@@ -1,0 +1,210 @@
+{
+ "claim_batch_return_s": 0.029437208082526922,
+ "requests_claim_batch_call": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 1,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 1
+ },
+ "fill_cpu_s": 4.7741626770000005,
+ "fill_wall_s": 25.07742620795034,
+ "fill_cpu_cores": 0.19037690062014576,
+ "create_attempts": 5000,
+ "creates_ok": 5000,
+ "creates_retried": 0,
+ "create_429s": 0,
+ "create_error_statuses": [],
+ "create_p50_ms": 5.392104503698647,
+ "create_p99_ms": 200.25120974518362,
+ "create_max_ms": 267.87233306095004,
+ "create_peak_in_flight": 50,
+ "fill_sent_s": 25.04962220788002,
+ "fill_acked_s": 25.055002541979775,
+ "creates_per_s": 199.56094562842196,
+ "requests_fill": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 1,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 5000,
+  "update leases": 1
+ },
+ "batch_err": null,
+ "members_ms": 1.5726671554148197,
+ "members_count": 5000,
+ "detach_s": 0.006402125116437674,
+ "lease_writes": 3,
+ "renewal_latency_ms": {
+  "n": 2,
+  "first": 3.707959083840251,
+  "p50": 5.6112505262717605,
+  "p90": 7.133883680216968,
+  "p99": 7.47647613985464,
+  "last": 7.51454196870327
+ },
+ "renewal_gap_max_s": 20.015607125125825,
+ "renew_interval_s": 20,
+ "attach_s": 0.2517358751501888,
+ "attach_rss_delta_mb": 91.84375,
+ "attach_list_s": 0.22191466577351093,
+ "release_s": 14.034976165974513,
+ "release_rounds": 1,
+ "release_deletecollection_s": 14.03018533391878,
+ "release_list_s": 0.001768584130331874,
+ "release_list_max_s": 0.001768584130331874,
+ "release_list_fraction": 0.0001260126208564226,
+ "release_deletecollection_fraction": 0.9996586505029238,
+ "release_rss_delta_mb": 1.15625,
+ "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/lib/python3.14/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+tip.44fb487",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/bin/python",
+ "python_version": "3.14.3",
+ "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+ "settings": {
+  "create_rps": 200,
+  "max_in_flight": 50,
+  "pool_size": 52,
+  "lease_duration": 60,
+  "quorum_timeout": 600,
+  "work_budget": 3600,
+  "concurrency": null,
+  "baseline_pool": null
+ },
+ "effective_pool_size": 52,
+ "rss_peak_mb": 255.203125,
+ "ru_maxrss_mb": 255.203125,
+ "rss_series_mb": [
+  [
+   0.0,
+   108.5625
+  ],
+  [
+   10.1,
+   152.734375
+  ],
+  [
+   20.0,
+   159.9375
+  ],
+  [
+   30.1,
+   162.71875
+  ],
+  [
+   40.0,
+   162.71875
+  ],
+  [
+   50.1,
+   253.9375
+  ],
+  [
+   60.1,
+   253.9375
+  ]
+ ],
+ "api_conns_peak": 52,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 2,
+ "requests_total": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 3,
+  "watch sandboxclaims": 3,
+  "create sandboxclaims": 5000,
+  "update leases": 4,
+  "get leases": 2,
+  "deletecollection sandboxclaims": 1,
+  "delete leases": 1
+ },
+ "sampler_cpu_s": 0.156664957,
+ "driver_exit": 0,
+ "run_wall_s": 61.261709625134245,
+ "apiserver": {
+  "start->filled": {
+   "requests_all": 60401,
+   "requests WATCH sandboxes": 1,
+   "requests GET sandboxes": 1858,
+   "requests PATCH sandboxes": 10349,
+   "requests PUT leases": 79,
+   "requests WATCH sandboxclaims": 1,
+   "requests LIST sandboxclaims": 1,
+   "requests PATCH sandboxclaims": 18286,
+   "requests POST sandboxes": 5043,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 5000
+  },
+  "filled->released": {
+   "requests_all": 2862,
+   "requests GET sandboxes": 586,
+   "requests PATCH sandboxes": 733,
+   "requests DELETE leases": 1,
+   "requests GET leases": 2,
+   "requests PUT leases": 27,
+   "requests WATCH sandboxclaims": 2,
+   "requests DELETE sandboxclaims": 1,
+   "requests LIST sandboxclaims": 17
+  },
+  "total": {
+   "requests_all": 63263,
+   "requests WATCH sandboxes": 1,
+   "requests GET sandboxes": 2444,
+   "requests PATCH sandboxes": 11082,
+   "requests DELETE leases": 1,
+   "requests GET leases": 2,
+   "requests PUT leases": 106,
+   "requests WATCH sandboxclaims": 3,
+   "requests DELETE sandboxclaims": 1,
+   "requests LIST sandboxclaims": 18,
+   "requests PATCH sandboxclaims": 18286,
+   "requests POST sandboxes": 5043,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 5000
+  }
+ },
+ "cleanup": {
+  "release": {
+   "mode": "count",
+   "selector": null,
+   "claims_at_start": 5000,
+   "claims_gone_s": 14.217512124916539,
+   "pods_left_at_claims_gone": 5000
+  }
+ },
+ "apiserver_watch_peak": 3.0,
+ "apiserver_watch_idle": 2.0,
+ "scenario": "1b",
+ "variant": "n5000-rps200",
+ "shell": "sync",
+ "run": 3,
+ "spec": {
+  "scenario": "1b",
+  "variant": "n5000-rps200",
+  "shell": "sync",
+  "location": "host",
+  "code": "tip",
+  "kind": "fill",
+  "groups": [
+   [
+    "unsched-pool",
+    5000
+   ]
+  ],
+  "create_rps": 200,
+  "max_in_flight": 50,
+  "pool_size": 52
+ },
+ "driver_location": "host",
+ "code": "tip",
+ "code_sha": "44fb487f361e3d60eb4690fafc6db9fa04d4fa92",
+ "finished_at": "2026-10-20T01:23:13"
+}

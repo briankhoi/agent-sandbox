@@ -1,0 +1,629 @@
+{
+ "claim_batch_return_s": 0.23874137504026294,
+ "requests_claim_batch_call": {
+  "get sandboxwarmpools": 100,
+  "get sandboxtemplates": 100,
+  "create leases": 1,
+  "list sandboxclaims": 1,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 1
+ },
+ "fill_cpu_s": 4.574607868,
+ "fill_wall_s": 80.25014970917255,
+ "fill_cpu_cores": 0.05700435307072237,
+ "create_attempts": 4000,
+ "creates_ok": 4000,
+ "creates_retried": 0,
+ "create_429s": 0,
+ "create_error_statuses": [],
+ "create_p50_ms": 4.19818761292845,
+ "create_p99_ms": 34.37035623705032,
+ "create_max_ms": 138.1439589895308,
+ "create_peak_in_flight": 7,
+ "fill_sent_s": 80.22647204203531,
+ "fill_acked_s": 80.23010791698471,
+ "creates_per_s": 49.856595034607956,
+ "requests_fill": {
+  "get sandboxwarmpools": 100,
+  "get sandboxtemplates": 100,
+  "create leases": 1,
+  "list sandboxclaims": 1,
+  "watch sandboxclaims": 3,
+  "create sandboxclaims": 4000,
+  "update leases": 3
+ },
+ "batch_err": null,
+ "members_ms": 1.3085000682622194,
+ "members_count": 4000,
+ "members_pool_ms": 0.27487496845424175,
+ "lease_writes": 5,
+ "renewal_latency_ms": {
+  "n": 4,
+  "first": 3.3517079427838326,
+  "p50": 4.733875044621527,
+  "p90": 5.685933888889849,
+  "p99": 5.907243981491774,
+  "last": 5.931833991780877
+ },
+ "renewal_gap_max_s": 20.019591291900724,
+ "renew_interval_s": 20,
+ "release_group_s": 0.13010470801964402,
+ "release_group_rounds": 1,
+ "release_group_deletecollection_s": 0.1272394589614123,
+ "release_group_list_s": 0.0025489998515695333,
+ "release_group_list_max_s": 0.0025489998515695333,
+ "release_group_list_fraction": 0.01959191093365099,
+ "release_group_deletecollection_fraction": 0.9779773606824504,
+ "release_group_rss_delta_mb": 0.34375,
+ "release_s": 11.876715040998533,
+ "release_rounds": 1,
+ "release_deletecollection_s": 11.871992000145838,
+ "release_list_s": 0.0013922080397605896,
+ "release_list_max_s": 0.0013922080397605896,
+ "release_list_fraction": 0.00011722164209166206,
+ "release_deletecollection_fraction": 0.9996023276776119,
+ "release_rss_delta_mb": 67.703125,
+ "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/lib/python3.14/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+tip.44fb487",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/bin/python",
+ "python_version": "3.14.3",
+ "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+ "settings": {
+  "create_rps": 50.0,
+  "max_in_flight": 20,
+  "pool_size": 22,
+  "lease_duration": 60,
+  "quorum_timeout": 600,
+  "work_budget": 3600,
+  "concurrency": null,
+  "baseline_pool": null
+ },
+ "effective_pool_size": 22,
+ "rss_peak_mb": 216.703125,
+ "ru_maxrss_mb": 216.703125,
+ "rss_series_mb": [
+  [
+   0.0,
+   108.40625
+  ],
+  [
+   10.0,
+   141.9375
+  ],
+  [
+   20.0,
+   142.6875
+  ],
+  [
+   30.0,
+   144.34375
+  ],
+  [
+   40.0,
+   145.40625
+  ],
+  [
+   50.1,
+   146.28125
+  ],
+  [
+   60.1,
+   147.140625
+  ],
+  [
+   70.1,
+   148.171875
+  ],
+  [
+   80.0,
+   149.0625
+  ],
+  [
+   90.0,
+   148.59375
+  ]
+ ],
+ "api_conns_peak": 9,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 1,
+ "requests_total": {
+  "get sandboxwarmpools": 100,
+  "get sandboxtemplates": 100,
+  "create leases": 1,
+  "list sandboxclaims": 3,
+  "watch sandboxclaims": 3,
+  "create sandboxclaims": 4000,
+  "update leases": 4,
+  "deletecollection sandboxclaims": 2,
+  "delete leases": 1
+ },
+ "sampler_cpu_s": 0.08761021599999994,
+ "driver_exit": 0,
+ "run_wall_s": 94.26830941578373,
+ "apiserver": {
+  "start->filled": {
+   "requests_all": 53990,
+   "requests WATCH sandboxes": 1,
+   "requests GET sandboxes": 2548,
+   "requests PATCH sandboxes": 9347,
+   "requests PUT leases": 140,
+   "requests WATCH sandboxclaims": 3,
+   "requests LIST sandboxclaims": 1,
+   "requests PATCH sandboxclaims": 13594,
+   "requests POST sandboxes": 4001,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 4000
+  },
+  "filled->released": {
+   "requests_all": 580,
+   "requests DELETE sandboxes": 168,
+   "requests GET sandboxes": 185,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 20,
+   "requests WATCH sandboxclaims": 1,
+   "requests DELETE sandboxclaims": 2,
+   "requests LIST sandboxclaims": 18,
+   "requests GET sandboxclaims": 140
+  },
+  "total": {
+   "requests_all": 54570,
+   "requests WATCH sandboxes": 1,
+   "requests DELETE sandboxes": 168,
+   "requests GET sandboxes": 2733,
+   "requests PATCH sandboxes": 9347,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 160,
+   "requests WATCH sandboxclaims": 4,
+   "requests DELETE sandboxclaims": 2,
+   "requests LIST sandboxclaims": 19,
+   "requests GET sandboxclaims": 140,
+   "requests PATCH sandboxclaims": 13594,
+   "requests POST sandboxes": 4001,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 4000
+  }
+ },
+ "cleanup": {
+  "release_group": {
+   "mode": "count",
+   "selector": "agents.x-k8s.io/batch-id=bbbnkst0eus5,agents.x-k8s.io/batch-group=586811b31b942385",
+   "claims_at_start": 40,
+   "claims_gone_s": 1.0095710000023246,
+   "pods_left_at_claims_gone": 3992
+  },
+  "release": {
+   "mode": "count",
+   "selector": null,
+   "claims_at_start": 3960,
+   "claims_gone_s": 12.11521404189989,
+   "pods_left_at_claims_gone": 3991
+  }
+ },
+ "apiserver_watch_peak": 3.0,
+ "apiserver_watch_idle": 2.0,
+ "scenario": "5",
+ "variant": "g100x40",
+ "shell": "sync",
+ "run": 2,
+ "spec": {
+  "scenario": "5",
+  "variant": "g100x40",
+  "shell": "sync",
+  "location": "host",
+  "code": "tip",
+  "kind": "fill",
+  "after": "groups",
+  "groups": [
+   [
+    "u0-pool",
+    40
+   ],
+   [
+    "u1-pool",
+    40
+   ],
+   [
+    "u2-pool",
+    40
+   ],
+   [
+    "u3-pool",
+    40
+   ],
+   [
+    "u4-pool",
+    40
+   ],
+   [
+    "u5-pool",
+    40
+   ],
+   [
+    "u6-pool",
+    40
+   ],
+   [
+    "u7-pool",
+    40
+   ],
+   [
+    "u8-pool",
+    40
+   ],
+   [
+    "u9-pool",
+    40
+   ],
+   [
+    "u10-pool",
+    40
+   ],
+   [
+    "u11-pool",
+    40
+   ],
+   [
+    "u12-pool",
+    40
+   ],
+   [
+    "u13-pool",
+    40
+   ],
+   [
+    "u14-pool",
+    40
+   ],
+   [
+    "u15-pool",
+    40
+   ],
+   [
+    "u16-pool",
+    40
+   ],
+   [
+    "u17-pool",
+    40
+   ],
+   [
+    "u18-pool",
+    40
+   ],
+   [
+    "u19-pool",
+    40
+   ],
+   [
+    "u20-pool",
+    40
+   ],
+   [
+    "u21-pool",
+    40
+   ],
+   [
+    "u22-pool",
+    40
+   ],
+   [
+    "u23-pool",
+    40
+   ],
+   [
+    "u24-pool",
+    40
+   ],
+   [
+    "u25-pool",
+    40
+   ],
+   [
+    "u26-pool",
+    40
+   ],
+   [
+    "u27-pool",
+    40
+   ],
+   [
+    "u28-pool",
+    40
+   ],
+   [
+    "u29-pool",
+    40
+   ],
+   [
+    "u30-pool",
+    40
+   ],
+   [
+    "u31-pool",
+    40
+   ],
+   [
+    "u32-pool",
+    40
+   ],
+   [
+    "u33-pool",
+    40
+   ],
+   [
+    "u34-pool",
+    40
+   ],
+   [
+    "u35-pool",
+    40
+   ],
+   [
+    "u36-pool",
+    40
+   ],
+   [
+    "u37-pool",
+    40
+   ],
+   [
+    "u38-pool",
+    40
+   ],
+   [
+    "u39-pool",
+    40
+   ],
+   [
+    "u40-pool",
+    40
+   ],
+   [
+    "u41-pool",
+    40
+   ],
+   [
+    "u42-pool",
+    40
+   ],
+   [
+    "u43-pool",
+    40
+   ],
+   [
+    "u44-pool",
+    40
+   ],
+   [
+    "u45-pool",
+    40
+   ],
+   [
+    "u46-pool",
+    40
+   ],
+   [
+    "u47-pool",
+    40
+   ],
+   [
+    "u48-pool",
+    40
+   ],
+   [
+    "u49-pool",
+    40
+   ],
+   [
+    "u50-pool",
+    40
+   ],
+   [
+    "u51-pool",
+    40
+   ],
+   [
+    "u52-pool",
+    40
+   ],
+   [
+    "u53-pool",
+    40
+   ],
+   [
+    "u54-pool",
+    40
+   ],
+   [
+    "u55-pool",
+    40
+   ],
+   [
+    "u56-pool",
+    40
+   ],
+   [
+    "u57-pool",
+    40
+   ],
+   [
+    "u58-pool",
+    40
+   ],
+   [
+    "u59-pool",
+    40
+   ],
+   [
+    "u60-pool",
+    40
+   ],
+   [
+    "u61-pool",
+    40
+   ],
+   [
+    "u62-pool",
+    40
+   ],
+   [
+    "u63-pool",
+    40
+   ],
+   [
+    "u64-pool",
+    40
+   ],
+   [
+    "u65-pool",
+    40
+   ],
+   [
+    "u66-pool",
+    40
+   ],
+   [
+    "u67-pool",
+    40
+   ],
+   [
+    "u68-pool",
+    40
+   ],
+   [
+    "u69-pool",
+    40
+   ],
+   [
+    "u70-pool",
+    40
+   ],
+   [
+    "u71-pool",
+    40
+   ],
+   [
+    "u72-pool",
+    40
+   ],
+   [
+    "u73-pool",
+    40
+   ],
+   [
+    "u74-pool",
+    40
+   ],
+   [
+    "u75-pool",
+    40
+   ],
+   [
+    "u76-pool",
+    40
+   ],
+   [
+    "u77-pool",
+    40
+   ],
+   [
+    "u78-pool",
+    40
+   ],
+   [
+    "u79-pool",
+    40
+   ],
+   [
+    "u80-pool",
+    40
+   ],
+   [
+    "u81-pool",
+    40
+   ],
+   [
+    "u82-pool",
+    40
+   ],
+   [
+    "u83-pool",
+    40
+   ],
+   [
+    "u84-pool",
+    40
+   ],
+   [
+    "u85-pool",
+    40
+   ],
+   [
+    "u86-pool",
+    40
+   ],
+   [
+    "u87-pool",
+    40
+   ],
+   [
+    "u88-pool",
+    40
+   ],
+   [
+    "u89-pool",
+    40
+   ],
+   [
+    "u90-pool",
+    40
+   ],
+   [
+    "u91-pool",
+    40
+   ],
+   [
+    "u92-pool",
+    40
+   ],
+   [
+    "u93-pool",
+    40
+   ],
+   [
+    "u94-pool",
+    40
+   ],
+   [
+    "u95-pool",
+    40
+   ],
+   [
+    "u96-pool",
+    40
+   ],
+   [
+    "u97-pool",
+    40
+   ],
+   [
+    "u98-pool",
+    40
+   ],
+   [
+    "u99-pool",
+    40
+   ]
+  ],
+  "pool_size": 22
+ },
+ "driver_location": "host",
+ "code": "tip",
+ "code_sha": "44fb487f361e3d60eb4690fafc6db9fa04d4fa92",
+ "finished_at": "2026-10-20T01:55:16"
+}

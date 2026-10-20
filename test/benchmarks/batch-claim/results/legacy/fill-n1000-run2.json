@@ -1,0 +1,158 @@
+{
+ "spec": {
+  "client": "sync",
+  "create_rps": 50,
+  "max_in_flight": 20,
+  "pool_size": 22,
+  "kind": "fill",
+  "n": 1000
+ },
+ "claim_batch_return_s": 0.02728554094210267,
+ "fill_cpu_s": 1.018709577,
+ "fill_wall_s": 20.016867624945007,
+ "fill_cpu_fraction": 0.05089255702178321,
+ "create_attempts": 1000,
+ "creates_ok": 1000,
+ "creates_retried": 0,
+ "create_429s": 0,
+ "create_errors": [],
+ "create_p50_ms": 4.091353970579803,
+ "create_p99_ms": 13.737989529035971,
+ "create_max_ms": 26.22600004542619,
+ "create_peak_in_flight": 2,
+ "fill_sent_s": 20.005974208004773,
+ "fill_acked_s": 20.011830249917693,
+ "creates_per_s": 49.9704418592154,
+ "batch_err": null,
+ "members_ms": 0.24750002194195986,
+ "members_count": 1000,
+ "members_median5_ms": 0.1718329731374979,
+ "detach_s": 0.006114790914580226,
+ "lease_writes": 3,
+ "renewal_gap_max_s": 20.014764874940738,
+ "attach_s": 0.04767350002657622,
+ "attach_rss_delta_mb": 18.6875,
+ "attach_list_s": 0.03856620902661234,
+ "release_s": 2.403433458064683,
+ "release_rounds": 1,
+ "release_deletecollection_s": 2.396047084010206,
+ "release_list_s": 0.0014410830335691571,
+ "release_list_max_s": 0.0014410830335691571,
+ "release_list_items": [
+  0
+ ],
+ "release_list_fraction": 0.000599593481040062,
+ "release_rss_delta_mb": 0.234375,
+ "effective_pool_size": 22,
+ "create_rps": 50,
+ "max_in_flight": 20,
+ "pool_size": 22,
+ "rss_peak_mb": 156.625,
+ "ru_maxrss_mb": 156.625,
+ "api_conns_peak": 4,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "sandbox_gets_sdk": 0,
+ "watches_opened_sdk": 3,
+ "watches_peak_sdk": 2,
+ "sampler_samples": 481,
+ "sampler_cpu_s": 0.080621161,
+ "driver_exit": 0,
+ "run_wall_s": 49.45056070899591,
+ "apiserver": {
+  "start->filled": {
+   "requests": {
+    "LIST sandboxclaims": 1,
+    "PATCH sandboxclaims": 1000,
+    "PATCH sandboxclaims/status": 2489,
+    "PATCH sandboxes/status": 2404,
+    "POST leases": 1,
+    "POST sandboxclaims": 1000,
+    "POST sandboxes": 1000,
+    "PUT leases": 76,
+    "WATCH sandboxclaims": 1
+   },
+   "non_2xx": {
+    "PATCH sandboxclaims/status 409": 489
+   },
+   "429s": 0,
+   "flowcontrol_rejected": 0,
+   "sandboxclaims_durations": {
+    "LIST": {
+     "count": 1,
+     "mean_s": 0.0007070390000000204,
+     "p99_le_s": 0.005
+    },
+    "POST": {
+     "count": 1000,
+     "mean_s": 0.0037478793810000006,
+     "p99_le_s": 0.025
+    }
+   }
+  },
+  "filled->released": {
+   "requests": {
+    "DELETE leases": 1,
+    "DELETE sandboxclaims": 1,
+    "DELETE sandboxes": 38,
+    "GET leases": 2,
+    "GET sandboxclaims": 20,
+    "GET sandboxes": 48,
+    "LIST sandboxclaims": 2,
+    "PUT leases": 9,
+    "WATCH sandboxclaims": 2
+   },
+   "non_2xx": {
+    "GET sandboxclaims 404": 20
+   },
+   "429s": 0,
+   "flowcontrol_rejected": 0,
+   "sandboxclaims_durations": {
+    "LIST": {
+     "count": 2,
+     "mean_s": 0.015917847999999984,
+     "p99_le_s": 0.05
+    }
+   }
+  },
+  "total": {
+   "requests": {
+    "DELETE leases": 1,
+    "DELETE sandboxclaims": 1,
+    "DELETE sandboxes": 38,
+    "GET leases": 2,
+    "GET sandboxclaims": 20,
+    "GET sandboxes": 48,
+    "LIST sandboxclaims": 3,
+    "PATCH sandboxclaims": 1000,
+    "PATCH sandboxclaims/status": 2489,
+    "PATCH sandboxes/status": 2404,
+    "POST leases": 1,
+    "POST sandboxclaims": 1000,
+    "POST sandboxes": 1000,
+    "PUT leases": 85,
+    "WATCH sandboxclaims": 3
+   },
+   "non_2xx": {
+    "GET sandboxclaims 404": 20,
+    "PATCH sandboxclaims/status 409": 489
+   },
+   "429s": 0,
+   "flowcontrol_rejected": 0,
+   "sandboxclaims_durations": {
+    "LIST": {
+     "count": 3,
+     "mean_s": 0.01084757833333333,
+     "p99_le_s": 0.05
+    },
+    "POST": {
+     "count": 1000,
+     "mean_s": 0.0037478793810000006,
+     "p99_le_s": 0.025
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,368 @@
+{
+ "groups_ready": {
+  "n": 40,
+  "first": 2.525599606000469,
+  "p50": 3.064159668000684,
+  "p90": 3.2437770329011983,
+  "p99": 3.315352509370805,
+  "last": 3.329212180000468
+ },
+ "group_errors": [],
+ "group_error_count": 0,
+ "all_ready_s": 3.3292558880002616,
+ "ready_cpu_s": 0.30977642,
+ "member_ready_s": {
+  "n": 160,
+  "first": 0.09384504300032859,
+  "p50": 1.7672895675013933,
+  "p90": 3.0728002480011125,
+  "p99": 3.2799244556407574,
+  "last": 3.3154095350000716
+ },
+ "create_attempts": 160,
+ "creates_ok": 160,
+ "creates_retried": 0,
+ "create_429s": 0,
+ "create_error_statuses": [],
+ "create_p50_ms": 8.98376949953672,
+ "create_p99_ms": 247.39020748993417,
+ "create_max_ms": 279.24232500117796,
+ "create_peak_in_flight": 14,
+ "fill_sent_s": 3.2524128800014296,
+ "fill_acked_s": 3.2610924180007714,
+ "creates_per_s": 49.063313605227044,
+ "lease_writes": 1,
+ "renewal_latency_ms": null,
+ "renewal_gap_max_s": null,
+ "renew_interval_s": 20,
+ "requests_until_ready": {
+  "get sandboxwarmpools": 40,
+  "get sandboxtemplates": 40,
+  "create leases": 1,
+  "list sandboxclaims": 1,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 160
+ },
+ "release_s": 1.197128989999328,
+ "sdk_file": "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+tip",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/opt/venv/bin/python",
+ "python_version": "3.12.15",
+ "platform": "Linux-6.17.8-orbstack-00308-g8f9c941121b1-aarch64-with-glibc2.41",
+ "settings": {
+  "create_rps": 50.0,
+  "max_in_flight": 20,
+  "pool_size": 22,
+  "lease_duration": 60,
+  "quorum_timeout": 600,
+  "work_budget": 3600,
+  "concurrency": null,
+  "baseline_pool": null
+ },
+ "effective_pool_size": 22,
+ "rss_peak_mb": 121.09765625,
+ "ru_maxrss_mb": 120.5390625,
+ "rss_series_mb": [
+  [
+   0.0,
+   92.7265625
+  ]
+ ],
+ "api_conns_peak": 16,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 1,
+ "requests_total": {
+  "get sandboxwarmpools": 40,
+  "get sandboxtemplates": 40,
+  "create leases": 1,
+  "list sandboxclaims": 2,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 160,
+  "deletecollection sandboxclaims": 1,
+  "delete leases": 1
+ },
+ "sampler_cpu_s": 0.064087244,
+ "driver_exit": 0,
+ "run_wall_s": 30.112572791986167,
+ "apiserver": {
+  "start->ready": {
+   "requests_all": 3153,
+   "requests PATCH sandboxes": 701,
+   "requests PUT leases": 4,
+   "requests LIST sandboxclaims": 1,
+   "requests PATCH sandboxclaims": 556,
+   "requests PUT sandboxclaims": 160,
+   "requests POST sandboxes": 121,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 160
+  },
+  "ready->released": {
+   "requests_all": 566,
+   "requests LIST sandboxes": 1,
+   "requests DELETE sandboxes": 17,
+   "requests GET sandboxes": 28,
+   "requests PATCH sandboxes": 98,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 3,
+   "requests WATCH sandboxclaims": 1,
+   "requests DELETE sandboxclaims": 1,
+   "requests LIST sandboxclaims": 4,
+   "requests POST sandboxes": 39
+  },
+  "total": {
+   "requests_all": 3719,
+   "requests LIST sandboxes": 1,
+   "requests DELETE sandboxes": 17,
+   "requests GET sandboxes": 28,
+   "requests PATCH sandboxes": 799,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 7,
+   "requests WATCH sandboxclaims": 1,
+   "requests DELETE sandboxclaims": 1,
+   "requests LIST sandboxclaims": 5,
+   "requests PATCH sandboxclaims": 556,
+   "requests PUT sandboxclaims": 160,
+   "requests POST sandboxes": 160,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 160
+  }
+ },
+ "cleanup": {
+  "release": {
+   "mode": "pods",
+   "selector": null,
+   "claims_at_start": 160,
+   "pods_at_start": 160,
+   "claims_gone_s": 2.0286970410961658,
+   "pods_left_at_claims_gone": 160,
+   "pods_gone_s": 25.474797666072845
+  }
+ },
+ "apiserver_watch_peak": 3.0,
+ "apiserver_watch_idle": 2.0,
+ "scenario": "3c",
+ "variant": "batch-groups",
+ "shell": "sync",
+ "run": 2,
+ "spec": {
+  "scenario": "3c",
+  "variant": "batch-groups",
+  "shell": "sync",
+  "location": "pod",
+  "code": "tip",
+  "kind": "ready",
+  "consumer": "groups",
+  "pool_size": 22,
+  "groups": [
+   [
+    "w0-pool",
+    4,
+    4
+   ],
+   [
+    "w1-pool",
+    4,
+    4
+   ],
+   [
+    "w2-pool",
+    4,
+    4
+   ],
+   [
+    "w3-pool",
+    4,
+    4
+   ],
+   [
+    "w4-pool",
+    4,
+    4
+   ],
+   [
+    "w5-pool",
+    4,
+    4
+   ],
+   [
+    "w6-pool",
+    4,
+    4
+   ],
+   [
+    "w7-pool",
+    4,
+    4
+   ],
+   [
+    "w8-pool",
+    4,
+    4
+   ],
+   [
+    "w9-pool",
+    4,
+    4
+   ],
+   [
+    "w10-pool",
+    4,
+    4
+   ],
+   [
+    "w11-pool",
+    4,
+    4
+   ],
+   [
+    "w12-pool",
+    4,
+    4
+   ],
+   [
+    "w13-pool",
+    4,
+    4
+   ],
+   [
+    "w14-pool",
+    4,
+    4
+   ],
+   [
+    "w15-pool",
+    4,
+    4
+   ],
+   [
+    "w16-pool",
+    4,
+    4
+   ],
+   [
+    "w17-pool",
+    4,
+    4
+   ],
+   [
+    "w18-pool",
+    4,
+    4
+   ],
+   [
+    "w19-pool",
+    4,
+    4
+   ],
+   [
+    "w20-pool",
+    4,
+    4
+   ],
+   [
+    "w21-pool",
+    4,
+    4
+   ],
+   [
+    "w22-pool",
+    4,
+    4
+   ],
+   [
+    "w23-pool",
+    4,
+    4
+   ],
+   [
+    "w24-pool",
+    4,
+    4
+   ],
+   [
+    "w25-pool",
+    4,
+    4
+   ],
+   [
+    "w26-pool",
+    4,
+    4
+   ],
+   [
+    "w27-pool",
+    4,
+    4
+   ],
+   [
+    "w28-pool",
+    4,
+    4
+   ],
+   [
+    "w29-pool",
+    4,
+    4
+   ],
+   [
+    "w30-pool",
+    4,
+    4
+   ],
+   [
+    "w31-pool",
+    4,
+    4
+   ],
+   [
+    "w32-pool",
+    4,
+    4
+   ],
+   [
+    "w33-pool",
+    4,
+    4
+   ],
+   [
+    "w34-pool",
+    4,
+    4
+   ],
+   [
+    "w35-pool",
+    4,
+    4
+   ],
+   [
+    "w36-pool",
+    4,
+    4
+   ],
+   [
+    "w37-pool",
+    4,
+    4
+   ],
+   [
+    "w38-pool",
+    4,
+    4
+   ],
+   [
+    "w39-pool",
+    4,
+    4
+   ]
+  ]
+ },
+ "driver_location": "pod",
+ "code": "tip",
+ "code_sha": "44fb487f361e3d60eb4690fafc6db9fa04d4fa92",
+ "finished_at": "2026-10-19T23:48:45"
+}

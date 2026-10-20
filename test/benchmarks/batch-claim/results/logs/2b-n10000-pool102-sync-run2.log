@@ -1,0 +1,19 @@
+Traceback (most recent call last):
+  File "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/test/benchmarks/batch-claim/bench.py", line 1946, in <module>
+    main()
+    ~~~~^^
+  File "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/test/benchmarks/batch-claim/bench.py", line 1932, in main
+    Driver(json.loads(args.spec)).run()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/test/benchmarks/batch-claim/bench.py", line 836, in run
+    getattr(self, f"s_{kind}")()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/test/benchmarks/batch-claim/bench.py", line 920, in s_fill
+    batch = client.get_batch(batch.batch_id, namespace=NS)
+  File "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/lib/python3.14/site-packages/k8s_agent_sandbox/sandbox_client.py", line 471, in get_batch
+    batch = SandboxBatch._attach(self, batch_id, namespace)
+  File "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/lib/python3.14/site-packages/k8s_agent_sandbox/sandbox_batch.py", line 336, in _attach
+    raise BatchLeaseExpiredError(
+        f"batch '{batch_id}' Lease is missing or stale in namespace '{namespace}'"
+    )
+k8s_agent_sandbox.exceptions.BatchLeaseExpiredError: batch 'bgm2bx24n32m' Lease is missing or stale in namespace 'batch-bench'

@@ -1,0 +1,33 @@
+[15:08:45] === step 0 start
+[15:08:45] bench.py suite --only 1a-n1000 1a-n5000
+[15:18:49] bench.py errored --supersede
+superseded: 2b-n10000-pool102-sync-run2.json: driver_exit=1
+[15:18:49] bench.py suite --only 1a-n1000 1a-n5000
+[15:18:51] bench.py errored
+[15:18:51] === step 0 end
+## 2026-10 rerun steps
+
+- Step 0 (1a reruns): 6/6 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 5 rerun after a superseded attempt
+- Step 2 (3s): 0/48 done, 48 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 3 (3a2): 0/6 done, 6 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 4 (6v2): 0/24 done, 24 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 5 (memdiag): 0/2 done, 2 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 6 (1d): 0/3 done, 3 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+[15:18:51] === step 2 start
+[15:18:51] bench.py suite --only 3s
+/private/tmp/claude-501/-Users-brian-Desktop-comp-sci-google-agent-sandbox--claude-worktrees-bench-batch-claim/1de53ff4-72fc-4f4d-8e49-669aac32506c/scratchpad/pipeline.sh: line 8: 71279 Terminated: 15          "$PY" $B/bench.py "$@"
+[15:46:58] bench.py errored --supersede
+[15:46:58] bench.py suite --only 3s
+[16:18:36] bench.py errored
+[16:18:37] bench.py candidate
+candidate=None final=False winners=[] queue=['batch-rps1000-mif50'] reason=no safe default wins clearly
+[16:18:37] === step 2 end
+## 2026-10 rerun steps
+
+- Step 0 (1a reruns): 6/6 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 5 rerun after a superseded attempt
+- Step 2 (3s): 48/48 done, 0 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 3 (3a2): 0/6 done, 6 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 4 (6v2): 0/24 done, 24 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 5 (memdiag): 0/2 done, 2 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+- Step 6 (1d): 0/3 done, 3 pending, 0 not needed, 0 with errors, 0 starved, 0 rerun after a superseded attempt
+[16:18:37] pipeline done: 0 2

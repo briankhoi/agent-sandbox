@@ -1,0 +1,326 @@
+{
+ "all_ready_s": 236.485334134999,
+ "members": 300,
+ "round1": {
+  "commands": 300,
+  "errors": 0,
+  "error_samples": [],
+  "p50_ms": 6.731192499501049,
+  "p99_ms": 48.954429182886045,
+  "sandbox_gets": 0,
+  "tcp_active_opens": 300
+ },
+ "rounds2plus": {
+  "commands": 2700,
+  "errors": 0,
+  "error_samples": [],
+  "p50_ms": 9.711031500046374,
+  "p99_ms": 30.469882019060766,
+  "sandbox_gets": 2700,
+  "tcp_active_opens": 20
+ },
+ "distinct_pod_ip_conns_seen": 300,
+ "distinct_pod_ips_seen": 300,
+ "pod_conns_peak": 300,
+ "per_round": [
+  {
+   "round": 1,
+   "wall_s": 0.16954171399993356,
+   "errors": [],
+   "sandbox_gets": 0,
+   "tcp_active_opens": 300,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 6.731192499501049
+  },
+  {
+   "round": 2,
+   "wall_s": 0.1875024389992177,
+   "errors": [],
+   "sandbox_gets": 300,
+   "tcp_active_opens": 20,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 10.947783997835359
+  },
+  {
+   "round": 3,
+   "wall_s": 0.18921326499912539,
+   "errors": [],
+   "sandbox_gets": 300,
+   "tcp_active_opens": 0,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 10.337441501178546
+  },
+  {
+   "round": 4,
+   "wall_s": 0.18436749199827318,
+   "errors": [],
+   "sandbox_gets": 300,
+   "tcp_active_opens": 0,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 10.070927000924712
+  },
+  {
+   "round": 5,
+   "wall_s": 0.1887953949990333,
+   "errors": [],
+   "sandbox_gets": 300,
+   "tcp_active_opens": 0,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 10.11971200023254
+  },
+  {
+   "round": 6,
+   "wall_s": 0.1833260249986779,
+   "errors": [],
+   "sandbox_gets": 300,
+   "tcp_active_opens": 0,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 9.77996800065739
+  },
+  {
+   "round": 7,
+   "wall_s": 0.1886050899993279,
+   "errors": [],
+   "sandbox_gets": 300,
+   "tcp_active_opens": 0,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 9.033231499415706
+  },
+  {
+   "round": 8,
+   "wall_s": 0.15920227199967485,
+   "errors": [],
+   "sandbox_gets": 300,
+   "tcp_active_opens": 0,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 8.813877000648063
+  },
+  {
+   "round": 9,
+   "wall_s": 0.17998289400202339,
+   "errors": [],
+   "sandbox_gets": 300,
+   "tcp_active_opens": 0,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 9.20330149892834
+  },
+  {
+   "round": 10,
+   "wall_s": 0.1975047829982941,
+   "errors": [],
+   "sandbox_gets": 300,
+   "tcp_active_opens": 0,
+   "pod_conns_seen_total": 300,
+   "p50_ms": 9.200717500789324
+  }
+ ],
+ "release_s": 0.7303088619992195,
+ "sdk_file": "/opt/venv/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+tip",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/opt/venv/bin/python",
+ "python_version": "3.12.15",
+ "platform": "Linux-6.17.8-orbstack-00308-g8f9c941121b1-aarch64-with-glibc2.41",
+ "settings": {
+  "create_rps": 50.0,
+  "max_in_flight": 20,
+  "pool_size": 22,
+  "lease_duration": 60,
+  "quorum_timeout": 600,
+  "work_budget": 3600,
+  "concurrency": 20,
+  "baseline_pool": null
+ },
+ "effective_pool_size": 22,
+ "rss_peak_mb": 146.38671875,
+ "ru_maxrss_mb": 146.04296875,
+ "rss_series_mb": [
+  [
+   0.0,
+   92.68359375
+  ],
+  [
+   10.1,
+   117.5625
+  ],
+  [
+   20.0,
+   117.5625
+  ],
+  [
+   30.0,
+   117.62890625
+  ],
+  [
+   40.0,
+   117.62890625
+  ],
+  [
+   50.1,
+   108.75
+  ],
+  [
+   60.1,
+   109.1953125
+  ],
+  [
+   70.1,
+   110.1796875
+  ],
+  [
+   80.0,
+   110.1796875
+  ],
+  [
+   90.0,
+   110.1796875
+  ],
+  [
+   100.0,
+   102.48046875
+  ],
+  [
+   110.0,
+   102.88671875
+  ],
+  [
+   120.1,
+   102.88671875
+  ],
+  [
+   130.1,
+   102.8984375
+  ],
+  [
+   140.0,
+   101.62109375
+  ],
+  [
+   150.0,
+   103.11328125
+  ],
+  [
+   160.0,
+   103.171875
+  ],
+  [
+   170.0,
+   103.171875
+  ],
+  [
+   180.1,
+   103.171875
+  ],
+  [
+   190.0,
+   102.30078125
+  ],
+  [
+   200.0,
+   102.30078125
+  ],
+  [
+   210.0,
+   103.0078125
+  ],
+  [
+   220.1,
+   103.109375
+  ],
+  [
+   230.0,
+   101.921875
+  ],
+  [
+   240.0,
+   142.68359375
+  ]
+ ],
+ "api_conns_peak": 22,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 1,
+ "requests_total": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 2,
+  "watch sandboxclaims": 8,
+  "create sandboxclaims": 300,
+  "update leases": 11,
+  "get sandboxes": 2700,
+  "deletecollection sandboxclaims": 1,
+  "delete leases": 1
+ },
+ "sampler_cpu_s": 2.3845598229999982,
+ "driver_exit": 0,
+ "run_wall_s": 624.129699167097,
+ "apiserver": {
+  "ready->rounds_done": {
+   "requests_all": 2794,
+   "requests GET sandboxes": 2787,
+   "requests PUT leases": 4
+  },
+  "rounds_done->released": {
+   "requests_all": 64,
+   "requests LIST sandboxes": 1,
+   "requests GET sandboxes": 49,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 3,
+   "requests WATCH sandboxclaims": 1,
+   "requests DELETE sandboxclaims": 1,
+   "requests LIST sandboxclaims": 3
+  },
+  "total": {
+   "requests_all": 2858,
+   "requests LIST sandboxes": 1,
+   "requests GET sandboxes": 2836,
+   "requests DELETE leases": 1,
+   "requests PUT leases": 7,
+   "requests WATCH sandboxclaims": 1,
+   "requests DELETE sandboxclaims": 1,
+   "requests LIST sandboxclaims": 3
+  }
+ },
+ "cleanup": {
+  "release": {
+   "mode": "pods",
+   "selector": null,
+   "claims_at_start": 300,
+   "pods_at_start": 300,
+   "claims_gone_s": 1.0322531249839813,
+   "pods_left_at_claims_gone": 300,
+   "pods_gone_s": 384.4941925830208
+  }
+ },
+ "apiserver_watch_peak": 3.0,
+ "apiserver_watch_idle": 2.0,
+ "scenario": "4",
+ "variant": "batch",
+ "shell": "sync",
+ "run": 1,
+ "spec": {
+  "scenario": "4",
+  "variant": "batch",
+  "shell": "sync",
+  "location": "pod",
+  "code": "tip",
+  "groups": [
+   [
+    "ready-pool",
+    300
+   ]
+  ],
+  "rounds": 10,
+  "concurrency": 20,
+  "pool_size": 22,
+  "kind": "dataplane"
+ },
+ "driver_location": "pod",
+ "code": "tip",
+ "code_sha": "44fb487f361e3d60eb4690fafc6db9fa04d4fa92",
+ "finished_at": "2026-10-20T02:32:01"
+}

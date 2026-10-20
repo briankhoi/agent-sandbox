@@ -1,0 +1,842 @@
+{
+ "rule": "A variant wins clearly when, in both the warm and rl shapes of 3s:\n- its median last Ready is at most 0.75x the baseline-pool1000 median;\n- its slowest run's last Ready is faster than the baseline's fastest;\n- in rl, its median first group is at most 1.5x the baseline's median first group;\n- it has zero 429s (driver and apiserver), zero flow-control rejections and zero retried creates;\n- the p99 bucket of its POST sandboxclaims latency (its runs' histograms pooled) is at most one\n  bucket above batch-rps50-mif20's in the same shape, and no higher than the 1 s bucket.\nWinners are ordered by create_rps, lowest first, then max_in_flight 20 before 50. Up to two run\n3a2's cold check, lowest first; the candidate is the first that passes: cold median first Ready\nat most 1.5x batch-rps50-mif20's, and cold median last Ready at most 1.1x the baseline's. With\nno winner, the best variant (the lowest worse-shape ratio of median last Ready to the baseline's)\nruns the cold check instead, to see whether it is at least harmless.",
+ "variants": [
+  "batch-rps50-mif20",
+  "batch-rps100-mif20",
+  "batch-rps200-mif20",
+  "batch-rps500-mif20",
+  "batch-rps500-mif50",
+  "batch-rps1000-mif20",
+  "batch-rps1000-mif50"
+ ],
+ "shapes": {
+  "warm": {
+   "batch-rps50-mif20": {
+    "label": "3s-warm-batch-rps50-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 3.2666037710005185,
+     "min": 3.2521181819975027,
+     "max": 3.27973815400037
+    },
+    "first_ready_s": 0.05802602000039769,
+    "p50_ready_s": 1.6770959830028005,
+    "p90_ready_s": 2.9266248313993857,
+    "first_group_s": null,
+    "last_group_s": null,
+    "fill_sent_s": 3.1968470720021287,
+    "creates_per_s": 49.884686434174505,
+    "create_p50_ms": 10.294744999555405,
+    "create_p99_ms": 45.320987071318065,
+    "create_peak_in_flight": 3,
+    "tail_after_fill_s": 0.06975669899838977,
+    "adoption_s": {
+     "p50": 0.05596585900275386,
+     "p99": 0.11077176807986686,
+     "max": 0.11898882300010882
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.014042417612493334,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 168,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 5,
+    "driver_cpu_s": 0.30169875199999996,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps100-mif20": {
+    "label": "3s-warm-batch-rps100-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.7100944110061391,
+     "min": 1.682229449004808,
+     "max": 1.721470265998505
+    },
+    "first_ready_s": 0.051752826999290846,
+    "p50_ready_s": 0.9276939960036543,
+    "p90_ready_s": 1.5711088755990203,
+    "first_group_s": null,
+    "last_group_s": null,
+    "fill_sent_s": 1.612354292999953,
+    "creates_per_s": 98.70537493540893,
+    "create_p50_ms": 12.728613495710306,
+    "create_p99_ms": 51.12815128130022,
+    "create_peak_in_flight": 7,
+    "tail_after_fill_s": 0.07421485100348946,
+    "adoption_s": {
+     "p50": 0.08799648549756967,
+     "p99": 0.1345479701802833,
+     "max": 0.14916470200114418
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.012039041041678427,
+     "p99_le_s": 0.1,
+     "p99_bucket_index": 3
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 168,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 9,
+    "driver_cpu_s": 0.25812087499999997,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps200-mif20": {
+    "label": "3s-warm-batch-rps200-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.1274106729979394,
+     "min": 1.0916461950037046,
+     "max": 1.4357854379995842
+    },
+    "first_ready_s": 0.044391671995981596,
+    "p50_ready_s": 0.6468735080015904,
+    "p90_ready_s": 1.0660666666954057,
+    "first_group_s": null,
+    "last_group_s": null,
+    "fill_sent_s": 0.8505801799983601,
+    "creates_per_s": 180.6106290042296,
+    "create_p50_ms": 17.544539001391968,
+    "create_p99_ms": 89.04552060834244,
+    "create_peak_in_flight": 13,
+    "tail_after_fill_s": 0.30964460399991367,
+    "adoption_s": {
+     "p50": 0.19105012299769442,
+     "p99": 0.3550042889230826,
+     "max": 0.36886628099455265
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.02051023061250703,
+     "p99_le_s": 0.1,
+     "p99_bucket_index": 3
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 168,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 15,
+    "driver_cpu_s": 0.24160970699999995,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps500-mif20": {
+    "label": "3s-warm-batch-rps500-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.1682763770004385,
+     "min": 0.9722525969991693,
+     "max": 1.3999955380058964
+    },
+    "first_ready_s": 0.08175898299668916,
+    "p50_ready_s": 0.6450589994965412,
+    "p90_ready_s": 1.0876673965001828,
+    "first_group_s": null,
+    "last_group_s": null,
+    "fill_sent_s": 0.5026239340004395,
+    "creates_per_s": 313.1080668761143,
+    "create_p50_ms": 24.750440497882664,
+    "create_p99_ms": 137.52461532036247,
+    "create_peak_in_flight": 20,
+    "tail_after_fill_s": 0.665652442999999,
+    "adoption_s": {
+     "p50": 0.3712246110007982,
+     "p99": 0.6520832498777599,
+     "max": 0.6577613650006242
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.02239037319789645,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 168,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 22,
+    "driver_cpu_s": 0.24670975300000003,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps500-mif50": {
+    "label": "3s-warm-batch-rps500-mif50-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.0137984829998459,
+     "min": 0.9094163629997638,
+     "max": 1.3381143620063085
+    },
+    "first_ready_s": 0.07782767800381407,
+    "p50_ready_s": 0.5226377230028447,
+    "p90_ready_s": 0.9154780402015603,
+    "first_group_s": null,
+    "last_group_s": null,
+    "fill_sent_s": 0.37746674000663916,
+    "creates_per_s": 380.5388584311566,
+    "create_p50_ms": 33.82731950114248,
+    "create_p99_ms": 150.6800924713752,
+    "create_peak_in_flight": 37,
+    "tail_after_fill_s": 0.6727346769985161,
+    "adoption_s": {
+     "p50": 0.3131128350032668,
+     "p99": 0.6600322247006988,
+     "max": 0.6682423140009632
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.019015957954161423,
+     "p99_le_s": 0.1,
+     "p99_bucket_index": 3
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 168,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 38,
+    "driver_cpu_s": 0.23098995800000005,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps1000-mif20": {
+    "label": "3s-warm-batch-rps1000-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.1415377800003625,
+     "min": 0.9892170370003441,
+     "max": 1.230899435999163
+    },
+    "first_ready_s": 0.10558848299842793,
+    "p50_ready_s": 0.6245278520000284,
+    "p90_ready_s": 1.0176469991994963,
+    "first_group_s": null,
+    "last_group_s": null,
+    "fill_sent_s": 0.32223677200090606,
+    "creates_per_s": 474.4614426719214,
+    "create_p50_ms": 22.04641649586847,
+    "create_p99_ms": 88.20930052061158,
+    "create_peak_in_flight": 20,
+    "tail_after_fill_s": 0.7529885589974583,
+    "adoption_s": {
+     "p50": 0.4202447484967706,
+     "p99": 0.7283480310909363,
+     "max": 0.7539066390017979
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.017367382579186595,
+     "p99_le_s": 0.1,
+     "p99_bucket_index": 3
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 168,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 22,
+    "driver_cpu_s": 0.23500008300000008,
+    "cluster_pods_peak": 337
+   },
+   "batch-rps1000-mif50": {
+    "label": "3s-warm-batch-rps1000-mif50-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 0.8971973210063879,
+     "min": 0.8632877849959186,
+     "max": 1.080880925997917
+    },
+    "first_ready_s": 0.09559677799552446,
+    "p50_ready_s": 0.5084711695017177,
+    "p90_ready_s": 0.7903354807967844,
+    "first_group_s": null,
+    "last_group_s": null,
+    "fill_sent_s": 0.326041375999921,
+    "creates_per_s": 421.40057760363516,
+    "create_p50_ms": 27.930976502830163,
+    "create_p99_ms": 213.3294175735499,
+    "create_peak_in_flight": 50,
+    "tail_after_fill_s": 0.5915891769982409,
+    "adoption_s": {
+     "p50": 0.3427633499959484,
+     "p99": 0.5634692378285399,
+     "max": 0.5791999920038506
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.024749105572912336,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 168,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 52,
+    "driver_cpu_s": 0.22338658599999994,
+    "cluster_pods_peak": 331
+   },
+   "baseline-pool1000": {
+    "label": "3s-warm-baseline-pool1000-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.3984547299987753,
+     "min": 1.2913740220028558,
+     "max": 1.476817893999396
+    },
+    "first_ready_s": 0.08594507400266593,
+    "p50_ready_s": 0.8339744719996816,
+    "p90_ready_s": 1.3025417704004212,
+    "first_group_s": null,
+    "last_group_s": null,
+    "fill_sent_s": 0.7006647050002357,
+    "creates_per_s": 172.07900746093824,
+    "create_p50_ms": 58.49007350116153,
+    "create_p99_ms": 295.15538249237574,
+    "create_peak_in_flight": 44,
+    "tail_after_fill_s": 0.6922427470053663,
+    "adoption_s": {
+     "p50": 0.328828126002918,
+     "p99": 0.616441267541668,
+     "max": 0.6876255919996765
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.037095374204178216,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 800,
+    "apiserver_watch_peak": 34.0,
+    "api_conns_peak": 115,
+    "driver_cpu_s": 0.7692308710000001,
+    "cluster_pods_peak": 331
+   }
+  },
+  "rl": {
+   "batch-rps50-mif20": {
+    "label": "3s-rl-batch-rps50-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 3.369032927999797,
+     "min": 3.34211729800154,
+     "max": 3.4087027449932066
+    },
+    "first_ready_s": 0.10402718499972252,
+    "p50_ready_s": 1.7234698244974425,
+    "p90_ready_s": 3.024141355296888,
+    "first_group_s": 2.5549449199970695,
+    "last_group_s": 3.3693408469989663,
+    "fill_sent_s": 3.257733491002,
+    "creates_per_s": 48.94252601881065,
+    "create_p50_ms": 11.945366499276133,
+    "create_p99_ms": 69.61984137276886,
+    "create_peak_in_flight": 5,
+    "tail_after_fill_s": 0.09671663799963426,
+    "adoption_s": {
+     "p50": 0.06173887149634538,
+     "p99": 0.21301895841112126,
+     "max": 0.23498141799791483
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.01612008425626641,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 246,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 7,
+    "driver_cpu_s": 0.34584090600000006,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps100-mif20": {
+    "label": "3s-rl-batch-rps100-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.8251536000025226,
+     "min": 1.8105327299999772,
+     "max": 1.8644128259984427
+    },
+    "first_ready_s": 0.14569551100430544,
+    "p50_ready_s": 1.0283116370010248,
+    "p90_ready_s": 1.653084916100488,
+    "first_group_s": 1.4478002450050553,
+    "last_group_s": 1.825249353001709,
+    "fill_sent_s": 1.7053103250000277,
+    "creates_per_s": 93.27201286881585,
+    "create_p50_ms": 15.202496499114204,
+    "create_p99_ms": 60.70799631248517,
+    "create_peak_in_flight": 9,
+    "tail_after_fill_s": 0.11984327500249492,
+    "adoption_s": {
+     "p50": 0.0856423109980824,
+     "p99": 0.1885460367798805,
+     "max": 0.19699452000349993
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.022078009220835308,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 246,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 11,
+    "driver_cpu_s": 0.3289778769999999,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps200-mif20": {
+    "label": "3s-rl-batch-rps200-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.2249152419972233,
+     "min": 1.1603589039950748,
+     "max": 1.4361326720027137
+    },
+    "first_ready_s": 0.14557851799327182,
+    "p50_ready_s": 0.8491721989994403,
+    "p90_ready_s": 1.1448740984982577,
+    "first_group_s": 1.0686102010004106,
+    "last_group_s": 1.2255980699992506,
+    "fill_sent_s": 0.9189955209949403,
+    "creates_per_s": 172.09098046623694,
+    "create_p50_ms": 22.614460500335554,
+    "create_p99_ms": 126.08789447171146,
+    "create_peak_in_flight": 20,
+    "tail_after_fill_s": 0.30591972100228304,
+    "adoption_s": {
+     "p50": 0.22935359850089299,
+     "p99": 0.35454797205980865,
+     "max": 0.3629212070009089
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.02366087422291988,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 246,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 22,
+    "driver_cpu_s": 0.27027478399999993,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps500-mif20": {
+    "label": "3s-rl-batch-rps500-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.0346230209979694,
+     "min": 0.8951387829947635,
+     "max": 1.066764475996024
+    },
+    "first_ready_s": 0.12410980300046504,
+    "p50_ready_s": 0.6550667500014242,
+    "p90_ready_s": 0.9361613067965664,
+    "first_group_s": 0.8228786370018497,
+    "last_group_s": 1.0348126039971248,
+    "fill_sent_s": 0.5207867359931697,
+    "creates_per_s": 293.9768375580847,
+    "create_p50_ms": 21.705986502638552,
+    "create_p99_ms": 112.26361434040881,
+    "create_peak_in_flight": 20,
+    "tail_after_fill_s": 0.5024532009992981,
+    "adoption_s": {
+     "p50": 0.30743001099835965,
+     "p99": 0.4417121647801831,
+     "max": 0.4892761379960575
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.022056930577103156,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 246,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 22,
+    "driver_cpu_s": 0.217867957,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps500-mif50": {
+    "label": "3s-rl-batch-rps500-mif50-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.0821906860001036,
+     "min": 1.0391465489956317,
+     "max": 1.2600702039999305
+    },
+    "first_ready_s": 0.14791263799997978,
+    "p50_ready_s": 0.7018774950010993,
+    "p90_ready_s": 1.0253963530987675,
+    "first_group_s": 0.885799390001921,
+    "last_group_s": 1.0822171030013124,
+    "fill_sent_s": 0.58127799200156,
+    "creates_per_s": 256.42213606923025,
+    "create_p50_ms": 50.70914850148256,
+    "create_p99_ms": 242.97330542882264,
+    "create_peak_in_flight": 47,
+    "tail_after_fill_s": 0.4994295609940309,
+    "adoption_s": {
+     "p50": 0.34666031450251467,
+     "p99": 0.5118855649210309,
+     "max": 0.5432988370012026
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.02472978065626042,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 246,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 49,
+    "driver_cpu_s": 0.32045033,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps1000-mif20": {
+    "label": "3s-rl-batch-rps1000-mif20-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.0220885660019121,
+     "min": 0.9417330860014772,
+     "max": 1.302506928004732
+    },
+    "first_ready_s": 0.24517929900321178,
+    "p50_ready_s": 0.6256397049983207,
+    "p90_ready_s": 0.8882387526988167,
+    "first_group_s": 0.8279072840014123,
+    "last_group_s": 1.0221076970046852,
+    "fill_sent_s": 0.4134865720043308,
+    "creates_per_s": 342.33929965034827,
+    "create_p50_ms": 30.963791003159713,
+    "create_p99_ms": 79.99322768977436,
+    "create_peak_in_flight": 20,
+    "tail_after_fill_s": 0.6086019939975813,
+    "adoption_s": {
+     "p50": 0.3662322630007111,
+     "p99": 0.5944399250015704,
+     "max": 0.5987377790006576
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.025527831762493253,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 246,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 22,
+    "driver_cpu_s": 0.22714212600000006,
+    "cluster_pods_peak": 331
+   },
+   "batch-rps1000-mif50": {
+    "label": "3s-rl-batch-rps1000-mif50-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 0.9646858819978661,
+     "min": 0.8580296899963287,
+     "max": 1.1272450299948105
+    },
+    "first_ready_s": 0.23576595800113864,
+    "p50_ready_s": 0.5706738629996835,
+    "p90_ready_s": 0.9001156552018074,
+    "first_group_s": 0.6534271169948624,
+    "last_group_s": 0.9652184229998966,
+    "fill_sent_s": 0.34636288899491774,
+    "creates_per_s": 354.61904291581016,
+    "create_p50_ms": 40.51012700074352,
+    "create_p99_ms": 212.60319472916305,
+    "create_peak_in_flight": 50,
+    "tail_after_fill_s": 0.5578590709992568,
+    "adoption_s": {
+     "p50": 0.2525437439981033,
+     "p99": 0.5108031535788177,
+     "max": 0.5219770029943902
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.025106132839547022,
+     "p99_le_s": 0.2,
+     "p99_bucket_index": 4
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 246,
+    "apiserver_watch_peak": 3.0,
+    "api_conns_peak": 52,
+    "driver_cpu_s": 0.2684525869999999,
+    "cluster_pods_peak": 331
+   },
+   "baseline-pool1000": {
+    "label": "3s-rl-baseline-pool1000-sync",
+    "runs": 3,
+    "last_ready_s": {
+     "median": 1.429317248002917,
+     "min": 1.108944669002085,
+     "max": 1.5111308909981744
+    },
+    "first_ready_s": 0.12194131400610786,
+    "p50_ready_s": 0.760710882004787,
+    "p90_ready_s": 1.3382824896056262,
+    "first_group_s": 0.15688080499967327,
+    "last_group_s": 1.429317248002917,
+    "fill_sent_s": 1.2940461800026242,
+    "creates_per_s": 117.81064097703735,
+    "create_p50_ms": 56.736380502115935,
+    "create_p99_ms": 342.5990998830093,
+    "create_peak_in_flight": 43,
+    "tail_after_fill_s": 0.13527106800029287,
+    "adoption_s": {
+     "p50": 0.16607360600028187,
+     "p99": 0.4777337172214174,
+     "max": 0.5020805859967368
+    },
+    "post_claims": {
+     "count": 480,
+     "mean_s": 0.021077198614600928,
+     "p99_le_s": 0.1,
+     "p99_bucket_index": 3
+    },
+    "create_429s": 0,
+    "creates_retried": 0,
+    "apiserver_429s": 0,
+    "flowcontrol_rejected": 0,
+    "requests_total": 800,
+    "apiserver_watch_peak": 32.0,
+    "api_conns_peak": 72,
+    "driver_cpu_s": 0.8759460789999999,
+    "cluster_pods_peak": 331
+   }
+  }
+ },
+ "winners": [],
+ "clauses": {
+  "batch-rps50-mif20": {
+   "warm": [
+    "FAIL: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ],
+   "rl": [
+    "FAIL: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "FAIL: median first group <= 1.5x baseline",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ]
+  },
+  "batch-rps100-mif20": {
+   "warm": [
+    "FAIL: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ],
+   "rl": [
+    "FAIL: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "FAIL: median first group <= 1.5x baseline",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ]
+  },
+  "batch-rps200-mif20": {
+   "warm": [
+    "FAIL: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ],
+   "rl": [
+    "FAIL: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "FAIL: median first group <= 1.5x baseline",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ]
+  },
+  "batch-rps500-mif20": {
+   "warm": [
+    "FAIL: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ],
+   "rl": [
+    "pass: median last Ready <= 0.75x baseline",
+    "pass: slowest run faster than baseline's fastest",
+    "FAIL: median first group <= 1.5x baseline",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ]
+  },
+  "batch-rps500-mif50": {
+   "warm": [
+    "pass: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ],
+   "rl": [
+    "FAIL: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "FAIL: median first group <= 1.5x baseline",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ]
+  },
+  "batch-rps1000-mif20": {
+   "warm": [
+    "FAIL: median last Ready <= 0.75x baseline",
+    "pass: slowest run faster than baseline's fastest",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ],
+   "rl": [
+    "pass: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "FAIL: median first group <= 1.5x baseline",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ]
+  },
+  "batch-rps1000-mif50": {
+   "warm": [
+    "pass: median last Ready <= 0.75x baseline",
+    "pass: slowest run faster than baseline's fastest",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ],
+   "rl": [
+    "pass: median last Ready <= 0.75x baseline",
+    "FAIL: slowest run faster than baseline's fastest",
+    "FAIL: median first group <= 1.5x baseline",
+    "pass: zero 429s, rejections and retries",
+    "pass: POST p99 bucket <= rps50's + 1 and <= 1 s"
+   ]
+  }
+ },
+ "cold_checks": [
+  {
+   "variant": "batch-rps1000-mif50",
+   "first_ready_s": 10.211986604997946,
+   "rps50_first_ready_s": 1.3538375999996788,
+   "first_ready_ratio": 7.542992309417591,
+   "last_ready_s": 26.746127712001908,
+   "baseline_last_ready_s": 24.657116413996846,
+   "last_ready_ratio": 1.0847224494109626,
+   "baseline_first_ready_s": 10.469791957002599,
+   "rps50_last_ready_s": 28.184000608001952,
+   "passed": false
+  }
+ ],
+ "cold_check_queue": [
+  "batch-rps1000-mif50"
+ ],
+ "candidate": null,
+ "reason": "no safe default wins clearly",
+ "best_variant": "batch-rps1000-mif50",
+ "best_last_ready_ratio": {
+  "warm": 0.6415633640190653,
+  "rl": 0.6749277554341087
+ },
+ "binding": {
+  "warm": {
+   "limit": "apiserver",
+   "numbers": {
+    "creates_per_s": 421.40057760363516,
+    "create_rps": 1000,
+    "fill_sent_s": 0.326041375999921,
+    "last_ready_s": 0.8971973210063879,
+    "tail_after_fill_s": 0.5915891769982409,
+    "adoption_p50_s": 0.3427633499959484,
+    "baseline_last_ready_s": 1.3984547299987753,
+    "create_peak_in_flight": 50,
+    "max_in_flight": 50,
+    "post_p99_le_s": 0.2,
+    "rps50_post_p99_le_s": 0.2,
+    "429s_or_rejections": 0
+   }
+  },
+  "rl": {
+   "limit": "apiserver",
+   "numbers": {
+    "creates_per_s": 354.61904291581016,
+    "create_rps": 1000,
+    "fill_sent_s": 0.34636288899491774,
+    "last_ready_s": 0.9646858819978661,
+    "tail_after_fill_s": 0.5578590709992568,
+    "adoption_p50_s": 0.2525437439981033,
+    "baseline_last_ready_s": 1.429317248002917,
+    "create_peak_in_flight": 50,
+    "max_in_flight": 50,
+    "post_p99_le_s": 0.2,
+    "rps50_post_p99_le_s": 0.2,
+    "429s_or_rejections": 0
+   }
+  }
+ },
+ "final": true,
+ "cost_vs_baseline": {
+  "warm": {
+   "variant": "batch-rps1000-mif50",
+   "requests_total": 4.761904761904762,
+   "apiserver_watch_peak": 11.333333333333334,
+   "api_conns_peak": 2.2115384615384617
+  },
+  "rl": {
+   "variant": "batch-rps1000-mif50",
+   "requests_total": 3.252032520325203,
+   "apiserver_watch_peak": 10.666666666666666,
+   "api_conns_peak": 1.3846153846153846
+  }
+ },
+ "cluster_pods_peak": 337
+}

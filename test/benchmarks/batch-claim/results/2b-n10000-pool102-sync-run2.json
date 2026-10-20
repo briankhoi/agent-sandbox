@@ -1,0 +1,157 @@
+{
+ "claim_batch_return_s": 0.03113512508571148,
+ "requests_claim_batch_call": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 1,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 5
+ },
+ "fill_cpu_s": 8.137773104,
+ "fill_wall_s": 10.551219542045146,
+ "fill_cpu_cores": 0.7712637455388075,
+ "create_attempts": 10000,
+ "creates_ok": 10000,
+ "creates_retried": 0,
+ "create_429s": 0,
+ "create_error_statuses": [],
+ "create_p50_ms": 16.137063037604094,
+ "create_p99_ms": 138.7381413485855,
+ "create_max_ms": 1057.8557909466326,
+ "create_peak_in_flight": 100,
+ "fill_sent_s": 10.434521042043343,
+ "fill_acked_s": 10.506833499995992,
+ "creates_per_s": 951.7615369086999,
+ "requests_fill": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 1,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 10000,
+  "update leases": 5
+ },
+ "batch_err": null,
+ "members_ms": 11.476959101855755,
+ "members_count": 10000,
+ "detach_s": 0.061398375080898404,
+ "lease_writes": 10,
+ "renewal_latency_ms": {
+  "n": 9,
+  "first": 6.4338750671595335,
+  "p50": 9.613957954570651,
+  "p90": 101.51832462288439,
+  "p99": 119.22624439932406,
+  "last": 121.19379104115069
+ },
+ "renewal_gap_max_s": 2.134314415976405,
+ "renew_interval_s": 2,
+ "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/lib/python3.14/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+tip.44fb487",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/bench-batch-claim/bin/bench-venv/bin/python",
+ "python_version": "3.14.3",
+ "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+ "settings": {
+  "create_rps": 1000,
+  "max_in_flight": 100,
+  "pool_size": 102,
+  "lease_duration": 6,
+  "quorum_timeout": 600,
+  "work_budget": 3600,
+  "concurrency": null,
+  "baseline_pool": null
+ },
+ "effective_pool_size": 102,
+ "rss_peak_mb": 353.21875,
+ "ru_maxrss_mb": 354.046875,
+ "rss_series_mb": [
+  [
+   0.0,
+   108.65625
+  ],
+  [
+   10.1,
+   189.265625
+  ],
+  [
+   20.1,
+   187.296875
+  ]
+ ],
+ "api_conns_peak": 102,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 1,
+ "requests_total": {
+  "get sandboxwarmpools": 1,
+  "get sandboxtemplates": 1,
+  "create leases": 1,
+  "list sandboxclaims": 2,
+  "watch sandboxclaims": 1,
+  "create sandboxclaims": 10000,
+  "update leases": 11,
+  "get leases": 2
+ },
+ "sampler_cpu_s": 0.12425936600000001,
+ "driver_exit": 1,
+ "run_wall_s": 23.195733834058046,
+ "apiserver": {
+  "start->filled": {
+   "requests_all": 88685,
+   "requests GET sandboxes": 816,
+   "requests PATCH sandboxes": 17106,
+   "requests PUT leases": 43,
+   "requests LIST sandboxclaims": 1,
+   "requests PATCH sandboxclaims": 22229,
+   "requests POST sandboxes": 9101,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 10000
+  },
+  "total": {
+   "requests_all": 88685,
+   "requests GET sandboxes": 816,
+   "requests PATCH sandboxes": 17106,
+   "requests PUT leases": 43,
+   "requests LIST sandboxclaims": 1,
+   "requests PATCH sandboxclaims": 22229,
+   "requests POST sandboxes": 9101,
+   "requests POST leases": 1,
+   "requests POST sandboxclaims": 10000
+  }
+ },
+ "cleanup": {},
+ "apiserver_watch_peak": 3.0,
+ "apiserver_watch_idle": 2.0,
+ "scenario": "2b",
+ "variant": "n10000-pool102",
+ "shell": "sync",
+ "run": 2,
+ "spec": {
+  "scenario": "2b",
+  "variant": "n10000-pool102",
+  "shell": "sync",
+  "location": "host",
+  "code": "tip",
+  "kind": "fill",
+  "groups": [
+   [
+    "unsched-pool",
+    10000
+   ]
+  ],
+  "max_in_flight": 100,
+  "create_rps": 1000,
+  "lease_duration": 6,
+  "hold_min_s": 20,
+  "pool_size": 102
+ },
+ "driver_location": "host",
+ "code": "tip",
+ "code_sha": "44fb487f361e3d60eb4690fafc6db9fa04d4fa92",
+ "finished_at": "2026-10-20T02:39:46"
+}
