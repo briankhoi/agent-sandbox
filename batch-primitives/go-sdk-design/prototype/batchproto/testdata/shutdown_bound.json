@@ -1,0 +1,200 @@
+{
+ "generator": {
+  "python_commit": "8a72827f1db53c12a82229f49583105fd5df3e26",
+  "python": "3.13.15"
+ },
+ "now": "2026-10-20T08:00:00.123456+00:00",
+ "now_unix": 1792483200,
+ "limit_seconds": 251609817599,
+ "fill": [
+  {
+   "size": 1,
+   "create_rps": 50.0,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": true,
+    "shutdown_time": "2026-10-20T09:20:01Z"
+   }
+  },
+  {
+   "size": 3,
+   "create_rps": 0.1,
+   "quorum_timeout": 1,
+   "work_budget": 1,
+   "result": {
+    "ok": true,
+    "shutdown_time": "2026-10-20T08:10:32Z"
+   }
+  },
+  {
+   "size": 0,
+   "create_rps": 5e-324,
+   "quorum_timeout": 1,
+   "work_budget": 1,
+   "result": {
+    "ok": true,
+    "shutdown_time": "2026-10-20T08:10:02Z"
+   }
+  },
+  {
+   "size": 0,
+   "create_rps": 1e-300,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": true,
+    "shutdown_time": "2026-10-20T09:20:00Z"
+   }
+  },
+  {
+   "size": 1,
+   "create_rps": 1e-09,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": true,
+    "shutdown_time": "2058-06-28T11:06:40Z"
+   }
+  },
+  {
+   "size": 1,
+   "create_rps": 1e-10,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": true,
+    "shutdown_time": "2343-09-10T03:06:40Z"
+   }
+  },
+  {
+   "size": 1,
+   "create_rps": 4e-12,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": true,
+    "shutdown_time": "9948-12-26T21:46:40Z"
+   }
+  },
+  {
+   "size": 1,
+   "create_rps": 3e-12,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "shutdown_after_seconds is too large: 333333338134"
+   }
+  },
+  {
+   "size": 7,
+   "create_rps": 2.9e-11,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": true,
+    "shutdown_time": "9675-10-22T09:45:45Z"
+   }
+  },
+  {
+   "size": 1,
+   "create_rps": 1e-300,
+   "quorum_timeout": 1,
+   "work_budget": 1,
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "shutdown_after_seconds is too large: 999999999999999903803069407426113968898218766118103141789833949572356552411722264192305659040010509526872994217248819197070144216063125530186267630296136203765329090687113225440746189048800695790727969805197112921161540803823920273299782054992133678869364753954248541633605124057805104488924519072346"
+   }
+  },
+  {
+   "size": 1,
+   "create_rps": 5e-324,
+   "quorum_timeout": 1,
+   "work_budget": 1,
+   "result": {
+    "ok": false,
+    "error_type": "OverflowError",
+    "error": "cannot convert float infinity to integer"
+   }
+  },
+  {
+   "size": 251609812798,
+   "create_rps": 1.0,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": true,
+    "shutdown_time": "9999-12-31T23:59:58Z"
+   }
+  },
+  {
+   "size": 251609812799,
+   "create_rps": 1.0,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": true,
+    "shutdown_time": "9999-12-31T23:59:59Z"
+   }
+  },
+  {
+   "size": 251609812800,
+   "create_rps": 1.0,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "shutdown_after_seconds is too large: 251609817600"
+   }
+  }
+ ],
+ "acquire": [
+  {
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "result": {
+    "ok": true,
+    "shutdown_time": "2026-10-20T09:20:00Z"
+   }
+  },
+  {
+   "quorum_timeout": 1,
+   "work_budget": 251609816998,
+   "result": {
+    "ok": true,
+    "shutdown_time": "9999-12-31T23:59:59Z"
+   }
+  },
+  {
+   "quorum_timeout": 1,
+   "work_budget": 251609816999,
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "shutdown_after_seconds is too large: 251609817600"
+   }
+  },
+  {
+   "quorum_timeout": 1,
+   "work_budget": 251609817000,
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "shutdown_after_seconds is too large: 251609817601"
+   }
+  },
+  {
+   "quorum_timeout": 1,
+   "work_budget": 9000000000000000000,
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "shutdown_after_seconds is too large: 9000000000000000601"
+   }
+  }
+ ]
+}

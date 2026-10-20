@@ -1,0 +1,979 @@
+{
+ "generator": {
+  "python_commit": "8a72827f1db53c12a82229f49583105fd5df3e26",
+  "python": "3.13.15",
+  "unit_seconds": 0.25
+ },
+ "groups": [
+  {
+   "warmpool": "a",
+   "size": 2,
+   "min_ready": 1
+  },
+  {
+   "warmpool": "b",
+   "size": 1,
+   "min_ready": 1
+  }
+ ],
+ "scenarios": [
+  {
+   "name": "events: every fill member Ready -> settled, ends at once",
+   "consumer": "events",
+   "fill_deadline_units": 8,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-0",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-0.ns.svc"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 2,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-2",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "1",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "b"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-2",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-2.ns.svc"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 3,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-1",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-1",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-1.ns.svc"
+       }
+      }
+     },
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     1,
+     "member_ready:hb-0"
+    ],
+    [
+     2,
+     "member_ready:hb-2"
+    ],
+    [
+     3,
+     "member_ready:hb-1"
+    ],
+    [
+     3,
+     "end"
+    ]
+   ]
+  },
+  {
+   "name": "events: wakes at the fill deadline and ends",
+   "consumer": "events",
+   "fill_deadline_units": 4,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-0",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-0.ns.svc"
+       }
+      }
+     },
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     1,
+     "member_ready:hb-0"
+    ],
+    [
+     4,
+     "end"
+    ]
+   ]
+  },
+  {
+   "name": "events: pending then deleted -> member_lost, then the fill deadline",
+   "consumer": "events",
+   "fill_deadline_units": 5,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 2,
+     "op": "lost",
+     "claim": null,
+     "name": "hb-0"
+    },
+    {
+     "unit": 3,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-1",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "False",
+         "reason": "PodFailed",
+         "message": "boom"
+        }
+       ]
+      }
+     },
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     2,
+     "member_lost:hb-0"
+    ],
+    [
+     3,
+     "member_failed:hb-1"
+    ],
+    [
+     5,
+     "end"
+    ]
+   ]
+  },
+  {
+   "name": "events: break after the first item, call again to continue",
+   "consumer": "events-break-and-resume",
+   "fill_deadline_units": 8,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-0",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-0.ns.svc"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 2,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-2",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "1",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "b"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-2",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-2.ns.svc"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 3,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-1",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-1",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-1.ns.svc"
+       }
+      }
+     },
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     1,
+     "iter1 member_ready:hb-0"
+    ],
+    [
+     2,
+     "iter2 member_ready:hb-2"
+    ],
+    [
+     3,
+     "iter2 member_ready:hb-1"
+    ],
+    [
+     3,
+     "end"
+    ]
+   ]
+  },
+  {
+   "name": "events: err() set while waiting -> ends (Python: no exception)",
+   "consumer": "events",
+   "fill_deadline_units": 8,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-0",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-0.ns.svc"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 2,
+     "op": "error",
+     "claim": null,
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     1,
+     "member_ready:hb-0"
+    ],
+    [
+     2,
+     "end+err"
+    ]
+   ]
+  },
+  {
+   "name": "events: detach while waiting -> raises",
+   "consumer": "events",
+   "fill_deadline_units": 8,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-0",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-0.ns.svc"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 2,
+     "op": "detach",
+     "claim": null,
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     1,
+     "member_ready:hb-0"
+    ],
+    [
+     2,
+     "raise:BatchError"
+    ]
+   ]
+  },
+  {
+   "name": "groups: a yields at min_ready, b times out at the fill deadline",
+   "consumer": "groups",
+   "fill_deadline_units": 4,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-0",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-0.ns.svc"
+       }
+      }
+     },
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     1,
+     "group:a:hb-0"
+    ],
+    [
+     4,
+     "group:b:ERR:BatchTimeoutError"
+    ],
+    [
+     4,
+     "end"
+    ]
+   ]
+  },
+  {
+   "name": "groups: a unreachable after two failures",
+   "consumer": "groups",
+   "fill_deadline_units": 8,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "False",
+         "reason": "PodFailed",
+         "message": "boom"
+        }
+       ]
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 2,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-1",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "False",
+         "reason": "PodFailed",
+         "message": "boom"
+        }
+       ]
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 3,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-2",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "1",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "b"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-2",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-2.ns.svc"
+       }
+      }
+     },
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     2,
+     "group:a:ERR:QuorumUnreachableError"
+    ],
+    [
+     3,
+     "group:b:hb-2"
+    ],
+    [
+     3,
+     "end"
+    ]
+   ]
+  },
+  {
+   "name": "quorum: reached when the last group gets min_ready",
+   "consumer": "quorum",
+   "fill_deadline_units": 8,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-0",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-0.ns.svc"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 2,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-2",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "1",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "b"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-2",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-2.ns.svc"
+       }
+      }
+     },
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     2,
+     "quorum:hb-0,hb-2"
+    ]
+   ]
+  },
+  {
+   "name": "quorum: fill deadline -> BatchTimeoutError",
+   "consumer": "quorum",
+   "fill_deadline_units": 3,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-0",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-0.ns.svc"
+       }
+      }
+     },
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     3,
+     "raise:BatchTimeoutError"
+    ]
+   ]
+  },
+  {
+   "name": "quorum: no fill deadline yet, Ready arrives late",
+   "consumer": "quorum",
+   "fill_deadline_units": null,
+   "ops": [
+    {
+     "unit": 2,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-2",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "1",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "b"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-2",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-2.ns.svc"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 5,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-1",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-1",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-1.ns.svc"
+       }
+      }
+     },
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     5,
+     "quorum:hb-1,hb-2"
+    ]
+   ]
+  },
+  {
+   "name": "quorum: detach while waiting -> raises",
+   "consumer": "quorum",
+   "fill_deadline_units": 8,
+   "ops": [
+    {
+     "unit": 1,
+     "op": "upsert",
+     "claim": {
+      "metadata": {
+       "name": "hb-0",
+       "annotations": {
+        "agents.x-k8s.io/batch-group-size": "2",
+        "agents.x-k8s.io/batch-group-min-ready": "1"
+       }
+      },
+      "spec": {
+       "warmPoolRef": {
+        "name": "a"
+       }
+      },
+      "status": {
+       "conditions": [
+        {
+         "type": "Ready",
+         "status": "True",
+         "reason": "Ready",
+         "message": ""
+        }
+       ],
+       "sandbox": {
+        "name": "sb-hb-0",
+        "podIPs": [
+         "10.0.0.1"
+        ],
+        "serviceFQDN": "sb-hb-0.ns.svc"
+       }
+      }
+     },
+     "name": null
+    },
+    {
+     "unit": 2,
+     "op": "detach",
+     "claim": null,
+     "name": null
+    }
+   ],
+   "trace": [
+    [
+     2,
+     "raise:BatchError"
+    ]
+   ]
+  }
+ ]
+}

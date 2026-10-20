@@ -1,0 +1,5533 @@
+{
+ "generator": {
+  "python_commit": "8a72827f1db53c12a82229f49583105fd5df3e26",
+  "python": "3.13.15",
+  "kubernetes": "37.0.1",
+  "pydantic": "2.14.1"
+ },
+ "fill_plan": [
+  {
+   "batch_id": "b",
+   "groups": [
+    {
+     "warmpool": "p4",
+     "size": 4,
+     "min_ready": 2
+    },
+    {
+     "warmpool": "p2",
+     "size": 2,
+     "min_ready": 1
+    },
+    {
+     "warmpool": "p0",
+     "size": 0,
+     "min_ready": 0
+    },
+    {
+     "warmpool": "p3",
+     "size": 3,
+     "min_ready": 3
+    }
+   ],
+   "min_ready_given": [
+    true,
+    true,
+    true,
+    true
+   ],
+   "plan": [
+    [
+     "b-0",
+     "p4"
+    ],
+    [
+     "b-4",
+     "p2"
+    ],
+    [
+     "b-6",
+     "p3"
+    ],
+    [
+     "b-1",
+     "p4"
+    ],
+    [
+     "b-7",
+     "p3"
+    ],
+    [
+     "b-8",
+     "p3"
+    ],
+    [
+     "b-2",
+     "p4"
+    ],
+    [
+     "b-5",
+     "p2"
+    ],
+    [
+     "b-3",
+     "p4"
+    ]
+   ]
+  },
+  {
+   "batch_id": "b",
+   "groups": [
+    {
+     "warmpool": "a",
+     "size": 1,
+     "min_ready": 1
+    }
+   ],
+   "min_ready_given": [
+    true
+   ],
+   "plan": [
+    [
+     "b-0",
+     "a"
+    ]
+   ]
+  },
+  {
+   "batch_id": "bx",
+   "groups": [
+    {
+     "warmpool": "a",
+     "size": 5,
+     "min_ready": 0
+    },
+    {
+     "warmpool": "b",
+     "size": 5,
+     "min_ready": 5
+    }
+   ],
+   "min_ready_given": [
+    true,
+    true
+   ],
+   "plan": [
+    [
+     "bx-5",
+     "b"
+    ],
+    [
+     "bx-6",
+     "b"
+    ],
+    [
+     "bx-7",
+     "b"
+    ],
+    [
+     "bx-8",
+     "b"
+    ],
+    [
+     "bx-9",
+     "b"
+    ],
+    [
+     "bx-0",
+     "a"
+    ],
+    [
+     "bx-1",
+     "a"
+    ],
+    [
+     "bx-2",
+     "a"
+    ],
+    [
+     "bx-3",
+     "a"
+    ],
+    [
+     "bx-4",
+     "a"
+    ]
+   ]
+  },
+  {
+   "batch_id": "bx",
+   "groups": [
+    {
+     "warmpool": "a",
+     "size": 3,
+     "min_ready": 3
+    },
+    {
+     "warmpool": "b",
+     "size": 7,
+     "min_ready": 2
+    },
+    {
+     "warmpool": "c",
+     "size": 2,
+     "min_ready": 1
+    }
+   ],
+   "min_ready_given": [
+    false,
+    true,
+    true
+   ],
+   "plan": [
+    [
+     "bx-0",
+     "a"
+    ],
+    [
+     "bx-3",
+     "b"
+    ],
+    [
+     "bx-10",
+     "c"
+    ],
+    [
+     "bx-4",
+     "b"
+    ],
+    [
+     "bx-1",
+     "a"
+    ],
+    [
+     "bx-2",
+     "a"
+    ],
+    [
+     "bx-5",
+     "b"
+    ],
+    [
+     "bx-6",
+     "b"
+    ],
+    [
+     "bx-11",
+     "c"
+    ],
+    [
+     "bx-7",
+     "b"
+    ],
+    [
+     "bx-8",
+     "b"
+    ],
+    [
+     "bx-9",
+     "b"
+    ]
+   ]
+  },
+  {
+   "batch_id": "q",
+   "groups": [
+    {
+     "warmpool": "a",
+     "size": 6,
+     "min_ready": 3
+    },
+    {
+     "warmpool": "b",
+     "size": 4,
+     "min_ready": 2
+    }
+   ],
+   "min_ready_given": [
+    true,
+    true
+   ],
+   "plan": [
+    [
+     "q-0",
+     "a"
+    ],
+    [
+     "q-6",
+     "b"
+    ],
+    [
+     "q-1",
+     "a"
+    ],
+    [
+     "q-7",
+     "b"
+    ],
+    [
+     "q-2",
+     "a"
+    ],
+    [
+     "q-3",
+     "a"
+    ],
+    [
+     "q-8",
+     "b"
+    ],
+    [
+     "q-4",
+     "a"
+    ],
+    [
+     "q-9",
+     "b"
+    ],
+    [
+     "q-5",
+     "a"
+    ]
+   ]
+  },
+  {
+   "batch_id": "q",
+   "groups": [
+    {
+     "warmpool": "a",
+     "size": 0,
+     "min_ready": 0
+    }
+   ],
+   "min_ready_given": [
+    true
+   ],
+   "plan": []
+  },
+  {
+   "batch_id": "big",
+   "groups": [
+    {
+     "warmpool": "x",
+     "size": 10,
+     "min_ready": 7
+    },
+    {
+     "warmpool": "y",
+     "size": 3,
+     "min_ready": 1
+    },
+    {
+     "warmpool": "z",
+     "size": 1,
+     "min_ready": 0
+    }
+   ],
+   "min_ready_given": [
+    true,
+    true,
+    true
+   ],
+   "plan": [
+    [
+     "big-0",
+     "x"
+    ],
+    [
+     "big-10",
+     "y"
+    ],
+    [
+     "big-1",
+     "x"
+    ],
+    [
+     "big-2",
+     "x"
+    ],
+    [
+     "big-3",
+     "x"
+    ],
+    [
+     "big-4",
+     "x"
+    ],
+    [
+     "big-5",
+     "x"
+    ],
+    [
+     "big-6",
+     "x"
+    ],
+    [
+     "big-13",
+     "z"
+    ],
+    [
+     "big-11",
+     "y"
+    ],
+    [
+     "big-12",
+     "y"
+    ],
+    [
+     "big-7",
+     "x"
+    ],
+    [
+     "big-8",
+     "x"
+    ],
+    [
+     "big-9",
+     "x"
+    ]
+   ]
+  }
+ ],
+ "group_label": [
+  {
+   "warmpool": "python-sandbox-pool",
+   "value": "c0236d609e7e8cd8",
+   "selector": "agents.x-k8s.io/batch-id=bid,agents.x-k8s.io/batch-group=c0236d609e7e8cd8"
+  },
+  {
+   "warmpool": "a",
+   "value": "ca978112ca1bbdca",
+   "selector": "agents.x-k8s.io/batch-id=bid,agents.x-k8s.io/batch-group=ca978112ca1bbdca"
+  },
+  {
+   "warmpool": "",
+   "value": "e3b0c44298fc1c14",
+   "selector": "agents.x-k8s.io/batch-id=bid,agents.x-k8s.io/batch-group=e3b0c44298fc1c14"
+  },
+  {
+   "warmpool": "pool-with-a-very-long-name-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "value": "5ffc9261b6c77703",
+   "selector": "agents.x-k8s.io/batch-id=bid,agents.x-k8s.io/batch-group=5ffc9261b6c77703"
+  },
+  {
+   "warmpool": "ünïcødé-pool",
+   "value": "baf777e91d30363d",
+   "selector": "agents.x-k8s.io/batch-id=bid,agents.x-k8s.io/batch-group=baf777e91d30363d"
+  },
+  {
+   "warmpool": "UPPER",
+   "value": "9cba1c6593a62cf5",
+   "selector": "agents.x-k8s.io/batch-id=bid,agents.x-k8s.io/batch-group=9cba1c6593a62cf5"
+  },
+  {
+   "warmpool": "p0",
+   "value": "169b5b823c62b64c",
+   "selector": "agents.x-k8s.io/batch-id=bid,agents.x-k8s.io/batch-group=169b5b823c62b64c"
+  }
+ ],
+ "claim_batch_args": [
+  {
+   "name": "defaults",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 50.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "50"
+     }
+    }
+   }
+  },
+  {
+   "name": "labels",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": {
+     "team": "x",
+     "example.com/app": "y",
+     "empty": ""
+    },
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 50.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "team": "x",
+      "example.com/app": "y",
+      "empty": "",
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "50"
+     }
+    }
+   }
+  },
+  {
+   "name": "reserved batch-id label",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": {
+     "agents.x-k8s.io/batch-id": "x"
+    },
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "labels must not set agents.x-k8s.io/batch-id; claim_batch sets it"
+   }
+  },
+  {
+   "name": "reserved batch-group label",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": {
+     "agents.x-k8s.io/batch-group": "x"
+    },
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "labels must not set agents.x-k8s.io/batch-group; claim_batch sets it"
+   }
+  },
+  {
+   "name": "created-by label allowed by validate (overwritten on Lease)",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": {
+     "agents.x-k8s.io/created-by": "me"
+    },
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 50.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/created-by": "python-client",
+      "agents.x-k8s.io/batch-id": "bfixture"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "50"
+     }
+    }
+   }
+  },
+  {
+   "name": "empty groups",
+   "input": {
+    "groups": [],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "groups must not be empty"
+   }
+  },
+  {
+   "name": "duplicate pool",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 1
+     },
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "warm pool 'a' appears in more than one group"
+   }
+  },
+  {
+   "name": "bad batch id",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "1abc",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: '1abc'"
+   }
+  },
+  {
+   "name": "batch id 52",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 50.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "50"
+     }
+    }
+   }
+  },
+  {
+   "name": "batch id 53",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"
+   }
+  },
+  {
+   "name": "lease 5",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": 5
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "Duration must be greater than clock skew margin (5s)"
+   }
+  },
+  {
+   "name": "lease 6",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": 6
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 50.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 6,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "6",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "50"
+     }
+    }
+   }
+  },
+  {
+   "name": "lease float",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": 6.0
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "Duration must be an int, got float"
+   }
+  },
+  {
+   "name": "work budget float",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": 1.5,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "work_budget must be a positive int, got 1.5"
+   }
+  },
+  {
+   "name": "quorum 0",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": 0,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "quorum_timeout must be a positive int, got 0"
+   }
+  },
+  {
+   "name": "max_in_flight 0",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": 0,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "max_in_flight must be a positive int, got 0"
+   }
+  },
+  {
+   "name": "rps 0",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 0,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "create_rps must be a positive finite number, got 0"
+   }
+  },
+  {
+   "name": "rps -1",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": -1,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "create_rps must be a positive finite number, got -1"
+   }
+  },
+  {
+   "name": "rps inf",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": "inf",
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "create_rps must be a positive finite number, got inf"
+   }
+  },
+  {
+   "name": "rps nan",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": "nan",
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "create_rps must be a positive finite number, got nan"
+   }
+  },
+  {
+   "name": "rps bool",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": true,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": false,
+    "error_type": "ValueError",
+    "error": "create_rps must be a positive finite number, got True"
+   }
+  },
+  {
+   "name": "all groups size 0",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 0
+     },
+     {
+      "warmpool": "b",
+      "size": 0,
+      "min_ready": 0
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": null,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 50.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "50"
+     }
+    }
+   }
+  },
+  {
+   "name": "all groups size 0, rps 5e-324",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 0
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 5e-324,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 5e-324,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "4.94066e-324"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 50",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 50,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 50.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "50"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 1000000.0",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 1000000.0,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 1000000.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "1e+06"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 1234567",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 1234567,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 1234567.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "1.23457e+06"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 33.333333333",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 33.333333333,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 33.333333333,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "33.3333"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 0.5",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 0.5,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 0.5,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "0.5"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 0.3333333333333333",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 0.3333333333333333,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 0.3333333333333333,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "0.333333"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 100.0",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 100.0,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 100.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "100"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 1e-05",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 1e-05,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 1e-05,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "1e-05"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 0.0001",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 0.0001,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 0.0001,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "0.0001"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 12345.6789",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 12345.6789,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 12345.6789,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "12345.7"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 1e+16",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 1e+16,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 1e+16,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "1e+16"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 123456",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 123456,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 123456.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "123456"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 999999.5",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 999999.5,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 999999.5,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "1e+06"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 9999995",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 9999995,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 9999995.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "1e+07"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 0.1",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 0.1,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 0.1,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "0.1"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 2.5e-07",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 2.5e-07,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 2.5e-07,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "2.5e-07"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 7",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 7,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 7.0,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "7"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 1e+21",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 1e+21,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 1e+21,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "1e+21"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 1e-300",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 1e-300,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 1e-300,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "1e-300"
+     }
+    }
+   }
+  },
+  {
+   "name": "rps 5e-324",
+   "input": {
+    "groups": [
+     {
+      "warmpool": "a",
+      "size": 2
+     }
+    ],
+    "labels": null,
+    "batch_id": "bfixture",
+    "create_rps": 5e-324,
+    "max_in_flight": null,
+    "work_budget": null,
+    "quorum_timeout": null,
+    "lease_duration": null
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "create_rps": 5e-324,
+     "max_in_flight": 20,
+     "work_budget": 3600,
+     "quorum_timeout": 600,
+     "lease_duration": 60,
+     "lease_labels": {
+      "agents.x-k8s.io/batch-id": "bfixture",
+      "agents.x-k8s.io/created-by": "python-client"
+     },
+     "lease_annotations": {
+      "agents.x-k8s.io/batch-lease-duration": "60",
+      "agents.x-k8s.io/batch-work-budget": "3600",
+      "agents.x-k8s.io/batch-quorum-timeout": "600",
+      "agents.x-k8s.io/batch-create-rps": "4.94066e-324"
+     }
+    }
+   }
+  }
+ ],
+ "label_validation": [
+  {
+   "kind": "value",
+   "s": "a",
+   "ok": true,
+   "value": null
+  },
+  {
+   "kind": "value",
+   "s": "A",
+   "ok": true,
+   "value": null
+  },
+  {
+   "kind": "value",
+   "s": "a_b",
+   "ok": true,
+   "value": null
+  },
+  {
+   "kind": "value",
+   "s": "-a",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "Label value '-a' for key 'k' '-a' contains invalid characters. Must start and end with alphanumeric, and contain only [-A-Za-z0-9_.]."
+  },
+  {
+   "kind": "value",
+   "s": "a-",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "Label value 'a-' for key 'k' 'a-' contains invalid characters. Must start and end with alphanumeric, and contain only [-A-Za-z0-9_.]."
+  },
+  {
+   "kind": "value",
+   "s": "a.b",
+   "ok": true,
+   "value": null
+  },
+  {
+   "kind": "value",
+   "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "ok": true,
+   "value": null
+  },
+  {
+   "kind": "value",
+   "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "Label value 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' for key 'k' 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' exceeds max length of 63 characters."
+  },
+  {
+   "kind": "value",
+   "s": "abc\n",
+   "ok": true,
+   "value": null
+  },
+  {
+   "kind": "value",
+   "s": "a b",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "Label value 'a b' for key 'k' 'a b' contains invalid characters. Must start and end with alphanumeric, and contain only [-A-Za-z0-9_.]."
+  },
+  {
+   "kind": "key",
+   "s": "a/b",
+   "ok": true,
+   "value": null
+  },
+  {
+   "kind": "key",
+   "s": "Example.com/a",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "Label key prefix 'Example.com' must be a valid DNS subdomain."
+  },
+  {
+   "kind": "key",
+   "s": "a..b/c",
+   "ok": true,
+   "value": null
+  },
+  {
+   "kind": "key",
+   "s": "a.-b/c",
+   "ok": true,
+   "value": null
+  },
+  {
+   "kind": "key",
+   "s": "/a",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "Label key prefix '' is invalid or exceeds 253 characters."
+  },
+  {
+   "kind": "key",
+   "s": "a/",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "Label key 'a/' has an empty name after prefix."
+  },
+  {
+   "kind": "key",
+   "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/a",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "Label key prefix 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' is invalid or exceeds 253 characters."
+  },
+  {
+   "kind": "key",
+   "s": "a/b/c",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "Label key name in 'a/b/c' 'b/c' contains invalid characters. Must start and end with alphanumeric, and contain only [-A-Za-z0-9_.]."
+  }
+ ],
+ "lease_decode": [
+  {
+   "name": "full",
+   "labels": {
+    "team": "x",
+    "agents.x-k8s.io/batch-id": "b",
+    "agents.x-k8s.io/created-by": "python-client"
+   },
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {
+      "team": "x"
+     }
+    }
+   }
+  },
+  {
+   "name": "go-written",
+   "labels": {
+    "team": "x",
+    "agents.x-k8s.io/batch-id": "b",
+    "agents.x-k8s.io/created-by": "go-client"
+   },
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50",
+    "agents.x-k8s.io/batch-next-ordinal": "17"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 17,
+     "create_rps": 50.0,
+     "labels": {
+      "team": "x"
+     }
+    }
+   }
+  },
+  {
+   "name": "none",
+   "labels": null,
+   "annotations": null,
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "empty",
+   "labels": {},
+   "annotations": {},
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='1e+06'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "1e+06"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 1000000.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='1.23457e+06'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "1.23457e+06"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 1234570.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='33.3333'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "33.3333"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 33.3333,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='0'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "0"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value '0' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='-1'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "-1"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value '-1' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='nan'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "nan"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value 'nan' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='inf'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "inf"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value 'inf' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='Infinity'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "Infinity"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value 'Infinity' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='abc'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "abc"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value 'abc' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps=' 50 '",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": " 50 "
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='1_0'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "1_0"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 10.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='0x10'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "0x10"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value '0x10' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='1e400'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "1e400"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value '1e400' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='5e-324'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "5e-324"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 5e-324,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps=''",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": ""
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value '' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='.5'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": ".5"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 0.5,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='5.'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "5."
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 5.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='0x1p4'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "0x1p4"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value '0x1p4' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='0x1.8p1'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "0x1.8p1"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value '0x1.8p1' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='0X1P4'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "0X1P4"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value '0X1P4' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='-0x1p-2'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "-0x1p-2"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-create-rps value '-0x1p-2' is not a positive number"
+   }
+  },
+  {
+   "name": "batch-create-rps='1e1_0'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "1e1_0"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 10000000000.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='1e-10'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "1e-10"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 1e-10,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='1e-300'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "1e-300"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 1e-300,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-create-rps='+.5'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "+.5"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 0.5,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-lease-duration='5'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "5",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch lease duration annotation: Duration must be greater than clock skew margin (5s)"
+   }
+  },
+  {
+   "name": "batch-lease-duration='6'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "6",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 6,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-lease-duration='abc'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "abc",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch lease duration annotation 'abc' is not a valid integer"
+   }
+  },
+  {
+   "name": "batch-lease-duration='6.0'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "6.0",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch lease duration annotation '6.0' is not a valid integer"
+   }
+  },
+  {
+   "name": "batch-lease-duration=' 7 '",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": " 7 ",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 7,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-lease-duration='+8'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "+8",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 8,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-lease-duration='1_0'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "1_0",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 10,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-lease-duration='-6'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "-6",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch lease duration annotation: Duration must be greater than clock skew margin (5s)"
+   }
+  },
+  {
+   "name": "batch-lease-duration=''",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch lease duration annotation '' is not a valid integer"
+   }
+  },
+  {
+   "name": "batch-work-budget='0'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "0",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-work-budget value '0' is not an integer of at least 1"
+   }
+  },
+  {
+   "name": "batch-work-budget='1'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "1",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 1,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-work-budget='1.5'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "1.5",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-work-budget value '1.5' is not an integer of at least 1"
+   }
+  },
+  {
+   "name": "batch-work-budget=' 2'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": " 2",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 2,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-work-budget='٣'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "٣",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-work-budget='99999999999999999999'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "99999999999999999999",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 99999999999999999999,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-quorum-timeout='0'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "0",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-quorum-timeout value '0' is not an integer of at least 1"
+   }
+  },
+  {
+   "name": "batch-quorum-timeout='1'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "1",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 1,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-quorum-timeout='x'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "x",
+    "agents.x-k8s.io/batch-create-rps": "50"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-quorum-timeout value 'x' is not an integer of at least 1"
+   }
+  },
+  {
+   "name": "batch-next-ordinal='0'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50",
+    "agents.x-k8s.io/batch-next-ordinal": "0"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 0,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-next-ordinal='-1'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50",
+    "agents.x-k8s.io/batch-next-ordinal": "-1"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-next-ordinal value '-1' is not an integer of at least 0"
+   }
+  },
+  {
+   "name": "batch-next-ordinal='12'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50",
+    "agents.x-k8s.io/batch-next-ordinal": "12"
+   },
+   "result": {
+    "ok": true,
+    "value": {
+     "lease_duration": 60,
+     "quorum_timeout": 600,
+     "work_budget": 3600,
+     "next_ordinal": 12,
+     "create_rps": 50.0,
+     "labels": {}
+    }
+   }
+  },
+  {
+   "name": "batch-next-ordinal='1e3'",
+   "labels": {},
+   "annotations": {
+    "agents.x-k8s.io/batch-lease-duration": "60",
+    "agents.x-k8s.io/batch-work-budget": "3600",
+    "agents.x-k8s.io/batch-quorum-timeout": "600",
+    "agents.x-k8s.io/batch-create-rps": "50",
+    "agents.x-k8s.io/batch-next-ordinal": "1e3"
+   },
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "batch annotation agents.x-k8s.io/batch-next-ordinal value '1e3' is not an integer of at least 0"
+   }
+  }
+ ],
+ "terminal_reasons": [
+  "ClaimExpired",
+  "EnvVarsInjectionRejected",
+  "InvalidConfiguration",
+  "InvalidMetadata",
+  "PodFailed",
+  "PodSucceeded",
+  "SandboxExpired",
+  "VolumeClaimTemplatesError"
+ ],
+ "derive_member": [
+  {
+   "name": "empty",
+   "claim": {},
+   "member": {
+    "claim_name": "",
+    "sandbox_name": "",
+    "warmpool": "",
+    "pod_ips": [],
+    "service_fqdn": "",
+    "state": "pending",
+    "reason": "",
+    "message": ""
+   }
+  },
+  {
+   "name": "no status",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "",
+    "warmpool": "p",
+    "pod_ips": [],
+    "service_fqdn": "",
+    "state": "pending",
+    "reason": "",
+    "message": ""
+   }
+  },
+  {
+   "name": "ready",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "Ready",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "Ready",
+    "message": "m"
+   }
+  },
+  {
+   "name": "ready no sandbox name",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "Ready",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "podIPs": [
+       "10.0.0.1"
+      ]
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1"
+    ],
+    "service_fqdn": "",
+    "state": "pending",
+    "reason": "Ready",
+    "message": "m"
+   }
+  },
+  {
+   "name": "ready empty sandbox name",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "Ready",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": ""
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "",
+    "warmpool": "p",
+    "pod_ips": [],
+    "service_fqdn": "",
+    "state": "pending",
+    "reason": "Ready",
+    "message": "m"
+   }
+  },
+  {
+   "name": "ready lowercase true",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "true",
+       "reason": "Ready",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "pending",
+    "reason": "Ready",
+    "message": "m"
+   }
+  },
+  {
+   "name": "unknown",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "Unknown",
+       "reason": "SandboxNotReady",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "pending",
+    "reason": "SandboxNotReady",
+    "message": "m"
+   }
+  },
+  {
+   "name": "not ready transient",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "SandboxNotReady",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "pending",
+    "reason": "SandboxNotReady",
+    "message": "m"
+   }
+  },
+  {
+   "name": "TemplateNotFound",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "TemplateNotFound",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ]
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "",
+    "warmpool": "p",
+    "pod_ips": [],
+    "service_fqdn": "",
+    "state": "pending",
+    "reason": "TemplateNotFound",
+    "message": "m"
+   }
+  },
+  {
+   "name": "WarmPoolNotFound",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "WarmPoolNotFound",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ]
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "",
+    "warmpool": "p",
+    "pod_ips": [],
+    "service_fqdn": "",
+    "state": "pending",
+    "reason": "WarmPoolNotFound",
+    "message": "m"
+   }
+  },
+  {
+   "name": "stale observedGeneration ready",
+   "claim": {
+    "metadata": {
+     "name": "b-0",
+     "generation": 2
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "Ready",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z",
+       "observedGeneration": 1
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "Ready",
+    "message": "m"
+   }
+  },
+  {
+   "name": "ready podIPs null",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "Ready",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb",
+      "podIPs": null
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb",
+    "warmpool": "p",
+    "pod_ips": [],
+    "service_fqdn": "",
+    "state": "ready",
+    "reason": "Ready",
+    "message": "m"
+   }
+  },
+  {
+   "name": "two Ready conditions",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "PodFailed",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      },
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "Ready",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "failed",
+    "reason": "PodFailed",
+    "message": "m"
+   }
+  },
+  {
+   "name": "other condition only",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Other",
+       "status": "True",
+       "reason": "x",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "pending",
+    "reason": "",
+    "message": ""
+   }
+  },
+  {
+   "name": "deleting ready",
+   "claim": {
+    "metadata": {
+     "name": "b-0",
+     "deletionTimestamp": "2026-01-01T00:00:00Z"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "Ready",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [],
+    "service_fqdn": "",
+    "state": "lost",
+    "reason": "Ready",
+    "message": "m"
+   }
+  },
+  {
+   "name": "deleting failed",
+   "claim": {
+    "metadata": {
+     "name": "b-0",
+     "deletionTimestamp": "2026-01-01T00:00:00Z"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "PodFailed",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [],
+    "service_fqdn": "",
+    "state": "failed",
+    "reason": "PodFailed",
+    "message": "m"
+   }
+  },
+  {
+   "name": "deleting pending",
+   "claim": {
+    "metadata": {
+     "name": "b-0",
+     "deletionTimestamp": "2026-01-01T00:00:00Z"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "",
+    "warmpool": "p",
+    "pod_ips": [],
+    "service_fqdn": "",
+    "state": "lost",
+    "reason": "",
+    "message": ""
+   }
+  },
+  {
+   "name": "terminal ClaimExpired",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "ClaimExpired",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "failed",
+    "reason": "ClaimExpired",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal EnvVarsInjectionRejected",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "EnvVarsInjectionRejected",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "failed",
+    "reason": "EnvVarsInjectionRejected",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal InvalidConfiguration",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "InvalidConfiguration",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "failed",
+    "reason": "InvalidConfiguration",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal InvalidMetadata",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "InvalidMetadata",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "failed",
+    "reason": "InvalidMetadata",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal PodFailed",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "PodFailed",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "failed",
+    "reason": "PodFailed",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal PodSucceeded",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "PodSucceeded",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "failed",
+    "reason": "PodSucceeded",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal SandboxExpired",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "SandboxExpired",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "failed",
+    "reason": "SandboxExpired",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal VolumeClaimTemplatesError",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "False",
+       "reason": "VolumeClaimTemplatesError",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "failed",
+    "reason": "VolumeClaimTemplatesError",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal ClaimExpired but status True",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "ClaimExpired",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "ClaimExpired",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal EnvVarsInjectionRejected but status True",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "EnvVarsInjectionRejected",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "EnvVarsInjectionRejected",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal InvalidConfiguration but status True",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "InvalidConfiguration",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "InvalidConfiguration",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal InvalidMetadata but status True",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "InvalidMetadata",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "InvalidMetadata",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal PodFailed but status True",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "PodFailed",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "PodFailed",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal PodSucceeded but status True",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "PodSucceeded",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "PodSucceeded",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal SandboxExpired but status True",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "SandboxExpired",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "SandboxExpired",
+    "message": "m"
+   }
+  },
+  {
+   "name": "terminal VolumeClaimTemplatesError but status True",
+   "claim": {
+    "metadata": {
+     "name": "b-0"
+    },
+    "spec": {
+     "warmPoolRef": {
+      "name": "p"
+     }
+    },
+    "status": {
+     "conditions": [
+      {
+       "type": "Ready",
+       "status": "True",
+       "reason": "VolumeClaimTemplatesError",
+       "message": "m",
+       "lastTransitionTime": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "sandbox": {
+      "name": "sb-1",
+      "podIPs": [
+       "10.0.0.1",
+       "fd00::1"
+      ],
+      "serviceFQDN": "sb-1.ns.svc.cluster.local"
+     }
+    }
+   },
+   "member": {
+    "claim_name": "b-0",
+    "sandbox_name": "sb-1",
+    "warmpool": "p",
+    "pod_ips": [
+     "10.0.0.1",
+     "fd00::1"
+    ],
+    "service_fqdn": "sb-1.ns.svc.cluster.local",
+    "state": "ready",
+    "reason": "VolumeClaimTemplatesError",
+    "message": "m"
+   }
+  }
+ ],
+ "reconstruct_groups": [
+  {
+   "name": "order by lowest ordinal",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-5",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "2",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "z"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "b-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "3",
+       "agents.x-k8s.io/batch-group-min-ready": "3"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "y"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "b-6",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "2",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "z"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "b-1",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "3",
+       "agents.x-k8s.io/batch-group-min-ready": "3"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "y"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": true,
+    "value": [
+     {
+      "warmpool": "y",
+      "size": 3,
+      "min_ready": 3
+     },
+     {
+      "warmpool": "z",
+      "size": 2,
+      "min_ready": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "acquire-only pool -> size 0",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "1",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "b-9",
+      "annotations": {}
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "acq"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": true,
+    "value": [
+     {
+      "warmpool": "a",
+      "size": 1,
+      "min_ready": 1
+     },
+     {
+      "warmpool": "acq",
+      "size": 0,
+      "min_ready": 0
+     }
+    ]
+   }
+  },
+  {
+   "name": "pool with no ordinal claims sorts last, then by name",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "weird",
+      "annotations": {}
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "w2"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "odd",
+      "annotations": {}
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "w1"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "b-3",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "1",
+       "agents.x-k8s.io/batch-group-min-ready": "0"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": true,
+    "value": [
+     {
+      "warmpool": "a",
+      "size": 1,
+      "min_ready": 0
+     },
+     {
+      "warmpool": "w1",
+      "size": 0,
+      "min_ready": 0
+     },
+     {
+      "warmpool": "w2",
+      "size": 0,
+      "min_ready": 0
+     }
+    ]
+   }
+  },
+  {
+   "name": "only one annotation",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "claim 'b-0' for pool 'a' carries only one of the batch group annotations"
+   }
+  },
+  {
+   "name": "conflicting",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "2",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "b-1",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "2",
+       "agents.x-k8s.io/batch-group-min-ready": "2"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "pool 'a' has conflicting batch group annotations across its claims"
+   }
+  },
+  {
+   "name": "non-integer",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "x",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "pool 'a' has invalid batch group annotations (size='x', min_ready='1')"
+   }
+  },
+  {
+   "name": "min_ready > size",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "1",
+       "agents.x-k8s.io/batch-group-min-ready": "2"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "pool 'a' has invalid batch group annotations (size='1', min_ready='2')"
+   }
+  },
+  {
+   "name": "negative size",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "-1",
+       "agents.x-k8s.io/batch-group-min-ready": "0"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "pool 'a' has invalid batch group annotations (size='-1', min_ready='0')"
+   }
+  },
+  {
+   "name": "same pair different string form",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "2",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "b-1",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "02",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": false,
+    "error_type": "BatchError",
+    "error": "pool 'a' has conflicting batch group annotations across its claims"
+   }
+  },
+  {
+   "name": "whitespace int",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": " 2",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": true,
+    "value": [
+     {
+      "warmpool": "a",
+      "size": 2,
+      "min_ready": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "fill claims missing (reattach)",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-2",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "4",
+       "agents.x-k8s.io/batch-group-min-ready": "2"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "a"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": true,
+    "value": [
+     {
+      "warmpool": "a",
+      "size": 4,
+      "min_ready": 2
+     }
+    ]
+   }
+  },
+  {
+   "name": "empty",
+   "batch_id": "b",
+   "claims": [],
+   "result": {
+    "ok": true,
+    "value": []
+   }
+  },
+  {
+   "name": "ordinal prefix mismatch",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "bb-0",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "1",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "x"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "b-1",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "1",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "y"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": true,
+    "value": [
+     {
+      "warmpool": "y",
+      "size": 1,
+      "min_ready": 1
+     },
+     {
+      "warmpool": "x",
+      "size": 1,
+      "min_ready": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "leading zero ordinal",
+   "batch_id": "b",
+   "claims": [
+    {
+     "metadata": {
+      "name": "b-007",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "1",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "x"
+      }
+     }
+    },
+    {
+     "metadata": {
+      "name": "b-3",
+      "annotations": {
+       "agents.x-k8s.io/batch-group-size": "1",
+       "agents.x-k8s.io/batch-group-min-ready": "1"
+      }
+     },
+     "spec": {
+      "warmPoolRef": {
+       "name": "y"
+      }
+     }
+    }
+   ],
+   "result": {
+    "ok": true,
+    "value": [
+     {
+      "warmpool": "y",
+      "size": 1,
+      "min_ready": 1
+     },
+     {
+      "warmpool": "x",
+      "size": 1,
+      "min_ready": 1
+     }
+    ]
+   }
+  }
+ ],
+ "parse_ordinal": [
+  {
+   "batch_id": "b",
+   "name": "b-0",
+   "ordinal": 0
+  },
+  {
+   "batch_id": "b",
+   "name": "b-12",
+   "ordinal": 12
+  },
+  {
+   "batch_id": "b",
+   "name": "b-",
+   "ordinal": null
+  },
+  {
+   "batch_id": "b",
+   "name": "b-x",
+   "ordinal": null
+  },
+  {
+   "batch_id": "b",
+   "name": "bb-1",
+   "ordinal": null
+  },
+  {
+   "batch_id": "b-1",
+   "name": "b-1-2",
+   "ordinal": 2
+  },
+  {
+   "batch_id": "b",
+   "name": "b-1-2",
+   "ordinal": null
+  },
+  {
+   "batch_id": "b",
+   "name": "b-007",
+   "ordinal": 7
+  },
+  {
+   "batch_id": "b",
+   "name": "b- 1",
+   "ordinal": null
+  },
+  {
+   "batch_id": "b",
+   "name": "b-+1",
+   "ordinal": null
+  }
+ ],
+ "validate_batch_id": [
+  {
+   "id": "a",
+   "ok": true,
+   "value": null
+  },
+  {
+   "id": "a1",
+   "ok": true,
+   "value": null
+  },
+  {
+   "id": "a-b",
+   "ok": true,
+   "value": null
+  },
+  {
+   "id": "a-",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: 'a-'"
+  },
+  {
+   "id": "-a",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: '-a'"
+  },
+  {
+   "id": "1a",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: '1a'"
+  },
+  {
+   "id": "A",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: 'A'"
+  },
+  {
+   "id": "a_b",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: 'a_b'"
+  },
+  {
+   "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "ok": true,
+   "value": null
+  },
+  {
+   "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"
+  },
+  {
+   "id": "",
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: ''"
+  },
+  {
+   "id": "a\n",
+   "ok": true,
+   "value": null
+  }
+ ],
+ "is_lease_stale": [
+  {
+   "renew": "2026-01-01T00:00:00+00:00",
+   "duration": 60,
+   "now": "2026-01-01T00:00:54+00:00",
+   "stale": false
+  },
+  {
+   "renew": "2026-01-01T00:00:00+00:00",
+   "duration": 60,
+   "now": "2026-01-01T00:00:55+00:00",
+   "stale": false
+  },
+  {
+   "renew": "2026-01-01T00:00:00+00:00",
+   "duration": 60,
+   "now": "2026-01-01T00:00:55.000001+00:00",
+   "stale": true
+  },
+  {
+   "renew": "2026-01-01T00:00:00+00:00",
+   "duration": 60,
+   "now": "2026-01-01T00:00:56+00:00",
+   "stale": true
+  },
+  {
+   "renew": "2026-01-01T00:00:00+00:00",
+   "duration": 6,
+   "now": "2026-01-01T00:00:01+00:00",
+   "stale": false
+  },
+  {
+   "renew": "2026-01-01T00:00:00+00:00",
+   "duration": 6,
+   "now": "2026-01-01T00:00:01.500000+00:00",
+   "stale": true
+  },
+  {
+   "renew": "2026-01-01T00:00:00+00:00",
+   "duration": 60,
+   "now": "2025-12-31T23:59:50+00:00",
+   "stale": false
+  }
+ ],
+ "create_error_outcome": [
+  {
+   "status": null,
+   "attempt": 1,
+   "outcome": "retry"
+  },
+  {
+   "status": null,
+   "attempt": 2,
+   "outcome": "retry"
+  },
+  {
+   "status": null,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 409,
+   "attempt": 1,
+   "outcome": "fail"
+  },
+  {
+   "status": 409,
+   "attempt": 2,
+   "outcome": "success"
+  },
+  {
+   "status": 409,
+   "attempt": 3,
+   "outcome": "success"
+  },
+  {
+   "status": 429,
+   "attempt": 1,
+   "outcome": "retry"
+  },
+  {
+   "status": 429,
+   "attempt": 2,
+   "outcome": "retry"
+  },
+  {
+   "status": 429,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 500,
+   "attempt": 1,
+   "outcome": "retry"
+  },
+  {
+   "status": 500,
+   "attempt": 2,
+   "outcome": "retry"
+  },
+  {
+   "status": 500,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 503,
+   "attempt": 1,
+   "outcome": "retry"
+  },
+  {
+   "status": 503,
+   "attempt": 2,
+   "outcome": "retry"
+  },
+  {
+   "status": 503,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 504,
+   "attempt": 1,
+   "outcome": "retry"
+  },
+  {
+   "status": 504,
+   "attempt": 2,
+   "outcome": "retry"
+  },
+  {
+   "status": 504,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 599,
+   "attempt": 1,
+   "outcome": "retry"
+  },
+  {
+   "status": 599,
+   "attempt": 2,
+   "outcome": "retry"
+  },
+  {
+   "status": 599,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 600,
+   "attempt": 1,
+   "outcome": "fail"
+  },
+  {
+   "status": 600,
+   "attempt": 2,
+   "outcome": "fail"
+  },
+  {
+   "status": 600,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 400,
+   "attempt": 1,
+   "outcome": "fail"
+  },
+  {
+   "status": 400,
+   "attempt": 2,
+   "outcome": "fail"
+  },
+  {
+   "status": 400,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 403,
+   "attempt": 1,
+   "outcome": "fail"
+  },
+  {
+   "status": 403,
+   "attempt": 2,
+   "outcome": "fail"
+  },
+  {
+   "status": 403,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 404,
+   "attempt": 1,
+   "outcome": "fail"
+  },
+  {
+   "status": 404,
+   "attempt": 2,
+   "outcome": "fail"
+  },
+  {
+   "status": 404,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 410,
+   "attempt": 1,
+   "outcome": "fail"
+  },
+  {
+   "status": 410,
+   "attempt": 2,
+   "outcome": "fail"
+  },
+  {
+   "status": 410,
+   "attempt": 3,
+   "outcome": "fail"
+  },
+  {
+   "status": 422,
+   "attempt": 1,
+   "outcome": "fail"
+  },
+  {
+   "status": 422,
+   "attempt": 2,
+   "outcome": "fail"
+  },
+  {
+   "status": 422,
+   "attempt": 3,
+   "outcome": "fail"
+  }
+ ],
+ "is_retryable_status": [
+  {
+   "status": null,
+   "retryable": true
+  },
+  {
+   "status": 200,
+   "retryable": false
+  },
+  {
+   "status": 409,
+   "retryable": false
+  },
+  {
+   "status": 410,
+   "retryable": false
+  },
+  {
+   "status": 429,
+   "retryable": true
+  },
+  {
+   "status": 499,
+   "retryable": false
+  },
+  {
+   "status": 500,
+   "retryable": true
+  },
+  {
+   "status": 503,
+   "retryable": true
+  },
+  {
+   "status": 599,
+   "retryable": true
+  },
+  {
+   "status": 600,
+   "retryable": false
+  }
+ ],
+ "retry_after": [
+  {
+   "header": "5",
+   "honoured": true,
+   "delay": 5.0
+  },
+  {
+   "header": " 7 ",
+   "honoured": true,
+   "delay": 7.0
+  },
+  {
+   "header": "0",
+   "honoured": true,
+   "delay": 0.0
+  },
+  {
+   "header": "100",
+   "honoured": true,
+   "delay": 30.0
+  },
+  {
+   "header": "30",
+   "honoured": true,
+   "delay": 30.0
+  },
+  {
+   "header": "31",
+   "honoured": true,
+   "delay": 30.0
+  },
+  {
+   "header": "1.5",
+   "honoured": false,
+   "delay": null
+  },
+  {
+   "header": "-1",
+   "honoured": false,
+   "delay": null
+  },
+  {
+   "header": "+3",
+   "honoured": false,
+   "delay": null
+  },
+  {
+   "header": "Wed, 21 Oct 2015 07:28:00 GMT",
+   "honoured": false,
+   "delay": null
+  },
+  {
+   "header": "",
+   "honoured": false,
+   "delay": null
+  },
+  {
+   "header": "٣",
+   "honoured": true,
+   "delay": 3.0
+  },
+  {
+   "header": "²",
+   "honoured": false,
+   "delay": null,
+   "python_raises": "ValueError: could not convert string to float: '²'"
+  }
+ ],
+ "backoff": [
+  {
+   "attempt": 1,
+   "rand": 0.0,
+   "delay": 0.25
+  },
+  {
+   "attempt": 1,
+   "rand": 0.5,
+   "delay": 0.375
+  },
+  {
+   "attempt": 1,
+   "rand": 0.999999,
+   "delay": 0.49999974999999997
+  },
+  {
+   "attempt": 2,
+   "rand": 0.0,
+   "delay": 0.5
+  },
+  {
+   "attempt": 2,
+   "rand": 0.5,
+   "delay": 0.75
+  },
+  {
+   "attempt": 2,
+   "rand": 0.999999,
+   "delay": 0.9999994999999999
+  },
+  {
+   "attempt": 3,
+   "rand": 0.0,
+   "delay": 1.0
+  },
+  {
+   "attempt": 3,
+   "rand": 0.5,
+   "delay": 1.5
+  },
+  {
+   "attempt": 3,
+   "rand": 0.999999,
+   "delay": 1.9999989999999999
+  },
+  {
+   "attempt": 6,
+   "rand": 0.0,
+   "delay": 8.0
+  },
+  {
+   "attempt": 6,
+   "rand": 0.5,
+   "delay": 12.0
+  },
+  {
+   "attempt": 6,
+   "rand": 0.999999,
+   "delay": 15.999991999999999
+  },
+  {
+   "attempt": 7,
+   "rand": 0.0,
+   "delay": 15.0
+  },
+  {
+   "attempt": 7,
+   "rand": 0.5,
+   "delay": 22.5
+  },
+  {
+   "attempt": 7,
+   "rand": 0.999999,
+   "delay": 29.999985
+  },
+  {
+   "attempt": 8,
+   "rand": 0.0,
+   "delay": 15.0
+  },
+  {
+   "attempt": 8,
+   "rand": 0.5,
+   "delay": 22.5
+  },
+  {
+   "attempt": 8,
+   "rand": 0.999999,
+   "delay": 29.999985
+  },
+  {
+   "attempt": 50,
+   "rand": 0.0,
+   "delay": 15.0
+  },
+  {
+   "attempt": 50,
+   "rand": 0.5,
+   "delay": 22.5
+  },
+  {
+   "attempt": 50,
+   "rand": 0.999999,
+   "delay": 29.999985
+  },
+  {
+   "attempt": 1000000,
+   "rand": 0.0,
+   "delay": 15.0
+  },
+  {
+   "attempt": 1000000,
+   "rand": 0.5,
+   "delay": 22.5
+  },
+  {
+   "attempt": 1000000,
+   "rand": 0.999999,
+   "delay": 29.999985
+  }
+ ],
+ "shutdown_seconds": [
+  {
+   "size": 1,
+   "create_rps": 50.0,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "fill_seconds": 4801,
+   "acquire_seconds": 4800
+  },
+  {
+   "size": 100,
+   "create_rps": 50.0,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "fill_seconds": 4802,
+   "acquire_seconds": 4800
+  },
+  {
+   "size": 101,
+   "create_rps": 50.0,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "fill_seconds": 4803,
+   "acquire_seconds": 4800
+  },
+  {
+   "size": 3,
+   "create_rps": 0.1,
+   "quorum_timeout": 1,
+   "work_budget": 1,
+   "fill_seconds": 632,
+   "acquire_seconds": 602
+  },
+  {
+   "size": 10,
+   "create_rps": 3.0,
+   "quorum_timeout": 1,
+   "work_budget": 1,
+   "fill_seconds": 606,
+   "acquire_seconds": 602
+  },
+  {
+   "size": 7,
+   "create_rps": 0.3333333333333333,
+   "quorum_timeout": 1,
+   "work_budget": 1,
+   "fill_seconds": 623,
+   "acquire_seconds": 602
+  },
+  {
+   "size": 1000,
+   "create_rps": 33.3333,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "fill_seconds": 4831,
+   "acquire_seconds": 4800
+  },
+  {
+   "size": 0,
+   "create_rps": 50.0,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "fill_seconds": 4800,
+   "acquire_seconds": 4800
+  },
+  {
+   "size": 49,
+   "create_rps": 0.7,
+   "quorum_timeout": 10,
+   "work_budget": 10,
+   "fill_seconds": 690,
+   "acquire_seconds": 620
+  },
+  {
+   "size": 1,
+   "create_rps": 1e-300,
+   "quorum_timeout": 1,
+   "work_budget": 1,
+   "fill_seconds": 999999999999999903803069407426113968898218766118103141789833949572356552411722264192305659040010509526872994217248819197070144216063125530186267630296136203765329090687113225440746189048800695790727969805197112921161540803823920273299782054992133678869364753954248541633605124057805104488924519072346,
+   "acquire_seconds": 602
+  },
+  {
+   "size": 0,
+   "create_rps": 5e-324,
+   "quorum_timeout": 1,
+   "work_budget": 1,
+   "fill_seconds": 602,
+   "acquire_seconds": 602
+  },
+  {
+   "size": 0,
+   "create_rps": 1e-300,
+   "quorum_timeout": 600,
+   "work_budget": 3600,
+   "fill_seconds": 4800,
+   "acquire_seconds": 4800
+  }
+ ],
+ "shutdown_time_format": "%Y-%m-%dT%H:%M:%SZ (seconds truncated, UTC); from utils.construct_sandbox_claim_lifecycle_spec",
+ "constants": {
+  "BATCH_BACKOFF_BASE_SECONDS": 0.5,
+  "BATCH_BACKOFF_MAX_SECONDS": 30.0,
+  "BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS": 90,
+  "BATCH_CREATE_ATTEMPTS": 3,
+  "BATCH_CREATE_RPS_ANNOTATION": "agents.x-k8s.io/batch-create-rps",
+  "BATCH_CREATOR_STOP_GRACE_SECONDS": 1,
+  "BATCH_DEFAULT_CREATE_RPS": 50.0,
+  "BATCH_DEFAULT_LEASE_DURATION_SECONDS": 60,
+  "BATCH_DEFAULT_MAX_IN_FLIGHT": 20,
+  "BATCH_DEFAULT_QUORUM_TIMEOUT_SECONDS": 600,
+  "BATCH_DEFAULT_WORK_BUDGET_SECONDS": 3600,
+  "BATCH_DELETE_ATTEMPTS": 3,
+  "BATCH_GROUP_LABEL": "agents.x-k8s.io/batch-group",
+  "BATCH_ID_LABEL": "agents.x-k8s.io/batch-id",
+  "BATCH_ID_MAX_LENGTH": 52,
+  "BATCH_LEASE_DURATION_ANNOTATION": "agents.x-k8s.io/batch-lease-duration",
+  "BATCH_NEXT_ORDINAL_ANNOTATION": "agents.x-k8s.io/batch-next-ordinal",
+  "BATCH_QUORUM_TIMEOUT_ANNOTATION": "agents.x-k8s.io/batch-quorum-timeout",
+  "BATCH_RELEASE_MAX_IDLE_ROUNDS": 3,
+  "BATCH_REQUEST_TIMEOUT_SECONDS": 30,
+  "BATCH_SHUTDOWN_MARGIN_SECONDS": 600,
+  "BATCH_WORK_BUDGET_ANNOTATION": "agents.x-k8s.io/batch-work-budget",
+  "CLOCK_SKEW_MARGIN": 5
+ }
+}
