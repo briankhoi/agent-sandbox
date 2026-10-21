@@ -1,0 +1,72 @@
+# Task list (do in order; ask Brian before starting the next)
+
+Read `project_instructions.md`, `working_rules.md` and `state.md` first. Each task says what else to read. "Needs OK" marks work that waits for Brian's approval before you start or before you act.
+
+---
+## Task 1. Restack onto the merged 5/N and get 6/N (fu5, #1984) ready for review
+
+**Goal.** Upstream merged 5/N (fu4, #1983). Rebase the remaining stack onto the new upstream `feature/batch-claim`, prepare 6/N for review, and handle review comments Brian pastes.
+
+**Read.** `state.md` (branch table), `working_rules.md` (restack, checks), `refs/pr_table.md` (fu5 description text), `refs/group_order_precheck_sync.md` (what the last sync pushed).
+
+**Steps.**
+1. `git fetch origin && git fetch upstream`. Confirm the real heads equal the `state.md` table (the group-order/precheck sync already ran). If a head differs, stop and tell Brian before touching anything.
+2. Find the new base: `git rev-parse upstream/feature/batch-claim`; confirm the 5/N squash commit is in its history (`git log --oneline upstream/feature/batch-claim | head`). Check the trees match: `git rev-parse <5/N squash commit>^{tree} origin/feat/batch-1-fu4-terminating-claims^{tree}`. If they differ, stop and report (someone changed the code during merge).
+3. Restack in order, old parent = the previous branch's pre-restack head: fu5, fu6, fu7, fu8, fu9, PR 2, PR 3, PR 4, PR 5, PR 6, transport, reaper, PR 7 (`git rebase --onto upstream/feature/batch-claim 2b8424a1 feat/batch-1-fu5-connect-checks`, then each next branch onto the rebased previous one, using the old previous head as the upstream argument). fu4's commits are dropped because they are merged. Do this on `review/restack-5n/<branch>` copies and push them, not on the real branches.
+4. Prove it mechanical: for each branch, `git diff <old-head> <new-head>` must be empty (identical tree), and `git range-diff` shows only the base change. Run mypy and the author check on every commit, and the changed tests of fu5 only. If any tree differs or a rebase conflicts, stop and report; do not resolve silently.
+5. Report to Brian with the compare links (`review/restack-5n/...` vs old heads should be empty diffs) and the sync recipe: a `git push --atomic origin --force-with-lease=...` command with one lease per real branch pinned to the heads you started from. **Run the sync only after Brian says OK** (open-PR branches).
+6. **6/N ready for review** means: fu5 rebased, `connect()` checks `err()` then readiness before the cached connection (`sandbox_batch.py`, `async_sandbox_batch.py`), tests for both shells pass, lint, mypy and author check clean, docs regenerate with no diff, and Brian has a draft description (the fu5 text in `refs/pr_table.md`, "This PR is the sixth in a series..." with the literal "(6/N)" in the title). Tell Brian what to check in one line.
+7. **Review comments.** Brian will paste CodeRabbit or reviewer comments on #1984 (and later ones). For each: read the code and decide valid or invalid. Valid: fix it in the owning commit on the review copy, rebase dependents, give a compare link and one line. Invalid or already handled: give a paste-ready reply with the reason and `file:line`. Do not post anything.
+
+**Done when.** The restacked review copies are pushed with empty diffs, mypy and author checks are green, Brian has the sync command and the 6/N brief, and each pasted comment has either a fix commit link or a paste-ready reply.
+
+### Also in this task: PR 2 description line (Brian pastes it himself)
+For the PR 2 description on #1824, Brian adds this line himself (do not edit GitHub): "Each group's first `min_ready` claims are created first, one group after another in group order, and the rest follow in the same order, so the first groups can be consumed while later groups are still being created."
+
+---
+## Task 2. Fold the async TLS EOF piece into PR 2 (needs the TLS PR decision)
+
+**Problem.** PR 2's async `_is_transport_error` (`async_sandbox_batch.py`, near line 84 on `feat/batch-2-claim`) rejects every `aiohttp.ClientSSLError`, so a TLS EOF during create or release is treated as non-transient. The sync helper in the merged PR 1 code is being changed (separate branch `feat/batch-ssl-eof-retry`, `8937ccdb`) to treat `ssl.SSLEOFError` as transient and keep certificate and other TLS failures fatal.
+
+**Read.** `git show origin/feat/batch-ssl-eof-retry` (the whole change; it also changes the watch loop's `except aiohttp.ClientSSLError` branch using `e.os_error` being `ssl.SSLEOFError`), and PR 2's two `_is_transport_error` helpers.
+
+**Steps.**
+1. Do this restack **after** Task 1's sync, as a change to the PR 2 commit that introduces the async helper (fixup + autosquash), on a `review/tls-eof/...` copy.
+2. Change the async helper so a `ClientSSLError` whose `os_error` is `ssl.SSLEOFError` counts as transient, and every other `ClientSSLError` stays non-transient. Match the wording of the comments between the sync and async helpers (identical comments rule).
+3. The sync helper in PR 2's file is the same function as in merged PR 1 code. Check whether the TLS PR is merged upstream yet (`git log upstream/feature/batch-claim --oneline | grep -i 'TLS EOF'`). If not merged, the sync side of PR 2 still rejects SSLEOFError, which breaks parity. Ask Brian: either he opens the TLS PR first (`feat/batch-ssl-eof-retry`, base it on the current upstream tip, restack if needed) and PR 2 waits for it, or you also apply the sync change in PR 2's tree.
+4. Add or extend a test in `test_async_sandbox_batch.py` for the create/release path (one owning test per contract; the sync side's coverage comes from the TLS PR). Mutation-check it: reverting the `os_error` check must fail it.
+5. Rebase PRs above PR 2, run the checks, give Brian a compare link.
+
+**Done when.** A review copy shows the async helper retrying SSLEOF only, tests pass, mutation check done, dependents rebased with empty-tree diffs apart from this change.
+
+---
+## Task 3. Design-doc updates (notes branch)
+
+**Why.** The notes still describe the old create order ("interleaved across groups in proportion to their sizes"). Brian approved group-by-group on 2026-10-21 and it is built in PR 2.
+
+**Read.** `batch_claim_proposal.md` line ~58, `review_carryover_notes.md` line ~90 (the "PR 2" row of "Approved review decisions"), `refs/work_plan.md` (the PR 2 row also says "interleaved"), `refs/benchmark_rerun_review.md` section 3A for the evidence, and the code in `feat/batch-2-claim` (the create-plan function, `fill_create_plan` in `batch_utils.py`) so the text matches what is built.
+
+**Steps.** In the notes worktree (never a code branch), change minimally and keep Brian's wording elsewhere:
+1. Proposal and carryover row: creates go group by group in the caller's group order, each group's first `min_ready` claims first, then the rest in the same order; ordinals stay contiguous. Record "approved by Brian 2026-10-21 18:28" in the carryover row (the cloud project's note says he approved moving it into PR 2 and fixing the precheck race; quote his words only if you can find them, otherwise label it as the coordinator's record).
+2. Record in `review_carryover_notes.md` roadmap (and in `refs/work_plan.md`, editing that copy in place, since the cloud original is no longer maintained): the PR 7/PR 8 split (PR 7 = warm-aware pacing for the fill and `acquire()`; PR 8 = claim-list pagination, metadata-only re-list in `release()`, skip the deletecollection body); acquire pacing; Design C approval (2026-10-21 09:49) and the 300 s RL Lease default (2026-10-21 18:28); the group-order move into PR 2; the PR 6 precheck single-flight.
+3. Author as Brian Nguyen, message prefix `notes:`, push to `origin batch-primitives-notes` (normal push, no force). Do not touch STALE files.
+
+**Done when.** `grep -rn -i interleav batch-primitives/*.md` shows no remaining claim about the current create order (history in `pr2_design.md` and STALE files can stay) and Brian has the commit link.
+
+---
+## Task 4. Later queue (each item needs Brian's OK to start; work in this order)
+
+For each item, bring Brian a short plan first. Items marked RL are not yours.
+
+| # | Item | Details | Needs OK |
+| :-- | :-- | :-- | :-- |
+| 4.1 | **PR 8 (was 7b)** | Claim-list pagination (`limit=500` with continue tokens, used by `get_batch` attach and the `release()` re-list; the first page's resourceVersion starts the watch), a metadata-only paginated re-list in `release()` (`PartialObjectMetadataList`; `limit=1` and watch were rejected), and skip parsing the deletecollection response (`_preload_content=False`; `delete_sandbox_claims_by_label` in `k8s_helper.py` and `async_k8s_helper.py` calls `delete_collection_namespaced_custom_object` without `_preload_content=False`, so the client parses and discards the whole deleted list; verify in both helpers). Measured: one list of 5,000 claims peaks at 69.4 MB; `release()` peaks at 69.5 MB. Branch off PR 7 (`feat/batch-7a-create-path`) as `feat/batch-8-...`. Evidence: `refs/benchmark_rerun_review.md` sections 3B, 6 and 7. Measure the memory effect before and after. | Yes (plan), then review copy |
+| 4.2 | **Async memory probe** | Run the async baseline (per-claim, no batch code) with and without `MALLOC_ARENA_MAX=2` for about 10 minutes of the rolling scenario (`6v2-baseline-async`, see `refs/benchmark_rerun_prompt.md` and the harness on `origin/bench/batch-claim`, `test/benchmarks/batch-claim/bench.py`). If growth flattens it is allocator fragmentation, otherwise a leak. Then draft an upstream issue for Brian to file with the numbers (baseline grew 93 to 514 MB; Python-traced memory stayed flat at 11 MB). It does not block the series. | Yes (uses the kind cluster) |
+| 4.3 | **SDK validation run** | After PR 7/8: about 45 minutes locally. 3s warm and RL shapes at the PR 7 defaults versus the baseline, 3 runs each; 3a2 cold; 6v2a rolling; 100 groups x 40 sandboxes. Then optionally a kwok run (`dev/ci/presubmits/test-e2e-scalability-kwok`, 100 simulated nodes, useful for warm scale 1,000 to 10,000 claims) and a GKE scale run (Brian's GKE project is unknown, so ask). Write the run prompt in the style of `refs/benchmark_rerun_prompt.md` (resumable, SHA-pinned, fair comparisons: same limiting mechanism on both arms, lead with unlimited vs unlimited). Have it self-checked by a fresh subagent before you run it. | Yes (cluster; GKE needs details) |
+| 4.4 | **Type tightening** | A plan to replace loose types (`Any` where an exact type exists) in the batch modules, awaiting Brian's OK. The original plan text is not saved anywhere, so write a short new one: list the `Any` and untyped spots in `batch_*.py` and the two handles, what each would become, the mypy impact, and keep it out of the open PRs until approved. | Yes, plan only |
+| 4.5 | **Examples and docs PR** | Runnable versions of the proposal's usage examples, the driver Role, the reaper manifests README (`examples/batch-reaper/` was deliberately not added; location and image are still an upstream discussion), and one line on calling `detach(grace=...)` on SIGTERM so a preempted driver can re-attach with `get_batch` (`adopt_expired` stays cut). After PR 6 and the reaper. Go SDK is a later separate effort (Brian's local agent; do not start without being asked). | Yes |
+| 4.6 | **Small open items** | (a) The E402 nit in `test_async_sandbox_batch.py`: module-level imports (`import aiohttp`, `from kubernetes_asyncio ...`, `from k8s_agent_sandbox ...`) come after `pytest.importorskip("kubernetes_asyncio")`, which pycodestyle reports as E402 (it was reported at line 64 on an older head; find it with `pycodestyle --select=E402`). Ask Brian whether to fix it, and fold it into the PR whose commit added the line. (b) Delete stale `review/*`, `review/gofix*` and `review-diff/*` remote branches (**needs Brian's explicit OK**; list them first). (c) The PR 6 size-0 group gap: a re-attached handle (`get_batch`) forgets an empty `size=0` group. The options were to document it or store size-0 pools on the Lease; the independent audit recommended documenting it. Check the current code and decision in `review_carryover_notes.md` before acting. (d) The `delete_batch` card: a decision card from the cloud project whose content was not saved; ask Brian what it was about before doing anything. (e) Opening the transport and reaper PRs upstream: Brian does this himself; you prepare title and description text from `refs/pr_table.md` and check the stack is restacked. (f) Local kubeconfig context was left at `kind-batch-bench`; check `kubectl config current-context` before any cluster work. | Mixed (see each) |
+
+---
+## Not yours (stays in the cloud project)
+RL follow-ups: the RL integration prototype and its limits rerun; `fleet.prefetch` (only if a fill beats an acquire burst by more than 20%); a parallel precheck (only if prefetch ships); sandboxd exec as its own track; owner references on pools (only if leaks show up); the per-claim default acquire limit (mention at the TL meeting); the Lease-loss detection run. Changes to `examples/agent-sandbox-rl/`. If Brian pastes an SDK change request from that work, treat it as a normal task: owning PR, review copy, report.
