@@ -220,6 +220,7 @@ network failure.
 **Example**:
 
   
+  >>> from k8s_agent_sandbox import MemberState
   >>> client = SandboxClient()
   >>> batch = client.get_batch("b1234abcd12")
   >>> ready = [m for m in batch.members() if m.state is MemberState.READY]
