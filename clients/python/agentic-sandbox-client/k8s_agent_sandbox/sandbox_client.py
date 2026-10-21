@@ -380,9 +380,9 @@ class SandboxClient(Generic[T]):
         Checks that every group's ``SandboxWarmPool`` and its ``SandboxTemplate`` exist, creates the
         batch Lease ``batch-<id>``, and starts the batch's watch. The claims ``<id>-0`` to
         ``<id>-<N-1>``, where ``N`` is the sum of the group sizes, are then created in the background
-        until ``err()`` is set. Each group's claims get consecutive ordinals in group order, but each
-        group's first ``min_ready`` claims are created first, interleaved across groups in proportion
-        to their sizes, and the rest follow. Use ``events()`` or ``iter_ready_groups()`` to consume
+        until ``err()`` is set. Each group's claims get consecutive ordinals in group order. Each
+        group's first ``min_ready`` claims are created first, one group after another in group
+        order, and the rest follow in the same order. Use ``events()`` or ``iter_ready_groups()`` to consume
         them as they become Ready, and ``release()`` to delete the batch.
 
         Every claim gets the same ``shutdownTime``, the time of this call plus ``N / create_rps``

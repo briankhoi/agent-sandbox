@@ -1363,23 +1363,24 @@ class TestClaimBatchCreation(BaseClaimBatchTest):
         for k, t in enumerate(starts):
             self.assertGreaterEqual(t - start, k * 0.05 - 0.001)
 
-    def test_creates_each_groups_min_ready_claims_first_interleaved_by_size(self):
+    def test_creates_each_groups_min_ready_claims_first_in_group_order(self):
         self.claim(
-            [BatchGroup(warmpool="pool-a", size=6, min_ready=3), BatchGroup(warmpool="pool-b", size=2)],
+            [BatchGroup(warmpool="pool-a", size=6, min_ready=3), BatchGroup(warmpool="pool-b", size=3, min_ready=1)],
             max_in_flight=1,
         )
-        _wait_until(lambda: len(self.cluster.created) == 8)
+        _wait_until(lambda: len(self.cluster.created) == 9)
         self.assertEqual(
             [(c.args[0], c.args[1]) for c in self.cluster.helper.create_sandbox_claim.call_args_list],
             [
                 ("b1-0", "pool-a"),
-                ("b1-6", "pool-b"),
                 ("b1-1", "pool-a"),
                 ("b1-2", "pool-a"),
-                ("b1-7", "pool-b"),
+                ("b1-6", "pool-b"),
                 ("b1-3", "pool-a"),
                 ("b1-4", "pool-a"),
                 ("b1-5", "pool-a"),
+                ("b1-7", "pool-b"),
+                ("b1-8", "pool-b"),
             ],
         )
 
@@ -1454,7 +1455,7 @@ class TestClaimBatchCreation(BaseClaimBatchTest):
                 if mode == "group":
                     self.assertEqual(self.cluster.names(), ["b1-3", "b1-4"])
                 else:
-                    self.assertEqual(self.cluster.names(), ["b1-3", "b1-1", "b1-4", "b1-2"])
+                    self.assertEqual(self.cluster.names(), ["b1-1", "b1-2", "b1-3", "b1-4"])
 
 
 class TestConsumers(BaseClaimBatchTest):
