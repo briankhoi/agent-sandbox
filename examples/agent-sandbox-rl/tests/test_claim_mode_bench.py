@@ -88,6 +88,16 @@ def test_request_counter_reports_since_a_snapshot():
   assert d["create_window_s"] == 1.0 and d["creates_per_s"] == 2.0
 
 
+def test_request_counter_create_window_ignores_completion_order():
+  # A create sent first can return last, so times arrive out of send order.
+  c = bench.RequestCounter()
+  snap = c.snapshot()
+  for t in (2.0, 3.0, 1.0):
+    c.add("create sandboxclaims", 201, t)
+  d = c.since(snap)
+  assert d["create_window_s"] == 2.0 and d["creates_per_s"] == 1.0
+
+
 def test_request_counter_records_the_status_of_a_failed_request(monkeypatch):
   def call_api(self, method, url, *args, **kwargs):
     if url.endswith("/sandboxclaims"):

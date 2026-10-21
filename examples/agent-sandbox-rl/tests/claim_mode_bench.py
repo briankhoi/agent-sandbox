@@ -336,7 +336,9 @@ class RequestCounter:
                "statuses": statuses, "http_429": statuses.get("429", 0),
                "creates": len(creates)}
         if len(creates) >= 2:
-            window = creates[-1] - creates[0]
+            # Times are taken when a create is sent but appended when it returns, so
+            # concurrent creates land out of order.
+            window = max(creates) - min(creates)
             out["create_window_s"] = window
             out["creates_per_s"] = (len(creates) - 1) / window if window > 0 else None
         return out
