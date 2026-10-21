@@ -22,6 +22,7 @@ Requires the ``async`` optional dependencies::
 import asyncio
 import contextlib
 import logging
+import ssl
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -404,8 +405,13 @@ class AsyncSandboxBatch:
                 return
             except aiohttp.ClientSSLError as e:
                 # aiohttp.ClientSSLError is a subclass of aiohttp.ClientConnectionError, so it
-                # must be caught ahead of the tuple below. It is not known to be transient
-                # so surface it via err() instead of retrying.
+                # must be caught ahead of the tuple below.
+                if isinstance(e.os_error, ssl.SSLEOFError):
+                    # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
+                    # is transient like a connection reset. Certificate and other TLS failures are not.
+                    failures += 1
+                    await asyncio.sleep(_watch_backoff_delay(failures))
+                    continue
                 async with self._lock:
                     self._state.note_error(e)
                 return

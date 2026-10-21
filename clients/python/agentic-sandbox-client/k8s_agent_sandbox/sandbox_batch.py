@@ -15,6 +15,7 @@
 """Sync handle for using a claimed or re-attached sandbox batch."""
 
 import logging
+import ssl
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -60,11 +61,11 @@ _TRANSPORT_ERRORS = (
 
 
 def _is_transport_error(error: BaseException) -> bool:
-    # SSLError is not transient
-    if isinstance(error, urllib3.exceptions.MaxRetryError) and isinstance(
-        error.reason, urllib3.exceptions.SSLError
-    ):
-        return False
+    ssl_error = error.reason if isinstance(error, urllib3.exceptions.MaxRetryError) else error
+    if isinstance(ssl_error, urllib3.exceptions.SSLError):
+        # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
+        # is transient like a connection reset. Certificate and other TLS failures are not.
+        return bool(ssl_error.args) and isinstance(ssl_error.args[0], ssl.SSLEOFError)
     return isinstance(error, _TRANSPORT_ERRORS)
 
 
