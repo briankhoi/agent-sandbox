@@ -201,14 +201,16 @@ class SandboxBatch:
         self._next_create_at = 0.0
         self._create_interval = 0.0
         self._warm_credit = batch_utils.WarmCredit()
-        # Bounds concurrent claim creates and member deletes to max_in_flight, matching the HTTP
-        # connection pool budget so deletes neither overflow the pool nor serialize on a lock.
+        # Bounds concurrent claim creates (both fill and acquire()) and member deletes to
+        # max_in_flight, matching the HTTP connection pool budget that claim_batch checks.
         self._in_flight = threading.BoundedSemaphore(max_in_flight)
         self._max_in_flight = max_in_flight
         # Counts in-flight member and group delete requests per thread so detach() and release()
         # wait for other threads' deletes before giving up the Lease, without hanging a signal
         # handler that calls release() or detach() on a deleting thread.
         self._active_deletes: Counter[int] = Counter()
+        # One per pool, so concurrent acquires wait for one read of the pool's Ready count.
+        self._credit_refresh_locks: dict[str, threading.Lock] = {}
         # The caller's labels and the batch id label, which every claim carries.
         self._labels: dict[str, str] = {BATCH_ID_LABEL: batch_id}
         # Pools acquire() doesn't check again, since claim_batch checked them or they already have claims.
@@ -692,7 +694,11 @@ class SandboxBatch:
         and ``release_not_ready()`` leave it alone, and ``release_group()`` on its pool releases it
         with the pool's other members. Its ``shutdownTime`` is the
         time of its create plus ``quorum_timeout`` plus ``work_budget`` plus 600 seconds, and its
-        create is retried and paced like the initial claims'.
+        create is retried and paced like the initial claims'. Like theirs, a create that the pool's
+        Ready sandboxes cover isn't paced. Once the Ready count read at the pool's check is spent,
+        the count is read again, at most once a second per pool. The fill's and ``acquire()``'s
+        creates and member deletes share ``max_in_flight``, which defaults to 20 on a handle from
+        ``get_batch``.
 
         If it raises, including on a cancellation, the member is dropped from ``members()`` and its
         claim is deleted, unless the claim is already gone or its create was rejected. A failed delete is
@@ -718,7 +724,7 @@ class SandboxBatch:
                 ``CreateFailed``), the member fails terminally, or someone else deletes its claim
                 (the member is ``LOST``) before it is Ready.
             BatchTimeoutError: If the member isn't Ready within ``timeout``. A create or create retry
-                that ``create_rps`` pacing can't start within it isn't sent.
+                that ``create_rps`` pacing or ``max_in_flight`` can't start within it isn't sent.
             BatchError: If this handle has been detached or released, or ``err()`` is set, when
                 called or while waiting, or if ``release_member`` or ``release_group`` releases the
                 member before it is Ready.
@@ -726,15 +732,18 @@ class SandboxBatch:
         wait = batch_utils.positive_number("timeout", timeout, self._quorum_timeout)
         deadline = time.monotonic() + wait
         self._check_pool(warmpool, deadline, wait)
+        # Reads nothing right after the pool's check, since that check just read the count.
+        self._refresh_warm_credit(warmpool, deadline)
         with self._lock:
             self._check_healthy()
             now = time.monotonic()
+            covered = now < deadline and self._warm_credit.take(warmpool)
             # A create paced past the deadline would only make a claim to delete on timeout.
-            if max(now, self._next_create_at) >= deadline:
+            if not covered and max(now, self._next_create_at) >= deadline:
                 raise BatchTimeoutError(f"no create slot for warm pool '{warmpool}' within {wait:g}s")
             claim_name = self._state.start_acquire(warmpool)
             waiter = self._acquire_waiters[claim_name] = threading.Event()
-            slot = self._reserve_create_slot(now)
+            slot = now if covered else self._reserve_create_slot(now)
         # Whether a claim of the batch may exist under the name, so a failure deletes it.
         may_exist = False
         try:
@@ -805,9 +814,10 @@ class SandboxBatch:
             waiter.wait(remaining)
 
     def _check_pool(self, warmpool: str, deadline: float, wait: float) -> None:
-        """Checks a pool that isn't one of the batch's groups the first time ``acquire()`` uses it.
-        Concurrent first acquires of a pool share one check and its outcome. A check that fails
-        isn't remembered, so a later acquire checks the pool again.
+        """Checks a pool that isn't one of the batch's groups the first time ``acquire()`` uses it,
+        and makes its Ready count its credit. Concurrent first acquires of a pool share one check
+        and its outcome. A check that fails isn't remembered, so a later acquire checks the pool
+        again.
 
         Raises:
             BatchTimeoutError: If another acquire's check of the pool doesn't finish by ``deadline``.
@@ -835,7 +845,9 @@ class SandboxBatch:
                 continue
             return
         try:
-            _precheck_pools(self._client.k8s_helper, [warmpool], self.namespace)
+            ready = _precheck_pools(self._client.k8s_helper, [warmpool], self.namespace)
+            with self._lock:
+                self._warm_credit.record(warmpool, ready[warmpool])
         except BaseException as e:
             with self._lock:
                 del self._prechecks[warmpool]
@@ -848,6 +860,34 @@ class SandboxBatch:
             self._checked_pools.add(warmpool)
             del self._prechecks[warmpool]
         check.set_result(None)
+
+    def _refresh_warm_credit(self, warmpool: str, deadline: float) -> None:
+        """Reads the pool's Ready count again once its credit is spent, at most once every
+        ``BATCH_WARM_CREDIT_REFRESH_SECONDS``, so a burst of acquires on a warm pool isn't paced.
+        """
+        with self._lock:
+            refresh_lock = self._credit_refresh_locks.setdefault(warmpool, threading.Lock())
+        if not refresh_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            # The create is paced instead, and pacing decides whether it fits the deadline.
+            return
+        try:
+            with self._lock:
+                self._check_healthy()
+                if time.monotonic() >= deadline or not self._warm_credit.refresh_due(warmpool):
+                    return
+            try:
+                obj = self._client.k8s_helper.get_sandbox_warmpool(
+                    warmpool, self.namespace, _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
+                )
+                ready = 0 if obj is None else batch_utils.warmpool_ready_replicas(obj)
+            except Exception as e:
+                # The create is paced instead, and reports any real problem with the pool.
+                logger.debug(f"Batch '{self.batch_id}' failed to read warm pool '{warmpool}': {e}")
+                ready = 0
+            with self._lock:
+                self._warm_credit.record(warmpool, ready)
+        finally:
+            refresh_lock.release()
 
     def _drop_acquired(self, claim_name: str, may_exist: bool) -> None:
         """Drops a claim ``acquire()`` didn't get Ready and deletes it. A failed delete is logged,
@@ -1591,6 +1631,45 @@ class SandboxBatch:
         except Exception as e:
             logger.warning(f"Batch '{self.batch_id}' failed to delete released claim '{claim_name}': {e}")
 
+    def _send_create(
+        self,
+        claim_name: str,
+        warmpool: str,
+        annotations: dict[str, str],
+        labels: dict[str, str],
+        lifecycle: dict[str, str],
+        deadline: float | None,
+        on_send: Callable[[], None] | None = None,
+    ) -> bool:
+        """Sends one claim create while holding one of the ``max_in_flight`` slots, releasing the
+        slot before any retry backoff sleep. Returns ``False`` if creation stopped while waiting.
+
+        Raises:
+            BatchTimeoutError: If no slot frees up before ``deadline``.
+        """
+        wait = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if not self._in_flight.acquire(timeout=wait):
+            raise BatchTimeoutError(f"no create in flight slot for claim '{claim_name}' before the deadline")
+        try:
+            if self._stop_creating.is_set():
+                return False
+            if on_send is not None:
+                on_send()
+            self._client.k8s_helper.create_sandbox_claim(
+                claim_name,
+                warmpool,
+                self.namespace,
+                annotations=annotations,
+                labels=labels,
+                lifecycle=lifecycle,
+                owner_references=self._owner_references,
+                log_level=logging.DEBUG,
+                _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+            )
+            return True
+        finally:
+            self._in_flight.release()
+
     def _create_one(
         self,
         claim_name: str,
@@ -1607,31 +1686,16 @@ class SandboxBatch:
         the claim may exist, which is ``False`` only if creation was stopped.
 
         Raises:
-            BatchTimeoutError: If a retry's pacing slot is at or after ``deadline``.
+            BatchTimeoutError: If a retry's pacing slot is at or after ``deadline``, or no
+                ``max_in_flight`` slot frees up before it.
             Exception: The error the create failed with, once it isn't retried.
         """
         attempt = 1
         while True:
             try:
-                # Release the max_in_flight slot before any retry backoff sleep so waiting retries
-                # do not occupy connections other creates or deletes can use.
-                with self._in_flight:
-                    if self._stop_creating.is_set():
-                        return False
-                    if on_send is not None:
-                        on_send()
-                    self._client.k8s_helper.create_sandbox_claim(
-                        claim_name,
-                        warmpool,
-                        self.namespace,
-                        annotations=annotations,
-                        labels=labels,
-                        lifecycle=lifecycle,
-                        owner_references=self._owner_references,
-                        log_level=logging.DEBUG,
-                        _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
-                    )
-                return True
+                return self._send_create(
+                    claim_name, warmpool, annotations, labels, lifecycle, deadline, on_send
+                )
             except Exception as e:
                 if isinstance(e, ApiException):
                     outcome = batch_utils.create_error_outcome(e.status, attempt)
