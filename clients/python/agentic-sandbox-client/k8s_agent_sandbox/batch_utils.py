@@ -479,3 +479,42 @@ def warmpool_template_name(warmpool_obj: dict[str, Any]) -> str | None:
     """Returns the name of the SandboxTemplate a SandboxWarmPool object references, if any."""
     spec = warmpool_obj.get("spec") or {}
     return (spec.get("sandboxTemplateRef") or {}).get("name") or None
+
+
+def warmpool_ready_replicas(warmpool_obj: dict[str, Any]) -> int:
+    """Returns a SandboxWarmPool object's ``status.readyReplicas``, or 0 if it has none."""
+    ready = (warmpool_obj.get("status") or {}).get("readyReplicas")
+    return ready if isinstance(ready, int) and ready > 0 else 0
+
+
+class WarmCredit:
+    """Counts, per warm pool, the creates that the pool's Ready sandboxes can cover.
+
+    A covered create skips ``create_rps`` pacing, so only ``max_in_flight`` bounds it. Pacing
+    exists so that a burst of cold claims doesn't start many pods on a node at once, and a claim
+    a Ready sandbox takes starts no pod. The count is read when the pool is checked, so another
+    client taking the same sandboxes makes it stale, and then some claims start pods unpaced, as
+    every per-claim create does. The first 429 turns the credit off for good, so from then on the
+    apiserver's limit is respected by pacing every create. The handles call it with their lock held.
+    """
+
+    def __init__(self) -> None:
+        self._credit: dict[str, int] = {}
+        self.throttled = False
+
+    def record(self, warmpool: str, ready: int) -> None:
+        """Sets the pool's credit to its Ready replica count."""
+        self._credit[warmpool] = ready
+
+    def take(self, warmpool: str) -> bool:
+        """Spends one of the pool's credit, and returns whether there was one to spend."""
+        if self.throttled or self._credit.get(warmpool, 0) <= 0:
+            return False
+        self._credit[warmpool] -= 1
+        return True
+
+    def throttle(self) -> bool:
+        """Turns the credit off, and returns whether this was the first time."""
+        first = not self.throttled
+        self.throttled = True
+        return first
