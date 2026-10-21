@@ -655,6 +655,13 @@ func (s *batchState) setMode(mode ConsumerMode) error {
 		for _, p := range s.poolOrder {
 			s.checkQuorum(p)
 		}
+		// Decision B16 (Python b3c49a08, batch_state.py:680-683): with no group of size > 0 there is no
+		// fill to wait for and no watch event would ever decide the quorum, so it is reached with no
+		// members, on every handle (ClaimBatch or GetBatch). Set unconditionally, as Python does.
+		if len(s.groupByPool) == 0 {
+			s.quorumDecided = true
+			s.quorumMembers = []Member{}
+		}
 		if s.fillExpired {
 			s.failQuorum(fmt.Errorf("batch quorum timed out: %w", ErrTimeout))
 		}

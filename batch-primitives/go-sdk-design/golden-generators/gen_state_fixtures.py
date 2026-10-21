@@ -1,4 +1,5 @@
-"""Generates golden STATE-MACHINE fixtures for the Go batchState port from Python TOP (8a72827f).
+"""Generates golden STATE-MACHINE fixtures for the Go batchState port from Python (rev 3.2: 4fa72e04;
+first 8a72827f).
 
 Each scenario is (groups, next_ordinal, ops). Every op is applied to the real
 k8s_agent_sandbox.batch_state.BatchState, and after every op the generator records the op's return
@@ -316,7 +317,7 @@ sc.append(run("count_missing_fill after seed (re-attach)", [("a", 4, 2), ("b", 2
     ["count_missing_fill"], ["set_mode", "group"], ["pop_groups"], ["pop_events"],
 ], next_ordinal=8))
 # --- all size 0 (acquire-only) ----------------------------------------------------------------------
-sc.append(run("all groups size 0: quorum never decided by the state (handle would block)", [("a", 0, 0), ("b", 0, 0)], [
+sc.append(run("all groups size 0: set_mode(quorum) decides an empty quorum (Python b3c49a08, rev 3.2)", [("a", 0, 0), ("b", 0, 0)], [
     ["set_mode", "quorum"], ["start_acquire", "a"], ["upsert", claim("b-0", "a", "ready")], ["pop_events"],
     ["expire_fill"],
 ]))
@@ -329,7 +330,7 @@ sc.append(run("claims without fill annotations or of unknown pools are not fill"
     ["pop_events"], ["release_not_ready"],
 ]))
 
-out = {"generator": {"python_commit": "8a72827f1db53c12a82229f49583105fd5df3e26", "python": sys.version.split()[0],
+out = {"generator": {"python_commit": "4fa72e043e1c5f36273bb0d8e8a6b411e13db749", "python": sys.version.split()[0],
                      "pydantic": pydantic.VERSION, "PYTHONHASHSEED": "set by caller"},
        "scenarios": sc}
 json.dump(out, sys.stdout, indent=1, ensure_ascii=False)

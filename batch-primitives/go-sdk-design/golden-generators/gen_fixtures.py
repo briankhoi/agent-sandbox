@@ -1,4 +1,5 @@
-"""Generates golden parity fixtures for the Go batch port from the Python TOP (8a72827f).
+"""Generates golden parity fixtures for the Go batch port from the Python SDK (rev 3.2: re-generated at 4fa72e04,
+the end of the fork stack; first generated at 8a72827f).
 
 Run from clients/python/agentic-sandbox-client of the TOP checkout:
     python gen_fixtures.py > batch_golden.json
@@ -25,7 +26,7 @@ def err_or(fn):
 
 out = {
     "generator": {
-        "python_commit": "8a72827f1db53c12a82229f49583105fd5df3e26",
+        "python_commit": "4fa72e043e1c5f36273bb0d8e8a6b411e13db749",
         "python": sys.version.split()[0],
         "kubernetes": kubernetes.__version__,
         "pydantic": pydantic.VERSION,
@@ -267,16 +268,23 @@ class _E(Exception):
     def __init__(self, h):
         self.headers = h
 ra = []
-for h in ["5", " 7 ", "0", "100", "30", "31", "1.5", "-1", "+3", "Wed, 21 Oct 2015 07:28:00 GMT", "", "٣", "²"]:
-    try:
-        d = batch_utils.retry_delay(1, _E({"Retry-After": h}))
-        used = True
-        # backoff for attempt 1 is in [0.25, 0.5]; an honoured header gives an exact value
-        if not h.strip().isdigit():
-            used = False
-        ra.append({"header": h, "honoured": used, "delay": d if used else None})
-    except Exception as e:  # noqa: BLE001
-        ra.append({"header": h, "honoured": False, "delay": None, "python_raises": f"{type(e).__name__}: {e}"})
+# rev 3.2: whether a header was honoured is observed, not re-derived. retry_delay falls back to the
+# module-level backoff_delay, so a sentinel from a stubbed backoff_delay means "not honoured". (The old
+# `h.strip().isdigit()` re-implemented Python's rule before 924e8016 and mislabelled "٣" and "²" once
+# Python started requiring ASCII digits.)
+_NOT_HONOURED = -1.0
+_real_backoff_delay = batch_utils.backoff_delay
+batch_utils.backoff_delay = lambda *a, **k: _NOT_HONOURED
+try:
+    for h in ["5", " 7 ", "0", "100", "30", "31", "1.5", "-1", "+3", "Wed, 21 Oct 2015 07:28:00 GMT", "", "٣", "²"]:
+        try:
+            d = batch_utils.retry_delay(1, _E({"Retry-After": h}))
+            used = d != _NOT_HONOURED
+            ra.append({"header": h, "honoured": used, "delay": d if used else None})
+        except Exception as e:  # noqa: BLE001
+            ra.append({"header": h, "honoured": False, "delay": None, "python_raises": f"{type(e).__name__}: {e}"})
+finally:
+    batch_utils.backoff_delay = _real_backoff_delay
 out["retry_after"] = ra
 out["backoff"] = [{"attempt": a, "rand": r, "delay": batch_utils.backoff_delay(a, 0.5, 30.0, lambda r=r: r)}
                   for a in [1, 2, 3, 6, 7, 8, 50, 10**6] for r in [0.0, 0.5, 0.999999]]

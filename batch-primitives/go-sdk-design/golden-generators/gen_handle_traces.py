@@ -1,4 +1,4 @@
-"""Handle-level golden traces: Python TOP (8a72827f) SandboxBatch._next wake-ups and consumer iteration.
+"""Handle-level golden traces: Python (rev 3.2: 4fa72e04; first 8a72827f) SandboxBatch._next wake-ups and consumer iteration.
 
 Each scenario builds a real SandboxBatch (only the fields events()/iter_ready_groups()/wait_for_quorum()
 and _next read: _lock, _changed, _state = a real BatchState, _detached, _fill_deadline), starts ONE
@@ -141,7 +141,7 @@ SCENARIOS = [
     ("quorum: detach while waiting -> raises", "quorum", [(1, "upsert", "hb-0", "a", "ready"), (2, "detach")], 8),
 ]
 
-out = {"generator": {"python_commit": "8a72827f1db53c12a82229f49583105fd5df3e26", "python": sys.version.split()[0],
+out = {"generator": {"python_commit": "4fa72e043e1c5f36273bb0d8e8a6b411e13db749", "python": sys.version.split()[0],
                      "unit_seconds": UNIT},
        "groups": [{"warmpool": p, "size": s, "min_ready": m} for p, s, m in GROUPS], "scenarios": []}
 for name, consumer, ops, fd in SCENARIOS:

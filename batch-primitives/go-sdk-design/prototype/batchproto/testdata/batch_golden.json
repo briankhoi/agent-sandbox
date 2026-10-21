@@ -1,6 +1,6 @@
 {
  "generator": {
-  "python_commit": "8a72827f1db53c12a82229f49583105fd5df3e26",
+  "python_commit": "4fa72e043e1c5f36273bb0d8e8a6b411e13db749",
   "python": "3.13.15",
   "kubernetes": "37.0.1",
   "pydantic": "2.14.1"
@@ -4929,8 +4929,9 @@
   },
   {
    "id": "a\n",
-   "ok": true,
-   "value": null
+   "ok": false,
+   "error_type": "ValueError",
+   "error": "batch_id must be a DNS-1123 label starting with a letter, at most 52 characters: 'a\\n'"
   }
  ],
  "is_lease_stale": [
@@ -5274,14 +5275,13 @@
   },
   {
    "header": "٣",
-   "honoured": true,
-   "delay": 3.0
+   "honoured": false,
+   "delay": null
   },
   {
    "header": "²",
    "honoured": false,
-   "delay": null,
-   "python_raises": "ValueError: could not convert string to float: '²'"
+   "delay": null
   }
  ],
  "backoff": [
@@ -5523,6 +5523,7 @@
   "BATCH_ID_MAX_LENGTH": 52,
   "BATCH_LEASE_DURATION_ANNOTATION": "agents.x-k8s.io/batch-lease-duration",
   "BATCH_NEXT_ORDINAL_ANNOTATION": "agents.x-k8s.io/batch-next-ordinal",
+  "BATCH_POOL_HEADROOM": 2,
   "BATCH_QUORUM_TIMEOUT_ANNOTATION": "agents.x-k8s.io/batch-quorum-timeout",
   "BATCH_RELEASE_MAX_IDLE_ROUNDS": 3,
   "BATCH_REQUEST_TIMEOUT_SECONDS": 30,

@@ -20,15 +20,14 @@ import (
 // the divergence is explicit and reviewed, instead of hidden.
 var knownLaxPython = map[string]string{
 	"lease_decode/batch-work-budget='99999999999999999999'": "Python int is unbounded; Go rejects at GetBatch (Python fails later, at acquire, in datetime arithmetic)",
-	"lease_decode/batch-create-rps=' 50 '":        "Python float() strips whitespace",
-	"lease_decode/batch-lease-duration=' 7 '":     "Python int() strips whitespace",
-	"lease_decode/batch-lease-duration='1_0'":     "Python int() accepts digit underscores",
-	"lease_decode/batch-work-budget=' 2'":         "Python int() strips whitespace",
-	"lease_decode/batch-work-budget='٣'":          "Python int() accepts Unicode digits",
-	"reconstruct_groups/whitespace int":           "Python int() strips whitespace",
-	"validate_batch_id/\"a\\n\"":                  "Python re '$' matches before a trailing newline",
-	"retry_after/\"٣\"":                           "Python str.isdigit() accepts Unicode digits",
-	"retry_after/\"²\"":                           "Python raises ValueError (isdigit True, float() fails); Go falls back to backoff",
+	"lease_decode/batch-create-rps=' 50 '":                  "Python float() strips whitespace",
+	"lease_decode/batch-lease-duration=' 7 '":               "Python int() strips whitespace",
+	"lease_decode/batch-lease-duration='1_0'":               "Python int() accepts digit underscores",
+	"lease_decode/batch-work-budget=' 2'":                   "Python int() strips whitespace",
+	"lease_decode/batch-work-budget='٣'":                    "Python int() accepts Unicode digits",
+	"reconstruct_groups/whitespace int":                     "Python int() strips whitespace",
+	// rev 3.2: validate_batch_id("a\n") (aecbdb40, fullmatch) and the Unicode-digit Retry-After
+	// entries "٣"/"²" (924e8016, isascii) were dropped: Python now agrees with Go on all three.
 }
 
 type golden struct {
@@ -293,4 +292,3 @@ func trunc(s string) string {
 	}
 	return s
 }
-

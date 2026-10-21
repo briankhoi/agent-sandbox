@@ -242,6 +242,11 @@ func sortEvents(v any) any {
 	return l
 }
 
+// knownStateDivergence lists scenarios where the Go port differs from Python's BatchState on purpose,
+// pending a decision. Their mismatches are logged, not failed, and an entry that no longer diverges fails.
+// Empty since decision B16 (the all-size-0 empty quorum on every handle, Python b3c49a08).
+var knownStateDivergence = map[string]string{}
+
 func TestStateGoldenParity(t *testing.T) {
 	raw, err := os.ReadFile("testdata/state_golden.json")
 	if err != nil {
@@ -263,6 +268,19 @@ func TestStateGoldenParity(t *testing.T) {
 				pools = append(pools, gr.WarmPool)
 			}
 			s := newBatchState("b", groups, sc.NextOrdinal)
+			report := t.Errorf
+			diverged := false
+			if why, ok := knownStateDivergence[sc.Name]; ok {
+				report = func(format string, args ...any) {
+					diverged = true
+					t.Logf("ALLOWED divergence (%s): %s", why, fmt.Sprintf(format, args...))
+				}
+				defer func() {
+					if !diverged {
+						t.Errorf("knownStateDivergence entry %q no longer diverges; remove it", sc.Name)
+					}
+				}()
+			}
 			unordered := strings.Contains(sc.Name, "order-insensitive")
 			for i, st := range sc.Steps {
 				steps++
@@ -276,15 +294,15 @@ func TestStateGoldenParity(t *testing.T) {
 				}
 				id := fmt.Sprintf("step %d %s", i, st.Op[0])
 				if !reflect.DeepEqual(gotRet, wantRet) {
-					t.Errorf("%s: ret\n  go:     %v\n  python: %v", id, gotRet, wantRet)
+					report("%s: ret\n  go:     %v\n  python: %v", id, gotRet, wantRet)
 				}
 				if got, want := canon(t, errJSON(err)), rawCanon(t, st.Raises); !reflect.DeepEqual(got, want) {
-					t.Errorf("%s: raises\n  go:     %v\n  python: %v", id, got, want)
+					report("%s: raises\n  go:     %v\n  python: %v", id, got, want)
 				}
 				if got, want := canon(t, goSnapshot(s, pools)), rawCanon(t, st.State); !reflect.DeepEqual(got, want) {
 					gb, _ := json.Marshal(got)
 					wb, _ := json.Marshal(want)
-					t.Errorf("%s: state\n  go:     %s\n  python: %s", id, gb, wb)
+					report("%s: state\n  go:     %s\n  python: %s", id, gb, wb)
 				}
 			}
 		})
