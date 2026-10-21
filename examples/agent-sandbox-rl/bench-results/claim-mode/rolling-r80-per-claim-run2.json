@@ -1,0 +1,61 @@
+{
+ "variant": "per-claim",
+ "arm": "per-claim",
+ "shape": "r80",
+ "concurrency": 40,
+ "seconds": 240.04696554108523,
+ "settings": {
+  "create_rps": null,
+  "max_in_flight": null
+ },
+ "rollouts": 468,
+ "rollouts_per_min": 116.97710877829851,
+ "acquire_s": {
+  "n": 468,
+  "first": 0.02503558387979865,
+  "p50": 0.040313083096407354,
+  "p90": 0.08010410368442536,
+  "p99": 0.2717763463733716,
+  "last": 0.3489617081359029
+ },
+ "errors": 0,
+ "error_samples": [],
+ "requests_per_rollout": 6.0256410256410255,
+ "min_warm_ready": 75,
+ "starved": false,
+ "driver_cpu_s": 4.377807000000004,
+ "max_rss_mb": 242.375,
+ "throttled_logs": 0,
+ "requests": {
+  "get sandboxwarmpools": 480,
+  "create sandboxclaims": 468,
+  "watch sandboxclaims": 468,
+  "get sandboxes": 936,
+  "delete sandboxclaims": 468
+ },
+ "total_requests": 2820,
+ "watches": 468,
+ "statuses": {},
+ "http_429": 0,
+ "creates": 468,
+ "create_window_s": 239.81156458309852,
+ "creates_per_s": 1.9473623001119993,
+ "warm_wait_s": 11.224118916783482,
+ "pods_in_namespace": 80,
+ "pools": 10,
+ "ready_per_pool": 8,
+ "label": "rolling-r80-per-claim-run2",
+ "step": "rolling",
+ "run": 2,
+ "wall_started": 1792583451.655651,
+ "wall_s": 251.42143392562866,
+ "provenance": {
+  "head": "69120f71b8860766f935fcf7a76a6227b4512200",
+  "tree": "cd71ac46df6f204712cbcc01cbe000e252dc5aad",
+  "dirty": false,
+  "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py",
+  "rl_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/examples/agent-sandbox-rl/agent_sandbox_rl/__init__.py",
+  "smoke": false,
+  "python": "3.14.3"
+ }
+}

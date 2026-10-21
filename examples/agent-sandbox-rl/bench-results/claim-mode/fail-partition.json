@@ -1,0 +1,38 @@
+{
+ "case": "partition",
+ "lease_duration": 30,
+ "members": 20,
+ "warm_wait_s": 7.080235790926963,
+ "pods_in_namespace": 80,
+ "pools": 10,
+ "ready_per_pool": 8,
+ "reaped": [
+  "bck2rzrpnyvg"
+ ],
+ "worker": {
+  "mode": "hold",
+  "lease": 30,
+  "pid": 7632,
+  "err": "MaxRetryError(\"HTTPSConnectionPool(host='127.0.0.1', port=60749): Max retries exceeded with url: /apis/extensions.agents.x-k8s.io/v1beta1/namespaces/rl-bench/sandboxclaims?allowWatchBookmarks=true&labelSelector=agents.x-k8s.io/batch-id%3Dbck2rzrpnyvg&resourceVersion=7961881&timeoutSeconds=30&watch=true (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)')))\")",
+  "err_seen_s": 62.7512130420655,
+  "exec_failures_after": 20,
+  "new_acquire": "ok",
+  "new_batch": true
+ },
+ "pass": true,
+ "claims_left_s": 0.005832624854519963,
+ "label": "fail-partition",
+ "step": "failure",
+ "run": 1,
+ "wall_started": 1792584814.390954,
+ "wall_s": 70.74769902229309,
+ "provenance": {
+  "head": "69120f71b8860766f935fcf7a76a6227b4512200",
+  "tree": "cd71ac46df6f204712cbcc01cbe000e252dc5aad",
+  "dirty": false,
+  "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py",
+  "rl_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/examples/agent-sandbox-rl/agent_sandbox_rl/__init__.py",
+  "smoke": false,
+  "python": "3.14.3"
+ }
+}

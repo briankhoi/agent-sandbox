@@ -1,0 +1,50 @@
+# claim-mode bench status
+
+Regenerated from the result files on every suite start and run.
+
+- [x] burst-b160-per-claim-run1
+- [x] burst-b160-per-claim-c20-run1
+- [x] burst-b160-per-claim-c50-run1
+- [x] burst-b160-batch-default-run1
+- [x] burst-b160-batch-mif50-run1
+- [x] burst-b160-batch-mif100-run1
+- [x] burst-b160-batch-mif200-run1
+- [x] burst-b160-fill-default-run1
+- [x] burst-b160-fill-mif50-run1
+- [x] burst-b160-per-claim-c20-run2
+- [x] burst-b160-per-claim-c50-run2
+- [x] burst-b160-batch-default-run2
+- [x] burst-b160-batch-mif50-run2
+- [x] burst-b160-batch-mif100-run2
+- [x] burst-b160-batch-mif200-run2
+- [x] burst-b160-fill-default-run2
+- [x] burst-b160-fill-mif50-run2
+- [x] burst-b160-per-claim-run2
+- [x] burst-b160-per-claim-c50-run3
+- [x] burst-b160-batch-default-run3
+- [x] burst-b160-batch-mif50-run3
+- [x] burst-b160-batch-mif100-run3
+- [x] burst-b160-batch-mif200-run3
+- [x] burst-b160-fill-default-run3
+- [x] burst-b160-fill-mif50-run3
+- [x] burst-b160-per-claim-run3
+- [x] burst-b160-per-claim-c20-run3
+- [x] rolling-r80-per-claim-run1
+- [x] rolling-r80-batch-default-run1
+- [x] rolling-r80-batch-mif50-run1
+- [x] rolling-r80-batch-default-run2
+- [x] rolling-r80-batch-mif50-run2
+- [x] rolling-r80-per-claim-run2
+- [x] lease-lease60
+- [x] lease-lease300
+- [x] comp-recycle pass
+- [x] comp-ondemand pass
+- [x] comp-adopt pass
+- [x] comp-maxlive pass
+- [x] comp-pin pass
+- [x] fail-sigkill-reaper pass
+- [x] fail-sigkill-noreaper pass
+- [x] fail-stall pass
+- [x] fail-partition pass
+- [x] fail-member-deleted pass
+- [x] long-recycle-expiry pass

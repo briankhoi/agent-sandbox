@@ -1,0 +1,39 @@
+{
+ "case": "stall",
+ "lease_duration": 30,
+ "members": 20,
+ "warm_wait_s": 5.037788667017594,
+ "pods_in_namespace": 100,
+ "pools": 10,
+ "ready_per_pool": 8,
+ "claims_while_stopped": 0,
+ "reaped": [
+  "bqy5r867g0hg"
+ ],
+ "worker": {
+  "mode": "hold",
+  "lease": 30,
+  "pid": 7594,
+  "err": "BatchLeaseExpiredError(\"batch 'bqy5r867g0hg' lease has not renewed successfully for 30s\")",
+  "err_seen_s": 65.85898262495175,
+  "exec_failures_after": 20,
+  "new_acquire": "ok",
+  "new_batch": true
+ },
+ "pass": true,
+ "claims_left_s": 0.004400582984089851,
+ "label": "fail-stall",
+ "step": "failure",
+ "run": 1,
+ "wall_started": 1792584742.5286431,
+ "wall_s": 71.8601188659668,
+ "provenance": {
+  "head": "69120f71b8860766f935fcf7a76a6227b4512200",
+  "tree": "cd71ac46df6f204712cbcc01cbe000e252dc5aad",
+  "dirty": false,
+  "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py",
+  "rl_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/examples/agent-sandbox-rl/agent_sandbox_rl/__init__.py",
+  "smoke": false,
+  "python": "3.14.3"
+ }
+}

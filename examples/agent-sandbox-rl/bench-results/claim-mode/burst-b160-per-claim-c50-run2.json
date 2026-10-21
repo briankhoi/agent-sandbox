@@ -1,0 +1,80 @@
+{
+ "variant": "per-claim-c50",
+ "arm": "per-claim",
+ "shape": "b160",
+ "n": 160,
+ "settings": {
+  "create_rps": null,
+  "max_in_flight": null,
+  "acquire_concurrency": 50,
+  "lease_duration": 300
+ },
+ "started": 160,
+ "errors": 0,
+ "error_samples": [],
+ "acquired_s": {
+  "n": 160,
+  "first": 1.0936009581200778,
+  "p50": 1.6545669166371226,
+  "p90": 2.0626300001051274,
+  "p99": 2.216864887012634,
+  "last": 2.2293211659416556
+ },
+ "start_s": {
+  "n": 160,
+  "first": 1.3426756251137704,
+  "p50": 1.9466137705603614,
+  "p90": 2.3161950076697395,
+  "p99": 2.348460504282266,
+  "last": 2.352253125049174
+ },
+ "first_start_s": 1.3426756251137704,
+ "median_start_s": 1.9466137705603614,
+ "last_start_s": 2.352253125049174,
+ "group_start_s": {
+  "n": 40,
+  "first": 1.575115374987945,
+  "p50": 2.278080999501981,
+  "p90": 2.347431412199512,
+  "p99": 2.3510162887908517,
+  "last": 2.352253125049174
+ },
+ "first_group_s": 1.575115374987945,
+ "last_group_s": 2.352253125049174,
+ "step_s": 2.399938583141193,
+ "release_s": 0.12899591703899205,
+ "driver_cpu_s": 2.814774,
+ "max_rss_mb": 214.078125,
+ "execs": 160,
+ "throttled_logs": 0,
+ "requests": {
+  "create sandboxclaims": 160,
+  "watch sandboxclaims": 160,
+  "get sandboxes": 320
+ },
+ "total_requests": 640,
+ "watches": 160,
+ "statuses": {},
+ "http_429": 0,
+ "creates": 160,
+ "create_window_s": 1.1061486250255257,
+ "creates_per_s": 143.74198584419963,
+ "warm_wait_s": 26.511023791972548,
+ "pods_in_namespace": 160,
+ "pools": 40,
+ "ready_per_pool": 4,
+ "label": "burst-b160-per-claim-c50-run2",
+ "step": "burst",
+ "run": 2,
+ "wall_started": 1792581630.923002,
+ "wall_s": 29.384485006332397,
+ "provenance": {
+  "head": "69120f71b8860766f935fcf7a76a6227b4512200",
+  "tree": "cd71ac46df6f204712cbcc01cbe000e252dc5aad",
+  "dirty": false,
+  "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py",
+  "rl_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/examples/agent-sandbox-rl/agent_sandbox_rl/__init__.py",
+  "smoke": false,
+  "python": "3.14.3"
+ }
+}

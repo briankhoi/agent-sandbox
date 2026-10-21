@@ -1,0 +1,26 @@
+{
+ "mode": "lease",
+ "lease": 300,
+ "pid": 7246,
+ "rollouts": 258,
+ "errors": 0,
+ "seconds": 422.3692540000193,
+ "throttled_logs": 0,
+ "requests": {
+  "get sandboxwarmpools": 37,
+  "get sandboxtemplates": 10,
+  "create leases": 1,
+  "list sandboxclaims": 1,
+  "watch sandboxclaims": 15,
+  "create sandboxclaims": 258,
+  "delete sandboxclaims": 258,
+  "update leases": 4
+ },
+ "total_requests": 584,
+ "watches": 15,
+ "statuses": {},
+ "http_429": 0,
+ "creates": 258,
+ "create_window_s": 418.92139149992727,
+ "creates_per_s": 0.6134802500293056
+}

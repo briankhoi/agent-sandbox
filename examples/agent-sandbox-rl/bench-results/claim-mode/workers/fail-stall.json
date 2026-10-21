@@ -1,0 +1,10 @@
+{
+ "mode": "hold",
+ "lease": 30,
+ "pid": 7594,
+ "err": "BatchLeaseExpiredError(\"batch 'bqy5r867g0hg' lease has not renewed successfully for 30s\")",
+ "err_seen_s": 65.85898262495175,
+ "exec_failures_after": 20,
+ "new_acquire": "ok",
+ "new_batch": true
+}

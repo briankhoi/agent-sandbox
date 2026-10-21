@@ -1,0 +1,30 @@
+{
+ "case": "sigkill-noreaper",
+ "lease_duration": 30,
+ "members": 20,
+ "warm_wait_s": 5.027884291950613,
+ "pods_in_namespace": 100,
+ "pools": 10,
+ "ready_per_pool": 8,
+ "claims_before": 20,
+ "claims_after_lease_plus_30s": 20,
+ "claims_gone_after_kill_s": 71.16988770803437,
+ "reaped": [
+  "bcmff9qqtu41"
+ ],
+ "pass": true,
+ "label": "fail-sigkill-noreaper",
+ "step": "failure",
+ "run": 1,
+ "wall_started": 1792584664.983538,
+ "wall_s": 77.54160714149475,
+ "provenance": {
+  "head": "69120f71b8860766f935fcf7a76a6227b4512200",
+  "tree": "cd71ac46df6f204712cbcc01cbe000e252dc5aad",
+  "dirty": false,
+  "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py",
+  "rl_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/examples/agent-sandbox-rl/agent_sandbox_rl/__init__.py",
+  "smoke": false,
+  "python": "3.14.3"
+ }
+}

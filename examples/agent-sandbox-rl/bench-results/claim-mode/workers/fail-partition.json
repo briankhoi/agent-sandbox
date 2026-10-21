@@ -1,0 +1,10 @@
+{
+ "mode": "hold",
+ "lease": 30,
+ "pid": 7632,
+ "err": "MaxRetryError(\"HTTPSConnectionPool(host='127.0.0.1', port=60749): Max retries exceeded with url: /apis/extensions.agents.x-k8s.io/v1beta1/namespaces/rl-bench/sandboxclaims?allowWatchBookmarks=true&labelSelector=agents.x-k8s.io/batch-id%3Dbck2rzrpnyvg&resourceVersion=7961881&timeoutSeconds=30&watch=true (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)')))\")",
+ "err_seen_s": 62.7512130420655,
+ "exec_failures_after": 20,
+ "new_acquire": "ok",
+ "new_batch": true
+}

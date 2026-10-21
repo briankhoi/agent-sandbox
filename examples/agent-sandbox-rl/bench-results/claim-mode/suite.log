@@ -1,0 +1,50 @@
+04:15:44 burst-b160-per-claim-run1
+04:15:59 burst-b160-per-claim-c20-run1
+04:16:30 burst-b160-per-claim-c50-run1
+04:16:59 burst-b160-batch-default-run1
+04:17:28 burst-b160-batch-mif50-run1
+04:17:58 burst-b160-batch-mif100-run1
+04:18:27 burst-b160-batch-mif200-run1
+04:18:57 burst-b160-fill-default-run1
+04:19:26 burst-b160-fill-mif50-run1
+04:19:59 burst-b160-per-claim-c20-run2
+04:20:30 burst-b160-per-claim-c50-run2
+04:21:00 burst-b160-batch-default-run2
+04:21:28 burst-b160-batch-mif50-run2
+04:21:59 burst-b160-batch-mif100-run2
+04:22:30 burst-b160-batch-mif200-run2
+04:23:00 burst-b160-fill-default-run2
+04:23:33 burst-b160-fill-mif50-run2
+04:24:06 burst-b160-per-claim-run2
+04:24:40 burst-b160-per-claim-c50-run3
+04:25:09 burst-b160-batch-default-run3
+04:25:37 burst-b160-batch-mif50-run3
+04:26:06 burst-b160-batch-mif100-run3
+04:26:39 burst-b160-batch-mif200-run3
+04:27:12 burst-b160-fill-default-run3
+04:27:43 burst-b160-fill-mif50-run3
+04:28:11 burst-b160-per-claim-run3
+04:29:08 burst-b160-per-claim-c20-run3
+04:29:39 rolling-r80-per-claim-run1
+04:34:12 rolling-r80-batch-default-run1
+04:38:21 rolling-r80-batch-mif50-run1
+04:42:30 rolling-r80-batch-default-run2
+04:46:42 rolling-r80-batch-mif50-run2
+04:50:51 rolling-r80-per-claim-run2
+04:55:03 lease-lease60
+05:02:18 lease-lease300
+05:09:30 comp-recycle
+05:09:37 comp-ondemand
+image bench.local/rl-task:od0 is not in the plan; creating an on-demand size-1 pool 'pool-rlb-6643816254aa' on cluster kind. If this image IS already warm here, the pool is named something other than 'pool-{template}' — set pool_name_format to match, or adopt_existing=True to fail instead of provisioning in parallel.
+05:09:46 comp-adopt
+05:09:56 comp-maxlive
+05:10:03 comp-pin
+05:10:10 fail-sigkill-reaper
+05:11:04 fail-sigkill-noreaper
+05:12:22 fail-stall
+batch bqy5r867g0hg on cluster kind stopped (batch 'bqy5r867g0hg' lease has not renewed successfully for 30s); opening a new one for new acquires
+05:13:34 fail-partition
+batch bck2rzrpnyvg on cluster kind stopped (HTTPSConnectionPool(host='127.0.0.1', port=60749): Max retries exceeded with url: /apis/extensions.agents.x-k8s.io/v1beta1/namespaces/rl-bench/sandboxclaims?allowWatchBookmarks=true&labelSelector=agents.x-k8s.io/batch-id%3Dbck2rzrpnyvg&resourceVersion=7961881&timeoutSeconds=30&watch=true (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)')))); opening a new one for new acquires
+05:14:45 fail-member-deleted
+05:14:52 long-recycle-expiry
+warm_per_task: image bench.local/rl-task:r00 has 13 tasks but max_warmpool_size=8; warming only 8 replicas (raise max_warmpool_size for one per task)

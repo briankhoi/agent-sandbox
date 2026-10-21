@@ -1,0 +1,27 @@
+{
+ "case": "recycle-expiry",
+ "tasks": 13,
+ "task_s": 60,
+ "ok": 13,
+ "failures": [],
+ "claims": 2,
+ "warm_wait_s": 7.072642666986212,
+ "pods_in_namespace": 80,
+ "pools": 10,
+ "ready_per_pool": 8,
+ "pass": true,
+ "label": "long-recycle-expiry",
+ "step": "long",
+ "run": 1,
+ "wall_started": 1792584892.730328,
+ "wall_s": 788.3175737857819,
+ "provenance": {
+  "head": "69120f71b8860766f935fcf7a76a6227b4512200",
+  "tree": "cd71ac46df6f204712cbcc01cbe000e252dc5aad",
+  "dirty": false,
+  "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py",
+  "rl_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/examples/agent-sandbox-rl/agent_sandbox_rl/__init__.py",
+  "smoke": false,
+  "python": "3.14.3"
+ }
+}

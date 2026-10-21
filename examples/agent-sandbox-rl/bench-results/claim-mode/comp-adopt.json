@@ -1,0 +1,43 @@
+{
+ "case": "adopt",
+ "warm_wait_s": 9.11887437500991,
+ "pods_in_namespace": 80,
+ "pools": 10,
+ "ready_per_pool": 8,
+ "adopted_acquires": 4,
+ "pass": true,
+ "requests": {
+  "list sandboxclaims": 2,
+  "get sandboxwarmpools": 2,
+  "create sandboxclaims": 4,
+  "watch sandboxclaims": 1,
+  "delete sandboxclaims": 4,
+  "get sandboxtemplates": 2,
+  "create leases": 1,
+  "deletecollection sandboxclaims": 1,
+  "delete leases": 1,
+  "list sandboxtemplates": 1,
+  "list sandboxwarmpools": 1
+ },
+ "total_requests": 20,
+ "watches": 1,
+ "statuses": {},
+ "http_429": 0,
+ "creates": 4,
+ "create_window_s": 0.10852604196406901,
+ "creates_per_s": 27.643134732521116,
+ "label": "comp-adopt",
+ "step": "composition",
+ "run": 1,
+ "wall_started": 1792584586.438849,
+ "wall_s": 9.606207132339478,
+ "provenance": {
+  "head": "69120f71b8860766f935fcf7a76a6227b4512200",
+  "tree": "cd71ac46df6f204712cbcc01cbe000e252dc5aad",
+  "dirty": false,
+  "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py",
+  "rl_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode/examples/agent-sandbox-rl/agent_sandbox_rl/__init__.py",
+  "smoke": false,
+  "python": "3.14.3"
+ }
+}
