@@ -24,6 +24,7 @@ import re
 import secrets
 import socket
 import string
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -75,6 +76,9 @@ BATCH_DEFAULT_MAX_IN_FLIGHT = 20
 # doesn't make requests wait. It opens one-off connections that close after a single request, so
 # each pays a fresh handshake.
 BATCH_POOL_HEADROOM = 2
+# How long acquire() waits before re-reading a warm pool's Ready count once callers spend its credit,
+# so a burst of acquires on one pool sends about one GET a second rather than one per acquire.
+BATCH_WARM_CREDIT_REFRESH_SECONDS = 1.0
 BATCH_DEFAULT_QUORUM_TIMEOUT_SECONDS = 600
 BATCH_DEFAULT_WORK_BUDGET_SECONDS = 3600
 # Added to each claim's shutdownTime
@@ -524,19 +528,30 @@ class WarmCredit:
 
     A covered create skips ``create_rps`` pacing, so only ``max_in_flight`` bounds it. Pacing
     exists so that a burst of cold claims doesn't start many pods on a node at once, and a claim
-    a Ready sandbox takes starts no pod. Prechecks read the initial count, so if another client
-    takes those sandboxes first, the stale credit lets some claims start pods unpaced, just as
-    per-claim creates do. The first 429 turns the credit off for good so the handle respects the
-    apiserver's limit by pacing every later create. The handles call it with their lock held.
+    a Ready sandbox takes starts no pod. Prechecks read the initial count, and ``acquire()`` reads
+    the pool again once callers spend that credit. If another client takes those sandboxes first,
+    the stale credit lets some claims start pods unpaced, just as per-claim creates do. The first
+    429 turns the credit off for good so the handle respects the apiserver's limit by pacing every
+    later create. The handles call it with their lock held.
     """
 
     def __init__(self) -> None:
         self._credit: dict[str, int] = {}
+        self._read_at: dict[str, float] = {}
         self.throttled = False
 
     def record(self, warmpool: str, ready: int) -> None:
-        """Sets the pool's credit to its Ready replica count."""
+        """Sets the pool's credit to its Ready replica count, just read."""
         self._credit[warmpool] = ready
+        self._read_at[warmpool] = time.monotonic()
+
+    def refresh_due(self, warmpool: str) -> bool:
+        """Whether callers spent the pool's credit and the last read happened at least
+        ``BATCH_WARM_CREDIT_REFRESH_SECONDS`` ago, making a new read worthwhile.
+        """
+        if self.throttled or self._credit.get(warmpool, 0) > 0:
+            return False
+        return time.monotonic() - self._read_at.get(warmpool, -math.inf) >= BATCH_WARM_CREDIT_REFRESH_SECONDS
 
     def take(self, warmpool: str) -> bool:
         """Spends one of the pool's credit, and returns whether there was one to spend."""
