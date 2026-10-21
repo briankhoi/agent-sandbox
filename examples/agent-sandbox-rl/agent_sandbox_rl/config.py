@@ -99,6 +99,28 @@ class ObservabilityConfig(BaseModel):
   trace_service_name: str = "agent-sandbox-rl"
 
 
+class BatchClaimConfig(BaseModel):
+  """SDK batch settings for ``FleetConfig(claim_mode="batch")``. ``None`` keeps the
+  SDK's default."""
+
+  create_rps: float | None = None
+  max_in_flight: int | None = None
+  # Longer than the SDK's 60 s: losing the Lease ends every in-flight rollout of
+  # the batch, and a driver that shares its process with a trainer can stall for
+  # tens of seconds. Renewals happen every lease_duration // 3 per fleet process.
+  lease_duration: int = 300
+  # Seconds one claim may be held after it is Ready; part of its shutdownTime.
+  # Recycle rotates a claim before this runs out.
+  work_budget: int = 3600
+
+  @field_validator("lease_duration", "work_budget")
+  @classmethod
+  def _positive_seconds(cls, v: int) -> int:
+    if v < 1:
+      raise ValueError("must be >= 1")
+    return v
+
+
 class ClusterConfig(BaseModel):
   """A single target cluster. Defaults to the ambient kube context."""
 
@@ -148,6 +170,10 @@ class FleetConfig(BaseModel):
   warm_per_task: bool = False
   window_size: int | None = None            # sliding: None = auto from max_concurrent
   ready_timeout: int = 900
+  # constants.CLAIM_MODES. "batch" claims through one SDK batch per cluster; see
+  # `batch_claims` for its settings.
+  claim_mode: str = "per_claim"
+  batch_claims: BatchClaimConfig = Field(default_factory=BatchClaimConfig)
   # Stage the warm fill in waves of <= this many sandbox creates in flight,
   # waiting for each wave to reach Ready before the next. Bounds the controller's
   # concurrent create burst (Σ pools×replicas). On controllers <= v0.5.3 this
@@ -256,6 +282,14 @@ class FleetConfig(BaseModel):
     if v not in constants.RUN_ISOLATION_MODES:
       raise ValueError(f"unknown run_isolation '{v}'; choose from "
                        f"{list(constants.RUN_ISOLATION_MODES)}")
+    return v
+
+  @field_validator("claim_mode")
+  @classmethod
+  def _known_claim_mode(cls, v: str) -> str:
+    if v not in constants.CLAIM_MODES:
+      raise ValueError(f"unknown claim_mode '{v}'; choose from "
+                       f"{list(constants.CLAIM_MODES)}")
     return v
 
   @field_validator("run_id")

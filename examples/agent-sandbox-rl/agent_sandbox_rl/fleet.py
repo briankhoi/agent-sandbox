@@ -36,9 +36,11 @@ from dataclasses import dataclass
 from typing import Optional
 from collections.abc import Callable
 
+from k8s_agent_sandbox.utils import select_pod_ip
 from kubernetes import client
 
 from . import constants, sizing
+from .batch_claims import BatchClaim, BatchClaims
 from .cluster import Cluster, ClusterRegistry
 from .config import ClusterConfig, FleetConfig, run_namespace
 from .exceptions import (
@@ -195,6 +197,12 @@ class SandboxFleet:
     self._guard_lock = threading.Lock()      # guards _guard_active
     self._obs = Observer(self.config.observability)
     self.report = None                       # set by run()/the Observer
+    self._batch_claims = (
+        BatchClaims(self.config.batch_claims,
+                    ready_timeout=self.config.ready_timeout,
+                    labels=self.config.labels)
+        if self.config.claim_mode == "batch" else None)
+    self._warned_pin_fallback = False
     if self.config.observability.enable_tracing:
       self._enable_sdk_tracing()
 
@@ -1338,20 +1346,45 @@ class SandboxFleet:
         cluster.reserve_replicas(1)
 
     fam = repo_family(task)
+    batch_claims = self._batch_claims
+    if batch_claims is not None and annotations:
+      # SandboxBatch.acquire takes no pod metadata, so a pinned acquire keeps
+      # the per-claim path.
+      if not self._warned_pin_fallback:
+        self._warned_pin_fallback = True
+        logger.info("claim_mode='batch': acquires with snapshot_uid or "
+                    "pod_annotations are claimed one by one, outside the batch")
+      batch_claims = None
     sandbox = None
+    claim: BatchClaim | None = None
     try:
       with self._obs.phase("claim", cluster=cluster.name, family=fam):
-        sandbox = cluster.sandbox_client.create_sandbox(
-            warmpool=pool, namespace=cluster.namespace,
-            sandbox_ready_timeout=self.config.ready_timeout,
-            labels=dict(self.config.labels), **extra)
-        pod = sandbox.get_pod_name()
-        try:
-          pod_ip = sandbox.get_pod_ip()
-        except Exception:  # noqa: BLE001
-          pod_ip = None
+        if batch_claims is not None:
+          claim = batch_claims.acquire(cluster, pool)
+          # The batch's watch already reported the member's Sandbox and pod IP,
+          # so no GETs here. The pod is named after its Sandbox, and connect()
+          # gives the snapshot operations their Sandbox without a request.
+          pod = claim.member.sandbox_name
+          pod_ip = select_pod_ip(claim.member.pod_ips)
+          sandbox = claim.batch.connect(claim.member)
+        else:
+          sandbox = cluster.sandbox_client.create_sandbox(
+              warmpool=pool, namespace=cluster.namespace,
+              sandbox_ready_timeout=self.config.ready_timeout,
+              labels=dict(self.config.labels), **extra)
+          pod = sandbox.get_pod_name()
+          try:
+            pod_ip = sandbox.get_pod_ip()
+          except Exception:  # noqa: BLE001
+            pod_ip = None
     except Exception:  # noqa: BLE001 — roll back partial state, then re-raise
-      if sandbox is not None:
+      if claim is not None:
+        try:
+          claim.release()
+        except Exception:  # noqa: BLE001
+          logger.warning("failed to release batch member after acquire error",
+                         exc_info=True)
+      elif sandbox is not None:
         try:
           sandbox.terminate()
         except Exception:  # noqa: BLE001
@@ -1388,7 +1421,7 @@ class SandboxFleet:
     handle = SandboxHandle(
         task=task, cluster_name=cluster.name, claim_name=sandbox.claim_name,
         sandbox_id=sandbox.sandbox_id, pod_name=pod, hostname=sandbox.sandbox_id,
-        pod_ip=pod_ip, sandbox=sandbox, _cluster=cluster)
+        pod_ip=pod_ip, sandbox=sandbox, _cluster=cluster, _batch_claim=claim)
     # The remote create ran outside the lock, and the breaker thread can tear
     # the fleet down in that window. _teardown flips _torndown under this same
     # lock before it sweeps, so exactly one of two things is true here: the
@@ -1401,7 +1434,10 @@ class SandboxFleet:
         self._handles.append(handle)
     if torn:
       try:
-        sandbox.terminate()
+        if claim is not None:
+          claim.release()
+        else:
+          sandbox.terminate()
       except Exception:  # noqa: BLE001
         logger.warning("failed to terminate sandbox created during teardown",
                        exc_info=True)
@@ -1635,6 +1671,9 @@ class SandboxFleet:
       with self._lock:
         self._torndown = True
     self.release_all()
+    if self._batch_claims is not None:
+      # Deletes any member a handle didn't release, and each batch's Lease.
+      self._batch_claims.release_all()
     if self._shared_run_id:
       # A sweep by a shared id would tear down the whole job; unwarm only what
       # this fleet warmed and leave the rest for the reaper.
