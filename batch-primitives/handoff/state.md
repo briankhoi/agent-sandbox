@@ -9,7 +9,7 @@ Always `git fetch origin && git fetch upstream` and use the live heads. The hash
 - Upstream base branch for the whole stack is `feature/batch-claim` (maintainer: Janet Kuo). Upstream `main` is separate; the fork's `origin/main` lags.
 
 ## Merged upstream
-PR 1 #1742 (squashed as `3a1607bc`), fu1 (2/N), fu2 (3/N), merge-main #2005, fu3 (4/N) #1982 (upstream tip `4bb0db30`), and **fu4 (5/N) #1983, merged 2026-10-21 (Brian's report; confirm with `git fetch upstream`)**. These are squash merges, so the merged tree should equal our local branch tree while the hashes differ (verify, see Task 1). After 5/N the lowest open PR is fu5 (6/N).
+PR 1 #1742 (squashed as `3a1607bc`), fu1 (2/N), fu2 (3/N), merge-main #2005, fu3 (4/N) #1982 (upstream tip `4bb0db30`), and **fu4 (5/N) #1983, merged 2026-10-21 as squash commit `cc4a40bf` (tree `663a0951`, equal to the tree of our fu4 branch), directly on `4bb0db30`**. Squash merges keep the tree but change hashes. After 5/N the lowest open PR is fu5 (6/N).
 
 ## Branch order (linear, bottom to top)
 Each branch sits on the one before it. Upstream PR numbers from the project's tracking (Brian opens PRs himself, so check):
@@ -26,11 +26,11 @@ Each branch sits on the one before it. Upstream PR numbers from the project's tr
 | 12/N | `feat/batch-4-group-quorum` (PR 4) | `a91dd880` | #1989 |
 | 13/N | `feat/batch-5-release-group-76a8m3` (PR 5) | `c02229bc` | #1990 |
 | 14/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | `c227f2f4` | #1991 |
-| not opened | `feat/batch-transport-ltlfdm` | `cfc74d0c` | none |
-| not opened | `feat/batch-reaper-ymtd6t` | `268c988a` | none |
-| not opened | `feat/batch-7a-create-path` (PR 7, top) | `769b7f2e` | none |
+| 15/N (inferred) | `feat/batch-transport-ltlfdm` | `cfc74d0c` | not opened |
+| 16/N (inferred) | `feat/batch-reaper-ymtd6t` | `268c988a` | not opened |
+| 17/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `769b7f2e` | not opened |
 
-These heads are the result of the group-order and precheck sync (done 2026-10-21 about 22:14). They sit on upstream `4bb0db30`, **not yet restacked onto the 5/N merge** (Task 1). `refs/pr_table.md` predates the fu8/fu9 merge and the 5/N number shift, so its "k/N" column is off by one from #1996 onward; use this table for numbers and `refs/pr_table.md` for titles and description text.
+These heads are the result of the group-order and precheck sync (done 2026-10-21 about 22:14). They sit on upstream `4bb0db30`, **not yet restacked onto the 5/N merge** (Task 1). Numbers for transport (15/N), reaper (16/N) and PR 7 (17/N) are inferred from the stack order, since none is opened; Brian decides. `refs/pr_table.md` was renumbered to match this table and holds titles and description text.
 
 Side branches: `feat/batch-ssl-eof-retry` (`8937ccdb`, TLS EOF retry, based on upstream `4bb0db30`, not opened upstream; the old `claude/project-thread-0ysqcj` is kept as a backup), `fix/python-terminal-pod-reasons` (upstream #1917, Brian's). `bench/batch-claim` holds the SDK benchmark harness (`test/benchmarks/batch-claim/`, `bench.py`). `bench/rl-claim-mode` and `claude/project-thread-c7716c` are RL work (not yours). Many `review/*` and `review-diff/*` branches on `origin` are old review copies, safe to ignore (deleting needs Brian's OK).
 
@@ -40,7 +40,7 @@ fu4 terminating claims become LOST. fu5 `connect()` checks readiness and `err()`
 ## Approved design decisions
 Brian's words are quoted where recorded. Everything else here was approved by him or settled on his delegation.
 - Features in the proposal stay until Brian approves removal. Cut with his approval ("so i do agree with the list of stuff it recommended to cut"): `replace`, `wait_for_quorum`'s `timeout`, the `LEASE_DEGRADED` event, `adopt_expired`. `adopt_expired` stays cut; the docs PR gets a `detach(grace=...)` preemption line. Kept: `release_not_ready()`, lazy `size=0` groups, `BatchClaimer`, `fleet.run(wave=True)`.
-- Linear PR ordering: "let's make everything linear in terms of PR ordering" (2026-10-19).
+- Brian decided on 2026-10-19 to make the stack linear (the cloud memory records this; the verbatim wording was not found).
 - **Group order (approved 2026-10-21 18:28):** the fill creates claims group by group in caller order, `min_ready` claims first, in PR 2. This replaces the earlier round-robin/"interleaved" order (#11/#12). Each group's ordinals stay contiguous.
 - No Lease `batch-size` annotation (Brian chose "Per-claim", 2026-10-13). `release()` gives up after three delete rounds with no progress ("#46 is approved").
 - PR 5: caller-called `release_group(group)`; group label = SHA-256 first 16 hex of the pool name; `deletecollection`; `release_not_ready()` touches fill claims only; skipped creates count as released; no deletes for LOST/CreateFailed members. No automatic failed-group delete.

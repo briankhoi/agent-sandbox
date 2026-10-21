@@ -1,6 +1,6 @@
 # Batch claiming PR stack: table, titles and descriptions
 
-Bottom to top, 17 PRs, each diffed against the one below it. Branch heads checked after `git fetch origin` on 2026-10-19, after PR 1 merged upstream as 3a1607b and the post-merge fixes: fu1 cc4e887, fu2 2d71b26, fu3 08aaa75, fu4 4f82252, fu5 728a159, fu6 c8b58ce, fu7 9cfd4ea, fu8 b3b29ec, fu9 4cbc6c1, PR 2 a242cf8, PR 3 1f14246, PR 4 4ea07cf, PR 5 2d2a4e7, PR 6 8a72827, transport 6207034, reaper 44fb487.
+Bottom to top, 16 PRs plus PR 7, each diffed against the one below it. Branch heads checked after `git fetch origin` on 2026-10-19, after PR 1 merged upstream as 3a1607b and the post-merge fixes: fu1 cc4e887, fu2 2d71b26, fu3 08aaa75, fu4 4f82252, fu5 728a159, fu6 c8b58ce, fu7 9cfd4ea, fu8 b3b29ec, fu9 4cbc6c1, PR 2 a242cf8, PR 3 1f14246, PR 4 4ea07cf, PR 5 2d2a4e7, PR 6 8a72827, transport 6207034, reaper 44fb487.
 
 Comment sources are Janet's five comments on #1742 (J1 to J5), CodeRabbit's four (C1 to C4), and the manager's feedback. The manager's items are the two err() and Lease-staleness items folded into fu2 and the group-release feedback of 2026-10-13 (`design/pr3_feedback_and_pr1_followups.md`). C2, C3 and C4 were rejected with reasons, so no PR addresses them.
 
@@ -16,15 +16,15 @@ Comment sources are Janet's five comments on #1742 (J1 to J5), CodeRabbit's four
 | 6 | `feat/batch-1-fu5-connect-checks` | fix(python-sdk): check a batch member before returning its cached connection (6/N) | `connect()` raises `BatchError` once `err()` is set, then checks the member is READY, before using the cache. | J1 and J2 (readiness before the cached connection). Manager item 1 (`BatchError` once `err()` is set, even for a cached member). |
 | 7 | `feat/batch-1-fu6-group-order` | fix(python-sdk): keep a batch's group order when re-attaching (7/N) | `get_batch` orders groups by lowest claim ordinal instead of pool name. A claim without an ordinal sorts last. | None (Brian's best-practice review). |
 | 8 | `feat/batch-1-fu7-client-cleanup` | fix(python-sdk): close cached batch connections on client cleanup (8/N) | Client cleanup closes each tracked batch's cached connections. Async `close()` and `delete_all()` share `_stop_batches()`, and async atexit closes batch connections. `_unregister_batch` removes only its own handle. | J5 (cleanup leaks connections). C1 (async `_stop_batches()`). |
-| 9 | `feat/batch-1-fu8-task-names` | refactor(python-sdk): start async batch tasks with create_task and name them (9/N) | The async handle's watch and renewal tasks start with `asyncio.create_task`, named `batch-<id>-watch` and `batch-<id>-renew`. | None (Brian's best-practice review). |
-| 10 | `feat/batch-1-fu9-concurrent-detach` | fix(python-sdk): let concurrent detach() calls on a batch handle both succeed (10/N) | On a 409 from the release write, `detach()` re-reads the Lease and treats the release as done unless this handle still holds it. | barney-s's concurrent `detach()` comment on #1742. |
-| 11 | `feat/batch-2-claim` (#1824) | feat(python-sdk): add claim_batch and release (11/N) | `claim_batch` on both clients: prechecks, batch Lease, paced background creates with retries, `CreateFailed` members. `release()` with deletecollection rounds. Tracked handles are released by `delete_all()` and exit cleanup. | Carries the J5 atexit follow-through (atexit no longer skips batch-only clients). |
-| 12 | `feat/batch-3-group-consumers` | feat(python-sdk): add events and iter_ready_groups (12/N) | O(1) fill accounting in the batch state. `events()` and `iter_ready_groups()` with per-group quorum, `GroupReady`, `QuorumUnreachableError` and `BatchTimeoutError`. | None. |
-| 13 | `feat/batch-4-group-quorum` | feat(python-sdk): add wait_for_quorum (13/N) | Batch-wide quorum mode in the state. `wait_for_quorum()` returns each group's first `min_ready` members at once. README example for the third mode. | None. |
-| 14 | `feat/batch-5-release-group-76a8m3` | feat(python-sdk): add release_member, release_group and release_not_ready (14/N) | Released members in the state. `release_member`, `release_group` (hashed group label, deletecollection) and `release_not_ready`. Unsent creates are skipped and late creates deleted. | Manager's group-release feedback: caller-called `release_group` replaces an automatic delete, with a per-group label and `deletecollection`. |
-| 15 | `feat/batch-6-acquire-nbbp5j` | feat(python-sdk): add acquire (15/N) | `acquire(warmpool)` adds one Ready member after the fill. `size=0` groups. `TerminalMemberError`. The Lease records labels, `create_rps` and the next ordinal for re-attach. | None. |
-| 16 | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (16/N) | `connect()` seeds the Sandbox with the watched pod IP, saving one GET per member. Cached connections close when a member is lost, failed or changes IP. `claim_batch` rejects a connection pool smaller than `max_in_flight + 2`, and the clients take `pool_size`. | None. |
-| 17 | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (17/N) | Claims carry an ownerReference to their batch Lease. `python -m k8s_agent_sandbox.batch_reaper` deletes only stale Leases (with a resourceVersion precondition). The garbage collector deletes the claims through the ownerReference, so the reaper needs no claim RBAC. | None. |
+| 9 | `feat/batch-1-fu9-concurrent-detach` (#1996, contains fu8) | fix(python-sdk): let concurrent detach() calls on a batch handle both succeed (9/N) | The async handle's watch and renewal tasks start with `asyncio.create_task` and are named (fu8). On a 409 from the release write, `detach()` re-reads the Lease and treats the release as done unless this handle still holds it. | barney-s's concurrent `detach()` comment on #1742. |
+| 10 | `feat/batch-2-claim` (#1824) | feat(python-sdk): add claim_batch and release (10/N) | `claim_batch` on both clients: prechecks, batch Lease, paced background creates with retries, `CreateFailed` members. `release()` with deletecollection rounds. Tracked handles are released by `delete_all()` and exit cleanup. | Carries the J5 atexit follow-through (atexit no longer skips batch-only clients). |
+| 11 | `feat/batch-3-group-consumers` | feat(python-sdk): add events and iter_ready_groups (11/N) | O(1) fill accounting in the batch state. `events()` and `iter_ready_groups()` with per-group quorum, `GroupReady`, `QuorumUnreachableError` and `BatchTimeoutError`. | None. |
+| 12 | `feat/batch-4-group-quorum` | feat(python-sdk): add wait_for_quorum (12/N) | Batch-wide quorum mode in the state. `wait_for_quorum()` returns each group's first `min_ready` members at once. README example for the third mode. | None. |
+| 13 | `feat/batch-5-release-group-76a8m3` | feat(python-sdk): add release_member, release_group and release_not_ready (13/N) | Released members in the state. `release_member`, `release_group` (hashed group label, deletecollection) and `release_not_ready`. Unsent creates are skipped and late creates deleted. | Manager's group-release feedback: caller-called `release_group` replaces an automatic delete, with a per-group label and `deletecollection`. |
+| 14 | `feat/batch-6-acquire-nbbp5j` | feat(python-sdk): add acquire (14/N) | `acquire(warmpool)` adds one Ready member after the fill. `size=0` groups. `TerminalMemberError`. The Lease records labels, `create_rps` and the next ordinal for re-attach. | None. |
+| 15 | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (15/N) | `connect()` seeds the Sandbox with the watched pod IP, saving one GET per member. Cached connections close when a member is lost, failed or changes IP. `claim_batch` rejects a connection pool smaller than `max_in_flight + 2`, and the clients take `pool_size`. | None. |
+| 16 | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (16/N) | Claims carry an ownerReference to their batch Lease. `python -m k8s_agent_sandbox.batch_reaper` deletes only stale Leases (with a resourceVersion precondition). The garbage collector deletes the claims through the ownerReference, so the reaper needs no claim RBAC. | None. |
+| 17 | `feat/batch-7a-create-path` ("PR 7") | feat(python-sdk): skip create pacing for claims a warm pool covers (17/N) | Warm-aware pacing for the fill and `acquire()`: a pool's ready replicas at the precheck pay no pacing slot. | None. |
 
 ## Suggested descriptions
 
@@ -71,58 +71,60 @@ This PR is the eighth in a series of PRs to implement a batch. It makes client c
 - The async client's `close()` and `delete_all()` share one `_stop_batches()`, and its atexit hook closes batch connections.
 - `detach()` unregisters only its own handle, so a newer handle for the same batch stays tracked.
 
-### fu8 (9/N)
-This PR is the ninth in a series of PRs to implement a batch. It names the async batch handle's background tasks.
-- The watch and Lease renewal start with `asyncio.create_task` instead of `ensure_future`, named `batch-<id>-watch` and `batch-<id>-renew`, so they are easy to tell apart in task dumps.
-
-### fu9 (10/N)
-This PR is the tenth in a series of PRs to implement a batch. It lets two `detach()` calls on the same handle both succeed.
+### fu9, containing fu8 (9/N)
+This PR is the ninth in a series of PRs to implement a batch. It lets two `detach()` calls on the same handle both succeed, and names the async batch handle's background tasks.
+- The watch and Lease renewal start with `asyncio.create_task` instead of `ensure_future`, named `batch-<id>-watch` and `batch-<id>-renew`, so they are easy to tell apart in task dumps (fu8).
 - Both calls can read the Lease while this handle holds it, so the second release write used to fail with a 409 even though the batch was released.
 - On a 409, `detach()` now reads the Lease again and only raises if this handle still holds it.
 
-### PR 2 (11/N)
-This PR is the eleventh in a series of PRs to implement a batch. It adds `claim_batch` and `release`.
+### PR 2 (10/N)
+This PR is the tenth in a series of PRs to implement a batch. It adds `claim_batch` and `release`.
 - `claim_batch` prechecks each group's warm pool and template, creates the batch Lease, then creates claims in the background at `create_rps` with `max_in_flight` workers. Failed creates become `CreateFailed` members.
 - Each group's first `min_ready` claims are created first, one group after another in group order, and the rest follow in the same order, so the first groups can be consumed while later groups are still being created.
 - `release()` stops the handle and deletes the batch's claims by label, then its Lease.
 - `delete_all()` and exit cleanup release every tracked batch.
 
-### PR 3 (12/N)
-This PR is the twelfth in a series of PRs to implement a batch. It adds the ways to consume a batch as it fills.
+### PR 3 (11/N)
+This PR is the eleventh in a series of PRs to implement a batch. It adds the ways to consume a batch as it fills.
 - `events()` yields member events as they happen.
 - `iter_ready_groups()` yields each group once it has `min_ready` Ready members, or raises when it can't.
 - Fill accounting is O(1) per watch event.
 
-### PR 4 (13/N)
-This PR is the thirteenth in a series of PRs to implement a batch. It adds `wait_for_quorum()`.
+### PR 4 (12/N)
+This PR is the twelfth in a series of PRs to implement a batch. It adds `wait_for_quorum()`.
 - It blocks until every group has `min_ready` Ready members and returns them in one list, or raises `QuorumUnreachableError` or `BatchTimeoutError`.
 - Members beyond the quorum are handed out through `events()`.
 
-### PR 5 (14/N)
-This PR is the fourteenth in a series of PRs to implement a batch. It lets a caller free part of a batch.
+### PR 5 (13/N)
+This PR is the thirteenth in a series of PRs to implement a batch. It lets a caller free part of a batch.
 - `release_member(member)` deletes one member's claim.
 - `release_group(warmpool)` deletes a group's fill claims with one label-scoped `deletecollection`, using a hashed group label.
 - `release_not_ready()` ends the fill and deletes every member that isn't Ready and was never handed out.
 
-### PR 6 (15/N)
-This PR is the fifteenth in a series of PRs to implement a batch. It adds `acquire()` so a caller can replace a released member.
+### PR 6 (14/N)
+This PR is the fourteenth in a series of PRs to implement a batch. It adds `acquire()` so a caller can replace a released member.
 - `acquire(warmpool, timeout=None)` adds one member from any warm pool in the namespace and blocks until it is Ready. It never leaves its claim behind.
 - `size=0` groups are allowed for pools filled only through `acquire()`.
 - The Lease records labels, `create_rps` and the next ordinal, so a re-attached handle behaves like the original.
 
-### Transport (16/N)
-This PR is the sixteenth in a series of PRs to implement a batch. It makes fan-out cheaper and safer.
+### Transport (15/N)
+This PR is the fifteenth in a series of PRs to implement a batch. It makes fan-out cheaper and safer.
 - `connect()` uses the pod IP the watch already knows, so it skips one Sandbox GET per member.
 - A cached connection closes when its member is lost, failed or moves to another IP.
 - `claim_batch` fails early when the client's connection pool is smaller than `max_in_flight + 2`. `SandboxClient` and `AsyncSandboxClient` take `pool_size`.
 
-### Reaper (17/N)
-This PR is the seventeenth in a series of PRs to implement a batch. It cleans up batches whose driver died.
+### Reaper (16/N)
+This PR is the sixteenth in a series of PRs to implement a batch. It cleans up batches whose driver died.
 - Batch claims carry an ownerReference to their Lease, so the garbage collector deletes them once the Lease is gone.
 - `python -m k8s_agent_sandbox.batch_reaper` runs once and finds Leases past their duration plus a skew margin. It deletes only those Leases, each with a resourceVersion precondition, and never touches claims, so its RBAC is `list`, `get` and `delete` on Leases. `--dry-run` only logs.
 
+### PR 7 (17/N, number inferred from stack order; Brian decides)
+This PR is the seventeenth in a series of PRs to implement a batch. It stops create pacing from slowing batches that a warm pool already covers.
+- `claim_batch` and `acquire()` read each warm pool's `status.readyReplicas` at the precheck and give that many creates no pacing slot, so only `max_in_flight` bounds them. The rest stay at `create_rps`.
+
 ## Notes
-- Titles use his "(k/N)" form with a literal N, numbered by stack position.
+- **Numbering (corrected 2026-10-21).** Upstream titles are: 6/N fu5 #1984, 7/N fu6 #1985, 8/N fu7 #1986, 9/N fu9 #1996 (contains fu8), 10/N PR 2 #1824, 11/N PR 3 #1988, 12/N PR 4 #1989, 13/N PR 5 #1990, 14/N PR 6 #1991. Transport, reaper, PR 7 and the TLS EOF fix are not opened upstream; their numbers here (15/N to 17/N) are inferred from the stack order. 5/N (fu4, #1983) is merged. The table header and the description above were renumbered from the original draft; the heads quoted at the top of the file are old.
+- The PR 7 text above was drafted from the commit titles ("skip create pacing for claims a warm pool covers", "skip acquire pacing ..."), not from Brian's wording. Check it against the code.- Titles use his "(k/N)" form with a literal N, numbered by stack position.
 - PR 1's diff against `origin/main` also lists upstream commits because the fork's main lags. The row covers only its five batch commits.
 - The follow-ups were split by topic on 2026-10-19. The old `feat/batch-1-fu4-group-order` and `feat/batch-1-fu5-logging` branches are stale; fu6 and fu7 replace them.
 - Row 17 describes the branch tip 2dcf9fd, with the reaper deleting only Leases (option B, approved 2026-10-19).

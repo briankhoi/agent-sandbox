@@ -9,7 +9,7 @@ Setup, in the repo root:
   git fetch origin
   git remote get-url upstream || git remote add upstream https://github.com/kubernetes-sigs/agent-sandbox.git
   git fetch upstream
-  git worktree add -B batch-primitives-notes ../agent-sandbox-notes origin/batch-primitives-notes   # if it already exists: git -C ../agent-sandbox-notes pull --ff-only
+  git worktree add ../agent-sandbox-notes batch-primitives-notes   # if the worktree exists: git -C ../agent-sandbox-notes pull --ff-only
 Read these in order, from ../agent-sandbox-notes/batch-primitives/handoff/:
   1. project_instructions.md   (Brian's rules; they override your defaults)
   2. working_rules.md          (how he wants work done and reported)
@@ -17,7 +17,7 @@ Read these in order, from ../agent-sandbox-notes/batch-primitives/handoff/:
   4. tasks.md                  (ordered tasks; each says which other files to read)
 Then do Task 1 in tasks.md. Do not start a later task until Brian says to, except to read ahead.
 
-Hard rules (the files repeat them): commits authored by Brian Nguyen <brianknguyen@google.com> with no Co-Authored-By or Claude-Session trailers, never --no-verify, push only to origin, never comment on GitHub or open a PR (Brian does), review copies before syncing open-PR branches, ask before creating or deleting kind clusters, base every claim on code you have read, and report short: summary, ranked findings, decisions last.
+Hard rules (the files repeat them): commits authored by Brian Nguyen <brianknguyen@google.com> with no Co-Authored-By or Claude-Session trailers, never --no-verify, run only new or changed tests (no full suite), push only to origin, never comment on GitHub or open a PR (Brian does), review copies before syncing open-PR branches, ask before creating or deleting kind clusters, base every claim on code you have read, and report short: summary, ranked findings, decisions last.
 ```
 
 Files here: `project_instructions.md`, `working_rules.md`, `state.md`, `tasks.md`, and `refs/` (cloud-only documents that tasks point to).
