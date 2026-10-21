@@ -22,10 +22,11 @@ in ``claim_mode`` and its settings. Each starts from the same warm state: every
 pool of its shape at full ``readyReplicas``, no claims, no terminating pods.
 
 Arms, per env (a tunix-like loop: acquire on reset, one exec, release on close):
-  per-claim    ``FleetConfig(claim_mode="per_claim")``, optionally with at most
-               ``acquire_concurrency`` acquires in flight, to separate the gain
-               from batching from the gain from bounded concurrency
+  per-claim    ``FleetConfig(claim_mode="per_claim")``
   batch        ``FleetConfig(claim_mode="batch")``, the code under test
+  Either arm can run with at most ``acquire_concurrency`` envs inside
+  ``fleet.acquire`` at once (a driver semaphore, held until acquire returns), so
+  the two can be compared under the same limit as well as with none.
   fill         one ``claim_batch`` for the whole step, one group per pool sized to
                its tasks; envs take Ready members as ``events()`` yields them.
                Test-only: it is the deferred ``fleet.prefetch`` hook's mechanism
@@ -47,6 +48,7 @@ rotated each round, so drift in the cluster spreads evenly across variants.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import math
@@ -119,7 +121,7 @@ class Variant:
     arm: str                                  # per-claim | batch | fill
     create_rps: float | None = None
     max_in_flight: int | None = None
-    acquire_concurrency: int | None = None    # per-claim only
+    acquire_concurrency: int | None = None    # driver semaphore, per-claim or batch
     lease_duration: int = 300
 
 
@@ -133,6 +135,9 @@ BURST_VARIANTS = [
     Variant("batch-mif50", "batch", max_in_flight=50),
     Variant("batch-mif100", "batch", max_in_flight=100),
     Variant("batch-mif200", "batch", max_in_flight=200),
+    # The same driver semaphore as per-claim-c20 and -c50, over SDK defaults.
+    Variant("batch-c20", "batch", acquire_concurrency=20),
+    Variant("batch-c50", "batch", acquire_concurrency=50),
     Variant("fill-default", "fill"),
     Variant("fill-mif50", "fill", max_in_flight=50),
 ]
@@ -279,13 +284,26 @@ def ratio(a, b):
 class RequestCounter:
     """Counts every request the sync Kubernetes client sends, by verb and resource,
     with the time of each claim create and every non-2xx status. Exec goes over a
-    websocket that bypasses ApiClient.call_api, so the env loop counts execs."""
+    websocket that bypasses ApiClient.call_api, so the env loop counts execs.
+    Requests the driver sends for its own monitoring, inside ``driver()``, are kept
+    apart as ``driver_requests`` so they don't count against either arm."""
+
+    DRIVER = "driver "
 
     def __init__(self):
         self.lock = threading.Lock()
         self.counts: dict[str, int] = {}
         self.statuses: dict[str, int] = {}
         self.create_times: list[float] = []
+        self._local = threading.local()
+
+    @contextlib.contextmanager
+    def driver(self):
+        self._local.driver = True
+        try:
+            yield
+        finally:
+            self._local.driver = False
 
     def install(self) -> None:
         from kubernetes.client import ApiClient
@@ -296,6 +314,8 @@ class RequestCounter:
             parsed = urlparse(url)
             query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
             key = classify_request(method, parsed.path, query)
+            if getattr(counter._local, "driver", False):
+                key = counter.DRIVER + key
             now = time.monotonic()
             try:
                 resp = orig(self, method, url, *args, **kwargs)
@@ -331,7 +351,10 @@ class RequestCounter:
             statuses = {k: v - statuses0.get(k, 0) for k, v in self.statuses.items()
                         if v - statuses0.get(k, 0)}
             creates = self.create_times[creates0:]
+        driver = {k: v for k, v in counts.items() if k.startswith(self.DRIVER)}
+        counts = {k: v for k, v in counts.items() if k not in driver}
         out = {"requests": counts, "total_requests": sum(counts.values()),
+               "driver_requests": sum(driver.values()),
                "watches": sum(v for k, v in counts.items() if k.startswith("watch ")),
                "statuses": statuses, "http_429": statuses.get("429", 0),
                "creates": len(creates)}
@@ -677,7 +700,9 @@ def run_rolling(args, variant: Variant, shape: Shape, run: int) -> dict:
     def sample():
         while time.monotonic() < stop:
             try:
-                ready = sum(r for _, r in pool_states(custom, args, pools).values())
+                with COUNTER.driver():
+                    states = pool_states(custom, args, pools)
+                ready = sum(r for _, r in states.values())
                 cur = min_ready["value"]
                 min_ready["value"] = ready if cur is None else min(cur, ready)
             except Exception:  # noqa: BLE001 — a missed sample isn't a result
@@ -1423,13 +1448,13 @@ def verdict(burst_rows: dict, failures: list[dict]) -> dict:
         "best_fill": best_fill and {"variant": best_fill[0], "ratio": ratio(best_fill[1], base)},
         "failures_all_pass": failures_ok,
         "per_claim_errors": per_claim.get("errors"),
-        # Same in-flight limit on both sides. Unbounded per-claim has all 160 in
-        # flight, which stands in for batch-mif100 and batch-mif200.
-        "batch_default_vs_per_claim_c20": ratio(
-            batch.get("batch-default"),
+        # The same driver semaphore on both arms. batch_default_ratio is the
+        # comparison with no semaphore on either.
+        "batch_c20_vs_per_claim_c20": ratio(
+            batch.get("batch-c20"),
             (burst_rows.get("per-claim-c20") or {}).get("last_start_median")),
-        "batch_mif50_vs_per_claim_c50": ratio(
-            batch.get("batch-mif50"),
+        "batch_c50_vs_per_claim_c50": ratio(
+            batch.get("batch-c50"),
             (burst_rows.get("per-claim-c50") or {}).get("last_start_median")),
     }
     sized_ok = best_batch is not None and base and best_batch[1] <= 1.1 * base

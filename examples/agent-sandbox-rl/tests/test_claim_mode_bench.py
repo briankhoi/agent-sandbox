@@ -118,6 +118,21 @@ def test_request_counter_records_the_status_of_a_failed_request(monkeypatch):
   assert d["statuses"] == {"429": 1, "-1": 1}   # -1: no HTTP response
 
 
+def test_request_counter_keeps_driver_requests_apart(monkeypatch):
+  monkeypatch.setattr(ApiClient, "call_api", lambda self, method, url, *a, **k: None)
+  c = bench.RequestCounter()
+  c.install()
+  snap = c.snapshot()
+  pool = "/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/ns/sandboxwarmpools/p"
+  ApiClient.call_api(None, "GET", pool)
+  with c.driver():
+    ApiClient.call_api(None, "GET", pool)
+    ApiClient.call_api(None, "GET", pool)
+  d = c.since(snap)
+  assert d["requests"] == {"get sandboxwarmpools": 1}
+  assert d["total_requests"] == 1 and d["driver_requests"] == 2
+
+
 def test_clean_stale_deletes_this_runs_claims_and_leases(monkeypatch):
   custom = MagicMock()
   custom.list_namespaced_custom_object.return_value = {"items": [{}, {}]}
@@ -157,15 +172,15 @@ def test_verdict_rules():
   assert bench.verdict(slow, ok)["ship_pr1"] is False
 
 
-def test_verdict_compares_batch_to_per_claim_at_the_same_in_flight_limit():
+def test_verdict_compares_batch_to_per_claim_under_the_same_semaphore():
   rows = bench.summarize_burst(_burst("per-claim", 1.0) + _burst("per-claim-c20", 2.0)
-                               + _burst("per-claim-c50", 1.5) + _burst("batch-default", 1.0)
-                               + _burst("batch-mif50", 0.75))
-  assert round(rows["batch-default"]["ready_last_median"], 2) == 0.9
-  assert rows["batch-default"]["create_window_median"] == 0.5
+                               + _burst("per-claim-c50", 1.5) + _burst("batch-c20", 1.0)
+                               + _burst("batch-c50", 0.75))
+  assert round(rows["batch-c20"]["ready_last_median"], 2) == 0.9
+  assert rows["batch-c20"]["create_window_median"] == 0.5
   v = bench.verdict(rows, [{"pass": True}])
-  assert round(v["batch_default_vs_per_claim_c20"], 2) == 0.5
-  assert round(v["batch_mif50_vs_per_claim_c50"], 2) == 0.5
+  assert round(v["batch_c20_vs_per_claim_c20"], 2) == 0.5
+  assert round(v["batch_c50_vs_per_claim_c50"], 2) == 0.5
 
 
 def test_verdict_is_undecided_when_the_per_claim_baseline_had_errors():
