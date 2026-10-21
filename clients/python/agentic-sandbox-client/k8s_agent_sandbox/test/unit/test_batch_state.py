@@ -82,9 +82,13 @@ class TestDeriveMember(unittest.TestCase):
         self.assertEqual(member.service_fqdn, "sbx-1.svc")
 
     def test_terminating_claim_counts_as_deleted(self):
-        ready = {"type": "Ready", "status": "True"}
-        failed = {"type": "Ready", "status": "False", "reason": "ClaimExpired"}
-        for condition, expected in ((ready, MemberState.LOST), (failed, MemberState.FAILED)):
+        ready = {"type": "Ready", "status": "True", "reason": "Ready", "message": "x"}
+        failed = {"type": "Ready", "status": "False", "reason": "ClaimExpired", "message": "x"}
+        cases = (
+            (ready, MemberState.LOST, None, None),
+            (failed, MemberState.FAILED, "ClaimExpired", "x"),
+        )
+        for condition, expected, reason, message in cases:
             with self.subTest(expected=expected):
                 claim = _claim(
                     "b1-0",
@@ -94,6 +98,7 @@ class TestDeriveMember(unittest.TestCase):
                 )
                 member = batch_state.derive_member(claim)
                 self.assertEqual(member.state, expected)
+                self.assertEqual((member.reason, member.message), (reason, message))
                 # The DELETED event that follows leaves the member as it is.
                 state = batch_state.BatchState("b1", [])
                 state.upsert_claim(claim)
@@ -155,7 +160,7 @@ class TestLost(unittest.TestCase):
         state.upsert_claim(
             _claim(
                 "b1-0",
-                conditions=[{"type": "Ready", "status": "True", "reason": "Ready"}],
+                conditions=[{"type": "Ready", "status": "True", "reason": "Ready", "message": "x"}],
                 sandbox={"name": "sbx-1", "podIPs": ["10.0.0.1"], "serviceFQDN": "sbx-1.svc"},
             )
         )
@@ -163,7 +168,8 @@ class TestLost(unittest.TestCase):
         self.assertEqual(lost.state, MemberState.LOST)
         self.assertEqual(lost.pod_ips, ())
         self.assertIsNone(lost.service_fqdn)
-        self.assertEqual(lost.reason, "Ready")
+        self.assertIsNone(lost.reason)
+        self.assertIsNone(lost.message)
 
     def test_failed_member_missing_from_a_relist_stays_failed(self):
         state = batch_state.BatchState("b1", [BatchGroup(warmpool="pool-a", size=1)])

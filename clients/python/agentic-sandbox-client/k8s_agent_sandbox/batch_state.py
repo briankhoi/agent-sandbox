@@ -123,6 +123,7 @@ def derive_member(claim_obj: dict[str, Any]) -> Member:
     terminating = metadata.get("deletionTimestamp") is not None
     if terminating and state is not MemberState.FAILED:
         state = MemberState.LOST
+        reason = message = None
 
     return Member(
         claim_name=metadata.get("name", ""),
@@ -168,16 +169,17 @@ class BatchState:
         """Handles a lost claim (watch DELETED or missing on re-list).
 
         A member that already failed stays ``FAILED``, so its state keeps saying why it can't
-        become Ready.
+        become Ready. A lost member drops its reason and message, which described the deleted
+        claim's last Ready condition.
         """
         existing = self._members.get(claim_name)
         if existing is None:
             # Deleted before this handle ever saw an ADDED/MODIFIED event for it.
             return None
-        state = MemberState.FAILED if existing.state is MemberState.FAILED else MemberState.LOST
-        lost_member = existing.model_copy(
-            update={"state": state, "pod_ips": (), "service_fqdn": None}
-        )
+        update: dict[str, Any] = {"pod_ips": (), "service_fqdn": None}
+        if existing.state is not MemberState.FAILED:
+            update.update(state=MemberState.LOST, reason=None, message=None)
+        lost_member = existing.model_copy(update=update)
         self._members[claim_name] = lost_member
         return lost_member
 
