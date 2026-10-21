@@ -238,8 +238,12 @@ an error that stops the watch or Lease renewal shows in ``err()``.
   from ``get_batch`` puts them on the claims it adds with ``acquire()``.
 - `batch_id` - Optional batch id; a DNS-1123 label starting with a letter, at most 52
   characters. Generated if omitted.
-- `create_rps` - Maximum claim creates started per second. Defaults to 50.
-- `max_in_flight` - Maximum claim creates in flight at once. Defaults to 20. The client's
+- `create_rps` - Maximum claim creates started per second. Defaults to 50. Claims that a
+  pool's Ready sandboxes cover, counted when the pool is checked, aren't paced, so
+  only ``max_in_flight`` bounds them. Once the apiserver answers a create with 429,
+  every later create is paced.
+- `max_in_flight` - Maximum claim creates in flight at once, counting the creates of
+  ``acquire()`` on the returned handle. Defaults to 20. The client's
   Kubernetes API connection pool must hold at least ``max_in_flight + 2``, since the
   batch's watch and its Lease renewal each need a connection too.
 - `work_budget` - Seconds the caller expects to work with the batch after it is Ready;
@@ -1002,7 +1006,10 @@ never one of the initial claims. ``events()``, ``group_outcomes()``, ``wait_for_
 and ``release_not_ready()`` leave it alone, and ``release_group()`` on its pool releases it
 with the pool's other members. Its ``shutdownTime`` is the
 time of its create plus ``quorum_timeout`` plus ``work_budget`` plus 600 seconds, and its
-create is retried and paced like the initial claims'.
+create is retried and paced like the initial claims'. Like theirs, a create that the pool's
+Ready sandboxes cover isn't paced. Once the Ready count read at the pool's check is spent,
+the count is read again, at most once a second per pool. The fill's and ``acquire()``'s creates share
+``max_in_flight``, which is the default of 20 on a handle from ``get_batch``.
 
 If it raises, including on a cancellation, the member is dropped from ``members()`` and its
 claim is deleted, unless the claim is already gone or its create was rejected. A failed delete is
@@ -1031,7 +1038,7 @@ or a missing pool or template.
   ``CreateFailed``), the member fails terminally, or someone else deletes its claim
   (the member is ``LOST``) before it is Ready.
 - `BatchTimeoutError` - If the member isn't Ready within ``timeout``. A create or create retry
-  that ``create_rps`` pacing can't start within it isn't sent.
+  that ``create_rps`` pacing or ``max_in_flight`` can't start within it isn't sent.
 - `BatchError` - If this handle has been detached or released, or ``err()`` is set, when
   called or while waiting, or if ``release_member`` or ``release_group`` releases the
   member before it is Ready.
