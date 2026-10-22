@@ -24,6 +24,9 @@ pool of its shape at full ``readyReplicas``, no claims, no terminating pods.
 Arms, per env (a tunix-like loop: acquire on reset, one exec, release on close):
   per-claim    ``FleetConfig(claim_mode="per_claim")``
   batch        ``FleetConfig(claim_mode="batch")``, the code under test
+  async-*      the same arms through ``AsyncSandboxFleet`` (``await fleet.acquire``), all
+               envs as asyncio tasks on one loop; the exec runs on a driver thread pool
+               sized to the step, so only the fleet's own pool can bind
   Either arm can run with at most ``acquire_concurrency`` envs inside
   ``fleet.acquire`` at once (a driver semaphore, held until acquire returns), so
   the two can be compared under the same limit as well as with none.
@@ -48,6 +51,7 @@ rotated each round, so drift in the cluster spreads evenly across variants.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import contextlib
 import json
 import logging
@@ -63,6 +67,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
@@ -123,6 +128,10 @@ class Variant:
     max_in_flight: int | None = None
     acquire_concurrency: int | None = None    # driver semaphore, per-claim or batch
     lease_duration: int = 300
+    loop: str = "sync"                        # sync (threads) | async (AsyncSandboxFleet)
+    # async only: replaces the fleet's own thread pool (max(64, ...) workers, 496 here)
+    # with one of this size, to see what a small pool does to a burst.
+    pool_workers: int | None = None
 
 
 # Every claim here is covered by a warm pool, so the SDK sends it unpaced and only
@@ -140,6 +149,17 @@ BURST_VARIANTS = [
     Variant("batch-c50", "batch", acquire_concurrency=50),
     Variant("fill-default", "fill"),
     Variant("fill-mif50", "fill", max_in_flight=50),
+    # AsyncSandboxFleet, no limit and then the same driver semaphore on both arms.
+    Variant("async-per-claim", "per-claim", loop="async"),
+    Variant("async-per-claim-c20", "per-claim", acquire_concurrency=20, loop="async"),
+    Variant("async-per-claim-c50", "per-claim", acquire_concurrency=50, loop="async"),
+    Variant("async-batch-default", "batch", loop="async"),
+    Variant("async-batch-c20", "batch", acquire_concurrency=20, loop="async"),
+    Variant("async-batch-c50", "batch", acquire_concurrency=50, loop="async"),
+    # The smallest pool a fleet ever builds (max_concurrent 16 gives 64 workers), on
+    # both arms; an acquire holds its thread until the claim is Ready.
+    Variant("async-per-claim-pool64", "per-claim", loop="async", pool_workers=64),
+    Variant("async-batch-pool64", "batch", loop="async", pool_workers=64),
 ]
 ROLLING_VARIANTS = [
     Variant("per-claim", "per-claim"),
@@ -553,9 +573,36 @@ def _exec_true(cluster, pod: str, namespace: str) -> None:
     exec_in_pod(cluster.exec_core_api(), pod, namespace, ["true"])
 
 
+def burst_out(variant: Variant, shape: Shape, n: int, starts: dict[int, float],
+              acquired: dict[int, float], errors: list[str], *, step_s: float,
+              release_s: float, cpu: float, throttled: int, cost: dict, warm: dict) -> dict:
+    start_times = list(starts.values())
+    groups = group_starts(starts, shape.per_image)
+    return {
+        "variant": variant.name, "arm": variant.arm, "shape": shape.name, "n": n,
+        "settings": {"create_rps": variant.create_rps, "max_in_flight": variant.max_in_flight,
+                     "acquire_concurrency": variant.acquire_concurrency,
+                     "lease_duration": variant.lease_duration, "loop": variant.loop,
+                     "pool_workers": variant.pool_workers},
+        "started": len(starts), "errors": len(errors), "error_samples": errors[:5],
+        "acquired_s": dist(list(acquired.values())), "start_s": dist(start_times),
+        "first_start_s": min(start_times) if start_times else None,
+        "median_start_s": percentile(start_times, 50),
+        "last_start_s": max(start_times) if start_times else None,
+        "group_start_s": dist(groups),
+        "first_group_s": groups[0] if groups else None,
+        "last_group_s": groups[-1] if groups else None,
+        "step_s": step_s, "release_s": release_s, "driver_cpu_s": cpu,
+        "max_rss_mb": max_rss_mb(), "execs": len(starts),
+        "throttled_logs": throttled, **cost, **warm,
+    }
+
+
 def run_burst(args, variant: Variant, shape: Shape) -> dict:
     """One synchronous step: every env acquires at once, execs once, waits for the
     step to end, then releases."""
+    if variant.loop == "async":
+        return run_burst_async(args, variant, shape)
     activate(args, shape)
     warm = wait_warm(args, shape)
     images = shape.image_list()
@@ -654,27 +701,103 @@ def run_burst(args, variant: Variant, shape: Shape) -> dict:
         fill_batch.release()
     fleet.teardown()
     release_s = time.monotonic() - t_release
-    start_times = list(starts.values())
-    groups = group_starts(starts, shape.per_image)
-    out = {
-        "variant": variant.name, "arm": variant.arm, "shape": shape.name, "n": n,
-        "settings": {"create_rps": variant.create_rps, "max_in_flight": variant.max_in_flight,
-                     "acquire_concurrency": variant.acquire_concurrency,
-                     "lease_duration": variant.lease_duration},
-        "started": len(starts), "errors": len(errors), "error_samples": errors[:5],
-        "acquired_s": dist(list(acquired.values())), "start_s": dist(start_times),
-        "first_start_s": min(start_times) if start_times else None,
-        "median_start_s": percentile(start_times, 50),
-        "last_start_s": max(start_times) if start_times else None,
-        "group_start_s": dist(groups),
-        "first_group_s": groups[0] if groups else None,
-        "last_group_s": groups[-1] if groups else None,
-        "step_s": step_s, "release_s": release_s, "driver_cpu_s": cpu,
-        "max_rss_mb": max_rss_mb(), "execs": len(starts),
-        "throttled_logs": THROTTLE.count - throttled0, **cost, **warm,
-    }
+    out = burst_out(variant, shape, n, starts, acquired, errors, step_s=step_s,
+                    release_s=release_s, cpu=cpu, throttled=THROTTLE.count - throttled0,
+                    cost=cost, warm=warm)
     if variant.arm == "fill":
         out["claim_batch_s"] = claim_batch_s
+    return out
+
+
+async def run_async_step(fleet, variant: Variant, n: int, exec_pool) -> dict:
+    """One burst step on an ``AsyncSandboxFleet``: every env is an asyncio task that
+    awaits acquire, execs once on ``exec_pool``, waits for the step to end, then
+    awaits release. The loop's scheduling lag is sampled, since a loop the fleet
+    blocks would show there before it showed in the start times."""
+    loop = asyncio.get_running_loop()
+    starts: dict[int, float] = {}
+    acquired: dict[int, float] = {}
+    errors: list[str] = []
+    lags: list[float] = []
+    go = asyncio.Event()
+    step_end = asyncio.Event()
+    sem = (asyncio.Semaphore(variant.acquire_concurrency)
+           if variant.acquire_concurrency else None)
+    t0 = 0.0
+
+    async def env(i: int, task):
+        try:
+            await go.wait()
+            if sem is not None:
+                async with sem:
+                    handle = await fleet.acquire(task)
+            else:
+                handle = await fleet.acquire(task)
+            acquired[i] = time.monotonic() - t0
+            await loop.run_in_executor(exec_pool, handle.exec, ["true"])
+            starts[i] = time.monotonic() - t0
+            await step_end.wait()
+            await fleet.release(handle)
+        except Exception as e:  # noqa: BLE001 — recorded, the step carries on
+            errors.append(f"{type(e).__name__}: {e}"[:300])
+
+    async def sample_lag():
+        while True:
+            t = time.monotonic()
+            await asyncio.sleep(0.01)
+            lags.append(max(0.0, time.monotonic() - t - 0.01))
+
+    envs = [asyncio.create_task(env(i, t)) for i, t in enumerate(fleet.tasks)]
+    sampler = asyncio.create_task(sample_lag())
+    snap = COUNTER.snapshot()
+    throttled0 = THROTTLE.count
+    cpu0 = cpu_seconds()
+    t0 = time.monotonic()
+    go.set()
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline and len(starts) + len(errors) < n:
+        await asyncio.sleep(0.05)
+    step_s = time.monotonic() - t0
+    cost = COUNTER.since(snap)
+    cpu = cpu_seconds() - cpu0
+    t_release = time.monotonic()
+    step_end.set()
+    await asyncio.wait(envs, timeout=300)
+    sampler.cancel()
+    await fleet.teardown()
+    fleet.close()
+    return {"starts": starts, "acquired": acquired, "errors": errors, "step_s": step_s,
+            "release_s": time.monotonic() - t_release, "cpu": cpu,
+            "throttled": THROTTLE.count - throttled0, "cost": cost,
+            "loop_lag_s": dist(lags)}
+
+
+def run_burst_async(args, variant: Variant, shape: Shape) -> dict:
+    """``run_burst`` through ``AsyncSandboxFleet``. A smaller ``pool_workers`` swaps
+    the fleet's lazily built thread pool (a private attribute, which a bench may
+    touch) before its first use, so the cap is the only thing that changes."""
+    from agent_sandbox_rl import AsyncSandboxFleet
+    activate(args, shape)
+    warm = wait_warm(args, shape)
+    fleet = AsyncSandboxFleet(
+        sync_fleet=arm_fleet(args, variant, shape.image_list(), shape.per_image))
+    if variant.pool_workers:
+        fleet._executor = ThreadPoolExecutor(max_workers=variant.pool_workers,
+                                             thread_name_prefix="asrl-async")
+    pool_workers = fleet._thread_pool()._max_workers
+    exec_pool = ThreadPoolExecutor(max_workers=shape.tasks, thread_name_prefix="bench-exec")
+    try:
+        step = asyncio.run(run_async_step(fleet, variant, shape.tasks, exec_pool))
+    finally:
+        exec_pool.shutdown(wait=True)
+    out = burst_out(variant, shape, shape.tasks, step["starts"], step["acquired"],
+                    step["errors"], step_s=step["step_s"], release_s=step["release_s"],
+                    cpu=step["cpu"], throttled=step["throttled"], cost=step["cost"],
+                    warm=warm)
+    out.update(
+        pool_workers_actual=pool_workers, loop_lag_s=step["loop_lag_s"],
+        leaked_pool_threads=sum(t.name.startswith("asrl-async") and t.is_alive()
+                                for t in threading.enumerate()))
     return out
 
 
@@ -1416,12 +1539,77 @@ def summarize_burst(results: list[dict]) -> dict:
             "throttled_logs": sum(r.get("throttled_logs", 0) for r in rs),
             "driver_cpu_median": median_of(rs, "driver_cpu_s"),
         }
+        if any("pool_workers_actual" in r for r in rs):
+            lag = [(r.get("loop_lag_s") or {}) for r in rs]
+            rows[name].update(
+                pool_workers_actual_min=min(r["pool_workers_actual"] for r in rs),
+                loop_lag_p99_median=statistics.median(
+                    [d["p99"] for d in lag if d.get("p99") is not None] or [0.0]),
+                loop_lag_max_max=max([d["last"] for d in lag if d.get("last") is not None]
+                                     or [0.0]),
+                leaked_pool_threads=sum(r.get("leaked_pool_threads", 0) for r in rs))
     return rows
 
 
 def _median_dist(results: list[dict], key: str, stat: str):
     vals = [r[key][stat] for r in results if (r.get(key) or {}).get(stat) is not None]
     return statistics.median(vals) if vals else None
+
+
+# Fixed before the async run, not measured: the async path may cost this much more
+# than the sync one before it needs changes.
+ASYNC_TOLERANCE = 1.2
+
+
+def async_checks(v: dict, burst_rows: dict) -> dict:
+    """True, False, or None when a run it needs is missing or had errors."""
+
+    def le(a, b):
+        return None if a is None or b is None else a <= b
+
+    def clean(names):
+        rows = [burst_rows.get(n) for n in names]
+        if any(r is None for r in rows):
+            return None
+        return not any(r.get("errors") for r in rows)
+
+    sync_ratio = v.get("batch_default_ratio")
+    return {
+        # Awaiting the sync batch from threads costs at most ASYNC_TOLERANCE.
+        "async_batch_within_tolerance_of_sync_batch": le(
+            v["async_batch_vs_sync_batch"], ASYNC_TOLERANCE),
+        # Batch keeps its win over per-claim on the async path.
+        "async_ratio_within_tolerance_of_sync_ratio": le(
+            v["async_default_ratio"],
+            None if sync_ratio is None else sync_ratio * ASYNC_TOLERANCE),
+        "async_batch_faster_than_async_per_claim": le(v["async_default_ratio"], 1.0),
+        "async_c20_batch_faster": le(v["async_c20_vs_async_per_claim_c20"], 1.0),
+        "async_c50_batch_faster": le(v["async_c50_vs_async_per_claim_c50"], 1.0),
+        "async_pool64_batch_faster": le(v["async_pool64_ratio"], 1.0),
+        # The default pool is not the limit, so nothing was capped by it.
+        "default_pool_not_binding": _default_pool_ok(burst_rows),
+        "no_loop_stall_over_100ms": _lag_ok(burst_rows),
+        "no_errors_or_leaked_threads": clean(
+            [n for n in ("async-per-claim", "async-batch-default", "async-per-claim-c20",
+                         "async-batch-c20", "async-per-claim-c50", "async-batch-c50",
+                         "async-per-claim-pool64", "async-batch-pool64")])
+        and not any((burst_rows.get(n) or {}).get("leaked_pool_threads")
+                    for n in burst_rows if n.startswith("async-")),
+    }
+
+
+def _default_pool_ok(burst_rows: dict):
+    rows = [burst_rows[n] for n in ("async-per-claim", "async-batch-default")
+            if n in burst_rows]
+    if not rows:
+        return None
+    return all((r.get("pool_workers_actual_min") or 0) >= BURST.tasks for r in rows)
+
+
+def _lag_ok(burst_rows: dict):
+    lags = [r["loop_lag_max_max"] for n, r in burst_rows.items()
+            if n.startswith("async-") and r.get("loop_lag_max_max") is not None]
+    return None if not lags else max(lags) <= 0.1
 
 
 def verdict(burst_rows: dict, failures: list[dict]) -> dict:
@@ -1457,6 +1645,26 @@ def verdict(burst_rows: dict, failures: list[dict]) -> dict:
             batch.get("batch-c50"),
             (burst_rows.get("per-claim-c50") or {}).get("last_start_median")),
     }
+
+    def med(name):
+        r = burst_rows.get(name) or {}
+        return None if r.get("errors") else r.get("last_start_median")
+
+    # The async arms. The first four are ratios of last-start medians, where under 1
+    # means batch is faster; the checks below them are fixed before the run.
+    out.update({
+        "async_default_ratio": ratio(med("async-batch-default"), med("async-per-claim")),
+        "async_c20_vs_async_per_claim_c20": ratio(med("async-batch-c20"),
+                                                  med("async-per-claim-c20")),
+        "async_c50_vs_async_per_claim_c50": ratio(med("async-batch-c50"),
+                                                  med("async-per-claim-c50")),
+        "async_pool64_ratio": ratio(med("async-batch-pool64"),
+                                    med("async-per-claim-pool64")),
+        "async_batch_vs_sync_batch": ratio(med("async-batch-default"),
+                                           med("batch-default")),
+        "async_per_claim_vs_sync_per_claim": ratio(med("async-per-claim"), med("per-claim")),
+    })
+    out["async_checks"] = async_checks(out, burst_rows)
     sized_ok = best_batch is not None and base and best_batch[1] <= 1.1 * base
     # None: the baseline had errors, so the rule can't be applied.
     out["ship_pr1"] = bool(sized_ok and failures_ok) if baseline_ok else None
@@ -1495,6 +1703,14 @@ def cmd_report(args) -> int:
             f"{_fmt(r['create_window_median'])} | {_fmt(r['requests_median'], 0)} | {_fmt(r['watches_median'], 0)} | "
             f"{_fmt(r['creates_per_s_median'], 0)} | {r['http_429']} | "
             f"{r['throttled_logs']} | {_fmt(r['driver_cpu_median'])} |")
+    lines += ["", "## Async path", "",
+              "| variant | thread pool workers | loop lag p99 s (median of runs) | "
+              "loop lag max s | leaked pool threads |", "|---|---|---|---|---|"]
+    for name, r in burst.items():
+        if "pool_workers_actual_min" in r:
+            lines.append(f"| {name} | {r['pool_workers_actual_min']} | "
+                         f"{_fmt(r['loop_lag_p99_median'], 3)} | "
+                         f"{_fmt(r['loop_lag_max_max'], 3)} | {r['leaked_pool_threads']} |")
     lines += ["", "## Rolling", "",
               "| variant | run | rollouts/min | acquire p50/p90/p99 s | requests/rollout | "
               "watches | min warm Ready | starved | 429s | throttled | errors |",
@@ -1529,7 +1745,8 @@ def cmd_report(args) -> int:
             "wall_started", "pools", "ready_per_pool", "pods_in_namespace")}
         lines.append(f"| {r['label']} | {r.get('pass')} | `{json.dumps(keep)[:400]}` |")
     lines += ["", "Not measured here: snapshot suspend/resume/restore on a batch member "
-              "(needs GKE Pod Snapshots); the async fleet (sync only); connections; the "
+              "(needs GKE Pod Snapshots); the async fleet's rolling and recycle paths (the "
+              "async arms are bursts only); connections; the "
               "cold and throttled create path (every claim is warm-covered, so create_rps "
               "only applies after a 429); scale past 160. Rolling holds are lognormal, "
               "median 15 s and p99 about 150 s, capped at 150 s, shorter than the decision "

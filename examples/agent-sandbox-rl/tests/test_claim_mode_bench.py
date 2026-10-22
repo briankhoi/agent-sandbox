@@ -14,8 +14,10 @@
 
 """Unit tests for the cluster-free helpers in claim_mode_bench.py."""
 
+import asyncio
 import statistics
 import types
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import claim_mode_bench as bench
@@ -208,3 +210,138 @@ def test_worker_command_puts_cluster_flags_before_the_subcommand(monkeypatch):
   parsed = bench.build_parser().parse_args(cmd[2:])
   assert (parsed.cmd, parsed.mode, parsed.lease, parsed.n) == ("worker", "hold", 30, 20)
   assert parsed.context == "kind-x"
+
+
+def _async_burst(variant, last, pool=496, lag_max=0.01, leaked=0, runs=3, errors=0):
+  rows = _burst(variant, last, runs=runs, errors=errors)
+  for r in rows:
+    r.update(pool_workers_actual=pool, loop_lag_s={"p99": 0.001, "last": lag_max},
+             leaked_pool_threads=leaked)
+  return rows
+
+
+def _all_async():
+  # Sync batch 1.0 vs per-claim 3.0 (0.33); async batch 1.1 vs per-claim 3.3.
+  return (_burst("per-claim", 3.0) + _burst("batch-default", 1.0)
+          + _async_burst("async-per-claim", 3.3) + _async_burst("async-batch-default", 1.1)
+          + _async_burst("async-per-claim-c20", 2.0) + _async_burst("async-batch-c20", 1.0)
+          + _async_burst("async-per-claim-c50", 2.0) + _async_burst("async-batch-c50", 1.0)
+          + _async_burst("async-per-claim-pool64", 5.0, pool=64)
+          + _async_burst("async-batch-pool64", 4.0, pool=64))
+
+
+def test_verdict_async_ratios_and_checks_pass_when_async_tracks_sync():
+  v = bench.verdict(bench.summarize_burst(_all_async()), [{"pass": True}])
+  assert round(v["async_default_ratio"], 2) == 0.34
+  assert round(v["async_batch_vs_sync_batch"], 2) == 1.1
+  assert round(v["async_per_claim_vs_sync_per_claim"], 2) == 1.1
+  assert round(v["async_pool64_ratio"], 2) == 0.8
+  assert all(c is True for c in v["async_checks"].values()), v["async_checks"]
+
+
+def test_verdict_async_checks_flag_a_thread_pool_that_costs_the_win():
+  rows = _all_async()
+  rows = [r for r in rows if r["variant"] != "async-batch-default"]
+  rows += _async_burst("async-batch-default", 2.5)    # 2.5x the sync batch
+  c = bench.verdict(bench.summarize_burst(rows), [{"pass": True}])["async_checks"]
+  assert c["async_batch_within_tolerance_of_sync_batch"] is False
+  assert c["async_ratio_within_tolerance_of_sync_ratio"] is False
+  assert c["async_batch_faster_than_async_per_claim"] is True
+
+
+def test_verdict_async_checks_flag_a_binding_pool_a_stalled_loop_and_leaks():
+  c = bench.verdict(bench.summarize_burst(
+      _all_async() + _async_burst("async-batch-c50", 1.0, pool=64, lag_max=0.5, leaked=2)),
+      [{"pass": True}])["async_checks"]
+  assert c["no_loop_stall_over_100ms"] is False
+  assert c["no_errors_or_leaked_threads"] is False
+  rows = [r for r in _all_async() if r["variant"] != "async-per-claim"]
+  c = bench.verdict(bench.summarize_burst(rows + _async_burst("async-per-claim", 3.0, pool=64)),
+                    [{"pass": True}])["async_checks"]
+  assert c["default_pool_not_binding"] is False
+
+
+def test_verdict_async_checks_are_undecided_without_the_async_runs():
+  v = bench.verdict(bench.summarize_burst(_burst("per-claim", 1.0)
+                                          + _burst("batch-default", 1.0)), [{"pass": True}])
+  assert v["async_default_ratio"] is None
+  assert v["async_checks"]["async_batch_faster_than_async_per_claim"] is None
+  assert v["async_checks"]["default_pool_not_binding"] is None
+
+
+class _FakeAsyncFleet:
+  """Stands in for AsyncSandboxFleet: acquire takes 20 ms and records how many are
+  inside it at once."""
+
+  def __init__(self, n, fail=()):
+    self.tasks = list(range(n))
+    self.fail = set(fail)
+    self.inside = self.peak = 0
+    self.released = []
+    self.torn_down = self.closed = False
+
+  async def acquire(self, task):
+    self.inside += 1
+    self.peak = max(self.peak, self.inside)
+    try:
+      await asyncio.sleep(0.02)
+      if task in self.fail:
+        raise RuntimeError("no member")
+      return types.SimpleNamespace(exec=lambda cmd: "", task=task)
+    finally:
+      self.inside -= 1
+
+  async def release(self, handle):
+    self.released.append(handle.task)
+
+  async def teardown(self):
+    self.torn_down = True
+
+  def close(self):
+    self.closed = True
+
+
+async def _step(fleet, variant, n):
+  with ThreadPoolExecutor(max_workers=n) as pool:
+    return await bench.run_async_step(fleet, variant, n, pool)
+
+
+async def test_async_step_holds_the_driver_semaphore_and_releases_every_env():
+  fleet = _FakeAsyncFleet(12)
+  v = bench.Variant("async-per-claim-c5", "per-claim", acquire_concurrency=5, loop="async")
+  step = await _step(fleet, v, 12)
+  assert fleet.peak == 5
+  assert len(step["starts"]) == 12 and step["errors"] == []
+  assert sorted(fleet.released) == list(range(12))
+  assert fleet.torn_down and fleet.closed
+  assert step["loop_lag_s"] is not None
+
+
+async def test_async_step_without_a_semaphore_runs_every_acquire_at_once():
+  fleet = _FakeAsyncFleet(12)
+  await _step(fleet, bench.Variant("async-per-claim", "per-claim", loop="async"), 12)
+  assert fleet.peak == 12
+
+
+async def test_async_step_records_a_failed_env_and_finishes_the_rest():
+  fleet = _FakeAsyncFleet(6, fail={2})
+  step = await _step(fleet, bench.Variant("async-batch-default", "batch", loop="async"), 6)
+  assert len(step["starts"]) == 5
+  assert step["errors"] == ["RuntimeError: no member"]
+  assert 2 not in fleet.released and fleet.torn_down
+
+
+def test_burst_out_records_the_loop_and_pool_settings():
+  v = bench.Variant("async-batch-pool64", "batch", loop="async", pool_workers=64)
+  out = bench.burst_out(v, bench.BURST, 2, {0: 1.0, 1: 2.0}, {0: 0.5, 1: 0.6}, [],
+                        step_s=2.0, release_s=0.1, cpu=0.2, throttled=0, cost={}, warm={})
+  assert out["settings"]["loop"] == "async" and out["settings"]["pool_workers"] == 64
+  assert out["last_start_s"] == 2.0
+
+
+def test_verdict_async_ratios_leave_out_a_variant_with_errors():
+  rows = [r for r in _all_async() if r["variant"] != "async-batch-default"]
+  v = bench.verdict(bench.summarize_burst(rows + _async_burst("async-batch-default", 1.0,
+                                                              errors=1)), [{"pass": True}])
+  assert v["async_default_ratio"] is None and v["async_batch_vs_sync_batch"] is None
+  assert v["async_checks"]["no_errors_or_leaked_threads"] is False
