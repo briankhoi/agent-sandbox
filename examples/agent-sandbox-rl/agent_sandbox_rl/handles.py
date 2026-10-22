@@ -29,6 +29,7 @@ from .exceptions import FleetError, SnapshotsUnavailable
 from .sources import Task
 
 if TYPE_CHECKING:
+  from .batch_claims import BatchClaim
   from .cluster import Cluster
 
 logger = logging.getLogger("agent_sandbox_rl.handles")
@@ -208,6 +209,8 @@ class SandboxHandle:
   _cluster: "Cluster" = field(default=None, repr=False)
   _session: Optional["SandboxSession"] = field(default=None, repr=False)
   _slot_released: bool = field(default=False, repr=False)
+  # Set when the claim is a member of the fleet's batch (claim_mode="batch").
+  _batch_claim: Optional["BatchClaim"] = field(default=None, repr=False)
 
   def exec(self, command, timeout: float | None = None) -> str:
     """Run a command inside the sandbox (router-free, via the pod's exec API).
@@ -396,7 +399,11 @@ class SandboxHandle:
     this directly just frees the remote resources.
     """
     self.close_session()                       # drop the persistent stream, if any
-    if self.sandbox is not None:
+    if self._batch_claim is not None:
+      # Through the batch, so it stops tracking the member; terminating the
+      # connected Sandbox would delete the claim behind the batch's back.
+      self._batch_claim.release()
+    elif self.sandbox is not None:
       self.sandbox.terminate()
     else:
       self._cluster.sandbox_client.delete_sandbox(
