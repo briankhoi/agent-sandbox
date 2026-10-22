@@ -22,6 +22,7 @@ SDK's `K8sHelper` / `SandboxClient` (built lazily). No SDK fork required.
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections import OrderedDict
 
@@ -50,6 +51,19 @@ def build_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
   return client.ApiClient(configuration)
 
 
+def _without_retries(api_client):
+  """Returns a copy of ``api_client`` whose requests urllib3 doesn't retry.
+
+  The batch Lease client needs this. urllib3 retries a timed-out request with a
+  fresh timeout, so a retried renewal can land after the Lease has expired and the
+  batch has stopped. A retried write that already landed the first time comes back
+  as a conflict. The SDK builds its own Lease client without retries for the same
+  reasons."""
+  configuration = copy.deepcopy(api_client.configuration)
+  configuration.retries = False
+  return client.ApiClient(configuration)
+
+
 class Cluster:
   """A single target cluster and its API clients."""
 
@@ -66,6 +80,9 @@ class Cluster:
         self.custom_api, self.core_api, self.namespace, labels=labels)
     self._k8s_helper = None
     self._sandbox_client = None
+    # True once batch_sandbox_client has pointed k8s_helper's Lease API at
+    # this cluster, so later calls skip rebuilding it.
+    self._leases_injected = False
     self.tracer_config = None                 # optional SDK SandboxTracerConfig
     # Placement / capacity bookkeeping. Mutated from parallel claim workers, so
     # guard with a per-cluster lock and only touch via the methods below.
@@ -121,6 +138,19 @@ class Cluster:
         c.k8s_helper = self.k8s_helper
       self._sandbox_client = c
     return self._sandbox_client
+
+  def batch_sandbox_client(self):
+    """Returns `sandbox_client` with its Lease API also pointed at this cluster.
+
+    `k8s_helper` injects only this cluster's claim and core APIs, so its Lease API
+    still reaches the ambient kube context. A batch keeps a Lease, so this method
+    gives the helper a Lease API on this cluster that doesn't retry. Callers must
+    serialize the first call per cluster, as `BatchClaims` does."""
+    if not self._leases_injected:
+      self.k8s_helper.coordination_v1_api = client.CoordinationV1Api(
+          _without_retries(self.api_client))
+      self._leases_injected = True
+    return self.sandbox_client
 
   def template_spec(self, base: TemplateSpec) -> TemplateSpec:
     """Merge per-cluster overrides onto a base TemplateSpec."""
