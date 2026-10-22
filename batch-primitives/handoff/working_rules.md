@@ -58,6 +58,9 @@ Distilled from the cloud project's memory. Brian is token-limited, so be economi
 - When you find your own mistake, say "I was wrong about X, because Y". Change a recommendation only on a new fact, and name it.
 - Sync of open-PR branches: once Brian approves the review copies, run the atomic sync yourself; do not paste the command to him (Brian, 2026-10-22: "you can just ask if i approve of the review/changes, and if so then we can sync").
 
+## "Review it" shorthand (Brian, 2026-10-22)
+When Brian says to review a PR's comments: read them with `gh` yourself. For each comment, valid means fix it on review copies (owning commit, dependents restacked), run the checks, and show him the compare link before syncing; invalid means give a paste-ready reply with the reason and `file:line`. Never post on GitHub.
+
 ## Self-check (replaces the cloud's independent-review thread)
 In the cloud, audits and reviews of a thread's work went to a fresh thread that formed its own findings first and was never shown the author's list. Locally, do the same with a fresh subagent (the Agent tool, general-purpose) when:
 - you finish a non-trivial code change (a restack with conflicts, a behavior fix, anything touching more than one commit's logic), or
