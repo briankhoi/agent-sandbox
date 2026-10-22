@@ -16,3 +16,12 @@ Coordinator brief: `handoff/work/parallel_plan_prompt.md`. Prompts live in `hand
 ## Facts checked by the coordinator (2026-10-22 12:30)
 - Live heads equal `state.md` (PR 2 `f3b61c61`, transport `5affc426`, PR 7 `a26979f1`, upstream `255d15fc`, RL `e606b9bd`, `bench/batch-claim` `4a205e9f`, `go-batch-design-notes` `441ec93a`).
 - Kind: only cluster `agent-sandbox` exists; current context `kind-agent-sandbox` (not `kind-batch-bench` as the notes say; that cluster is gone). `go-batch-design-notes` is checked out in another conversation's worktree (`.../01d4a753.../scratch/notes-wt`).
+
+## Verification checklist (coordinator, every report; strict for code changes)
+Verify in a fresh `inherit` subagent (never flash), given the pushed SHAs and the rules, not the task's own findings. Brian, 2026-10-22: be especially strict on the "Minimal fixes" rules in `working_rules.md` (added `a2ae0d54` after a bloated transport fix).
+1. Claims match the pushed commits/files (SHAs, trees, authors, no trailers, lease pushes).
+2. Minimal change: what data already existed where the fix runs? Any new state, field, parameter, wider type, duplicated data or logic must carry a one-sentence justification; reject if a smaller change has the same behavior.
+3. No production change made to suit a test double.
+4. Best practice: idiomatic, DRY, sync/async parity (surface, docstrings, comments, tests), comments explain why, no drive-by changes, one owning test per contract, mutation-checked.
+5. Checks run: changed tests both shells, mypy per commit, pycodestyle on changed lines, docs regen no diff.
+6. Plans and recommendations: alternatives with costs, smallest option considered first, facts marked measured/verified/inferred.
