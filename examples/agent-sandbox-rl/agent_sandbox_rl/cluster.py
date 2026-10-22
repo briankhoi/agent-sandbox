@@ -22,6 +22,7 @@ SDK's `K8sHelper` / `SandboxClient` (built lazily). No SDK fork required.
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections import OrderedDict
 
@@ -50,6 +51,13 @@ def build_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
   return client.ApiClient(configuration)
 
 
+def _without_retries(api_client):
+  """A copy of ``api_client`` whose requests urllib3 doesn't retry."""
+  configuration = copy.deepcopy(api_client.configuration)
+  configuration.retries = False
+  return client.ApiClient(configuration)
+
+
 class Cluster:
   """A single target cluster and its API clients."""
 
@@ -66,6 +74,7 @@ class Cluster:
         self.custom_api, self.core_api, self.namespace, labels=labels)
     self._k8s_helper = None
     self._sandbox_client = None
+    self._leases_injected = False             # see batch_sandbox_client
     self.tracer_config = None                 # optional SDK SandboxTracerConfig
     # Placement / capacity bookkeeping. Mutated from parallel claim workers, so
     # guard with a per-cluster lock and only touch via the methods below.
@@ -121,6 +130,20 @@ class Cluster:
         c.k8s_helper = self.k8s_helper
       self._sandbox_client = c
     return self._sandbox_client
+
+  def batch_sandbox_client(self):
+    """`sandbox_client` with its Lease API pointed at this cluster too.
+
+    Batch claims keep a Lease, and `k8s_helper` only injects this cluster's claim
+    and core APIs, so its Lease API would still reach the ambient context. The
+    Lease client doesn't retry, like the SDK's own: a retried renewal can outlive
+    the Lease, and a retried write that already landed comes back as a conflict.
+    Callers serialize the first call per cluster (`BatchClaims` does)."""
+    if not self._leases_injected:
+      self.k8s_helper.coordination_v1_api = client.CoordinationV1Api(
+          _without_retries(self.api_client))
+      self._leases_injected = True
+    return self.sandbox_client
 
   def template_spec(self, base: TemplateSpec) -> TemplateSpec:
     """Merge per-cluster overrides onto a base TemplateSpec."""
