@@ -55,7 +55,7 @@ Creation of claims is paced in two ways:
 - `create_rps`: A cap to how many creates start per second, to help avoid overwhelming the Kubernetes API server
 - `max_in_flight`: A cap to bound how many creates are in flight at once, so a slow server response doesn't exhaust connections or stall the client
 
-Claims are created in the order that reaches quorum soonest. Each group's first `MinReady` claims go first, interleaved across groups in proportion to their sizes, and the rest follow. Ordinals still come from one batch-wide counter, and each group keeps a contiguous block of them; only the create order is interleaved.
+Claims are created in the order that reaches quorum soonest. Each group's first `MinReady` claims are created first, one group after another in the caller's group order, and the rest follow in the same order, so the first groups can be consumed while later groups are still being created. For groups A and B, that is A's first `MinReady` claims, then B's, then the rest of A, then the rest of B. Ordinals still come from one batch-wide counter, and each group keeps a contiguous block of them in group order; only the create order differs from the ordinal order.
 
 Note that this is pacing only for the client; server-side is through `--sandbox-warm-pool-max-batch-size` and `--sandbox-claim-concurrent-workers`.
 
