@@ -505,16 +505,17 @@ class TestWatcher(BaseAsyncBatchClientTest):
         self.assertEqual(handle._state.get_member("b1-0").state, MemberState.LOST)
 
     async def test_connection_is_closed_once_its_members_pod_is_gone(self):
-        def claim(pod_ip="10.0.0.1", ready="True", reason=None):
+        def claim(pod_ip="10.0.0.1", ready="True", reason=None, sandbox="sbx-1"):
             return _claim(
                 "b1-0",
                 conditions=[{"type": "Ready", "status": ready, "reason": reason}],
-                sandbox={"name": "sbx-1", "podIPs": [pod_ip] if pod_ip else []},
+                sandbox={"name": sandbox, "podIPs": [pod_ip] if pod_ip else []},
             )
 
         cases = {
             "same pod IP": ([{"type": "MODIFIED", "object": claim()}], False),
             "new pod IP": ([{"type": "MODIFIED", "object": claim(pod_ip="10.0.0.2")}], True),
+            "new sandbox on the same pod IP": ([{"type": "MODIFIED", "object": claim(sandbox="sbx-2")}], True),
             "not Ready on the same pod IP": ([{"type": "MODIFIED", "object": claim(ready="False")}], False),
             "no pod IP": ([{"type": "MODIFIED", "object": claim(pod_ip=None, ready="False")}], True),
             "failed": (
@@ -1043,7 +1044,7 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
         self.mock_client.k8s_helper.replace_batch_lease = AsyncMock()
         mock_sandbox = MagicMock()
         mock_sandbox.close_connection = AsyncMock()
-        self.handle._connected["b1-0"] = (mock_sandbox, None)
+        self.handle._connected["b1-0"] = (mock_sandbox, None, None)
 
         await self.handle.detach()
 
@@ -1104,7 +1105,7 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
         self.mock_client.k8s_helper.replace_batch_lease = AsyncMock()
         bad_sandbox = MagicMock()
         bad_sandbox.close_connection = AsyncMock(side_effect=RuntimeError("boom"))
-        self.handle._connected["b1-0"] = (bad_sandbox, None)
+        self.handle._connected["b1-0"] = (bad_sandbox, None, None)
 
         with self.assertLogs("k8s_agent_sandbox.async_sandbox_batch", level="WARNING"):
             await self.handle.detach()  # Must not raise.
@@ -1155,7 +1156,7 @@ class TestClientClose(BaseAsyncBatchClientTest):
         handle = _make_handle(self.client)
         handle._stop_background_tasks = AsyncMock()
         cached = MagicMock(close_connection=AsyncMock())
-        handle._connected["b1-0"] = (cached, None)
+        handle._connected["b1-0"] = (cached, None, None)
         self.client._active_batches[("default", "b1")] = handle
 
         await self.client.close()
@@ -1167,7 +1168,7 @@ class TestClientClose(BaseAsyncBatchClientTest):
     def test_atexit_closes_batch_connections(self):
         handle = _make_handle(self.client)
         cached = MagicMock()
-        handle._connected["b1-0"] = (cached, None)
+        handle._connected["b1-0"] = (cached, None, None)
         self.client._active_batches[("default", "b1")] = handle
 
         with patch("k8s_agent_sandbox.async_sandbox_client.K8sHelper"), \

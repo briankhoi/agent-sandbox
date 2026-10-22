@@ -147,8 +147,8 @@ class AsyncSandboxBatch:
         self._list_resource_version = list_resource_version
 
         self._lock = asyncio.Lock()
-        # Each cached connection, with the pod IP it was made to.
-        self._connected: dict[str, tuple["AsyncSandbox", str | None]] = {}
+        # Each cached connection, with the sandbox name and pod IP it was made to.
+        self._connected: dict[str, tuple["AsyncSandbox", str | None, str | None]] = {}
         self._detached = False
         self._lease_released = False
         self._renewal_degraded = False
@@ -429,7 +429,7 @@ class AsyncSandboxBatch:
         The connection starts from the pod IP the batch's watch reports, without reading the Sandbox.
 
         The batch closes a cached connection once the member's pod is gone, meaning the member is
-        lost or failed or the watch reports another pod IP for it, since the old IP may go to another
+        lost or failed or the watch reports another sandbox or pod IP for it, since the old IP may go to another
         sandbox. Call ``connect`` again once the member is Ready to get a new one. A member that is
         only not Ready keeps its connection.
 
@@ -461,7 +461,7 @@ class AsyncSandboxBatch:
             # The watch already has the pod IP, so the first request needs no Sandbox GET.
             pod_ip = select_pod_ip(current.pod_ips)
             sandbox._seeded_pod_ip = pod_ip
-            self._connected[member.claim_name] = (sandbox, pod_ip)
+            self._connected[member.claim_name] = (sandbox, current.sandbox_name, pod_ip)
             return sandbox
 
     def err(self) -> Exception | None:
@@ -934,7 +934,7 @@ class AsyncSandboxBatch:
         """Closes the cached connections to the given claims' sandboxes, or to every sandbox."""
         async with self._lock:
             if claim_names is None:
-                connected = [sandbox for sandbox, _ in self._connected.values()]
+                connected = [entry[0] for entry in self._connected.values()]
                 self._connected.clear()
             else:
                 connected = [
@@ -949,7 +949,7 @@ class AsyncSandboxBatch:
         for claim_name in claim_names:
             cached = self._connected.get(claim_name)
             if cached is not None and not batch_state.still_reaches(
-                self._state.get_member(claim_name), cached[1]
+                self._state.get_member(claim_name), cached[1], cached[2]
             ):
                 stale.append(self._connected.pop(claim_name)[0])
         return stale
