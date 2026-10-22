@@ -83,8 +83,12 @@ _TRANSPORT_ERRORS = (
 
 
 def _is_transport_error(error: BaseException) -> bool:
-    # aiohttp.ClientSSLError subclasses ClientConnectionError but isn't transient
-    return isinstance(error, _TRANSPORT_ERRORS) and not isinstance(error, aiohttp.ClientSSLError)
+    # aiohttp.ClientSSLError subclasses ClientConnectionError, so it must be checked first
+    if isinstance(error, aiohttp.ClientSSLError):
+        # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
+        # is transient like a connection reset. Certificate and other TLS failures are not.
+        return isinstance(error.os_error, ssl.SSLEOFError)
+    return isinstance(error, _TRANSPORT_ERRORS)
 
 
 def _is_transient_error(error: Exception) -> bool:

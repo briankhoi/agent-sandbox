@@ -1432,6 +1432,28 @@ class TestClaimBatchCreation(BaseClaimBatchTest):
             (MemberState.FAILED, "CreateFailed", "sandboxclaims is forbidden"),
         )
 
+    @patch("k8s_agent_sandbox.batch_utils.retry_delay", return_value=0)
+    async def test_create_retries_tls_eof_but_fails_on_certificate_error(self, _):
+        helper = self.cluster.helper
+        tls_eof = aiohttp.ClientConnectorSSLError(
+            MagicMock(), ssl.SSLEOFError(8, "EOF occurred in violation of protocol")
+        )
+        helper.create_sandbox_claim = AsyncMock(side_effect=[tls_eof, None])
+        batch = await self.claim([BatchGroup(warmpool="pool-a", size=1)])
+        await _wait_until(lambda: helper.create_sandbox_claim.call_count == 2)
+        await asyncio.sleep(0.1)
+        self.assertEqual(batch.members(), [])  # No CreateFailed member.
+
+        bad_cert = aiohttp.ClientConnectorCertificateError(
+            MagicMock(), ssl.SSLCertVerificationError(1, "certificate verify failed")
+        )
+        helper.create_sandbox_claim = AsyncMock(side_effect=bad_cert)
+        batch = await self.claim([BatchGroup(warmpool="pool-a", size=1)], batch_id="b2")
+        await _wait_until(lambda: batch.members() != [])
+        [member] = batch.members()
+        self.assertEqual((member.state, member.reason), (MemberState.FAILED, "CreateFailed"))
+        helper.create_sandbox_claim.assert_awaited_once()
+
 
 class TestRelease(BaseClaimBatchTest):
 
