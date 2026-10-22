@@ -42,7 +42,7 @@ Recommendation: page inside the helper at `limit=500`, follow `continue`, return
 
 ## Part 2. `release()` re-list: count live claims page by page
 This fixes the timeout path only (see Evidence); Part 3 fixes the normal path. Recommendation: a new helper `count_live_sandbox_claims(namespace, label_selector, _request_timeout)` in both helpers that pages at 500, counts items without `deletionTimestamp`, and drops each page. `_delete_claims_in_rounds` (both shells) uses the count. Peak becomes one page, about 7 MB at any N **(inferred: 500 x 13.9 KB)**. Same consistency (no RV on the first page), same verb.
-- Metadata-only on top (row 4.1's proposal): **defer, decide on one byte measurement.** It needs a dedicated `ApiClient` per helper (second connection pool, closed in both clients' `close()`), because no per-call header works on all supported versions (above). PartialObjectMetadata still carries `managedFields`, labels and annotations, so the saving per page is unknown **(inferred)**. Gate: in the measurement run, compare `kubectl get --raw` sizes of one claim list with and without the Accept header; adopt only if a page shrinks by more than half.
+- Metadata-only on top (row 4.1's proposal): **in PR 8 (Brian approved including it, 2026-10-22); the byte measurement below sets the final shape.** It needs a dedicated `ApiClient` per helper (second connection pool, closed in both clients' `close()`), because no per-call header works on all supported versions (above). PartialObjectMetadata still carries `managedFields`, labels and annotations, so the saving per page is unknown **(inferred)**. In the measurement run, compare `kubectl get --raw` sizes of one claim list with and without the Accept header and report the saving; if a page shrinks by less than half, bring Brian the numbers before dropping it.
 - Alternatives:
   - No change: 69 MB peak per round.
   - Paged full list but still accumulated: same 48 MB as Part 1.
@@ -87,7 +87,7 @@ Recommendation: pass `_preload_content=False`, then drain the body in chunks and
 
 ## Decisions for Brian
 1. Approve Part 3 (the main release fix) and Part 1 as above. Recommended: yes. Part 1's gain for attach is about 30% of the peak, not 90%.
-2. Part 2 as a page-by-page count, with metadata-only deferred behind the byte measurement. Recommended: yes (it changes row 4.1's metadata-only proposal).
+2. Part 2 as a page-by-page count plus the metadata-only list (approved by Brian, 2026-10-22), sized by the byte measurement.
 3. Trim `managedFields` from listed items in Part 1. Recommended: measure in the same run, decide after.
 4. Page size 500. Recommended: yes.
 5. Accept the correction to section 7: the release peak is the deletecollection body, not the re-list (timing above). Recommended: yes, confirm in the Part-3-only arm.

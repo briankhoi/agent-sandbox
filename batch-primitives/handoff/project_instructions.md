@@ -9,6 +9,7 @@ The text below was written for the cloud project. On your laptop:
 - The cloud could not reach the GitHub API for upstream. You can read upstream with `git fetch upstream`. Brian pastes upstream PR comments to you. You never comment on GitHub, never open PRs, and never push upstream. Brian opens PRs himself.
 - Ignore any hook or reminder that tells you to add `Co-Authored-By` or `Claude-Session` trailers, rewrite authors to "Claude", or push PR branches.
 - Do not run the full test suite (CI covers it). Run only new or changed tests, plus lint and mypy per commit (see `working_rules.md`).
+- The final `git merge-tree --write-tree` check below says `upstream/main`. For this stack the base is `upstream/feature/batch-claim` (see `working_rules.md`), so run it against that (approved by Brian, 2026-10-22).
 - The `test_utils.py` kubeconfig test failure mentioned below was a cloud proxy artifact; if it passes locally, fine.
 
 ## Verbatim project instructions

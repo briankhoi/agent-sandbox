@@ -52,7 +52,7 @@
 
 **1. Group-ordered creates.**
 - Keep "each group's `min_ready` claims first, then the rest".
-- Inside each part, create group by group, in order of `min_ready`, smallest first. That's shortest-job-first, which minimizes mean group finish time and keeps a small group from waiting behind a big one.
+- Inside each part, create group by group, in order of `min_ready`, smallest first. That's shortest-job-first, which minimizes mean group finish time and keeps a small group from waiting behind a big one. **[Superseded: the approved and built order is the caller's group order, in PR 2 (`state.md`), not sorted by `min_ready`.]**
 - Code: `fill_create_plan`'s sort key, one function shared by both shells, plus its test.
 - Expected: RL first group at about the cost of 4 creates plus adoption, roughly 0.1 to 0.25 s against the baseline's 0.16 s. The last group stays where it is **(inferred)**.
 - What could make this wrong: if the controller adopts one pool's claims more slowly than claims spread across pools, a big group created in one block could take longer. I haven't checked the controller for per-pool serialization, so the validation run measures it.
@@ -91,7 +91,7 @@
 |---|---|---|
 | Claim-list pagination | **Include. Low priority, cheap** | One list of 5,000 claims peaks at 69.4 MB traced and keeps 0 MB afterwards **(measured, 1d)**. So it's a transient spike, about 14 KB per claim, that leaves RSS high afterwards (attach RSS +182 MB at 10k). Paging at 500 would cap the spike near 7 MB **(inferred)**. 1d replaces the RSS-delta readings, which varied with the fill settings (92 to 114 MB at the same N). |
 | Don't parse the deletecollection response | **Include. Cheap** | `release()` peaks at 69.5 MB, the same as a full list, and keeps 0.05 MB **(measured)**. The call parses and throws away the whole deleted list (`k8s_helper.py:671`) **(verified)**. `_preload_content=False` would skip that **(inferred)**. |
-| Metadata-only release list, `members()` cache, wake-up items | **Drop** | Ruled out in the first run (listing 0.0 to 0.1% of `release()`; 9 ms at 10k; 0.05 to 0.08 cores) **(measured)** |
+| Metadata-only release list, `members()` cache, wake-up items | **Drop** (metadata-only reversed in section 7: include, in PR 8; `members()` cache and wake-ups stay dropped) | Ruled out in the first run (listing 0.0 to 0.1% of `release()`; 9 ms at 10k; 0.05 to 0.08 cores) **(measured)** |
 | 17 to 20 new TCP connections per command round | **No action** | They come from the existing per-command Sandbox GET overflowing a 22-connection pool, against the baseline's 1000 **(inferred)**. That's about 2 handshakes per 300 commands. If you approve the Transport thread's skip-GET card, they go away. |
 
 ### C. Not for the batch series: async native memory
@@ -117,7 +117,7 @@
 
 ## 5. Decisions for Brian
 
-1. **PR 7 = group-ordered creates (smallest first, `min_ready` first kept) + warm-aware pacing + pagination + skipping the deletecollection body.** Drop the three ruled-out items. Keep the default `create_rps` 50 and `max_in_flight` 20. Recommended: yes. Group order reverses approved #11 and #12, on the new measured first-group fact.
+1. **PR 7 = group-ordered creates (smallest first, `min_ready` first kept) + warm-aware pacing + pagination + skipping the deletecollection body.** Drop the three ruled-out items. Keep the default `create_rps` 50 and `max_in_flight` 20. Recommended: yes. Group order reverses approved #11 and #12, on the new measured first-group fact. **[Superseded: group order went into PR 2 in the caller's order, and pagination, the metadata-only re-list and the deletecollection body are PR 8 (`state.md`).]**
 2. **A validation run after PR 7** (about 45 minutes local), plus optionally a 3-node kind at warm N=500, which needs your OK to create the cluster. Recommended: the run yes. The scale test only if you want a time result at scale before GKE.
 3. **Start the RL design thread now, and run its prototype on the PR 7 branch.** Recommended: yes.
 4. **Async native memory goes to a separate upstream issue**, outside the batch series. Recommended: yes.
