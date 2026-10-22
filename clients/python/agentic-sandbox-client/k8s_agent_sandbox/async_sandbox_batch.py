@@ -66,6 +66,16 @@ _TRANSPORT_ERRORS = (
 )
 
 
+def _is_transport_error(error: BaseException) -> bool:
+    # aiohttp.ClientSSLError is a subclass of aiohttp.ClientConnectionError, so it must be checked
+    # ahead of the tuple.
+    if isinstance(error, aiohttp.ClientSSLError):
+        # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
+        # is transient like a connection reset. Certificate and other TLS failures are not.
+        return isinstance(error.os_error, ssl.SSLEOFError)
+    return isinstance(error, _TRANSPORT_ERRORS)
+
+
 def _watch_backoff_delay(failures: int) -> float:
     return batch_utils.backoff_delay(
         failures,
@@ -403,25 +413,13 @@ class AsyncSandboxBatch:
                 async with self._lock:
                     self._state.note_error(e)
                 return
-            except aiohttp.ClientSSLError as e:
-                # aiohttp.ClientSSLError is a subclass of aiohttp.ClientConnectionError, so it
-                # must be caught ahead of the tuple below.
-                if isinstance(e.os_error, ssl.SSLEOFError):
-                    # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
-                    # is transient like a connection reset. Certificate and other TLS failures are not.
+            except Exception as e:
+                if _is_transport_error(e):
+                    # Likely transient network-level failure so retry
                     failures += 1
                     await asyncio.sleep(_watch_backoff_delay(failures))
                     continue
-                async with self._lock:
-                    self._state.note_error(e)
-                return
-            except _TRANSPORT_ERRORS:
-                # Likely transient network-level failure so retry
-                failures += 1
-                await asyncio.sleep(_watch_backoff_delay(failures))
-                continue
-            except Exception as e:
-                # Anything else is not known to be transient either, so surface it via err().
+                # Anything else is not known to be transient, so surface it via err().
                 async with self._lock:
                     self._state.note_error(e)
                 return

@@ -418,7 +418,7 @@ class SandboxBatch:
                     failures += 1
                     self._watch_stop.wait(_watch_backoff_delay(failures))
                     continue
-                # Anything else (e.g. an SSL error) is not known to be transient, so surface it
+                # Anything else (e.g. a certificate error) is not known to be transient, so surface it
                 # via err() instead of leaving the thread dead with err() still None.
                 if self._watch_stop.is_set():
                     return
