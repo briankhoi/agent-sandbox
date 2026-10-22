@@ -42,8 +42,22 @@ case "${1:-}" in
     install /opt/venv "$SDK" "0.0.0+tip"
     install /opt/venv-base "$BASE_DIR/$SDK" "0.0.0+base.${BASE_SHA:0:7}"
     ;;
+  sdk-host)
+    # The SDK at any commit, for runs that pick their code by code_sha. Then sdk-pod in the pod.
+    sha=$2
+    cd "$(git rev-parse --show-toplevel)"
+    if [ ! -d "bin/sdk-${sha:0:7}/$SDK" ]; then
+      mkdir -p "bin/sdk-${sha:0:7}"
+      git archive "$sha" "$SDK" | tar -x -C "bin/sdk-${sha:0:7}"
+    fi
+    ;;
+  sdk-pod)
+    sha=$2
+    cd /src
+    install "/opt/venv-${sha:0:7}" "bin/sdk-${sha:0:7}/$SDK" "0.0.0+sdk.${sha:0:7}"
+    ;;
   *)
-    echo "usage: $0 host|pod" >&2
+    echo "usage: $0 host|pod|sdk-host <sha>|sdk-pod <sha>" >&2
     exit 2
     ;;
 esac

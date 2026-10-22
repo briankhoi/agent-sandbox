@@ -74,6 +74,9 @@ CODE_SHA = "44fb487f361e3d60eb4690fafc6db9fa04d4fa92"
 CODE_TREE = "8a7adc54a27eb8291289c6fb166c34c69ea47143"
 BASE_SHA = "7fd162d9d5c33fd0c8af9fbb15c6453ccf5ddd58"
 BASE_TREE = "588a31efbc306a7892c88f1ffd9e6c575019ad10"
+# Upstream main and the fix branch on it, for the 6v2-leak runs.
+LEAK_BASE_SHA = "840fdfde30129480050d025017651fafa70b33c2"
+LEAK_FIX_SHA = "2e02e42078d364917e80722ab8f4aaff8da8bcfe"
 # Tiny sizes and one run per variant, for checking that every metric is recorded.
 SMOKE = os.environ.get("BENCH_SMOKE") == "1"
 PYTHONS = {
@@ -1886,7 +1889,8 @@ def wait_clean(warm_total, log, timeout=7200):
 def run_driver(spec, log_file):
     payload = json.dumps(spec)
     script = f"{POD_REPO_ROOT}/test/benchmarks/batch-claim/bench.py" if spec["location"] == "pod" else os.path.abspath(__file__)
-    python = PYTHONS[(spec["location"], spec["code"])]
+    # A code_sha run uses its commit's venv, installed by setup-venvs.sh sdk-pod.
+    python = f"/opt/venv-{spec['code_sha'][:7]}/bin/python" if spec.get("code_sha") else PYTHONS[(spec["location"], spec["code"])]
     cmd = [python, script, "run", payload]
     if spec.get("memray") is not None:
         # The capture stays in the driver's filesystem, so it's copied out by hand.
@@ -2129,6 +2133,10 @@ def run_plan():
     add("6v2", "baseline-arena2", "async", {**long_baseline, "env": {"MALLOC_ARENA_MAX": "2"}}, runs=1)
     add("6v2", "baseline-memray", "async", {**long_baseline, "rollouts": 20 if SMOKE else 600,
                                             "memray": ["--native", "--aggregate"]}, runs=1)
+    # The same loop on upstream main and on the fix that drops terminated handles, by commit.
+    leak = {**long_baseline, "code": "sha", "rollouts": 20 if SMOKE else 600}
+    add("6v2", "leakbase", "async", {**leak, "code_sha": LEAK_BASE_SHA}, runs=1)
+    add("6v2", "leakfix", "async", {**leak, "code_sha": LEAK_FIX_SHA}, runs=1)
 
     # 1d: memory of the list and release paths at N = 5,000.
     add("1d", "n5000-memprobe", "sync", {**tip_host, "kind": "fill", "after": "memprobe", "extras": {},
@@ -2159,7 +2167,8 @@ STATUS_PATH = os.path.join(RESULTS_DIR, "STATUS.md")
 # The 2026-10 rerun's steps, by run-label prefix, for STATUS.md's step summary.
 STEPS = {"0 (1a reruns)": ("1a-n1000-sync", "1a-n5000-sync"), "2 (3s)": ("3s-",), "3 (3a2)": ("3a2-",),
          "4 (6v2)": ("6v2a-", "6v2b-", "6v2c-", "6v2-baseline-pool1000"), "5 (memdiag)": ("6v2-memdiag-", "6v2-baseline-async"),
-         "6 (1d)": ("1d-",), "7 (memprobe)": ("6v2-baseline-long-", "6v2-baseline-arena2-", "6v2-baseline-memray-")}
+         "6 (1d)": ("1d-",), "7 (memprobe)": ("6v2-baseline-long-", "6v2-baseline-arena2-", "6v2-baseline-memray-"),
+         "8 (leakfix)": ("6v2-leakbase-", "6v2-leakfix-")}
 
 
 def run_errors(r):
@@ -2386,8 +2395,9 @@ def cmd_suite(args):
                 continue
         result.update({"scenario": scenario, "variant": variant, "shell": shell, "run": k, "spec": run_spec,
                        "driver_location": spec["location"], "code": spec["code"],
-                       "code_sha": BASE_SHA if spec["code"] == "base" else CODE_SHA,
-                       "code_tree": BASE_TREE if spec["code"] == "base" else CODE_TREE,
+                       "code_sha": spec.get("code_sha") or (BASE_SHA if spec["code"] == "base" else CODE_SHA),
+                       "code_tree": (git("rev-parse", f"{spec['code_sha']}^{{tree}}") if spec.get("code_sha")
+                                     else BASE_TREE if spec["code"] == "base" else CODE_TREE),
                        "tip_branch_sha": tip_branch_sha, "bench_head_sha": bench_head, "bench_dirty": bench_dirty,
                        **controller_image(),
                        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
