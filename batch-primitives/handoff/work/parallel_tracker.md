@@ -8,7 +8,7 @@ Coordinator brief: `handoff/work/parallel_plan_prompt.md`. Prompts live in `hand
 | B. 4.4 type plan + transport mypy fix | `B-types-plan.md` | prompt ready | |
 | C. 4.1 PR 8 plan | `C-pr8-plan.md` | prompt ready (plan phase only) | |
 | D. 4.6 groundwork | not written | after A; (e) needs new PR numbers from Brian | |
-| E. Task 5 RL re-commit | `E-rl-recommit.md` | prompt ready (head `e606b9bd` checked 12:33) | |
+| E. Task 5 RL re-commit | `E-rl-recommit.md` | **accepted 14:56** (verified by subagent: trees and messages equal, A=C=Brian, parent `769b7f2e`, no trailers) | `e606b9bd` -> `166a15c8`; Brian relays to stack conversation with the stale same-tree note for Task 6 step 6 |
 | F1. Task 6 step 1 upstream naming check | subagent, no prompt | **done 12:32**: nothing found on #1988-#1991; coordinator re-checked human comments (only `/ok-to-test` from vicentefb, janetkuo) | CodeRabbit on #1989 (pullrequestreview-5606953886) suggests `members` as a tuple on `GroupReady`; carries over to `GroupOutcome` if still open |
 | F11. Task 6 step 11 Go notes rename | not written | after D | |
 | G. 4.2 async memory probe | `G-async-mem-probe.md` | prompt ready, reviewed by a fresh subagent | |
