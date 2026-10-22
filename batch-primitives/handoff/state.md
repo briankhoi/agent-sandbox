@@ -1,4 +1,4 @@
-# Stack state (as of 2026-10-22 20:30 UTC)
+# Stack state (as of 2026-10-22 20:50 UTC)
 
 Always `git fetch origin && git fetch upstream` and use the live heads. The hashes below are a snapshot, and anything newer than this file wins. If the live state differs from this file in a way that matters, tell Brian.
 
@@ -14,23 +14,24 @@ PR 1 #1742 (squashed as `3a1607bc`), fu1 (2/N), fu2 (3/N), merge-main #2005, fu3
 ## Branch order (linear, bottom to top)
 Each branch sits on the one before it. Upstream PR numbers from the project's tracking (Brian opens PRs himself, so check):
 
-| Upstream | Branch | Head (10-22 20:28) | Upstream PR |
+| Upstream | Branch | Head (10-22 20:46) | Upstream PR |
 | :-- | :-- | :-- | :-- |
 | 5/N | `feat/batch-1-fu4-terminating-claims` | `2b8424a1` | #1983 **merged** |
 | 6/N | `feat/batch-1-fu5-connect-checks` | `e295ca75` | #1984 **merged** (`255d15fc`) |
 | 7/N | `feat/batch-1-fu6-group-order` | `6e966b1d` | #1985 |
-| 8/N | `feat/batch-1-fu7-client-cleanup` | `c3fbd679` | #1986 |
-| 9/N | `feat/batch-1-fu8-task-names`, `feat/batch-1-fu9-concurrent-detach` (fu9 contains fu8) | fu8 `cb391f0a`, fu9 `31df742f` | #1996 (fu9 branch) |
-| 10/N | `feat/batch-2-claim` (PR 2) | `08bf87a3` | #1824 |
-| 11/N | `feat/batch-3-group-consumers` (PR 3) | `3a90ac72` | #1988 |
-| 12/N | `feat/batch-4-group-quorum` (PR 4) | `b06b75d6` | #1989 |
-| 13/N | `feat/batch-5-release-group-76a8m3` (PR 5) | `423d8dd8` | #1990 |
-| 14/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | `c343dec7` | #1991 |
-| 15/N (inferred) | `feat/batch-transport-ltlfdm` | `05fccef2` | not opened |
-| 16/N (inferred) | `feat/batch-reaper-ymtd6t` | `f4b1b1fa` | not opened |
-| 17/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `62721f9d` | not opened |
+| 8/N | `feat/batch-ssl-eof-retry` (TLS EOF) | `c8dbadb6` | to be opened by Brian |
+| 9/N (renumber pending) | `feat/batch-1-fu7-client-cleanup` | `6dd0cffd` | #1986 |
+| 9/N | `feat/batch-1-fu8-task-names`, `feat/batch-1-fu9-concurrent-detach` (fu9 contains fu8) | fu8 `c3b85010`, fu9 `45253488` | #1996 (fu9 branch) |
+| 10/N | `feat/batch-2-claim` (PR 2) | `3d1445d4` | #1824 |
+| 11/N | `feat/batch-3-group-consumers` (PR 3) | `ee2c42c1` | #1988 |
+| 12/N | `feat/batch-4-group-quorum` (PR 4) | `6de8066e` | #1989 |
+| 13/N | `feat/batch-5-release-group-76a8m3` (PR 5) | `18378cf5` | #1990 |
+| 14/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | `1971e659` | #1991 |
+| 15/N (inferred) | `feat/batch-transport-ltlfdm` | `6b6f8b30` | not opened |
+| 16/N (inferred) | `feat/batch-reaper-ymtd6t` | `2aa03beb` | not opened |
+| 17/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `0e5f0d79` | not opened |
 
-The 7/N copies (`review/fu6-lease/*`) were synced at 2026-10-22 12:20 after Brian's OK: 6/N restack onto `255d15fc` (trees unchanged) plus a second fu6 commit, "let batch Lease requests see a token rotated in place" (CodeRabbit on #1985; the code is from 3/N, folded into 7/N as an exception, Brian 2026-10-22: "this can be an exception, just fold in the change into this PR"). At 20:28 the lease commit was amended to a shallow copy (`copy.copy`; Brian: "i approve 1 (lease client)") and fu7 to PR 7 were restacked on it mechanically (each branch differs only by that change); heads are in the table. Pending review: `review/fix3/*` (TLS 8/N with the async `_is_transport_error` moved into it, and the transport identity check via the cached Sandbox's `sandbox_id`). Its fu6 is the synced `6e966b1d`; the copies above it predate the 20:28 restack, so the sync needs leases on the new heads. The `review/tls-eof/*` copies are obsolete (plan C below); the async TLS EOF helper change will be redone after the TLS insertion.
+The 7/N copies (`review/fu6-lease/*`) were synced at 2026-10-22 12:20 after Brian's OK: 6/N restack onto `255d15fc` (trees unchanged) plus a second fu6 commit, "let batch Lease requests see a token rotated in place" (CodeRabbit on #1985; the code is from 3/N, folded into 7/N as an exception, Brian 2026-10-22: "this can be an exception, just fold in the change into this PR"). At 20:28 the lease commit was amended to a shallow copy (Brian: "i approve 1 (lease client)"). At 20:46 plan C was synced after Brian approved the TLS and transport fixes ("i approve 2 and 3"): the TLS commit (with the async `_is_transport_error` it now introduces and the async watch using it) sits on fu6 as `feat/batch-ssl-eof-retry`, everything above is restacked on it, PR 2 no longer defines its own async helper, and transport checks the cached Sandbox's `sandbox_id` in `still_reaches`. Upstream PR numbers in the left column for 9/N and up are the old ones until the renumbering, which happens once Brian opens the TLS PR. The `review/planc/*`, `review/tls-eof/*` and `review/fix3/*` copies are superseded.
 
 **Plan C (Brian, 2026-10-22).** After 7/N, the TLS EOF fix (`feat/batch-ssl-eof-retry`) becomes **8/N**, inserted into the stack right after fu6; every later PR moves down one (fu7 9/N, fu9 10/N, PR 2 11/N, PR 3 12/N, PR 4 13/N, PR 5 14/N, PR 6 15/N; transport, reaper, PR 7 follow). The stack conversation renumbers the open PRs with `gh pr edit` (Brian: "github renumbering you do it"): the title's X/N and only the ordinal word in the description's first sentence.
 
