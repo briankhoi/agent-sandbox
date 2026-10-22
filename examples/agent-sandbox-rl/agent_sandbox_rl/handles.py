@@ -213,6 +213,13 @@ class SandboxHandle:
   # only with claim_mode="batch".
   _batch_claim: Optional["BatchClaim"] = field(default=None, repr=False)
 
+  @property
+  def claim_expires_at(self) -> Optional[float]:
+    """The ``time.monotonic()`` value at which the controller deletes this claim,
+    which is its ``shutdownTime``. ``None`` means the claim has no
+    ``shutdownTime``, which is true of every claim made outside a batch."""
+    return None if self._batch_claim is None else self._batch_claim.expires_at
+
   def exec(self, command, timeout: float | None = None) -> str:
     """Run a command inside the sandbox (router-free, via the pod's exec API).
 

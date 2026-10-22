@@ -31,10 +31,12 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from k8s_agent_sandbox import BatchGroup
+from k8s_agent_sandbox.batch_utils import BATCH_SHUTDOWN_MARGIN_SECONDS
 
 from .exceptions import FleetError
 
@@ -53,6 +55,10 @@ class BatchClaim:
 
   batch: "SandboxBatch"
   member: "Member"
+  # The time.monotonic() value at which the controller deletes the claim, which
+  # is the claim's shutdownTime. BatchClaims starts counting before the create,
+  # so this value is never later than the real shutdownTime.
+  expires_at: float
 
   def release(self) -> None:
     self.batch.release_member(self.member)
@@ -113,7 +119,8 @@ class BatchClaims:
           create_rps=s.create_rps,
           max_in_flight=s.max_in_flight,
           work_budget=s.work_budget,
-          # Part of each acquired claim's shutdownTime.
+          # The SDK adds this to each acquired claim's shutdownTime, and
+          # acquire() adds the same when it computes expires_at.
           quorum_timeout=self._ready_timeout,
           lease_duration=s.lease_duration)
       with self._lock:
@@ -138,8 +145,11 @@ class BatchClaims:
     `release_all`, it raises ``FleetError``.
     """
     batch = self._batch_for(cluster, pool)
+    started = time.monotonic()
     member = batch.acquire(pool, timeout=self._ready_timeout)
-    return BatchClaim(batch=batch, member=member)
+    expires_at = (started + self._ready_timeout + self._settings.work_budget
+                  + BATCH_SHUTDOWN_MARGIN_SECONDS)
+    return BatchClaim(batch=batch, member=member, expires_at=expires_at)
 
   def release_all(self) -> None:
     """Releases every batch this fleet opened. It logs a failed release and goes

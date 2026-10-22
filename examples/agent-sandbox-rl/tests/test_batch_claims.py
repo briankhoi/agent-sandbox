@@ -26,9 +26,14 @@ from kubernetes import client
 from pydantic import ValidationError
 
 from agent_sandbox_rl import (AsyncSandboxFleet, BatchClaimConfig, ClusterConfig,
-                              ClusterRegistry, FleetConfig, SandboxFleet, constants)
+                              ClusterRegistry, FleetConfig, SandboxFleet, constants,
+                              reuse_git_restore_sandbox,
+                              reuse_git_restore_sandbox_async)
 from agent_sandbox_rl.cluster import Cluster
 from agent_sandbox_rl.exceptions import FleetError
+from agent_sandbox_rl.handles import SandboxHandle
+
+_CLEAN = "PRISTINE=abc\nHEAD=abc\nDIRTY=0\nENV=e1\nCFG=g1\nPROCS=5"
 
 
 class FakeBatch:
@@ -151,6 +156,7 @@ def test_first_acquire_opens_one_batch_from_its_pool(make_cluster):
   assert h.claim_name == f"{b.batch_id}-1"
   assert h.pod_ip == "10.1.0.5"
   assert h.sandbox.claim_name == h.claim_name     # batch.connect(member)
+  assert h.claim_expires_at is not None
   assert c.active_claims == 3
 
 
@@ -305,7 +311,7 @@ def test_pinned_acquire_keeps_the_per_claim_path(make_cluster):
   f.plan()
   h = f.acquire(t, pod_annotations={"a": "b"})
   c.sandbox_client.create_sandbox.assert_called_once()
-  assert c.batches == []
+  assert c.batches == [] and h.claim_expires_at is None
   f.release(h)
   h.sandbox.terminate.assert_called_once()
 
@@ -325,4 +331,53 @@ async def test_async_fleet_claims_releases_and_tears_down_through_one_batch(make
   assert b.released_members == [handles[0].claim_name]
   await af.teardown()
   assert b.released
+  af.close()
+
+
+def _recycle_on_a_fake_clock(monkeypatch):
+  """Puts recycle and batch claims on a fake clock that only tasks move, by 100 s
+  each. Returns the batch settings under which a claim lives 400 s.
+
+  After one task, 300 s are left. That is more than twice the longest task plus
+  the 5 s reset_timeout, which is 205 s, so recycling resets and reuses the claim.
+  After two tasks, 200 s are left, so recycling rotates the claim, and the third
+  task runs on a second claim."""
+  monkeypatch.setattr("agent_sandbox_rl.preflight.preflight_cluster",
+                      lambda cluster, **kw: MagicMock(ok=True, checks=[]))
+  monkeypatch.setattr(SandboxHandle, "exec", lambda self, cmd: _CLEAN)
+  now = [0.0]
+  clock = types.SimpleNamespace(monotonic=lambda: now[0])
+  monkeypatch.setattr("agent_sandbox_rl.recycle.time", clock)
+  monkeypatch.setattr("agent_sandbox_rl.batch_claims.time", clock)
+  monkeypatch.setattr("agent_sandbox_rl.batch_claims.BATCH_SHUTDOWN_MARGIN_SECONDS", 0)
+
+  def task(t, h):
+    now[0] += 100
+  return dict(claim_mode="batch", ready_timeout=100,
+              batch_claims=BatchClaimConfig(work_budget=300)), task
+
+
+def test_recycle_rotates_a_batch_claim_before_it_expires(make_cluster, monkeypatch):
+  cfg, task = _recycle_on_a_fake_clock(monkeypatch)
+  c = _batch_cluster(make_cluster)
+  f = SandboxFleet(FleetConfig(**cfg), registry=ClusterRegistry([c]))
+  f.load_tasks(["img"] * 3)
+  f.plan()
+  reuse_git_restore_sandbox(f, f.tasks, task, concurrency=1,
+                            reset_timeout=5.0, use_session=False, scale_on_hold=False)
+  assert len(c.batches[0].acquired) == 2
+  f.teardown()
+
+
+async def test_async_recycle_rotates_a_batch_claim_before_it_expires(make_cluster, monkeypatch):
+  cfg, task = _recycle_on_a_fake_clock(monkeypatch)
+  c = _batch_cluster(make_cluster)
+  af = AsyncSandboxFleet(FleetConfig(**cfg), registry=ClusterRegistry([c]))
+  af.load_tasks(["img"] * 3)
+  af._fleet.plan()
+  await reuse_git_restore_sandbox_async(af, af.tasks, task, concurrency=1,
+                                        reset_timeout=5.0, use_session=False,
+                                        scale_on_hold=False)
+  assert len(c.batches[0].acquired) == 2
+  await af.teardown()
   af.close()
