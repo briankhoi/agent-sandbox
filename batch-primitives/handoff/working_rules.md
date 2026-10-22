@@ -50,6 +50,14 @@ Distilled from the cloud project's memory. Brian is token-limited, so be economi
 - A prompt you write for another agent (including a benchmark run) must be complete the first time, resumable after interruption, and work from a fresh chat. It requires that every API call, flag, script and path is verified against the code at the tested SHA, and it records code SHA, tree and SDK version in the results.
 - Benchmarks and e2e use kind. Ask Brian before creating or deleting a cluster, and say which cluster you will use.
 
+## Minimal fixes (Brian, 2026-10-22, after a transport fix that widened a type for data the object already had)
+- Before writing a fix, list the data already available where it runs. Use existing fields before adding state, fields or wider types.
+- Never change production code to suit a test double. Fix the mock.
+- Before reporting, ask what the smallest change with the same behavior is. Any new state or type change needs one sentence on why the existing data isn't enough.
+- Reviewer briefs always include: "Is there a smaller change with the same behavior? Does it add state, duplicate data or logic, or widen a type without need?"
+- When you find your own mistake, say "I was wrong about X, because Y". Change a recommendation only on a new fact, and name it.
+- Sync of open-PR branches: once Brian approves the review copies, run the atomic sync yourself; do not paste the command to him (Brian, 2026-10-22: "you can just ask if i approve of the review/changes, and if so then we can sync").
+
 ## Self-check (replaces the cloud's independent-review thread)
 In the cloud, audits and reviews of a thread's work went to a fresh thread that formed its own findings first and was never shown the author's list. Locally, do the same with a fresh subagent (the Agent tool, general-purpose) when:
 - you finish a non-trivial code change (a restack with conflicts, a behavior fix, anything touching more than one commit's logic), or
