@@ -5,7 +5,7 @@ Brief: `handoff/work/coordinator2_prompt.md`. Prompts in `handoff/work/prompts/`
 | Item | Prompt | Status | Last result | Open decisions |
 | :-- | :-- | :-- | :-- | :-- |
 | B. Task 4.4 type tightening + transport mypy fix | `prompts/B-types-plan.md` | plan `type_tightening_plan.md` written (pinned at old heads, PR 7 `a26979f1`); verification running 2026-10-22 22:15 | report with Brian (requested) | D1 to D5 in the plan, pending verification |
-| C. Task 4.1 PR 8 | `prompts/C-pr8-plan.md` | plan `pr8_plan.md` written (pinned PR 7 `a26979f1`, edited `eca64789`); verification running 22:15 | report with Brian (requested) | plan decisions 1 to 5, pending verification |
+| C. Task 4.1 PR 8 | `prompts/C-pr8-plan.md` | plan `pr8_plan.md` written (pinned PR 7 `a26979f1`, edited `eca64789`); verified 22:19: ACCEPT WITH FIXES (re-pin to `deee6702`; async metadata-only via direct `call_api` header, no second client; sync route is a decision; line 96 hedge stale; measurement plan needs new `par-` name, v1beta4 kind copy, bench knobs for 5 s timeout and N=10k, BENCH_CONTEXT from `2ad745c0`, re-list item count persisted; test fixtures need a default count; drain with `stream()`, release in `finally`; one shared page iterator per helper; drop managedFields trim) | report pasted by Brian 22:17 (not in results/) | plan decisions 1 to 5, pending verification |
 
 ## Live heads at start (2026-10-22 22:13)
 upstream `feature/batch-claim` `d07e8941`; TLS `0e586d47`; PR 2 `520a37b1`; PR 5 `defa5411`; PR 6 `b1e13656`; transport `760f8796` (pool commit `df4dbeb2`); reaper `ab0635f9`; PR 7 `deee6702`; `bench/batch-claim` `4a205e9f`; `bench/async-mem-probe` `2ad745c0`.
