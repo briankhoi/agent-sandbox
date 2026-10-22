@@ -2137,6 +2137,10 @@ def run_plan():
     leak = {**long_baseline, "code": "sha", "rollouts": 20 if SMOKE else 600}
     add("6v2", "leakbase", "async", {**leak, "code_sha": LEAK_BASE_SHA}, runs=1)
     add("6v2", "leakfix", "async", {**leak, "code_sha": LEAK_FIX_SHA}, runs=1)
+    # Longer, since dropped handles are freed only by the cyclic GC and 600 rollouts can't tell a
+    # plateau from growth.
+    add("6v2", "leakbase-long", "async", {**leak, "code_sha": LEAK_BASE_SHA, "rollouts": 20 if SMOKE else 2400}, runs=1)
+    add("6v2", "leakfix-long", "async", {**leak, "code_sha": LEAK_FIX_SHA, "rollouts": 20 if SMOKE else 2400}, runs=1)
 
     # 1d: memory of the list and release paths at N = 5,000.
     add("1d", "n5000-memprobe", "sync", {**tip_host, "kind": "fill", "after": "memprobe", "extras": {},
