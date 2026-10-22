@@ -1930,7 +1930,6 @@ def run_driver(spec, log_file):
     if result is None:
         raise RuntimeError(f"driver exited {proc.returncode} without a result")
     result["driver_exit"] = proc.returncode
-    result["driver_env"] = env
     result["driver_cmd"] = cmd
     result["run_wall_s"] = time.monotonic() - started
     names = list(phases)
@@ -2377,7 +2376,6 @@ def cmd_suite(args):
         write_status(statuses)
         log(f"{key} start")
         run_spec = {k2: v for k2, v in spec.items() if k2 != "extras"}
-        run_spec.update(bench_head_sha=bench_head, bench_dirty=bench_dirty)
         with open(os.path.join(LOGS_DIR, f"{key}.log"), "w") as driver_log:
             try:
                 result = run_driver(run_spec, driver_log)

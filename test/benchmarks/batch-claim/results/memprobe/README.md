@@ -3,7 +3,7 @@
 Is the async per-claim baseline driver's steadily rising RSS glibc arena fragmentation or live
 growth? This directory has two 2,400-rollout runs of the baseline loop on the base SDK (one as
 shipped, one with `MALLOC_ARENA_MAX=2`), each with a malloc probe, and a 600-rollout run under
-memray that finds where the memory is allocated.
+memray that finds where the memory is allocated. MB here means MiB (2^20 bytes).
 
 ## Verdict
 
@@ -19,13 +19,16 @@ referenced, each pinning an OpenSSL context.**
   both runs, 95% of RSS. Free bytes held (`fordblks`) are 4.0 and 1.4 MB, and `malloc_trim(0)`
   gave back 0.5 and 0.3 MB. That is live allocations, not fragmentation in any arena. RSS minus
   malloc's arena is about 88 MB in both runs, so pymalloc's arenas are not where the growth is.
-- memray (`memray-top.txt`): at the high-water mark of the 600-rollout run, 330.6 of 391.7 MB
-  (84%) were allocated under `ssl.create_default_context`, called from
+- memray (`memray-top.txt`): at the high-water mark of the 600-rollout run, 330.6 of the 391.7 MB
+  that memray tracked (84%) were allocated under `ssl.create_default_context`, called from
   `httpx.AsyncHTTPTransport.__init__` (`httpx/_transports/default.py:297`), from
   `AsyncSandboxConnector.__init__` (`k8s_agent_sandbox/async_connector.py:215`), from
   `AsyncSandboxClient.create_sandbox` (`async_sandbox_client.py:349`). That is 0.55 MB per rollout.
+  memray's tracked total under-counts the process: at the end of that run glibc reported 994.5 MB
+  in use (`malloc_probe` in its result), so the 84% is a share of memray-tracked bytes, not of the
+  process.
 - Why it is retained (read in the base SDK `7fd162d9`): `create_sandbox` stores each handle in
-  `AsyncSandboxClient._active_connection_sandboxes` (`async_sandbox_client.py:367-369`).
+  `AsyncSandboxClient._active_connection_sandboxes` (`async_sandbox_client.py:368-369`).
   `AsyncSandbox.terminate()` (`async_sandbox.py:213-231`) closes the connection and deletes the
   claim but leaves the handle in that dict. Only `delete_sandbox`, `list_active_sandboxes`,
   `close` and a few other client methods remove entries. Each handle keeps its connector's closed
@@ -33,8 +36,12 @@ referenced, each pinning an OpenSSL context.**
 - `httpx_retained.py` measures that cost alone: a closed `httpx.AsyncClient(verify=True)` that
   stays referenced holds 0.70 MB of malloc memory, of which tracemalloc sees 0.02 MB. Run in the
   driver pod (Python 3.12.15, glibc 2.41, httpx 0.28.1) it printed 0.701 MB, and dropping the
-  references freed it. The runs retained about 0.69 MB per rollout (1,660 MB over 2,400).
-- The same code is on upstream `main` at `a502928b`.
+  references freed it. The runs retained about 0.68 MB of `uordblks` per rollout ((1,660 - 30.5) MB
+  over 2,400 rollouts, subtracting the first sample).
+- The same code is on upstream `main` at `840fdfde` (store at `async_sandbox_client.py:370-371`).
+- The sync `SandboxClient` stores and keeps handles the same way (`sandbox_client.py:253-254`,
+  `sandbox.py:201-220` on `840fdfde`); its cost per handle was not measured here. The batch claim
+  path does not use this dict, so it does not hit this retention.
 
 | run | env | rollouts | rolling wall s | rollouts/min | RSS first / last in window / peak MB | 2nd-half slope MB/s | MB per 100 rollouts (derived) | warm pool min Ready | errors |
 | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |
@@ -50,8 +57,8 @@ probe values.
 
 - All three runs starved the warm pool (0 Ready at times, below 40 Ready in most samples), so
   rollouts waited for cold pods and ran at about 40/min instead of the earlier run's 232/min.
-  Both 2,400-rollout runs starved alike, and the growth is per rollout (0.69 MB here, 0.70 MB in
-  the earlier unstarved run), so the comparison holds. The host (8 CPUs, a second kind cluster
+  Both 2,400-rollout runs starved alike, and the growth is per rollout (about 0.69 MB of RSS per
+  rollout here, 0.70 MB in the earlier unstarved run), so the comparison holds. The host (8 CPUs, a second kind cluster
   running) is the bottleneck, not the driver.
 - One run per arm.
 - The memray run's RSS and mallinfo2 include memray's own memory, so they are not compared with
