@@ -1,0 +1,17 @@
+# Coordinator 2 tracker (items B and C)
+
+Brief: `handoff/work/coordinator2_prompt.md`. Prompts in `handoff/work/prompts/` (`B*`, `C*`), results in `handoff/work/results/` (`B*`, `C*`). Link base: `https://github.com/briankhoi/agent-sandbox/blob/batch-primitives-notes/batch-primitives/handoff/work/`.
+
+| Item | Prompt | Status | Last result | Open decisions |
+| :-- | :-- | :-- | :-- | :-- |
+| B. Task 4.4 type tightening + transport mypy fix | `prompts/B-types-plan.md` | plan `type_tightening_plan.md` written (pinned at old heads, PR 7 `a26979f1`); verification running 2026-10-22 22:15 | report with Brian (requested) | D1 to D5 in the plan, pending verification |
+| C. Task 4.1 PR 8 | `prompts/C-pr8-plan.md` | plan `pr8_plan.md` written (pinned PR 7 `a26979f1`, edited `eca64789`); verification running 22:15 | report with Brian (requested) | plan decisions 1 to 5, pending verification |
+
+## Live heads at start (2026-10-22 22:13)
+upstream `feature/batch-claim` `d07e8941`; TLS `0e586d47`; PR 2 `520a37b1`; PR 5 `defa5411`; PR 6 `b1e13656`; transport `760f8796` (pool commit `df4dbeb2`); reaper `ab0635f9`; PR 7 `deee6702`; `bench/batch-claim` `4a205e9f`; `bench/async-mem-probe` `2ad745c0`.
+
+## Sequencing
+B's mypy fix folds into transport `df4dbeb2` (review copy `review/types/...`, only after Brian says the stack has settled), handed to the stack conversation for sync. C's implementation (`feat/batch-8-<slug>` off live PR 7) starts after B's sync lands, or rebases onto the new PR 7 head.
+
+## Brian's answers (verbatim)
+- 2026-10-22 (`temp-prompts/pr8_scope_and_pacing_answers.md`): "`members()` caching and wake-up changes stay dropped and are not in PR 8 (measured: `members()` 9 ms at 10k claims, wake-ups 0.05 to 0.08 cores). The metadata-only re-list in `release()` IS in PR 8." "PR 8 = claim-list pagination (attach and release re-list), metadata-only re-list in `release()`, and skip parsing the deletecollection body. Follow tasks.md 4.1." "The roadmap's Pacing PR stays, as a later, conditional item".
