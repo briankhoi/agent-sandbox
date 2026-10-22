@@ -1,4 +1,4 @@
-# Stack state (as of 2026-10-22 01:15 UTC)
+# Stack state (as of 2026-10-22 02:30 UTC)
 
 Always `git fetch origin && git fetch upstream` and use the live heads. The hashes below are a snapshot, and anything newer than this file wins. If the live state differs from this file in a way that matters, tell Brian.
 
@@ -9,7 +9,7 @@ Always `git fetch origin && git fetch upstream` and use the live heads. The hash
 - Upstream base branch for the whole stack is `feature/batch-claim` (maintainer: Janet Kuo). Upstream `main` is separate; the fork's `origin/main` lags.
 
 ## Merged upstream
-PR 1 #1742 (squashed as `3a1607bc`), fu1 (2/N), fu2 (3/N), merge-main #2005, fu3 (4/N) #1982 (upstream tip `4bb0db30`), and **fu4 (5/N) #1983, merged 2026-10-21 as squash commit `cc4a40bf` (tree `663a0951`, equal to the tree of our fu4 branch), directly on `4bb0db30`**. Squash merges keep the tree but change hashes. After 5/N the lowest open PR is fu5 (6/N).
+PR 1 #1742 (squashed as `3a1607bc`), fu1 (2/N), fu2 (3/N), merge-main #2005, fu3 (4/N) #1982 (upstream tip `4bb0db30`), and **fu4 (5/N) #1983, merged 2026-10-21 as squash commit `cc4a40bf` (tree `663a0951`, equal to the tree of our fu4 branch), directly on `4bb0db30`**. Squash merges keep the tree but change hashes. **fu5 (6/N) #1984 merged 2026-10-22 as `255d15fc` (tree `fc27cfe7`, equal to our fu5 tree)**, on `cc4a40bf`. The lowest open PR is now fu6 (7/N, #1985).
 
 ## Branch order (linear, bottom to top)
 Each branch sits on the one before it. Upstream PR numbers from the project's tracking (Brian opens PRs himself, so check):
@@ -30,7 +30,11 @@ Each branch sits on the one before it. Upstream PR numbers from the project's tr
 | 16/N (inferred) | `feat/batch-reaper-ymtd6t` | `8bc78f11` | not opened |
 | 17/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `24a4e9a1` | not opened |
 
-These heads are the Task 1 restack onto the 5/N merge (upstream `cc4a40bf`), synced by atomic push on 2026-10-22 01:05 after Brian's OK. Every commit's tree is unchanged from the 22:15 heads (fu5 `c4cbce8e` ... PR 7 `769b7f2e`); only the base moved. fu4 is no longer in the stack. Pending review copies on top of these: `review/tls-eof/*` (Task 2, pushed 2026-10-22 01:15, not synced): the async `_is_transport_error` retries a TLS EOF, folded into PR 2's "add claim_batch and release". Heads PR 2 `871aeb63`, PR 3 `5327de63`, PR 4 `6586b882`, PR 5 `468bb627`, PR 6 `f6430b1a`, transport `852f9693`, reaper `e1382970`, PR 7 `b6b920ea`. Sync side waits on Brian's TLS PR decision (`feat/batch-ssl-eof-retry`). Numbers for transport (15/N), reaper (16/N) and PR 7 (17/N) are inferred from the stack order, since none is opened; Brian decides. `refs/pr_table.md` was renumbered to match this table and holds titles and description text.
+The table's heads are the 5/N restack sync (2026-10-22 01:05) and are still the real heads. Pending, not synced: `review/fu6-lease/*` (fu6 to PR 7), the 6/N restack onto `255d15fc` (trees unchanged) plus a second fu6 commit, "let batch Lease requests see a token rotated in place" (CodeRabbit on #1985; the code is from 3/N, folded into 7/N as an exception, Brian 2026-10-22: "this can be an exception, just fold in the change into this PR"). The `review/tls-eof/*` copies are obsolete (plan C below); the async TLS EOF helper change will be redone after the TLS insertion.
+
+**Plan C (Brian, 2026-10-22).** After 7/N, the TLS EOF fix (`feat/batch-ssl-eof-retry`) becomes **8/N**, inserted into the stack right after fu6; every later PR moves down one (fu7 9/N, fu9 10/N, PR 2 11/N, PR 3 12/N, PR 4 13/N, PR 5 14/N, PR 6 15/N; transport, reaper, PR 7 follow). The stack conversation renumbers the open PRs with `gh pr edit` (Brian: "github renumbering you do it"): the title's X/N and only the ordinal word in the description's first sentence.
+
+**Two conversations.** A separate parallel conversation works Task 3 and Task 4 items (prompt in `handoff/work/parallel_plan_prompt.md`, all subagents on the `inherit` model). This file, `tasks.md` and `refs/pr_table.md` belong to the stack conversation.
 
 Side branches: `feat/batch-ssl-eof-retry` (`8937ccdb`, TLS EOF retry, based on upstream `4bb0db30`, not opened upstream; the old `claude/project-thread-0ysqcj` is kept as a backup), `fix/python-terminal-pod-reasons` (upstream #1917, Brian's). `bench/batch-claim` holds the SDK benchmark harness (`test/benchmarks/batch-claim/`, `bench.py`). `bench/rl-claim-mode` and `claude/project-thread-c7716c` are RL work (not yours). Many `review/*` and `review-diff/*` branches on `origin` are old review copies, safe to ignore (deleting needs Brian's OK).
 
