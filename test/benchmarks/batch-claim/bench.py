@@ -520,6 +520,8 @@ class Sampler(threading.Thread):
         self.batch = None
         self.degraded_ever = False
         self.rss_series = []
+        # glibc's mallinfo2() next to each RSS sample, when a run asks for the malloc probe.
+        self.malloc_series = None
         self.started = time.monotonic()
         # CPU this thread spends, subtracted from the driver's CPU.
         self.own_cpu = 0.0
@@ -532,6 +534,8 @@ class Sampler(threading.Thread):
             now = time.monotonic() - self.started
             if now >= next_series:
                 self.rss_series.append((round(now, 1), self.proc.memory_info().rss / 2**20))
+                if self.malloc_series is not None:
+                    self.malloc_series.append((round(now, 1), _mallinfo2()))
                 next_series += 10
             self.own_cpu += time.thread_time() - t
             self.stop.wait(self.interval)
@@ -573,6 +577,35 @@ class Sampler(threading.Thread):
         self.sample()
         with self.lock:
             return self.window_peak - start_rss
+
+
+_MALLINFO2_FIELDS = ("arena", "ordblks", "smblks", "hblks", "hblkhd", "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost")
+
+
+def _libc():
+    import ctypes
+
+    try:
+        return ctypes.CDLL("libc.so.6")
+    except OSError:
+        return None
+
+
+def _mallinfo2():
+    """glibc's mallinfo2() over all arenas, in bytes, or None off glibc 2.33+. uordblks is what
+    malloc has handed out and not had back, fordblks what it holds free, hblkhd its mmapped chunks."""
+    import ctypes
+
+    libc = _libc()
+    if libc is None or not hasattr(libc, "mallinfo2"):
+        return None
+
+    class Mallinfo2(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_size_t) for name in _MALLINFO2_FIELDS]
+
+    libc.mallinfo2.restype = Mallinfo2
+    info = libc.mallinfo2()
+    return {name: getattr(info, name) for name in _MALLINFO2_FIELDS}
 
 
 class DiscardCounter(logging.Handler):
@@ -621,6 +654,8 @@ class Driver:
         self.ready.install()
         self.probe = Probe()
         self.sampler = Sampler(_api_endpoints())
+        if spec.get("malloc_probe"):
+            self.sampler.malloc_series = []
         self.discards = DiscardCounter()
         urllib3_logger = logging.getLogger("urllib3.connectionpool")
         urllib3_logger.addHandler(self.discards)
@@ -715,6 +750,9 @@ class Driver:
         r["python"] = sys.executable
         r["python_version"] = platform.python_version()
         r["platform"] = platform.platform()
+        # From inside the driver, so the result shows what the process actually ran with.
+        r["malloc_arena_max"] = os.environ.get("MALLOC_ARENA_MAX")
+        r["libc"] = platform.libc_ver()
         settings = {k: self.spec.get(k) for k in ("create_rps", "max_in_flight", "pool_size", "lease_duration",
                                                    "quorum_timeout", "work_budget", "concurrency", "baseline_pool")}
         try:
@@ -746,6 +784,8 @@ class Driver:
         maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         r["ru_maxrss_mb"] = maxrss / 2**20 if sys.platform == "darwin" else maxrss / 1024
         r["rss_series_mb"] = self.sampler.rss_series
+        if self.sampler.malloc_series is not None:
+            r["mallinfo2_series"] = self.sampler.malloc_series
         r["api_conns_peak"] = self.sampler.api_conns_peak
         r["pool_discard_warnings"] = self.discards.count
         r["pool_discard_first"] = self.discards.first
@@ -1369,6 +1409,17 @@ class Driver:
         self.result["release_s"] = time.monotonic() - t
         self.phase("released")
 
+    def malloc_probe(self):
+        """RSS and mallinfo2() before and after malloc_trim(0). Free memory that malloc_trim hands
+        back to the OS points at fragmentation; in-use bytes near RSS point at live allocations."""
+        libc = _libc()
+        before = {"rss_mb": self.proc.memory_info().rss / 2**20, "mallinfo2": _mallinfo2()}
+        released = None
+        if libc is not None and hasattr(libc, "malloc_trim"):
+            released = libc.malloc_trim(0)
+        after = {"rss_mb": self.proc.memory_info().rss / 2**20, "mallinfo2": _mallinfo2()}
+        self.result["malloc_probe"] = {"before_trim": before, "malloc_trim_returned": released, "after_trim": after}
+
     def mem_point(self, rollouts):
         """A tracemalloc snapshot, live objects by type, asyncio tasks and RSS, for memdiag."""
         import gc
@@ -1534,6 +1585,11 @@ class Driver:
 
         await asyncio.gather(*(worker() for _ in range(spec["concurrency"])))
         self._rolling_summary(t0, acquire_ms, len(done), req0, cpu0, errors)
+        # On the sampler's clock, so the RSS series can be cut to the rolling phase.
+        self.result["rolling_start_s"] = t0 - self.sampler.started
+        self.result["rolling_end_s"] = time.monotonic() - self.sampler.started
+        if spec.get("malloc_probe"):
+            self.malloc_probe()
         await self.aphase("rolled")
         await client.close()
         await self.aphase("released")
@@ -1768,7 +1824,8 @@ def prepare_pools(extras, log):
 
 def gc_queue_depth():
     """kube-controller-manager's garbage_collector_attempt_to_delete queue depth, or None."""
-    out = subprocess.run(["bash", os.path.join(HERE, "gc-queue.sh")], capture_output=True, text=True).stdout
+    node = os.environ.get("BENCH_KIND_NODE", "batch-bench-control-plane")
+    out = subprocess.run(["bash", os.path.join(HERE, "gc-queue.sh"), node], capture_output=True, text=True).stdout
     for line in out.splitlines():
         if line.startswith('workqueue_depth{name="garbage_collector_attempt_to_delete"}'):
             return float(line.rsplit(" ", 1)[1])
@@ -1826,6 +1883,14 @@ def run_driver(spec, log_file):
     script = f"{POD_REPO_ROOT}/test/benchmarks/batch-claim/bench.py" if spec["location"] == "pod" else os.path.abspath(__file__)
     python = PYTHONS[(spec["location"], spec["code"])]
     cmd = [python, script, "run", payload]
+    if spec.get("memray") is not None:
+        # The capture stays where the driver runs; it's too large to keep in results/.
+        label = run_label(spec["scenario"], spec["variant"], spec["shell"])
+        cmd = [python, "-m", "memray", "run", "-f", *spec["memray"], "-o", f"/tmp/{label}.bin", *cmd[1:]]
+    # Through env(1), since the orchestrator's environment doesn't reach a driver in the pod.
+    env = spec.get("env") or {}
+    if env:
+        cmd = ["env", *(f"{k}={v}" for k, v in env.items()), *cmd]
     if spec["location"] == "pod":
         cmd = ["kubectl", "exec", "-i", "-n", DRIVER_NS, DRIVER_POD, "--", *cmd]
     gauges = Gauges(spec.get("warm_series_pool"), spec.get("warm_interval_s", 10))
@@ -1860,6 +1925,8 @@ def run_driver(spec, log_file):
     if result is None:
         raise RuntimeError(f"driver exited {proc.returncode} without a result")
     result["driver_exit"] = proc.returncode
+    result["driver_env"] = env
+    result["driver_cmd"] = cmd
     result["run_wall_s"] = time.monotonic() - started
     names = list(phases)
     result["apiserver"] = {f"{a}->{b}": diff(phases[b], phases[a]) for a, b in zip(names, names[1:])}
@@ -2048,6 +2115,15 @@ def run_plan():
                                     "memdiag_at": [5, 20] if SMOKE else [100, 600]}, runs=1)
     add("6v2", "baseline", "async", {**base_pod, **rolling2, "kind": "baseline_rolling", "claim_pools": [WARM_POOL],
                                      "baseline_pool": 1000}, runs=1)
+    # Step 7 asks whether the async baseline's RSS growth is glibc arena fragmentation, so it runs
+    # the loop longer as shipped and with MALLOC_ARENA_MAX=2, each with a malloc probe at the end
+    # of the rolling phase, and once under memray to find the native allocation sites.
+    long_baseline = {**base_pod, **rolling2, "kind": "baseline_rolling", "claim_pools": [WARM_POOL],
+                     "baseline_pool": 1000, "rollouts": 20 if SMOKE else 2400, "malloc_probe": True}
+    add("6v2", "baseline-long", "async", long_baseline, runs=1)
+    add("6v2", "baseline-arena2", "async", {**long_baseline, "env": {"MALLOC_ARENA_MAX": "2"}}, runs=1)
+    add("6v2", "baseline-memray", "async", {**long_baseline, "rollouts": 20 if SMOKE else 600,
+                                            "memray": ["--native", "--aggregate"]}, runs=1)
 
     # 1d: memory of the list and release paths at N = 5,000.
     add("1d", "n5000-memprobe", "sync", {**tip_host, "kind": "fill", "after": "memprobe", "extras": {},
@@ -2078,7 +2154,7 @@ STATUS_PATH = os.path.join(RESULTS_DIR, "STATUS.md")
 # The 2026-10 rerun's steps, by run-label prefix, for STATUS.md's step summary.
 STEPS = {"0 (1a reruns)": ("1a-n1000-sync", "1a-n5000-sync"), "2 (3s)": ("3s-",), "3 (3a2)": ("3a2-",),
          "4 (6v2)": ("6v2a-", "6v2b-", "6v2c-", "6v2-baseline-pool1000"), "5 (memdiag)": ("6v2-memdiag-", "6v2-baseline-async"),
-         "6 (1d)": ("1d-",)}
+         "6 (1d)": ("1d-",), "7 (memprobe)": ("6v2-baseline-long-", "6v2-baseline-arena2-", "6v2-baseline-memray-")}
 
 
 def run_errors(r):
@@ -2159,12 +2235,23 @@ def tip_sha():
 
 
 def check_code():
-    """The tip branch's commit at run time, after checking both commits' trees are the ones under test."""
+    """The tip branch's commit at run time, after checking the pinned commits' trees are the ones
+    under test. The branch has moved on since, so only CODE_SHA's tree is checked, not the branch's."""
     tip = git("rev-parse", f"origin/{TIP_BRANCH}")
-    trees = git("rev-parse", f"{CODE_SHA}^{{tree}}", f"{tip}^{{tree}}", f"{BASE_SHA}^{{tree}}").split()
-    if trees != [CODE_TREE, CODE_TREE, BASE_TREE]:
-        raise SystemExit(f"trees {trees} aren't {[CODE_TREE, CODE_TREE, BASE_TREE]}; origin/{TIP_BRANCH} is {tip}")
+    trees = git("rev-parse", f"{CODE_SHA}^{{tree}}", f"{BASE_SHA}^{{tree}}").split()
+    if trees != [CODE_TREE, BASE_TREE]:
+        raise SystemExit(f"trees {trees} aren't {[CODE_TREE, BASE_TREE]}")
     return tip
+
+
+def check_context():
+    """Refuses to run unless BENCH_CONTEXT names the current kubectl context, since bench.py and
+    the scripts it calls follow KUBECONFIG and would otherwise run against any cluster."""
+    want = os.environ.get("BENCH_CONTEXT")
+    have = kubectl("config", "current-context", check=False).strip()
+    if not want or want != have:
+        raise SystemExit(f"BENCH_CONTEXT is {want!r} but the current context is {have!r}; set BENCH_CONTEXT to the "
+                         "benchmark cluster's context and KUBECONFIG to its kubeconfig")
 
 
 def controller_image():
@@ -2243,6 +2330,7 @@ def jobs(plan):
 
 
 def cmd_suite(args):
+    check_context()
     os.makedirs(LOGS_DIR, exist_ok=True)
     tip_branch_sha = check_code()
     record_env()
@@ -2254,6 +2342,9 @@ def cmd_suite(args):
         suite_log.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
         suite_log.flush()
 
+    # In each result too: env.json keeps its first value when the cluster is unchanged.
+    bench_head = git("rev-parse", "HEAD")
+    bench_dirty = bool(git("status", "--porcelain", "--", HERE + "/*.py", HERE + "/*.sh"))
     plan = run_plan()
     for (scenario, variant, shell, runs, spec), k in jobs(plan):
         label = run_label(scenario, variant, shell)
@@ -2280,6 +2371,7 @@ def cmd_suite(args):
         write_status(statuses)
         log(f"{key} start")
         run_spec = {k2: v for k2, v in spec.items() if k2 != "extras"}
+        run_spec.update(bench_head_sha=bench_head, bench_dirty=bench_dirty)
         with open(os.path.join(LOGS_DIR, f"{key}.log"), "w") as driver_log:
             try:
                 result = run_driver(run_spec, driver_log)
@@ -2292,7 +2384,8 @@ def cmd_suite(args):
                        "driver_location": spec["location"], "code": spec["code"],
                        "code_sha": BASE_SHA if spec["code"] == "base" else CODE_SHA,
                        "code_tree": BASE_TREE if spec["code"] == "base" else CODE_TREE,
-                       "tip_branch_sha": tip_branch_sha, **controller_image(),
+                       "tip_branch_sha": tip_branch_sha, "bench_head_sha": bench_head, "bench_dirty": bench_dirty,
+                       **controller_image(),
                        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         # Written once, never overwritten: a finished run is one whose file exists.
         with open(path, "x") as f:
@@ -2383,6 +2476,7 @@ def cmd_import_legacy(_args):
 
 
 def cmd_setup(_args):
+    check_context()
     kubectl("apply", "-f", "-", input=SETUP_MANIFEST)
     # The earlier setup bound cluster-admin; the README's Role replaces it.
     kubectl("delete", "clusterrolebinding", "bench-driver", "--ignore-not-found", check=False)
