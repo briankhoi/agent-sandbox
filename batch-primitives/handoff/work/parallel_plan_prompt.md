@@ -2,7 +2,9 @@
 
 ---
 
-You are the coordinator of the **parallel work** for Brian's batch claiming project (Python SDK in `kubernetes-sigs/agent-sandbox`, stack of PRs on his fork `briankhoi/agent-sandbox`). You have no memory of earlier work; everything is in the handoff pack on the notes branch. A separate conversation (the **stack conversation**) owns the PR stack itself. You run alongside it, so the ownership rules below matter.
+You are the **coordinator** of the **parallel work** for Brian's batch claiming project (Python SDK in `kubernetes-sigs/agent-sandbox`, stack of PRs on his fork `briankhoi/agent-sandbox`). You have no memory of earlier work; everything is in the handoff pack on the notes branch. A separate conversation (the **stack conversation**) owns the PR stack itself. You run alongside it, so the ownership rules below matter.
+
+**You coordinate; you do not do the work yourself.** Your context must stay clean for a long session. For each item you write a self-contained prompt file that Brian pastes into a fresh conversation (a task conversation). Brian pastes the task conversation's report back to you. You verify it against the code and the rules (read the pushed commits and files yourself; use a fresh `inherit` reviewer subagent where `working_rules.md` asks for one), then either write a fix prompt or move on to the next prompt. You may also spawn `inherit` subagents directly for short read-only jobs (a check, a review), but anything long or multi-step goes to a task conversation through a prompt.
 
 ## Setup (repo root `/usr/local/google/home/brianknguyen/agent-sandbox`)
 ```sh
@@ -21,7 +23,8 @@ Read in order, from `../agent-sandbox-notes/batch-primitives/handoff/`:
 - Commits authored by `Brian Nguyen <brianknguyen@google.com>`, no `Co-Authored-By` or `Claude-Session` trailers, never `--no-verify`.
 - Run only new or changed tests, plus lint on changed lines and mypy per commit. No full suite.
 - Push only to `origin`. Never comment on GitHub, never open a PR, never edit PR titles or descriptions (the stack conversation does renumbering), never push upstream.
-- Ask Brian before creating or deleting kind clusters (and before deleting any remote branch).
+- Kind (Brian, 2026-10-22: "feel free to create worktrees as you need, install packages, tools, test on local kind cluster"): task conversations may create, use and delete their own kind clusters, named with the prefix `par-` (for example `par-mem`). Never touch, reuse or delete any other cluster (in particular `kind-batch-bench`) without asking Brian. Check `kubectl config current-context` before any cluster command and pass `--context` explicitly. Ask Brian before deleting any remote branch.
+- Worktrees, packages and tools: create worktrees (outside the repo, for example `../agent-sandbox-par-<item>`), venvs and installs as needed, outside CitC and outside the repo tree except for deliverables.
 - Base every claim on code you have read (`file:line`); mark facts as measured, verified or inferred. A fact you cannot establish is a question for Brian.
 - Report short: summary first, ranked findings with a recommendation and reason each, decisions for Brian last.
 - Design changes need Brian's approval. Propose, then wait.
@@ -32,7 +35,7 @@ Read in order, from `../agent-sandbox-notes/batch-primitives/handoff/`:
 - **Stack conversation owns**: every `feat/batch-*` branch and every open upstream PR branch, all restacks and syncs, the TLS PR insertion, the Task 6 rename of the stack (steps 2 to 10), review comments on open PRs, `review/*` copies of stack branches, and these notes files: `handoff/state.md`, `handoff/tasks.md`, `handoff/refs/pr_table.md`. Do not edit them; if one needs a change, tell Brian and he relays it.
 - **You own**: `batch_claim_proposal.md`, `review_carryover_notes.md`, `handoff/refs/work_plan.md`, and new files under `handoff/work/` (except this file and `rename_group_outcomes.py`), plus `feat/rl-batch-claim-mode` (Task 5) and the `go-batch-design-notes` branch (Task 6 step 11). Exception: when the stack conversation runs Task 6 step 10, it renames the old names in your notes files too. Push your Task 3 edits before then, and pull before editing again. Edit notes only in `../agent-sandbox-notes`. Always `git pull --rebase` right before you commit and push notes (normal push, never force), since both conversations push to `batch-primitives-notes`.
 - Code branches you create: new names only (for example `feat/batch-8-...`, `review/pr8/...`, `plan/...`). Never rebase or push a stack branch.
-- Use separate git worktrees (for example `../agent-sandbox-par-<item>`); never switch branches in the main repo worktree or in `../agent-sandbox-restack` / `../agent-sandbox-fu5` / `../agent-sandbox-leasefix` (the stack conversation uses those).
+- Use separate git worktrees (for example `../agent-sandbox-par-<item>`); never switch branches in the main repo worktree or in `../agent-sandbox-restack` / `../agent-sandbox-fu5` (the stack conversation uses those).
 
 ## Live situation (as of 2026-10-22 12:25 UTC; `state.md` and live heads win)
 - Upstream `feature/batch-claim` tip is `255d15fc` (6/N, fu5, #1984 merged). 7/N is fu6 (#1985), synced at 12:20 with a second commit (the Lease credential fix from CodeRabbit). Real heads now: fu6 `5c51feca` ... PR 7 `a26979f1` (see `state.md`).
@@ -52,17 +55,21 @@ Read in order, from `../agent-sandbox-notes/batch-primitives/handoff/`:
 | E. Task 5 | Re-commit `feat/rl-batch-claim-mode` with Brian as committer, trees identical, exactly as `tasks.md` Task 5 says (check the head is still `e606b9bd` first; stop and ask Brian if it moved). No open upstream PR is known for it; ask Brian if unsure before the force-with-lease push. | Now | Per `tasks.md` Task 5. Tell Brian the new head, and tell him to relay it to the stack conversation (Task 6 step 6 rebases this branch). |
 | F. Task 6, steps 1 and 11 only | Step 1 (read-only): check every review comment on #1988, #1989, #1990, #1991 for the names, as `tasks.md` describes. Report early: if a reviewer asked for, approved or proposed names, Brian must see the links before the stack conversation renames anything. Step 11: rename in the Go design notes branch `go-batch-design-notes` (design and prototype only), run `go vet` and `go test` in `prototype/batchproto`, one `notes(go):` commit, plain push. | Now | Step 1 report with links (or "nothing found"); step 11 commit link. |
 
+| G. 4.2 async memory probe | Brian calls this important. Run the async baseline (per-claim, no batch code) with and without `MALLOC_ARENA_MAX=2` for about 10 minutes each of the rolling scenario (`6v2-baseline-async`), on a `par-` kind cluster the task conversation creates. Harness: `test/benchmarks/batch-claim/bench.py` on `origin/bench/batch-claim`; scenario definitions and run conventions in `refs/benchmark_rerun_prompt.md`; earlier numbers in `refs/benchmark_rerun_review.md` and `state.md` ("Measured facts": baseline async native memory grew 93 to 514 MB, batch 94 to 282 MB, Python-traced memory flat at 11 MB). If growth flattens with `MALLOC_ARENA_MAX=2` it is allocator fragmentation, otherwise a leak; consider a short `tracemalloc` or `memray` run to locate it if it is a leak. The run prompt must be complete, resumable after interruption, pin the code SHA, tree and SDK version, verify every flag and path against the harness at that SHA, and be self-checked by a fresh `inherit` subagent before Brian runs it (`working_rules.md`, "Prompts and benchmarks"). | Now (does not touch the stack) | The two RSS curves (data and a plot), the verdict with the evidence, and a drafted upstream issue text for Brian to file. |
+
 Steps 2 to 10 of Task 6 (the stack rename, RL copy, PR text, notes renames) belong to the stack conversation and run after plan C and the renumbering.
 
 ## Parallel or sequential
-Not everything needs its own worker. Use a worker when an item is large and independent; do small items yourself, one after another. Suggested:
-- Workers (in parallel, `inherit`): B (4.4 plan) and C (4.1 plan). Both are read-only plans of real size.
-- Yourself, in this order: F step 1 first (it can block the rename), then E (small, mechanical), then A (notes; you are the only writer of your notes files, and Task 6 step 10 later touches the same files, so finish and push A early), then D, then F step 11.
-- Change this split if you find a reason; say what you changed and why.
+Prompts are files under `handoff/work/prompts/` (one per task conversation, named `<letter>-<slug>.md`), committed and pushed so Brian can open them by link. Each prompt is self-contained: setup commands, the files to read, the hard rules and the ownership section (copied, not referenced), the exact goal and steps, the checks, the done criteria, and a short report format ending with commit or compare links, so Brian can paste the report back to you. Each says to use the `inherit` model for any subagents.
 
-Not yours: 4.2 (needs Brian's OK to use kind), 4.3 (after PR 7/8), 4.5 (needs OK; ask Brian first), anything RL.
+Suggested grouping (change it if you find a reason, and say why):
+- **Can run at the same time** (no shared files): G (4.2 memory probe), B (4.4 plan), C (4.1 plan), F step 1 (read-only review-comment check; report it first because it can block the rename), E (Task 5, RL branch only).
+- **Sequential**: A (Task 3) before the stack conversation reaches Task 6 step 10, since both edit the same notes files; then D (4.6 groundwork), then F step 11. D's item (e) needs the new PR numbers, so ask Brian for them.
+- Small read-only jobs (for example F step 1) you may give to an `inherit` subagent instead of a prompt, if the result is short.
+
+Not yours: 4.3 (after PR 7/8), 4.5 (needs OK; ask Brian first), RL library changes in `examples/agent-sandbox-rl/` (Task 5 only re-commits; it changes no code).
 
 ## How to start
-1. Do the setup and read the four files.
-2. Follow the parallel or sequential split above. Each worker (model `inherit`) gets its own worktree and a complete brief: the item text, the rules, the ownership section, and what to return. Workers return drafts to you; you commit notes yourself so only one writer of yours touches the notes branch at a time.
-3. Review each result against the rules, run the independent reviewer where required, then report to Brian in one short message with links (GitHub commit or compare links on `briankhoi/agent-sandbox`).
+1. Do the setup and read the four files (and `refs/benchmark_rerun_prompt.md` before writing G's prompt).
+2. Write the first batch of prompts (the "same time" group), commit and push them, and give Brian one short message: the prompt links, which ones can run in parallel, and anything you need from him first.
+3. When Brian pastes a report: verify it yourself against the pushed code and files (do not trust the report), run an independent `inherit` reviewer where required, then reply with either a fix prompt (also a file) or "accepted" plus the next prompt. Keep a short tracker file `handoff/work/parallel_tracker.md` (item, prompt link, status, last result link) so a fresh coordinator could resume.
