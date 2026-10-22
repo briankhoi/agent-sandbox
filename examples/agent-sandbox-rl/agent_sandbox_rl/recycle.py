@@ -53,6 +53,21 @@ _DEFAULT_WIPE = ("/tmp/*", "/var/tmp/*", "$HOME/.cache/*")
 _UNSET = object()
 
 
+def _claim_expiring(handle, longest_task_s: float, reset_timeout: float) -> bool:
+  """Whether the claim could reach its ``shutdownTime`` before another reset and
+  task finish on it.
+
+  A batch claim's ``shutdownTime`` is fixed when it is created, but recycling
+  keeps one claim for many tasks, so it is rotated like a ``max_reuses`` claim
+  before the controller deletes it mid-task. Twice the longest task seen on this
+  group leaves room for a task that runs long. A claim with no ``shutdownTime``
+  never expires."""
+  expires_at = handle.claim_expires_at
+  if expires_at is None:
+    return False
+  return expires_at - time.monotonic() < 2 * longest_task_s + reset_timeout
+
+
 @dataclass
 class ResetBaseline:
   """Pristine fingerprint captured at first claim; compared on every reset."""
@@ -295,12 +310,15 @@ def reuse_git_restore_sandbox(fleet, tasks, process_fn, concurrency, *,
       results[i] = e
       logger.error("task %s failed: %s", t.id, e)
     finally:
-      fleet._obs.task_done(handle.cluster_name, fam, status, time.monotonic() - t0)
+      elapsed = time.monotonic() - t0
+      fleet._obs.task_done(handle.cluster_name, fam, status, elapsed)
+    return elapsed
 
   def _run_group(group):
     handle = None
     baseline = None
     uses = 0
+    longest = 0.0
     recyclable = None                         # None = undetermined; decided at 1st prime
     try:
       for pos, (i, t) in enumerate(group):
@@ -325,7 +343,7 @@ def reuse_git_restore_sandbox(fleet, tasks, process_fn, concurrency, *,
           if scale_on_hold and recyclable:    # holding it → stop the pool replenishing
             fleet.unwarm_image(t.image)
           uses = 0
-        _process(handle, i, t)
+        longest = max(longest, _process(handle, i, t))
         if pos == len(group) - 1:
           break                               # last task in group: nothing to reset for
         if not recyclable:                    # can't reset → fresh claim, no reset/quarantine
@@ -333,7 +351,8 @@ def reuse_git_restore_sandbox(fleet, tasks, process_fn, concurrency, *,
           handle = None
           continue
         uses += 1
-        if uses >= max_reuses:                # planned rotation (drift bound)
+        if (uses >= max_reuses                # planned rotation (drift bound)
+            or _claim_expiring(handle, longest, reset_timeout)):
           with fleet._obs.phase("rotate", cluster=handle.cluster_name):
             fleet.release(handle)
           handle = None
@@ -451,13 +470,16 @@ async def reuse_git_restore_sandbox_async(afleet, tasks, process_fn, concurrency
       results[i] = e
       logger.error("task %s failed: %s", t.id, e)
     finally:
-      obs.task_done(handle.cluster_name, fam, status, time.monotonic() - t0)
+      elapsed = time.monotonic() - t0
+      obs.task_done(handle.cluster_name, fam, status, elapsed)
+    return elapsed
 
   async def _run_group(img, group):
     async with sem:
       handle = None
       baseline = None
       uses = 0
+      longest = 0.0
       recyclable = None
       try:
         for pos, (i, t) in enumerate(group):
@@ -482,13 +504,14 @@ async def reuse_git_restore_sandbox_async(afleet, tasks, process_fn, concurrency
                   held[img] += 1
                   await _rescale(img)
             uses = 0
-          await _process(handle, i, t)
+          longest = max(longest, await _process(handle, i, t))
           if pos == len(group) - 1:
             break
           if not recyclable:                      # can't reset → fresh claim per task
             await afleet.release(handle); handle = None; continue
           uses += 1
-          if uses >= max_reuses:                  # planned rotation (drift bound)
+          if (uses >= max_reuses                  # planned rotation (drift bound)
+              or _claim_expiring(handle, longest, reset_timeout)):
             with obs.phase("rotate", cluster=handle.cluster_name):
               await afleet.release(handle)
             if scale_on_hold and recyclable:      # released → make a warm for re-claim
