@@ -72,5 +72,91 @@ Write plans and run prompts as files under `batch-primitives/handoff/work/` on t
 | 4.6 | **Small open items** | (a) The E402 nit in `test_async_sandbox_batch.py`: module-level imports (`import aiohttp`, `from kubernetes_asyncio ...`, `from k8s_agent_sandbox ...`) come after `pytest.importorskip("kubernetes_asyncio")`, which pycodestyle reports as E402 (it was reported at line 64 on an older head; find it with `pycodestyle --select=E402`). Ask Brian whether to fix it, and fold it into the PR whose commit added the line. (b) Delete stale `review/*`, `review/gofix*` and `review-diff/*` remote branches (**needs Brian's explicit OK**; list them first). (c) The PR 6 size-0 group gap: a re-attached handle (`get_batch`) forgets an unused `size=0` group. Not decided. The PR 6 independent audit (`refs/pr6_independent_audit.md`, "Where I agree and disagree") agreed with the earlier audit's item 2 and called it low impact, so documenting it is enough. The alternative was storing size-0 pools on the Lease. Ask Brian; if he agrees to document, the docstring change goes into PR 6 on a review copy (**needs OK**). (d) The `delete_batch` idea is in `review_carryover_notes.md` under "Ideas raised but not planned" (`client.delete_batch(batch_id, namespace)` doing the reaper's steps; the reaper review says to use the reaper's delete order). There was a decision card, and its outcome is not recorded. Ask Brian whether he wants it before doing anything (**needs OK**). (e) Opening the transport and reaper PRs upstream: Brian does this himself; you prepare title and description text from `refs/pr_table.md` and check the stack is restacked. (f) Local kubeconfig context was left at `kind-batch-bench`; check `kubectl config current-context` before any cluster work. | Mixed (see each) |
 
 ---
+## Task 5. Re-commit the RL claim_mode branch with Brian as committer (small, any time)
+
+**Why.** The 4 commits on `feat/rl-batch-claim-mode` (head `e606b9bd` on 2026-10-22) have author Brian Nguyen but committer `Claude <noreply@anthropic.com>`. The cloud project asked for this on 2026-10-22. The trees must stay identical.
+
+**Steps.**
+1. `git fetch origin`. Check that the head is still `e606b9bd` and that `git log --format='%h %an | %cn %s' -4 origin/feat/rl-batch-claim-mode` shows the 4 commits (`9bcee22c`, `496ea1e8`, `c1fcca9a`, `e606b9bd`) with committer Claude. If the head moved, stop and ask Brian.
+2. The branch sits on `769b7f2e`, the pre-5/N-restack PR 7. Its tree equals today's PR 7 tree (`99697680`). Re-commit in place, keeping the same parent so the trees can't change (recipe checked in a cloud scratch clone: same 4 trees, Brian as committer): `git switch -c review/recommit/rl-batch-claim-mode origin/feat/rl-batch-claim-mode`, then `GIT_COMMITTER_NAME="Brian Nguyen" GIT_COMMITTER_EMAIL=brianknguyen@google.com git rebase --no-ff --committer-date-is-author-date 769b7f2e`.
+3. Verify. For each of the 4 commits, old and new trees are equal (`git rev-parse <old>^{tree} <new>^{tree}`), `git diff origin/feat/rl-batch-claim-mode HEAD` is empty, and `git log --format='%an <%ae> | %cn <%ce>' 769b7f2e..HEAD` shows Brian on both sides. Messages carry no `Co-Authored-By` or `Claude-Session` trailers.
+4. This branch has no open upstream PR as far as the notes know (Brian opens PRs himself, so ask if unsure). Push with `git push origin --force-with-lease=feat/rl-batch-claim-mode:e606b9bd HEAD:feat/rl-batch-claim-mode` and give Brian the new head.
+
+**Done when.** The branch head has 4 commits with Brian as author and committer, identical trees, and Brian has the new SHA.
+
+---
+## Task 6. Rename `iter_ready_groups()` to `group_outcomes()` and `GroupReady` to `GroupOutcome` (approved)
+
+**Approval.** Brian, 2026-10-22 00:45 UTC, verbatim (excerpt): "should we rename wait for wait for quorum, events, and iter ready groups to be more clear to users of what they do? i feel like its not immediately obvious, but man it would be a large effort". The recommendation is in the cloud project file `design/batch_api_naming.md`. Brian, 2026-10-22 11:56 UTC, verbatim: "i approve the naming call - can you add this as a task in the remote branch so the other agent can pick it up?"
+
+**What was approved** (the recommendation he approved, nothing more):
+- `iter_ready_groups()` becomes `group_outcomes()` on both handles, and the type `GroupReady` becomes `GroupOutcome`. The old name misled because failed groups are yielded too (`GroupReady(error=...)`, `batch_state.py` `_set_group_outcome` calls), and the PR 3 description said it "raises when it can't", which is wrong. "Outcome" is already the code's word (`pop_group_outcome`, `_set_group_outcome`, "as soon as its outcome is known").
+- `wait_for_quorum()` and `events()` keep their names.
+- Two docstring edits, both handles: the first line of `events()` becomes "Hands out each initial claim once, as it becomes Ready, fails, or is lost." The group method's "It fails with ``QuorumUnreachableError`` once ... or with ``BatchTimeoutError`` ..." becomes "A failed group is yielded with ``error`` set, not raised. The error is ``QuorumUnreachableError`` once ..., or ``BatchTimeoutError`` ...". This makes clear the iterator doesn't raise for a failed group.
+- No aliases and no deprecation, because none of this is merged upstream (`upstream/feature/batch-claim` has none of the names; measured 2026-10-22).
+
+**When.** After the pending stack work lands: the `review/fu6-lease/*` sync, the plan C TLS insertion and the renumbering (see `state.md`). The rename is head-independent, so run it on whatever the live heads are then. Ask Brian before starting.
+
+**Read.** `state.md` (branch order), `working_rules.md` (review copies, checks), the script `handoff/work/rename_group_outcomes.py` (this task's only code change), and `refs/pr_table.md` rows for PR 3 to PR 7.
+
+**Steps.**
+1. **Check upstream first.** For #1988 (PR 3) and #1989 (PR 4), and also #1990 and #1991, whose docstrings mention the name, read every review comment: `gh api --paginate repos/kubernetes-sigs/agent-sandbox/pulls/<n>/comments`, `.../pulls/<n>/reviews` and `.../issues/<n>/comments`. Grep the bodies for `iter_ready_groups|GroupReady|wait_for_quorum|events\(|naming|rename`. If a reviewer asked for these names, approved them, or proposed others, stop and bring Brian the links before changing anything.
+2. **Where the name lives** (measured 2026-10-22 at PR 7 `24a4e9a1`; recount on the live heads). 12 files: `k8s_agent_sandbox/{__init__,models,batch_state,sandbox_batch,async_sandbox_batch,sandbox_client,async_sandbox_client}.py`, `test/unit/test_sandbox_batch.py`, `test/unit/test_async_sandbox_batch.py`, the SDK `README.md` (a docs-site mount, `/docs/python-client/`), `docs/python_sdk_reference.md` and `test/e2e/clients/python/test_batch_e2e.py`. Commits that add or change the name or the two docstrings:
+   - PR 3, all 5: "add batch event models and group outcome errors", "add batch fill accounting", "add events and iter_ready_groups", "use iter_ready_groups in the claim_batch e2e test", "regenerate Python SDK reference for events and iter_ready_groups".
+   - PR 4, 3: "add batch-wide quorum to the batch state", "add wait_for_quorum to batch handles", "regenerate Python SDK reference for wait_for_quorum".
+   - PR 5, 2: "add release_member, release_group and release_not_ready" and its docs regeneration.
+   - PR 6, 3: "add acquire to batch handles", "allow size=0 batch groups", and the acquire docs regeneration.
+   - Transport, reaper and PR 7 carry the renamed text only through their parents, plus README edits in the reaper and PR 7 commits. The script covers all of them.
+   - The RL branch `feat/rl-batch-claim-mode` and `bench/rl-claim-mode` call none of the renamed names (measured). The bench calls only `events()`, which keeps its name.
+3. **Make review copies**, one per real branch at its live head: `git branch review/rename/<branch> origin/<branch>` for PR 3, PR 4, PR 5, PR 6, transport, reaper and PR 7.
+4. **One scripted pass, no rebase.** Fixups at PR 3 followed by rebases would conflict wherever a later commit rewrites the same docstring lines. Instead, rewrite every commit's tree in one `git filter-branch` over all seven copies at once, so shared commits are rewritten once and the copies stay stacked:
+   ```
+   BASE=$(git rev-parse origin/feat/batch-2-claim)   # PR 2 head, unchanged by this task
+   SCRIPT=/abs/path/to/notes-worktree/batch-primitives/handoff/work/rename_group_outcomes.py
+   FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
+     --tree-filter "python3 -I $SCRIPT" \
+     --msg-filter "sed -E 's/\biter_ready_groups\b/group_outcomes/g; s/\bGroupReady\b/GroupOutcome/g'" \
+     -- $(for b in feat/batch-3-group-consumers feat/batch-4-group-quorum feat/batch-5-release-group-76a8m3 \
+                   feat/batch-6-acquire-nbbp5j feat/batch-transport-ltlfdm feat/batch-reaper-ymtd6t \
+                   feat/batch-7a-create-path; do echo "$BASE..review/rename/$b"; done)
+   ```
+   The script is idempotent. It also renames the escaped heading `iter\_ready\_groups` that pydoc-markdown writes into the reference, so the regenerated docs match. A cloud dry run on 2026-10-22 rewrote all 26 commits in 8 s. That run's script lacked the README path, which was added afterwards and checked at the PR 7 head. At the PR 7 head, 254 tests in `test_sandbox_batch.py`, `test_async_sandbox_batch.py` and `test_batch_state.py` passed, mypy was clean, `make generate-python-docs` matched the script's output byte for byte, and no old name was left. Committers become your local identity, so set it to Brian Nguyen first. Authors are kept.
+5. **Verify** before showing Brian:
+   - `git grep -n -E 'iter_ready_groups|GroupReady|iter\\_ready' review/rename/feat/batch-7a-create-path` is empty.
+   - Each copy has the same commit count and subjects (renamed) as its real branch. `git range-diff origin/feat/batch-2-claim..origin/<b> origin/feat/batch-2-claim..review/rename/<b>` shows only the renames and the two docstring edits.
+   - `git diff origin/<b> review/rename/<b> --stat` touches only the 12 files above.
+   - Per commit, in detached worktrees: mypy with the repo config, pytest on the batch test files that exist at that commit, and pycodestyle on changed lines. `GroupOutcome` is 2 characters longer than `GroupReady`, so a few long lines grow by 2. The longest is a `batch_state.py` comment, which goes from 129 to 131 characters. These files already have lines over 115, so don't rewrap unless Brian asks. At each of the 5 "regenerate" commits, `make generate-python-docs` gives no diff. Then the author and trailer check.
+   - No behaviour changes, so no mutation check is needed. Say so in the report.
+6. **RL branch** (after Task 5): `git switch -c review/rename/rl-batch-claim-mode origin/feat/rl-batch-claim-mode && git rebase --onto review/rename/feat/batch-7a-create-path HEAD~4`. Its 4 commits touch only `examples/agent-sandbox-rl/`, and its old base `769b7f2e` has the same tree as PR 7 `24a4e9a1`, so this should apply cleanly. Check that `git diff review/rename/feat/batch-7a-create-path HEAD --stat` equals `git diff 769b7f2e origin/feat/rl-batch-claim-mode --stat`, and run `examples/agent-sandbox-rl/tests/test_batch_claims.py` (`MYPYPATH=clients/python/agentic-sandbox-client` for mypy; the RL lib uses 2-space indent). Do **not** rewrite `bench/rl-claim-mode`. It is a pinned benchmark record (the limits rerun prompt pins `96103717`) on an older SDK copy, and it needs no change.
+7. **Show Brian** two-dot compare links that show only this change: `https://github.com/briankhoi/agent-sandbox/compare/<old PR 3 head>..<new PR 3 head>` and the same for PR 7. Add one line on what to check: the names, the two docstrings, and nothing else.
+8. **Sync only after Brian's OK** (these are open-PR branches): one `git push --atomic origin --force-with-lease=<branch>:<live head> ... review/rename/<b>:<b>` covering all seven, plus the RL branch.
+9. **PR text** (draft it, and change GitHub titles only under the renumbering rule in `state.md`): the #1988 title becomes "feat(python-sdk): add events and group_outcomes (k/N)" with k from `state.md`. In `refs/pr_table.md`, rename the PR 3 row and fix line ~90 to: "`group_outcomes()` yields each group once its outcome is known: its first `min_ready` Ready members, or an `error` (`QuorumUnreachableError` or `BatchTimeoutError`)." Rename the name wherever it appears in the PR 4 to PR 7 descriptions.
+10. **Notes edits** (in the notes worktree, after the usual check that nobody else is editing the notes): rename in `batch_claim_proposal.md` (the 8 lines below), in the current-state lines of `review_carryover_notes.md` (~94, ~107, ~131, ~167), `state.md` (~42, ~51), `refs/work_plan.md` (~19) and `project_instructions.md` (~31). Leave the quoted, already-posted reply text in `review_carryover_notes.md` (~13, ~15, ~17, ~26) and the historical run prompts unchanged. Tell Brian that his own project instructions table ("PR 3 `events`, `iter_ready_groups`, fill accounting") needs the same one-word edit.
+11. **Go design** (branch `go-batch-design-notes`, design and prototype only, no SDK code): rename `ReadyGroups` and `IterReadyGroups` to `GroupOutcomes`, and `GroupReady` to `GroupOutcome`. Rename the Python names too. Files: `go_batch_final_design.md` (17 hits), `python_sdk_alignment.md` (3), `pending_user_actions.md` (1), `golden-generators/gen_handle_traces.py` (2), `python-repros/check_all_size0.py` and `check_attach_no_groups.py` (2 each), and `prototype/batchproto/{batch_state.go,handle.go,handle_trace_test.go}`. The prototype's private `groupOutcomes` field and `popGroupOutcome` don't clash with the public names. Leave any text quoted from Brian unchanged. Run `go vet ./... && go test ./...` in `prototype/batchproto`, and regenerate the golden traces if the generator's output changes. Make one commit authored by Brian Nguyen with the prefix `notes(go):`, and push it with a plain push.
+
+**Google Doc edits for Brian** (he mirrors the proposal by hand). The simplest way is Find and replace with "Match case" on: `iter_ready_groups` → `group_outcomes` (7 hits) and `GroupReady` → `GroupOutcome` (2 hits). They sit in these places in `batch_claim_proposal.md` (line numbers at notes `b026b0f8`):
+
+| Line | Section | Before | After |
+| :-- | :-- | :-- | :-- |
+| 263 | Core Batch Methods | `` `iter_ready_groups`: A live channel yielding once per group, ... `` | `` `group_outcomes`: A live channel yielding once per group, ... `` |
+| 307 | Python (types) | `class GroupReady:` | `class GroupOutcome:` |
+| 308 | Python (types) | `"""One group's own quorum outcome, yielded by iter_ready_groups()."""` | `"""One group's own quorum outcome, yielded by group_outcomes()."""` |
+| 371 | Python (handle) | `def iter_ready_groups(self) -> AsyncIterator[GroupReady]: ...` | `def group_outcomes(self) -> AsyncIterator[GroupOutcome]: ...` |
+| 394 | Go | ``The `events` and `iter_ready_groups` iterators become receive-only channels`` | ``The `events` and `group_outcomes` iterators become receive-only channels`` |
+| 434 | 2. Per-group quorum example | ``(via `iter_ready_groups`)``, and twice ``` `iter_ready_groups()` ``` later in the paragraph | ``(via `group_outcomes`)``, and twice ``` `group_outcomes()` ``` |
+| 459 | 2. Per-group quorum example (code) | `async for group in batch.iter_ready_groups():` | `async for group in batch.group_outcomes():` |
+| 611 | Rollout Waves: Per-Step Cohorts | ``Uses `batch.iter_ready_groups()` so each pool's cohort dispatches ...`` | ``Uses `batch.group_outcomes()` so each pool's cohort dispatches ...`` |
+
+The proposal has no text for the two docstring edits, so nothing else changes there.
+
+**Done when.**
+- Step 1's upstream check is reported, with links if anything was found.
+- The seven `review/rename/*` copies (plus the RL copy) are pushed and pass step 5's checks.
+- Brian has the two compare links, then gives his OK, and the atomic sync has run.
+- The pr_table, notes and Go design edits are pushed, with commit links.
+- Brian has the Google Doc table above and the reminder about his project instructions table.
+- `git grep -E 'iter_ready_groups|GroupReady'` on PR 7 and on `feat/rl-batch-claim-mode` is empty.
+
+---
 ## Not yours (stays in the cloud project)
 RL follow-ups: the RL integration prototype and its limits rerun; `fleet.prefetch` (only if a fill beats an acquire burst by more than 20%); a parallel precheck (only if prefetch ships); sandboxd exec as its own track; owner references on pools (only if leaks show up); the per-claim default acquire limit (mention at the TL meeting); the Lease-loss detection run. Changes to `examples/agent-sandbox-rl/`. If Brian pastes an SDK change request from that work, treat it as a normal task: owning PR, review copy, report.
