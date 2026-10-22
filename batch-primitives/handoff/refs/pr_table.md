@@ -75,7 +75,8 @@ This PR is the eighth in a series of PRs to implement a batch. It keeps the batc
 This PR is the ninth in a series of PRs to implement a batch. It makes client cleanup close what batches leave open.
 - Cleanup closes each tracked batch's cached connections, which hold port-forward processes.
 - The async client's `close()` and `delete_all()` share one `_stop_batches()`, and its atexit hook closes batch connections.
-- `detach()` unregisters only its own handle, so a newer handle for the same batch stays tracked.
+- `detach()` unregisters only its own handle, so a newer handle for the same batch stays tracked. The sync client guards its batch registry with a lock, since `detach()` can run on another thread.
+- Cleanup marks each batch detached, so a later `connect()` raises `BatchError` instead of opening a connection nothing would close.
 
 ### fu9, containing fu8 (10/N)
 This PR is the tenth in a series of PRs to implement a batch. It lets two `detach()` calls on the same handle both succeed, and names the async batch handle's background tasks.
