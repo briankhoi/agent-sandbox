@@ -1,0 +1,93 @@
+{
+ "variant": "async-per-claim-c20",
+ "arm": "per-claim",
+ "shape": "b160",
+ "n": 160,
+ "settings": {
+  "create_rps": null,
+  "max_in_flight": null,
+  "acquire_concurrency": 20,
+  "lease_duration": 300,
+  "loop": "async",
+  "pool_workers": null
+ },
+ "started": 160,
+ "errors": 0,
+ "error_samples": [],
+ "acquired_s": {
+  "n": 160,
+  "first": 0.2808247909415513,
+  "p50": 0.9717052493942901,
+  "p90": 1.5463846581755205,
+  "p99": 1.6800650009117089,
+  "last": 1.683347457787022
+ },
+ "start_s": {
+  "n": 160,
+  "first": 0.3833469159435481,
+  "p50": 1.1000333953415975,
+  "p90": 1.6961992371361703,
+  "p99": 1.8068092105304823,
+  "last": 1.8080885407980531
+ },
+ "first_start_s": 0.3833469159435481,
+ "median_start_s": 1.1000333953415975,
+ "last_start_s": 1.8080885407980531,
+ "group_start_s": {
+  "n": 40,
+  "first": 0.5643361657857895,
+  "p50": 1.1035407494055107,
+  "p90": 1.698486803448759,
+  "p99": 1.8078874470945447,
+  "last": 1.8080885407980531
+ },
+ "first_group_s": 0.5643361657857895,
+ "last_group_s": 1.8080885407980531,
+ "step_s": 1.817826374899596,
+ "release_s": 0.1051657919306308,
+ "driver_cpu_s": 1.740630000000003,
+ "max_rss_mb": 211.484375,
+ "execs": 160,
+ "throttled_logs": 0,
+ "requests": {
+  "create sandboxclaims": 160,
+  "watch sandboxclaims": 160,
+  "get sandboxes": 320
+ },
+ "total_requests": 640,
+ "driver_requests": 0,
+ "watches": 160,
+ "statuses": {},
+ "http_429": 0,
+ "creates": 160,
+ "create_window_s": 1.3625227089505643,
+ "creates_per_s": 116.69530273184527,
+ "warm_wait_s": 26.52008670801297,
+ "pods_in_namespace": 160,
+ "pools": 40,
+ "ready_per_pool": 4,
+ "pool_workers_actual": 496,
+ "loop_lag_s": {
+  "n": 137,
+  "first": 3.94170731306074e-05,
+  "p50": 0.0010700000077486036,
+  "p90": 0.004128083642572164,
+  "p99": 0.012525103576481336,
+  "last": 0.08115679189562798
+ },
+ "leaked_pool_threads": 0,
+ "label": "burst-b160-async-per-claim-c20-run1",
+ "step": "burst",
+ "run": 1,
+ "wall_started": 1792711568.438269,
+ "wall_s": 28.79612112045288,
+ "provenance": {
+  "head": "2936f4f0f624dde5ec33fa94b3b9744ea91736df",
+  "tree": "fb8d70b2dd01319b16f7ef879cb8ba58276e8386",
+  "dirty": false,
+  "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode-async/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py",
+  "rl_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode-async/examples/agent-sandbox-rl/agent_sandbox_rl/__init__.py",
+  "smoke": false,
+  "python": "3.14.3"
+ }
+}

@@ -1,0 +1,83 @@
+{
+ "variant": "per-claim-c50",
+ "arm": "per-claim",
+ "shape": "b160",
+ "n": 160,
+ "settings": {
+  "create_rps": null,
+  "max_in_flight": null,
+  "acquire_concurrency": 50,
+  "lease_duration": 300,
+  "loop": "sync",
+  "pool_workers": null
+ },
+ "started": 160,
+ "errors": 0,
+ "error_samples": [],
+ "acquired_s": {
+  "n": 160,
+  "first": 0.8368902499787509,
+  "p50": 1.323048916994594,
+  "p90": 1.8037555381655692,
+  "p99": 1.9004031440848486,
+  "last": 1.9016531249508262
+ },
+ "start_s": {
+  "n": 160,
+  "first": 0.9343239590525627,
+  "p50": 1.6079158959910274,
+  "p90": 1.979056767327711,
+  "p99": 2.0002462182217275,
+  "last": 2.0018811670597643
+ },
+ "first_start_s": 0.9343239590525627,
+ "median_start_s": 1.6079158959910274,
+ "last_start_s": 2.0018811670597643,
+ "group_start_s": {
+  "n": 40,
+  "first": 1.139034542022273,
+  "p50": 1.8326689794193953,
+  "p90": 1.99940917911008,
+  "p99": 2.0016347357607445,
+  "last": 2.0018811670597643
+ },
+ "first_group_s": 1.139034542022273,
+ "last_group_s": 2.0018811670597643,
+ "step_s": 2.029747041873634,
+ "release_s": 0.35592408408410847,
+ "driver_cpu_s": 2.4710480000000015,
+ "max_rss_mb": 201.8125,
+ "execs": 160,
+ "throttled_logs": 0,
+ "requests": {
+  "create sandboxclaims": 160,
+  "watch sandboxclaims": 160,
+  "get sandboxes": 320
+ },
+ "total_requests": 640,
+ "driver_requests": 0,
+ "watches": 160,
+ "statuses": {},
+ "http_429": 0,
+ "creates": 160,
+ "create_window_s": 0.9744831251446158,
+ "creates_per_s": 163.16342058401884,
+ "warm_wait_s": 26.75164124998264,
+ "pods_in_namespace": 160,
+ "pools": 40,
+ "ready_per_pool": 4,
+ "label": "burst-b160-per-claim-c50-run1",
+ "step": "burst",
+ "run": 1,
+ "wall_started": 1792711420.1095722,
+ "wall_s": 29.533971786499023,
+ "provenance": {
+  "head": "2936f4f0f624dde5ec33fa94b3b9744ea91736df",
+  "tree": "fb8d70b2dd01319b16f7ef879cb8ba58276e8386",
+  "dirty": false,
+  "sdk_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode-async/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py",
+  "rl_file": "/Users/brian/Desktop/comp_sci/google/agent-sandbox/.claude/worktrees/rl-claim-mode-async/examples/agent-sandbox-rl/agent_sandbox_rl/__init__.py",
+  "smoke": false,
+  "python": "3.14.3"
+ }
+}
