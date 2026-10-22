@@ -430,7 +430,7 @@ class AsyncSandboxBatch:
         The connection starts from the pod IP the batch's watch reports, without reading the Sandbox.
 
         The batch closes a cached connection once the member's pod is gone, meaning the member is
-        lost or failed or the watch reports another pod IP for it, since the old IP may go to another
+        lost or failed or the watch reports another sandbox or pod IP for it, since the old IP may go to another
         sandbox. Call ``connect`` again once the member is Ready to get a new one. A member that is
         only not Ready keeps its connection.
 
@@ -950,7 +950,7 @@ class AsyncSandboxBatch:
         for claim_name in claim_names:
             cached = self._connected.get(claim_name)
             if cached is not None and not batch_state.still_reaches(
-                self._state.get_member(claim_name), cached[1]
+                self._state.get_member(claim_name), cached[0].sandbox_id, cached[1]
             ):
                 stale.append(self._connected.pop(claim_name)[0])
         return stale

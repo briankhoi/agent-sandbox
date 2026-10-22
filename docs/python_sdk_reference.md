@@ -863,7 +863,7 @@ to the Sandbox, it reuses the existing connection, otherwise it creates a new on
 The connection starts from the pod IP the batch's watch reports, without reading the Sandbox.
 
 The batch closes a cached connection once the member's pod is gone, meaning the member is
-lost or failed or the watch reports another pod IP for it, since the old IP may go to another
+lost or failed or the watch reports another sandbox or pod IP for it, since the old IP may go to another
 sandbox. Call ``connect`` again once the member is Ready to get a new one. A member that is
 only not Ready keeps its connection.
 

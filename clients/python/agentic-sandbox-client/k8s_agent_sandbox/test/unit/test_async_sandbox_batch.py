@@ -505,16 +505,17 @@ class TestWatcher(BaseAsyncBatchClientTest):
         self.assertEqual(handle._state.get_member("b1-0").state, MemberState.LOST)
 
     async def test_connection_is_closed_once_its_members_pod_is_gone(self):
-        def claim(pod_ip="10.0.0.1", ready="True", reason=None):
+        def claim(pod_ip="10.0.0.1", ready="True", reason=None, sandbox="sbx-1"):
             return _claim(
                 "b1-0",
                 conditions=[{"type": "Ready", "status": ready, "reason": reason}],
-                sandbox={"name": "sbx-1", "podIPs": [pod_ip] if pod_ip else []},
+                sandbox={"name": sandbox, "podIPs": [pod_ip] if pod_ip else []},
             )
 
         cases = {
             "same pod IP": ([{"type": "MODIFIED", "object": claim()}], False),
             "new pod IP": ([{"type": "MODIFIED", "object": claim(pod_ip="10.0.0.2")}], True),
+            "new sandbox on the same pod IP": ([{"type": "MODIFIED", "object": claim(sandbox="sbx-2")}], True),
             "not Ready on the same pod IP": ([{"type": "MODIFIED", "object": claim(ready="False")}], False),
             "no pod IP": ([{"type": "MODIFIED", "object": claim(pod_ip=None, ready="False")}], True),
             "failed": (
@@ -525,7 +526,9 @@ class TestWatcher(BaseAsyncBatchClientTest):
         }
         for name, (first_watch, closed) in cases.items():
             with self.subTest(name):
-                self.mock_sandbox_class.return_value = MagicMock(close_connection=AsyncMock())
+                self.mock_sandbox_class.side_effect = lambda **kwargs: MagicMock(
+                    sandbox_id=kwargs["sandbox_id"], close_connection=AsyncMock()
+                )
                 handle = _make_handle(self.client)
                 handle._state.upsert_claim(claim())
                 sandbox = await handle.connect(handle.members()[0])
