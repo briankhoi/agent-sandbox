@@ -35,3 +35,4 @@ Verify in a fresh `inherit` subagent (never flash), given the pushed SHAs and th
 ## Log (newest last)
 - 23:10 A2 accepted; G2 decision brief `coord1/2026-10-22-2310-a2-g2-verdicts.md`, prompt `G3-memleak-fix2.md` waits on Brian; D running as a subagent (results `results/D-small-items.md`). Replies to Brian go in `handoff/work/coord1/` (Brian: "communicate over .md").
 - 23:15 D decisions brief pushed; waiting on Brian for D 1-7 and G3.
+- 23:39 Brian rejected lazy prune (a) (1k terminate then no creates). Independent audit `results/leak-fix-audit.md` (`4e4ee715`): hook in terminate + cycle break. Brief `coord1/2026-10-22-2350-leak-fix-decision.md`; G3 to be rewritten after Brian answers. #1990 retargeted by Brian.
