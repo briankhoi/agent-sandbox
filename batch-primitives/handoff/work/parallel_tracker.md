@@ -4,7 +4,7 @@ Coordinator brief: `handoff/work/parallel_plan_prompt.md`. Prompts live in `hand
 
 | Item | Prompt | Status | Last result |
 | :-- | :-- | :-- | :-- |
-| A. Task 3 design-doc updates | `A-task3-design-doc.md` | prompt ready, must land before stack Task 6 step 10 | |
+| A. Task 3 design-doc updates | `A-task3-design-doc.md`, fix `A2-task3-fix.md` | `00781c63` accurate (subagent PASS 15:08), fix prompt A2 for 4 minimality nits (Brian's wording at proposal:58, duplicated PR 2 bullet, extra rerun sentence, placeholder branch) | `00781c63` |
 | B. 4.4 type plan + transport mypy fix | `B-types-plan.md` | prompt ready | |
 | C. 4.1 PR 8 plan | `C-pr8-plan.md` | prompt ready (plan phase only) | |
 | D. 4.6 groundwork | not written | after A; (e) needs new PR numbers from Brian | |
