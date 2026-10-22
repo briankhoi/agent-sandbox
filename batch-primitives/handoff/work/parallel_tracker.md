@@ -7,7 +7,7 @@ Coordinator brief: `handoff/work/parallel_plan_prompt.md`. Prompts live in `hand
 | A. Task 3 design-doc updates (**accepted 23:05**, `ac653680`) | `A-task3-design-doc.md`, fix `A2-task3-fix.md` | `00781c63` accurate (subagent PASS 15:08), fix prompt A2 for 4 minimality nits (Brian's wording at proposal:58, duplicated PR 2 bullet, extra rerun sentence, placeholder branch) | `00781c63` |
 | B. 4.4 type plan + transport mypy fix | `B-types-plan.md` | plan written (`type_tightening_plan.md`); **handed to coordinator 2** (`coordinator2_prompt.md`) 21:51 | |
 | C. 4.1 PR 8 plan | `C-pr8-plan.md` | plan written (`pr8_plan.md`, edited by `eca64789`); **handed to coordinator 2** 21:51 | |
-| D. 4.6 groundwork | not written | after A; (e) needs new PR numbers from Brian | |
+| D. 4.6 groundwork | subagent | **done 23:12**, decisions in `coord1/2026-10-22-2315-d-decisions.md` (7 items; #1990 targets main) | `results/D-small-items.md` `4a5ad938` |
 | E. Task 5 RL re-commit | `E-rl-recommit.md` | **accepted 14:56** (verified by subagent: trees and messages equal, A=C=Brian, parent `769b7f2e`, no trailers) | `e606b9bd` -> `166a15c8`; Brian relays to stack conversation with the stale same-tree note for Task 6 step 6 |
 | F1. Task 6 step 1 upstream naming check | subagent, no prompt | **done 12:32**: nothing found on #1988-#1991; coordinator re-checked human comments (only `/ok-to-test` from vicentefb, janetkuo) | CodeRabbit on #1989 (pullrequestreview-5606953886) suggests `members` as a tuple on `GroupReady`; carries over to `GroupOutcome` if still open |
 | F11. Task 6 step 11 Go notes rename | not written | after D | |
@@ -34,3 +34,4 @@ Verify in a fresh `inherit` subagent (never flash), given the pushed SHAs and th
 
 ## Log (newest last)
 - 23:10 A2 accepted; G2 decision brief `coord1/2026-10-22-2310-a2-g2-verdicts.md`, prompt `G3-memleak-fix2.md` waits on Brian; D running as a subagent (results `results/D-small-items.md`). Replies to Brian go in `handoff/work/coord1/` (Brian: "communicate over .md").
+- 23:15 D decisions brief pushed; waiting on Brian for D 1-7 and G3.
