@@ -250,6 +250,7 @@ class SandboxClient(Generic[T]):
                     logger.error(f"Failed to roll back SandboxClaim '{claim_name}': {cleanup_error}")
             raise
 
+        self._drop_terminated_handles()
         previous = self._active_connection_sandboxes.get((namespace, claim_name))
         self._active_connection_sandboxes[(namespace, claim_name)] = sandbox
         if previous is not None:
@@ -313,6 +314,7 @@ class SandboxClient(Generic[T]):
             k8s_helper=self.k8s_helper
         )
 
+        self._drop_terminated_handles()
         self._active_connection_sandboxes[key] = new_handle
         return new_handle
     
@@ -331,6 +333,14 @@ class SandboxClient(Generic[T]):
             if not obj.is_active:
                 self._active_connection_sandboxes.pop(key, None)
         return list(self._active_connection_sandboxes.keys())
+
+    def _drop_terminated_handles(self) -> None:
+        # terminate() clears claim_name only after its delete succeeds, so cleanup has
+        # nothing left to do for these handles. Each still holds its closed connector,
+        # which would otherwise stay in memory for as long as the client lives.
+        for key, sandbox in list(self._active_connection_sandboxes.items()):
+            if sandbox.claim_name is None:
+                self._active_connection_sandboxes.pop(key, None)
       
     def list_all_sandboxes(self, namespace: str = "default", label_selector: str | None = None) -> List[str]:
         """

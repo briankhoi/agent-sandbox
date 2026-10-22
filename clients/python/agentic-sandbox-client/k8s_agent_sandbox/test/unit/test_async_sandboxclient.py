@@ -209,6 +209,41 @@ class TestAsyncSandboxClient(unittest.IsolatedAsyncioTestCase):
         active = await self.client.list_active_sandboxes()
         self.assertEqual(active, [("ns1", "active-claim")])
 
+    async def _create_real_sandboxes(self, *names):
+        # Real handles, so terminate() and close_connection() set the state the client reads.
+        self.client.sandbox_class = AsyncSandbox
+        self.mock_k8s_helper.wait_for_claim_ready = AsyncMock(return_value="resolved-id")
+        self.mock_k8s_helper.delete_sandbox_claim = AsyncMock()
+        with patch("uuid.uuid4") as mock_uuid, \
+             patch.object(self.client, "_create_claim", new_callable=AsyncMock, return_value={}):
+            sandboxes = []
+            for name in names:
+                mock_uuid.return_value.hex = name
+                sandboxes.append(await self.client.create_sandbox("test-warmpool", "ns"))
+        return sandboxes
+
+    async def test_next_tracked_handle_drops_terminated_handles(self):
+        first, = await self._create_real_sandboxes("aaaaaaaa")
+        await first.terminate()
+
+        second, = await self._create_real_sandboxes("bbbbbbbb")
+        self.assertEqual(list(self.client._active_connection_sandboxes), [("ns", "sandbox-claim-bbbbbbbb")])
+
+        await second.terminate()
+        self.mock_k8s_helper.resolve_sandbox_name = AsyncMock(return_value="attached-id")
+        self.mock_k8s_helper.get_sandbox = AsyncMock(return_value={"metadata": {}})
+        await self.client.get_sandbox("attached-claim", "ns")
+        self.assertEqual(list(self.client._active_connection_sandboxes), [("ns", "attached-claim")])
+
+    async def test_create_sandbox_keeps_closed_handle_whose_claim_exists(self):
+        closed, = await self._create_real_sandboxes("aaaaaaaa")
+        await closed.close_connection()
+
+        await self._create_real_sandboxes("bbbbbbbb")
+        await self.client.delete_all()
+
+        self.mock_k8s_helper.delete_sandbox_claim.assert_any_await("sandbox-claim-aaaaaaaa", "ns")
+
     async def test_list_all_sandboxes(self):
         self.mock_k8s_helper.list_sandbox_claims = AsyncMock(
             return_value=["sb-1", "sb-2"]

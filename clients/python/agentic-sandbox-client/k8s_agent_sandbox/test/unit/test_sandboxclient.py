@@ -29,6 +29,7 @@ from urllib3.util.retry import Retry
 
 from kubernetes import config as k8s_config
 from k8s_agent_sandbox.sandbox_client import SandboxClient
+from k8s_agent_sandbox.sandbox import Sandbox
 from k8s_agent_sandbox.connector import SandboxConnector
 from k8s_agent_sandbox.models import AdditionalPodMetadata
 from k8s_agent_sandbox.pod_metadata import validate_labels
@@ -173,6 +174,40 @@ class TestSandboxClient(unittest.TestCase):
         
         self.assertEqual(active_list, [("ns1", "active-claim")])
         self.assertNotIn(("ns2", "inactive-claim"), self.client._active_connection_sandboxes)
+
+    def _create_real_sandboxes(self, *names):
+        # Real handles, so terminate() and close_connection() set the state the client reads.
+        self.client.sandbox_class = Sandbox
+        self.client.connection_config = SandboxDirectConnectionConfig(api_url="http://test-router:8080")
+        self.mock_k8s_helper.wait_for_claim_ready.return_value = "resolved-id"
+        with patch('uuid.uuid4') as mock_uuid, patch.object(self.client, '_create_claim', return_value={}):
+            sandboxes = []
+            for name in names:
+                mock_uuid.return_value.hex = name
+                sandboxes.append(self.client.create_sandbox("test-warmpool", "ns"))
+        return sandboxes
+
+    def test_next_tracked_handle_drops_terminated_handles(self):
+        first, = self._create_real_sandboxes("aaaaaaaa")
+        first.terminate()
+
+        second, = self._create_real_sandboxes("bbbbbbbb")
+        self.assertEqual(list(self.client._active_connection_sandboxes), [("ns", "sandbox-claim-bbbbbbbb")])
+
+        second.terminate()
+        self.mock_k8s_helper.resolve_sandbox_name.return_value = "attached-id"
+        self.mock_k8s_helper.get_sandbox.return_value = {"metadata": {}}
+        self.client.get_sandbox("attached-claim", "ns")
+        self.assertEqual(list(self.client._active_connection_sandboxes), [("ns", "attached-claim")])
+
+    def test_create_sandbox_keeps_closed_handle_whose_claim_exists(self):
+        closed, = self._create_real_sandboxes("aaaaaaaa")
+        closed.close_connection()
+
+        self._create_real_sandboxes("bbbbbbbb")
+        self.client.delete_all()
+
+        self.mock_k8s_helper.delete_sandbox_claim.assert_any_call("sandbox-claim-aaaaaaaa", "ns")
 
     def test_list_all_sandboxes(self):
         self.mock_k8s_helper.list_sandbox_claims.return_value = ["sandbox-1", "sandbox-2"]
