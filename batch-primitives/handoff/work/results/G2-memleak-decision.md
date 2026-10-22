@@ -12,7 +12,10 @@ Author: G2 task conversation, 2026-10-22. Asks the coordinator (or Brian) to pic
 - Same probe with two candidate edits, applied after `close_connection()`:
   - callbacks cleared on the connector and its strategy: 0.006 MiB left per dropped handle (177 small cyclic objects remain)
   - `connector.client` set to None: 0.006 MiB left (188 small cyclic objects remain)
-- Running now: 2,400-rollout arms (`6v2-leakbase-long-async`, `6v2-leakfix-long-async`) to show whether option (a) alone levels off under the GC.
+- Done 23:22: 2,400-rollout arms (`6v2-leakbase-long-async`, `6v2-leakfix-long-async`). Both started at 120 Ready, 0 errors, about 200 rollouts/min, harness `9e2a5802` clean. Upstream main was flagged starved (warm pool hit 0 once); the fix arm's minimum was 10 Ready.
+  - upstream main: `uordblks` grows linearly, 73 → 469 → 865 → 1,267 → 1,662 MiB at the quartiles. RSS goes from 156 to 1,757 MiB, a second-half slope of 70.3 MiB per 100 rollouts.
+  - fix (a): `uordblks` goes 73 → 325 → 270 → 197 → 146 MiB at the quartiles, peaking at 394 MiB. The second-half slope is −3.9 MiB per 100 rollouts. RSS ends at 482 MiB (peak 487) and stays there, because the heap the GC freed isn't returned to the OS.
+  - So (a) alone bounds memory (measured). The bound comes from GC timing, not from the code: a peak of about 400 MiB of `uordblks` and about 490 MiB RSS at this shape. With (i), dropped handles would be freed by reference counting at drop time, so the peak should stay near the live set. That last point is inferred and would be re-measured.
 
 Scripts: `test/benchmarks/batch-claim/results/leakfix/handle_cycle.py` and `handle_cycle_edges.py` on `bench/async-mem-probe`. That branch has unpushed commits, which will be pushed with the report.
 
@@ -27,8 +30,8 @@ There are two layers: bounding the registry, which (a) already does, and freeing
 ### (g) Rely on the GC (keep (a) only)
 - What: no further change.
 - New state or type change: none.
-- Risk: memory is a sawtooth whose peak depends on GC heuristics, not bytes. The 2,400-rollout runs will show whether it levels off and where.
-- Cost: none.
+- Risk: memory is a sawtooth whose peak depends on GC heuristics, not bytes. Measured at 2,400 rollouts: it levels off, with `uordblks` peaking at 394 MiB and RSS settling near 490 MiB, against 1,757 MiB and still rising without the fix.
+- Cost: none. A valid choice if a GC-bounded peak is acceptable.
 
 ### (h) Call `gc.collect()` from the client
 - What: on terminate, or every N inserts.
@@ -75,8 +78,8 @@ There are two layers: bounding the registry, which (a) already does, and freeing
 
 ## Recommendation
 
-1. Keep (a). It stops the registry from growing without bound.
-2. Add (i) to the same PR. It frees the 0.7 MiB at drop time with no new state and no type change, and it rests on an existing invariant: a closed connector never reopens.
+1. Keep (a). It stops the registry from growing without bound, and the 2,400-rollout run shows memory levels off with it alone. If you'd rather keep the PR as small as possible, (a) as pushed is a valid stopping point (option g).
+2. Add (i) to the same PR. It frees the 0.7 MiB at drop time with no new state and no type change, so the peak no longer depends on GC timing (about 400 MiB of `uordblks` at this shape). It rests on an existing invariant: a closed connector never reopens.
 3. File (d) as a separate follow-up issue.
 
 Avoid (e), (h) and (j). Take (f) only if one edit is preferred over the strategy edits in (i), accepting the type widening.
