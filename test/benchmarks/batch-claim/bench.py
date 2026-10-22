@@ -37,6 +37,7 @@ driver stops at phase boundaries while the orchestrator scrapes the apiserver's 
 
 import argparse
 import asyncio
+import functools
 import glob
 import inspect
 import json
@@ -582,28 +583,30 @@ class Sampler(threading.Thread):
 _MALLINFO2_FIELDS = ("arena", "ordblks", "smblks", "hblks", "hblkhd", "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost")
 
 
+@functools.lru_cache(maxsize=None)
 def _libc():
+    """libc with mallinfo2's return type set, once, so sampling doesn't allocate new ctypes types."""
     import ctypes
 
     try:
-        return ctypes.CDLL("libc.so.6")
+        libc = ctypes.CDLL("libc.so.6")
     except OSError:
         return None
+    if hasattr(libc, "mallinfo2"):
+        class Mallinfo2(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_size_t) for name in _MALLINFO2_FIELDS]
+
+        libc.mallinfo2.restype = Mallinfo2
+    return libc
 
 
 def _mallinfo2():
     """glibc's mallinfo2() over all arenas, in bytes, or None off glibc 2.33+. uordblks is what
-    malloc has handed out and not had back, fordblks what it holds free, hblkhd its mmapped chunks."""
-    import ctypes
-
+    malloc has handed out and not had back, fordblks what it holds free, hblkhd its mmapped chunks.
+    pymalloc's arenas are mmapped by CPython itself, so they are in RSS but in none of these."""
     libc = _libc()
     if libc is None or not hasattr(libc, "mallinfo2"):
         return None
-
-    class Mallinfo2(ctypes.Structure):
-        _fields_ = [(name, ctypes.c_size_t) for name in _MALLINFO2_FIELDS]
-
-    libc.mallinfo2.restype = Mallinfo2
     info = libc.mallinfo2()
     return {name: getattr(info, name) for name in _MALLINFO2_FIELDS}
 
@@ -1411,7 +1414,9 @@ class Driver:
 
     def malloc_probe(self):
         """RSS and mallinfo2() before and after malloc_trim(0). Free memory that malloc_trim hands
-        back to the OS points at fragmentation; in-use bytes near RSS point at live allocations."""
+        back to the OS points at fragmentation; malloc's in-use bytes (uordblks plus hblkhd) near
+        RSS point at live allocations. RSS above malloc's arena plus hblkhd is pymalloc or other
+        mmapped memory, which neither number sees."""
         libc = _libc()
         before = {"rss_mb": self.proc.memory_info().rss / 2**20, "mallinfo2": _mallinfo2()}
         released = None
@@ -1884,7 +1889,7 @@ def run_driver(spec, log_file):
     python = PYTHONS[(spec["location"], spec["code"])]
     cmd = [python, script, "run", payload]
     if spec.get("memray") is not None:
-        # The capture stays where the driver runs; it's too large to keep in results/.
+        # The capture stays in the driver's filesystem, so it's copied out by hand.
         label = run_label(spec["scenario"], spec["variant"], spec["shell"])
         cmd = [python, "-m", "memray", "run", "-f", *spec["memray"], "-o", f"/tmp/{label}.bin", *cmd[1:]]
     # Through env(1), since the orchestrator's environment doesn't reach a driver in the pod.
@@ -2117,7 +2122,8 @@ def run_plan():
                                      "baseline_pool": 1000}, runs=1)
     # Step 7 asks whether the async baseline's RSS growth is glibc arena fragmentation, so it runs
     # the loop longer as shipped and with MALLOC_ARENA_MAX=2, each with a malloc probe at the end
-    # of the rolling phase, and once under memray to find the native allocation sites.
+    # of the rolling phase, and once under memray to find the native allocation sites. memray's own
+    # memory inflates that run's RSS and mallinfo2, so it's not compared with the other two.
     long_baseline = {**base_pod, **rolling2, "kind": "baseline_rolling", "claim_pools": [WARM_POOL],
                      "baseline_pool": 1000, "rollouts": 20 if SMOKE else 2400, "malloc_probe": True}
     add("6v2", "baseline-long", "async", long_baseline, runs=1)
@@ -2342,7 +2348,7 @@ def cmd_suite(args):
         suite_log.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
         suite_log.flush()
 
-    # In each result too: env.json keeps its first value when the cluster is unchanged.
+    # In each result too, since env.json keeps its first value when the cluster is unchanged.
     bench_head = git("rev-parse", "HEAD")
     bench_dirty = bool(git("status", "--porcelain", "--", HERE + "/*.py", HERE + "/*.sh"))
     plan = run_plan()
