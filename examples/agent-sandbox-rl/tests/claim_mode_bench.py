@@ -709,7 +709,8 @@ def run_burst(args, variant: Variant, shape: Shape) -> dict:
     return out
 
 
-async def run_async_step(fleet, variant: Variant, n: int, exec_pool) -> dict:
+async def run_async_step(fleet, variant: Variant, n: int, exec_pool,
+                         deadline_s: float = 600, release_wait_s: float = 300) -> dict:
     """One burst step on an ``AsyncSandboxFleet``: every env is an asyncio task that
     awaits acquire, execs once on ``exec_pool``, waits for the step to end, then
     awaits release. The loop's scheduling lag is sampled, since a loop the fleet
@@ -754,15 +755,21 @@ async def run_async_step(fleet, variant: Variant, n: int, exec_pool) -> dict:
     cpu0 = cpu_seconds()
     t0 = time.monotonic()
     go.set()
-    deadline = time.monotonic() + 600
+    deadline = time.monotonic() + deadline_s
     while time.monotonic() < deadline and len(starts) + len(errors) < n:
         await asyncio.sleep(0.05)
     step_s = time.monotonic() - t0
+    # An env still waiting is a failure, or last_start_s would be the max over the
+    # envs that finished and a stalled run would look fast.
+    errors.extend(["env did not start before the deadline"]
+                  * (n - len(starts) - len(errors)))
     cost = COUNTER.since(snap)
     cpu = cpu_seconds() - cpu0
     t_release = time.monotonic()
     step_end.set()
-    await asyncio.wait(envs, timeout=300)
+    _, stuck = await asyncio.wait(envs, timeout=release_wait_s)
+    for task in stuck:
+        task.cancel()
     sampler.cancel()
     await fleet.teardown()
     fleet.close()

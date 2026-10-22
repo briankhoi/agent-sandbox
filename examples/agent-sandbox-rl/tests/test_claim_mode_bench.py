@@ -345,3 +345,21 @@ def test_verdict_async_ratios_leave_out_a_variant_with_errors():
                                                               errors=1)), [{"pass": True}])
   assert v["async_default_ratio"] is None and v["async_batch_vs_sync_batch"] is None
   assert v["async_checks"]["no_errors_or_leaked_threads"] is False
+
+
+async def test_async_step_counts_an_env_that_never_starts_as_an_error():
+  fleet = _FakeAsyncFleet(4)
+  real = fleet.acquire
+
+  async def acquire(task):
+    if task == 1:
+      await asyncio.sleep(3600)
+    return await real(task)
+
+  fleet.acquire = acquire
+  with ThreadPoolExecutor(max_workers=4) as pool:
+    step = await asyncio.wait_for(bench.run_async_step(
+        fleet, bench.Variant("async-batch-default", "batch", loop="async"), 4, pool,
+        deadline_s=0.3, release_wait_s=0.3), timeout=30)
+  assert len(step["starts"]) == 3
+  assert step["errors"] == ["env did not start before the deadline"]
