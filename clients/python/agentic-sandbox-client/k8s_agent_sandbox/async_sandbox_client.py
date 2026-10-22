@@ -374,6 +374,7 @@ class AsyncSandboxClient(Generic[T]):
 
         async with self._lock:
             previous = self._active_connection_sandboxes.get((namespace, claim_name))
+            sandbox._on_terminated = self._untrack
             self._active_connection_sandboxes[(namespace, claim_name)] = sandbox
         if previous is not None:
             await previous.close_connection()
@@ -470,6 +471,7 @@ class AsyncSandboxClient(Generic[T]):
         )
 
         async with self._lock:
+            new_handle._on_terminated = self._untrack
             self._active_connection_sandboxes[key] = new_handle
         return new_handle
 
@@ -480,6 +482,16 @@ class AsyncSandboxClient(Generic[T]):
                 if not obj.is_active:
                     self._active_connection_sandboxes.pop(key, None)
             return list(self._active_connection_sandboxes.keys())
+
+    def _untrack(self, sandbox: AsyncSandbox) -> None:
+        # Called by terminate() after a successful delete, while claim_name is still
+        # set, so the None check only narrows its type. A newer handle may have
+        # replaced this one for the same claim, so only this exact handle is removed.
+        if sandbox.claim_name is None:
+            return
+        key = (sandbox.namespace, sandbox.claim_name)
+        if self._active_connection_sandboxes.get(key) is sandbox:
+            del self._active_connection_sandboxes[key]
 
     async def list_all_sandboxes(self, namespace: str = "default", label_selector: str | None = None) -> list[str]:
         """Lists all SandboxClaim names in the Kubernetes cluster for a namespace.

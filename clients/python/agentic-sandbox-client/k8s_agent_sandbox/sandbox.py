@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import logging
+from typing import Callable
 from .trace_manager import create_tracer_manager
 from .commands.command_executor import CommandExecutor
 from .files.filesystem import Filesystem
@@ -40,6 +41,11 @@ class Sandbox:
     - Handling the underlying connection.
     - Integrating with OpenTelemetry for tracing operations.
     """
+
+    # Set by the client that tracks this handle, so terminate() can drop the
+    # client's entry once the claim is gone.
+    _on_terminated: Callable[["Sandbox"], None] | None = None
+
     def __init__(
         self,
         claim_name: str,
@@ -221,6 +227,11 @@ class Sandbox:
             return
 
         self.k8s_helper.delete_sandbox_claim(self.claim_name, self.namespace)
+
+        # The client stops tracking the handle here because its claim is gone. It
+        # runs before claim_name is cleared since that name is the client's key.
+        if self._on_terminated is not None:
+            self._on_terminated(self)
 
         # Clear only after success so a failed delete can be retried.
         self.claim_name = None
