@@ -15,7 +15,7 @@ Read in order, from `../agent-sandbox-notes/batch-primitives/handoff/`:
 1. `project_instructions.md` (Brian's rules; they override your defaults)
 2. `working_rules.md` (how he wants work done and reported)
 3. `state.md` (stack, branches, merged work, approved decisions; the stack conversation keeps it current)
-4. `tasks.md` (Task 3 and Task 4 are yours, as assigned below)
+4. `tasks.md` (Task 3, Task 4, Task 5 and parts of Task 6 are yours, as assigned below)
 
 ## Hard rules (repeated from the pack)
 - Commits authored by `Brian Nguyen <brianknguyen@google.com>`, no `Co-Authored-By` or `Claude-Session` trailers, never `--no-verify`.
@@ -29,14 +29,14 @@ Read in order, from `../agent-sandbox-notes/batch-primitives/handoff/`:
 - Every non-trivial code change or design recommendation gets a fresh independent reviewer subagent (also `inherit`), given only the question, base/head and the rules, never your own findings (see `working_rules.md`, "Self-check").
 
 ## Ownership (to avoid colliding with the stack conversation)
-- **Stack conversation owns**: every `feat/batch-*` branch and every open upstream PR branch, all restacks and syncs, the TLS PR insertion, review comments on open PRs, `review/*` copies of stack branches, and these notes files: `handoff/state.md`, `handoff/tasks.md`, `handoff/refs/pr_table.md`. Do not edit them; if one needs a change, tell Brian and he relays it.
-- **You own**: `batch_claim_proposal.md`, `review_carryover_notes.md`, `handoff/refs/work_plan.md`, and new files under `handoff/work/` (except this file). Edit notes only in `../agent-sandbox-notes`. Always `git pull --rebase` right before you commit and push notes (normal push, never force), since both conversations push to `batch-primitives-notes`.
+- **Stack conversation owns**: every `feat/batch-*` branch and every open upstream PR branch, all restacks and syncs, the TLS PR insertion, the Task 6 rename of the stack (steps 2 to 10), review comments on open PRs, `review/*` copies of stack branches, and these notes files: `handoff/state.md`, `handoff/tasks.md`, `handoff/refs/pr_table.md`. Do not edit them; if one needs a change, tell Brian and he relays it.
+- **You own**: `batch_claim_proposal.md`, `review_carryover_notes.md`, `handoff/refs/work_plan.md`, and new files under `handoff/work/` (except this file and `rename_group_outcomes.py`), plus `feat/rl-batch-claim-mode` (Task 5) and the `go-batch-design-notes` branch (Task 6 step 11). Exception: when the stack conversation runs Task 6 step 10, it renames the old names in your notes files too. Push your Task 3 edits before then, and pull before editing again. Edit notes only in `../agent-sandbox-notes`. Always `git pull --rebase` right before you commit and push notes (normal push, never force), since both conversations push to `batch-primitives-notes`.
 - Code branches you create: new names only (for example `feat/batch-8-...`, `review/pr8/...`, `plan/...`). Never rebase or push a stack branch.
 - Use separate git worktrees (for example `../agent-sandbox-par-<item>`); never switch branches in the main repo worktree or in `../agent-sandbox-restack` / `../agent-sandbox-fu5` / `../agent-sandbox-leasefix` (the stack conversation uses those).
 
-## Live situation (as of 2026-10-22 02:30 UTC; `state.md` and live heads win)
-- Upstream `feature/batch-claim` tip is `255d15fc` (6/N, fu5, #1984 merged). 7/N is fu6 (#1985).
-- The stack is being restacked and will change shape soon: Brian chose "plan C". The TLS EOF fix (`feat/batch-ssl-eof-retry`) becomes **8/N**, inserted after fu6, and every later PR moves down one number (fu7 9/N ... PR 6 15/N; transport, reaper and PR 7 follow). A Lease credential fix was folded into 7/N as a second commit. Expect stack branch heads to move several times today; do not base code on a stack branch until Brian tells you the stack has settled, except where an item says otherwise.
+## Live situation (as of 2026-10-22 12:25 UTC; `state.md` and live heads win)
+- Upstream `feature/batch-claim` tip is `255d15fc` (6/N, fu5, #1984 merged). 7/N is fu6 (#1985), synced at 12:20 with a second commit (the Lease credential fix from CodeRabbit). Real heads now: fu6 `5c51feca` ... PR 7 `a26979f1` (see `state.md`).
+- Order of stack work in the stack conversation, all sequential: 7/N review, then plan C (the TLS EOF fix `feat/batch-ssl-eof-retry` becomes **8/N** after fu6, every later PR moves down one, PR titles renumbered), then the async TLS EOF helper in PR 2 (Task 2), then the Task 6 rename. Stack heads will move several times; do not base code on a stack branch until Brian says the stack has settled, except where an item says otherwise.
 - Known mypy error from the transport branch up (`async_k8s_helper.py:105`, `CustomObjectsApi has no attribute api_client`, only with `kubernetes_asyncio` 36.1.0 which `make test-unit` installs). Details are in the `tasks.md` row for 4.4.
 - A Python venv with mypy, pytest, pycodestyle and the SDK extras exists at `/usr/local/google/home/brianknguyen/.gemini/jetski/brain/91dd6bc1-8e34-4a1b-b684-50f3ca2ec8f8/scratch/venv` (run tests with `python -m pytest` from `clients/python/agentic-sandbox-client`; the SDK is not installed in it, so cwd must be that directory). You may build your own venv outside the repo instead; never create files inside CitC or the repo except deliverables.
 
@@ -49,9 +49,20 @@ Read in order, from `../agent-sandbox-notes/batch-primitives/handoff/`:
 | C. 4.1 PR 8 | First a plan file (claim-list pagination with continue tokens for `get_batch` attach and the `release()` re-list, first page's resourceVersion starts the watch; metadata-only paginated re-list in `release()`; skip parsing the deletecollection response with `_preload_content=False` in both helpers). Verify each claim in both helpers, cite `refs/benchmark_rerun_review.md` 3B, 6, 7, list alternatives with costs. Implementation only after Brian approves and says the stack has settled; then branch `feat/batch-8-...` off the live PR 7 head on a `review/pr8/...` copy and measure memory before and after. | Plan now | Per `tasks.md` 4.1. |
 | D. 4.6 groundwork | Read-only: (b) list stale remote `review/*`, `review/gofix*`, `review-diff/*` branches (do not delete; Brian must OK), excluding any `review/*` the stack conversation created today (`review/restack-6n/*`, `review/fu6-lease/*`, `review/tls-eof/*`, `review-diff/tls-eof-pr2`); (a) find the E402 line with `pycodestyle --select=E402` on the live PR that owns `test_async_sandbox_batch.py`'s import block and name the owning commit; (c) and (d) prepare the questions for Brian with the facts; (e) draft transport and reaper PR text from `refs/pr_table.md` with the new numbers once the stack conversation has renumbered (ask Brian for them); (f) report `kubectl config current-context` without changing it. | Now | One short report with the lists and questions. |
 
+| E. Task 5 | Re-commit `feat/rl-batch-claim-mode` with Brian as committer, trees identical, exactly as `tasks.md` Task 5 says (check the head is still `e606b9bd` first; stop and ask Brian if it moved). No open upstream PR is known for it; ask Brian if unsure before the force-with-lease push. | Now | Per `tasks.md` Task 5. Tell Brian the new head, and tell him to relay it to the stack conversation (Task 6 step 6 rebases this branch). |
+| F. Task 6, steps 1 and 11 only | Step 1 (read-only): check every review comment on #1988, #1989, #1990, #1991 for the names, as `tasks.md` describes. Report early: if a reviewer asked for, approved or proposed names, Brian must see the links before the stack conversation renames anything. Step 11: rename in the Go design notes branch `go-batch-design-notes` (design and prototype only), run `go vet` and `go test` in `prototype/batchproto`, one `notes(go):` commit, plain push. | Now | Step 1 report with links (or "nothing found"); step 11 commit link. |
+
+Steps 2 to 10 of Task 6 (the stack rename, RL copy, PR text, notes renames) belong to the stack conversation and run after plan C and the renumbering.
+
+## Parallel or sequential
+Not everything needs its own worker. Use a worker when an item is large and independent; do small items yourself, one after another. Suggested:
+- Workers (in parallel, `inherit`): B (4.4 plan) and C (4.1 plan). Both are read-only plans of real size.
+- Yourself, in this order: F step 1 first (it can block the rename), then E (small, mechanical), then A (notes; you are the only writer of your notes files, and Task 6 step 10 later touches the same files, so finish and push A early), then D, then F step 11.
+- Change this split if you find a reason; say what you changed and why.
+
 Not yours: 4.2 (needs Brian's OK to use kind), 4.3 (after PR 7/8), 4.5 (needs OK; ask Brian first), anything RL.
 
 ## How to start
 1. Do the setup and read the four files.
-2. Spawn one worker per item A to D (model `inherit`), each in its own worktree, each with a complete brief: the item text above, the rules, the ownership section, and what to return. Workers return drafts to you; you commit notes yourself so only one writer of yours touches the notes branch at a time.
+2. Follow the parallel or sequential split above. Each worker (model `inherit`) gets its own worktree and a complete brief: the item text, the rules, the ownership section, and what to return. Workers return drafts to you; you commit notes yourself so only one writer of yours touches the notes branch at a time.
 3. Review each result against the rules, run the independent reviewer where required, then report to Brian in one short message with links (GitHub commit or compare links on `briankhoi/agent-sandbox`).

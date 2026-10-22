@@ -1,4 +1,4 @@
-# Stack state (as of 2026-10-22 02:30 UTC)
+# Stack state (as of 2026-10-22 12:25 UTC)
 
 Always `git fetch origin && git fetch upstream` and use the live heads. The hashes below are a snapshot, and anything newer than this file wins. If the live state differs from this file in a way that matters, tell Brian.
 
@@ -14,27 +14,27 @@ PR 1 #1742 (squashed as `3a1607bc`), fu1 (2/N), fu2 (3/N), merge-main #2005, fu3
 ## Branch order (linear, bottom to top)
 Each branch sits on the one before it. Upstream PR numbers from the project's tracking (Brian opens PRs himself, so check):
 
-| Upstream | Branch | Head (10-22 01:05) | Upstream PR |
+| Upstream | Branch | Head (10-22 12:20) | Upstream PR |
 | :-- | :-- | :-- | :-- |
 | 5/N | `feat/batch-1-fu4-terminating-claims` | `2b8424a1` | #1983 **merged** |
-| 6/N | `feat/batch-1-fu5-connect-checks` | `e295ca75` | #1984 open |
-| 7/N | `feat/batch-1-fu6-group-order` | `6d6f9b1f` | #1985 |
-| 8/N | `feat/batch-1-fu7-client-cleanup` | `4127bcde` | #1986 |
-| 9/N | `feat/batch-1-fu8-task-names`, `feat/batch-1-fu9-concurrent-detach` (fu9 contains fu8) | fu8 `da3893bf`, fu9 `8178a4c4` | #1996 (fu9 branch) |
-| 10/N | `feat/batch-2-claim` (PR 2) | `f293a7e3` | #1824 |
-| 11/N | `feat/batch-3-group-consumers` (PR 3) | `58a7b78b` | #1988 |
-| 12/N | `feat/batch-4-group-quorum` (PR 4) | `d7ac54d7` | #1989 |
-| 13/N | `feat/batch-5-release-group-76a8m3` (PR 5) | `ba690d94` | #1990 |
-| 14/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | `2f520b67` | #1991 |
-| 15/N (inferred) | `feat/batch-transport-ltlfdm` | `668f20c9` | not opened |
-| 16/N (inferred) | `feat/batch-reaper-ymtd6t` | `8bc78f11` | not opened |
-| 17/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `24a4e9a1` | not opened |
+| 6/N | `feat/batch-1-fu5-connect-checks` | `e295ca75` | #1984 **merged** (`255d15fc`) |
+| 7/N | `feat/batch-1-fu6-group-order` | `5c51feca` | #1985 |
+| 8/N | `feat/batch-1-fu7-client-cleanup` | `d39552e2` | #1986 |
+| 9/N | `feat/batch-1-fu8-task-names`, `feat/batch-1-fu9-concurrent-detach` (fu9 contains fu8) | fu8 `28186e82`, fu9 `d39a62fb` | #1996 (fu9 branch) |
+| 10/N | `feat/batch-2-claim` (PR 2) | `f3b61c61` | #1824 |
+| 11/N | `feat/batch-3-group-consumers` (PR 3) | `83a0be08` | #1988 |
+| 12/N | `feat/batch-4-group-quorum` (PR 4) | `a8c092f1` | #1989 |
+| 13/N | `feat/batch-5-release-group-76a8m3` (PR 5) | `ad2317c9` | #1990 |
+| 14/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | `43c0999f` | #1991 |
+| 15/N (inferred) | `feat/batch-transport-ltlfdm` | `5affc426` | not opened |
+| 16/N (inferred) | `feat/batch-reaper-ymtd6t` | `d4fa3400` | not opened |
+| 17/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `a26979f1` | not opened |
 
-The table's heads are the 5/N restack sync (2026-10-22 01:05) and are still the real heads. Pending, not synced: `review/fu6-lease/*` (fu6 to PR 7), the 6/N restack onto `255d15fc` (trees unchanged) plus a second fu6 commit, "let batch Lease requests see a token rotated in place" (CodeRabbit on #1985; the code is from 3/N, folded into 7/N as an exception, Brian 2026-10-22: "this can be an exception, just fold in the change into this PR"). The `review/tls-eof/*` copies are obsolete (plan C below); the async TLS EOF helper change will be redone after the TLS insertion.
+The 7/N copies (`review/fu6-lease/*`) were synced at 2026-10-22 12:20 after Brian's OK: 6/N restack onto `255d15fc` (trees unchanged) plus a second fu6 commit, "let batch Lease requests see a token rotated in place" (CodeRabbit on #1985; the code is from 3/N, folded into 7/N as an exception, Brian 2026-10-22: "this can be an exception, just fold in the change into this PR"). Live heads: fu6 `5c51feca`, fu7 `d39552e2`, fu8 `28186e82`, fu9 `d39a62fb`, PR 2 `f3b61c61`, PR 3 `83a0be08`, PR 4 `a8c092f1`, PR 5 `ad2317c9`, PR 6 `43c0999f`, transport `5affc426`, reaper `d4fa3400`, PR 7 `a26979f1`. The `review/tls-eof/*` copies are obsolete (plan C below); the async TLS EOF helper change will be redone after the TLS insertion.
 
 **Plan C (Brian, 2026-10-22).** After 7/N, the TLS EOF fix (`feat/batch-ssl-eof-retry`) becomes **8/N**, inserted into the stack right after fu6; every later PR moves down one (fu7 9/N, fu9 10/N, PR 2 11/N, PR 3 12/N, PR 4 13/N, PR 5 14/N, PR 6 15/N; transport, reaper, PR 7 follow). The stack conversation renumbers the open PRs with `gh pr edit` (Brian: "github renumbering you do it"): the title's X/N and only the ordinal word in the description's first sentence.
 
-**Two conversations.** A separate parallel conversation works Task 3 and Task 4 items (prompt in `handoff/work/parallel_plan_prompt.md`, all subagents on the `inherit` model). This file, `tasks.md` and `refs/pr_table.md` belong to the stack conversation.
+**Two conversations.** A separate parallel conversation works Task 3 and Task 4 items (prompt in `handoff/work/parallel_plan_prompt.md`, all subagents on the `inherit` model). This file, `tasks.md` and `refs/pr_table.md` belong to the stack conversation. Task 5 (RL re-commit) and Task 6 steps 1 and 11 go to the parallel conversation; Task 6 steps 2 to 10 stay here, after plan C and the renumbering.
 
 Side branches: `feat/batch-ssl-eof-retry` (`8937ccdb`, TLS EOF retry, based on upstream `4bb0db30`, not opened upstream; the old `claude/project-thread-0ysqcj` is kept as a backup), `fix/python-terminal-pod-reasons` (upstream #1917, Brian's). `bench/batch-claim` holds the SDK benchmark harness (`test/benchmarks/batch-claim/`, `bench.py`). `bench/rl-claim-mode` and `claude/project-thread-c7716c` are RL work (not yours). Many `review/*` and `review-diff/*` branches on `origin` are old review copies, safe to ignore (deleting needs Brian's OK).
 
