@@ -59,6 +59,10 @@ def _api_client_without_retries(api_client: client.ApiClient | None) -> client.A
         configuration = client.Configuration.get_default_copy()
     else:
         configuration = copy.deepcopy(api_client.configuration)
+        # Share the credential dicts so a token the caller rotates in place on the injected
+        # configuration also reaches Lease requests, as it does for the other APIs.
+        configuration.api_key = api_client.configuration.api_key
+        configuration.api_key_prefix = api_client.configuration.api_key_prefix
     configuration.retries = False
     no_retries = client.ApiClient(configuration=configuration)
     if api_client is not None:
