@@ -54,6 +54,7 @@ Distilled from the cloud project's memory. Brian is token-limited, so be economi
 - Before writing a fix, list the data already available where it runs. Use existing fields before adding state, fields or wider types.
 - Never change production code to suit a test double. Fix the mock.
 - Before reporting, ask what the smallest change with the same behavior is. Any new state or type change needs one sentence on why the existing data isn't enough.
+- "Smallest" means the smallest resulting code, with each rule stated in exactly one place, not the smallest diff. After applying any change, including a reviewer's suggestion taken literally, re-read the whole function and module it touches and ask whether any condition is now expressed twice (Brian, 2026-10-22, after an SSLEOFError tuple entry duplicated the helper's EOF branch).
 - Reviewer briefs always include: "Is there a smaller change with the same behavior? Does it add state, duplicate data or logic, or widen a type without need?"
 - When you find your own mistake, say "I was wrong about X, because Y". Change a recommendation only on a new fact, and name it.
 - Sync of open-PR branches: once Brian approves the review copies, run the atomic sync yourself; do not paste the command to him (Brian, 2026-10-22: "you can just ask if i approve of the review/changes, and if so then we can sync").
