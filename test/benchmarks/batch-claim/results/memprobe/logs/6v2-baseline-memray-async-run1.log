@@ -1,0 +1,12 @@
+Writing profile results into /tmp/6v2-baseline-memray-async.bin
+[memray] Successfully generated profile results.
+
+You can now generate reports from the stored allocation records.
+Some example commands to generate reports:
+
+/opt/venv-base/bin/python -m memray flamegraph /tmp/6v2-baseline-memray-async.bin
+ERROR:asyncio:Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x7f02b9925940>
+ERROR:asyncio:Unclosed connector
+connections: ['deque([(<aiohttp.client_proto.ResponseHandler object at 0x7f02b00dd750>, 220027.827836899), (<aiohttp.client_proto.ResponseHandler object at 0x7f02b074ef50>, 220028.409562489), (<aiohttp.client_proto.ResponseHandler object at 0x7f02b00dd450>, 220028.633192015)])']
+connector: <aiohttp.connector.TCPConnector object at 0x7f02b9697410>

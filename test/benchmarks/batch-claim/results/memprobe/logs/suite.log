@@ -1,0 +1,12 @@
+[15:07:35] deleting 1 extra pools
+[15:07:35] creating 1 extra pools
+[15:09:21] 6v2-baseline-long-async-run1 start
+[16:06:50] 6v2-baseline-long-async-run1 done, starved (warm pool hit 0 Ready)
+[16:06:52] 6v2-baseline-arena2-async-run1 start
+[17:08:20] 6v2-baseline-arena2-async-run1 done, starved (warm pool hit 0 Ready)
+[17:08:20] suite finished
+[17:13:09] deleting 1 extra pools
+[17:13:09] creating 1 extra pools
+[17:14:52] 6v2-baseline-memray-async-run1 start
+[17:32:34] 6v2-baseline-memray-async-run1 done, starved (warm pool hit 0 Ready)
+[17:32:34] suite finished

@@ -1,0 +1,163 @@
+{
+ "default": {
+  "rollouts": 2400,
+  "rolling_wall_s": 3427.1066660869983,
+  "rollouts_per_min": 42.01795100950748,
+  "rolling_window_s": [
+   1.9880352469917852,
+   3429.0981938769983
+  ],
+  "samples_in_window": 342,
+  "samples_in_second_half": 171,
+  "rss_first_mb": 93.84375,
+  "rss_window_first_mb": 137.64453125,
+  "rss_final_mb": 1752.375,
+  "rss_last_sample_mb": 1751.80859375,
+  "rss_peak_mb": 1752.3828125,
+  "second_half_slope_mb_per_s": 0.5071855903833116,
+  "second_half_mb_per_100_rollouts_derived": 72.42412990607987,
+  "warm_ready_min": 0,
+  "starved": true,
+  "errors": {
+   "driver_exit": 0,
+   "rollout_errors": 0,
+   "error_count_field_present": false
+  },
+  "driver_env": {},
+  "malloc_arena_max_in_driver": null,
+  "libc": [
+   "glibc",
+   "2.41"
+  ],
+  "sdk_file": "/opt/venv-base/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+  "sdk_version": "0.0.0+base.7fd162d",
+  "kubernetes_asyncio_version": "33.3.0",
+  "python_version": "3.12.15",
+  "code_sha": "7fd162d9d5c33fd0c8af9fbb15c6453ccf5ddd58",
+  "code_tree": "588a31efbc306a7892c88f1ffd9e6c575019ad10",
+  "bench_head_sha": "2f1eef297d02844a28a26dc0bef85a256c872c59",
+  "bench_dirty": false,
+  "controller_image": "kind.local/agent-sandbox-controller:bench",
+  "controller_image_id": "docker.io/library/import-2026-10-22@sha256:8be25e6d105f1adf7b892c145cda5b4912d35546559b24774f836fed0de3a92f",
+  "malloc_probe_mb": {
+   "rss_before_trim": 1752.30078125,
+   "rss_after_trim": 1751.79296875,
+   "in_use_uordblks_before": 1659.7495574951172,
+   "free_fordblks_before": 3.9887237548828125,
+   "mmapped_hblkhd_before": 0.76171875,
+   "arena_before": 1663.73828125,
+   "in_use_uordblks_after": 1659.752944946289,
+   "free_fordblks_after": 3.6103363037109375,
+   "mmapped_hblkhd_after": 0.76171875,
+   "in_use_incl_mmapped_share_of_rss_before": 0.9476177229462827,
+   "trim_returned_mb": 0.5078125
+  },
+  "mallinfo2_window_first_last_mb": {
+   "t": [
+    10.2,
+    3420.0
+   ],
+   "uordblks": [
+    70.13037109375,
+    1660.2008056640625
+   ],
+   "fordblks": [
+    2.23291015625,
+    3.5374755859375
+   ],
+   "hblkhd": [
+    1.6796875,
+    0.76171875
+   ],
+   "arena": [
+    72.36328125,
+    1663.73828125
+   ]
+  }
+ },
+ "arena2": {
+  "rollouts": 2400,
+  "rolling_wall_s": 3643.124728605995,
+  "rollouts_per_min": 39.52650834853523,
+  "rolling_window_s": [
+   2.8202244410058483,
+   3646.0316376579867
+  ],
+  "samples_in_window": 364,
+  "samples_in_second_half": 182,
+  "rss_first_mb": 93.015625,
+  "rss_window_first_mb": 131.69921875,
+  "rss_final_mb": 1749.28125,
+  "rss_last_sample_mb": 1748.91796875,
+  "rss_peak_mb": 1749.28515625,
+  "second_half_slope_mb_per_s": 0.47949176989046055,
+  "second_half_mb_per_100_rollouts_derived": 72.78534683545801,
+  "warm_ready_min": 0,
+  "starved": true,
+  "errors": {
+   "driver_exit": 0,
+   "rollout_errors": 0,
+   "error_count_field_present": false
+  },
+  "driver_env": {
+   "MALLOC_ARENA_MAX": "2"
+  },
+  "malloc_arena_max_in_driver": "2",
+  "libc": [
+   "glibc",
+   "2.41"
+  ],
+  "sdk_file": "/opt/venv-base/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+  "sdk_version": "0.0.0+base.7fd162d",
+  "kubernetes_asyncio_version": "33.3.0",
+  "python_version": "3.12.15",
+  "code_sha": "7fd162d9d5c33fd0c8af9fbb15c6453ccf5ddd58",
+  "code_tree": "588a31efbc306a7892c88f1ffd9e6c575019ad10",
+  "bench_head_sha": "2f1eef297d02844a28a26dc0bef85a256c872c59",
+  "bench_dirty": false,
+  "controller_image": "kind.local/agent-sandbox-controller:bench",
+  "controller_image_id": "docker.io/library/import-2026-10-22@sha256:8be25e6d105f1adf7b892c145cda5b4912d35546559b24774f836fed0de3a92f",
+  "malloc_probe_mb": {
+   "rss_before_trim": 1749.23828125,
+   "rss_after_trim": 1748.8984375,
+   "in_use_uordblks_before": 1659.7803955078125,
+   "free_fordblks_before": 1.4344482421875,
+   "mmapped_hblkhd_before": 0.76171875,
+   "arena_before": 1661.21484375,
+   "in_use_uordblks_after": 1659.7848510742188,
+   "free_fordblks_after": 1.05889892578125,
+   "mmapped_hblkhd_after": 0.76171875,
+   "in_use_incl_mmapped_share_of_rss_before": 0.9492944054889964,
+   "trim_returned_mb": 0.33984375
+  },
+  "mallinfo2_window_first_last_mb": {
+   "t": [
+    10.2,
+    3640.1
+   ],
+   "uordblks": [
+    62.54454040527344,
+    1660.2716522216797
+   ],
+   "fordblks": [
+    3.0531158447265625,
+    0.9431915283203125
+   ],
+   "hblkhd": [
+    1.6796875,
+    0.76171875
+   ],
+   "arena": [
+    65.59765625,
+    1661.21484375
+   ]
+  }
+ },
+ "verdict": {
+  "rule": "slope = least-squares MB/s over the second half of the rolling window",
+  "slope_ratio": 0.9453970676258348,
+  "per_100_rollouts_ratio": 1.0049875218362523,
+  "final_rss_ratio": 0.9982345388401456,
+  "verdict": "not arena fragmentation"
+ }
+}

@@ -1,0 +1,570 @@
+# memray 1.20.0, run --native --aggregate, 6v2-baseline-memray-async-run1 (600 rollouts). Summarized in the driver pod with /opt/venv-base/bin/python memray_top.py; the .bin capture is not committed. Per-allocation native frames (OpenSSL) resolve to no symbols on this interpreter, so the stacks show Python frames only.
+capture /tmp/6v2-baseline-memray-async.bin: peak 391.7 MB, total allocations 12131, python pymalloc, native traces True, pid 1318
+
+== high-water mark: 391.7 MB in 11429 records ==
+-- top 10 by innermost Python frames --
+    323.0 MB    728447 allocs  create_default_context /usr/local/lib/python3.12/ssl.py:707 <- create_ssl_context httpx/_config.py:40 <- __init__ httpx/_transports/default.py:297 <- __init__ k8s_agent_sandbox/async_connector.py:215
+      7.6 MB     42518 allocs  __new__ /usr/local/lib/python3.12/ssl.py:438 <- create_default_context /usr/local/lib/python3.12/ssl.py:698 <- create_ssl_context httpx/_config.py:40 <- __init__ httpx/_transports/default.py:297
+      2.0 MB       808 allocs  <module> kubernetes_asyncio/client/api/__init__.py:36 <- <module> kubernetes_asyncio/client/__init__.py:20 <- <module> kubernetes_asyncio/__init__.py:19 <- install /src/test/benchmarks/batch-claim/bench.py:321
+      1.9 MB        39 allocs  <module> prometheus_client/__init__.py:3 <- <module> k8s_agent_sandbox/metrics.py:15 <- <module> k8s_agent_sandbox/connector.py:31 <- <module> k8s_agent_sandbox/commands/command_executor.py:16
+      1.4 MB       124 allocs  <module> kubernetes_asyncio/client/api/__init__.py:56 <- <module> kubernetes_asyncio/client/__init__.py:20 <- <module> kubernetes_asyncio/__init__.py:19 <- install /src/test/benchmarks/batch-claim/bench.py:321
+      1.0 MB        49 allocs  <module> psutil/__init__.py:94 <- __init__ /src/test/benchmarks/batch-claim/bench.py:508 <- __init__ /src/test/benchmarks/batch-claim/bench.py:659 <- main /src/test/benchmarks/batch-claim/bench.py:2508
+      1.0 MB        26 allocs  <module> k8s_agent_sandbox/_proto/process/v1/process_pb2.py:22 <- <module> k8s_agent_sandbox/commands/_process_stubs.py:35 <- _run_sandboxd k8s_agent_sandbox/commands/async_command_executor.py:128 <- run k8s_agent_sandbox/commands/async_command_executor.py:82
+      1.0 MB        27 allocs  <module> dateutil/tz/tz.py:35 <- <module> dateutil/tz/__init__.py:6 <- import_module /usr/local/lib/python3.12/importlib/__init__.py:90 <- __getattr__ dateutil/__init__.py:16
+      1.0 MB        35 allocs  _compile_and_eval attr/_make.py:226 <- _linecache_and_compile attr/_make.py:260 <- _eval_snippets attr/_make.py:787 <- build_class attr/_make.py:802
+      1.0 MB        20 allocs  <module> httpx/_api.py:6 <- <module> httpx/__init__.py:2 <- <module> k8s_agent_sandbox/async_connector.py:31 <- <module> k8s_agent_sandbox/async_sandbox.py:19
+-- top 10 native+python stacks --
+     49.3 MB      4801 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     26.4 MB      4801 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     23.2 MB      4801 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     22.7 MB     67201 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     20.7 MB      6401 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     17.9 MB      9601 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     12.9 MB      9601 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     11.6 MB     33761 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     11.6 MB     33761 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     10.4 MB      4801 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+
+== leaked at exit: 390.8 MB in 10937 records ==
+-- top 10 by innermost Python frames --
+    323.0 MB    728447 allocs  create_default_context /usr/local/lib/python3.12/ssl.py:707 <- create_ssl_context httpx/_config.py:40 <- __init__ httpx/_transports/default.py:297 <- __init__ k8s_agent_sandbox/async_connector.py:215
+      7.6 MB     42518 allocs  __new__ /usr/local/lib/python3.12/ssl.py:438 <- create_default_context /usr/local/lib/python3.12/ssl.py:698 <- create_ssl_context httpx/_config.py:40 <- __init__ httpx/_transports/default.py:297
+      2.0 MB       808 allocs  <module> kubernetes_asyncio/client/api/__init__.py:36 <- <module> kubernetes_asyncio/client/__init__.py:20 <- <module> kubernetes_asyncio/__init__.py:19 <- install /src/test/benchmarks/batch-claim/bench.py:321
+      1.9 MB        39 allocs  <module> prometheus_client/__init__.py:3 <- <module> k8s_agent_sandbox/metrics.py:15 <- <module> k8s_agent_sandbox/connector.py:31 <- <module> k8s_agent_sandbox/commands/command_executor.py:16
+      1.4 MB       124 allocs  <module> kubernetes_asyncio/client/api/__init__.py:56 <- <module> kubernetes_asyncio/client/__init__.py:20 <- <module> kubernetes_asyncio/__init__.py:19 <- install /src/test/benchmarks/batch-claim/bench.py:321
+      1.0 MB        49 allocs  <module> psutil/__init__.py:94 <- __init__ /src/test/benchmarks/batch-claim/bench.py:508 <- __init__ /src/test/benchmarks/batch-claim/bench.py:659 <- main /src/test/benchmarks/batch-claim/bench.py:2508
+      1.0 MB        26 allocs  <module> k8s_agent_sandbox/_proto/process/v1/process_pb2.py:22 <- <module> k8s_agent_sandbox/commands/_process_stubs.py:35 <- _run_sandboxd k8s_agent_sandbox/commands/async_command_executor.py:128 <- run k8s_agent_sandbox/commands/async_command_executor.py:82
+      1.0 MB        27 allocs  <module> dateutil/tz/tz.py:35 <- <module> dateutil/tz/__init__.py:6 <- import_module /usr/local/lib/python3.12/importlib/__init__.py:90 <- __getattr__ dateutil/__init__.py:16
+      1.0 MB        35 allocs  _compile_and_eval attr/_make.py:226 <- _linecache_and_compile attr/_make.py:260 <- _eval_snippets attr/_make.py:787 <- build_class attr/_make.py:802
+      1.0 MB        20 allocs  <module> httpx/_api.py:6 <- <module> httpx/__init__.py:2 <- <module> k8s_agent_sandbox/async_connector.py:31 <- <module> k8s_agent_sandbox/async_sandbox.py:19
+-- top 10 native+python stacks --
+     49.3 MB      4801 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     26.4 MB      4801 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     23.2 MB      4801 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     22.7 MB     67201 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     20.7 MB      6401 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     17.9 MB      9601 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     12.9 MB      9601 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     11.6 MB     33761 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     11.6 MB     33761 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
+     10.4 MB      4801 allocs 6
+      create_default_context /usr/local/lib/python3.12/ssl.py:707
+      create_ssl_context httpx/_config.py:40
+      __init__ httpx/_transports/default.py:297
+      __init__ k8s_agent_sandbox/async_connector.py:215
+      __init__ k8s_agent_sandbox/async_sandbox.py:69
+      create_sandbox k8s_agent_sandbox/async_sandbox_client.py:349
+      worker /src/test/benchmarks/batch-claim/bench.py:1580
+      _run /usr/local/lib/python3.12/asyncio/events.py:88
+      _run_once /usr/local/lib/python3.12/asyncio/base_events.py:1999
+      run_forever /usr/local/lib/python3.12/asyncio/base_events.py:645
+      run_until_complete /usr/local/lib/python3.12/asyncio/base_events.py:678
+      run /usr/local/lib/python3.12/asyncio/runners.py:118
+      run /usr/local/lib/python3.12/asyncio/runners.py:195
+      run /src/test/benchmarks/batch-claim/bench.py:899
+      main /src/test/benchmarks/batch-claim/bench.py:2508
+      <module> /src/test/benchmarks/batch-claim/bench.py:2528
+      _run_code <frozen runpy>:88
+      _run_module_code <frozen runpy>:98
+      run_path <frozen runpy>:287
+      _run_tracker memray/commands/run.py:83
+      _run_with_file_output memray/commands/run.py:197
+      run memray/commands/run.py:359
+      main memray/commands/__init__.py:138
+      <module> memray/__main__.py:6
+      _run_code <frozen runpy>:88
+      _run_module_as_main <frozen runpy>:198
