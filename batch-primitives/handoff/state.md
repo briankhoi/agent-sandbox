@@ -1,4 +1,4 @@
-# Stack state (as of 2026-10-22 20:55 UTC)
+# Stack state (as of 2026-10-22 22:55 UTC)
 
 Always `git fetch origin && git fetch upstream` and use the live heads. The hashes below are a snapshot, and anything newer than this file wins. If the live state differs from this file in a way that matters, tell Brian.
 
@@ -9,29 +9,29 @@ Always `git fetch origin && git fetch upstream` and use the live heads. The hash
 - Upstream base branch for the whole stack is `feature/batch-claim` (maintainer: Janet Kuo). Upstream `main` is separate; the fork's `origin/main` lags.
 
 ## Merged upstream
-PR 1 #1742 (squashed as `3a1607bc`), fu1 (2/N), fu2 (3/N), merge-main #2005, fu3 (4/N) #1982 (upstream tip `4bb0db30`), and **fu4 (5/N) #1983, merged 2026-10-21 as squash commit `cc4a40bf` (tree `663a0951`, equal to the tree of our fu4 branch), directly on `4bb0db30`**. Squash merges keep the tree but change hashes. **fu5 (6/N) #1984 merged 2026-10-22 as `255d15fc` (tree `fc27cfe7`, equal to our fu5 tree)**, on `cc4a40bf`. The lowest open PR is now fu6 (7/N, #1985).
+PR 1 #1742 (squashed as `3a1607bc`), fu1 (2/N), fu2 (3/N), merge-main #2005, fu3 (4/N) #1982 (upstream tip `4bb0db30`), and **fu4 (5/N) #1983, merged 2026-10-21 as squash commit `cc4a40bf` (tree `663a0951`, equal to the tree of our fu4 branch), directly on `4bb0db30`**. Squash merges keep the tree but change hashes. **fu5 (6/N) #1984 merged 2026-10-22 as `255d15fc` (tree `fc27cfe7`, equal to our fu5 tree)**, on `cc4a40bf`. fu6 (7/N) #1985 merged as `d07e8941`. **TLS EOF (8/N) #2033 merged 2026-10-22 as `c56f0791` (tree `02bc09c5`, equal to our TLS branch `0e586d47`)**, on `d07e8941`. The lowest open PR is now fu7 (9/N, #1986).
 
 ## Branch order (linear, bottom to top)
 Each branch sits on the one before it. Upstream PR numbers from the project's tracking (Brian opens PRs himself, so check):
 
-| Upstream | Branch | Head (10-22 20:51) | Upstream PR |
+| Upstream | Branch | Head (10-22 22:51) | Upstream PR |
 | :-- | :-- | :-- | :-- |
 | 5/N | `feat/batch-1-fu4-terminating-claims` | `2b8424a1` | #1983 **merged** |
 | 6/N | `feat/batch-1-fu5-connect-checks` | `e295ca75` | #1984 **merged** (`255d15fc`) |
 | 7/N | `feat/batch-1-fu6-group-order` | `6e966b1d` | #1985 **merged** (`d07e8941`) |
-| 8/N | `feat/batch-ssl-eof-retry` (TLS EOF) | `ae63eb35` | #2033 |
-| 9/N | `feat/batch-1-fu7-client-cleanup` | `1e4c710e` | #1986 |
-| 10/N | `feat/batch-1-fu8-task-names`, `feat/batch-1-fu9-concurrent-detach` (fu9 contains fu8) | fu8 `8e5e0744`, fu9 `1047a1c2` | #1996 (fu9 branch) |
-| 11/N | `feat/batch-2-claim` (PR 2) | `18818b58` | #1824 |
-| 12/N | `feat/batch-3-group-consumers` (PR 3) | `1d5163fd` | #1988 |
-| 13/N | `feat/batch-4-group-quorum` (PR 4) | `fea3aed3` | #1989 |
-| 14/N | `feat/batch-5-release-group-76a8m3` (PR 5) | `85f2b037` | #1990 |
-| 15/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | `5382092c` | #1991 |
-| 16/N (inferred) | `feat/batch-transport-ltlfdm` | `c463865e` | not opened |
-| 17/N (inferred) | `feat/batch-reaper-ymtd6t` | `f6615e07` | not opened |
-| 18/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `44b250ca` | not opened |
+| 8/N | `feat/batch-ssl-eof-retry` (TLS EOF) | `0e586d47` | #2033 **merged** (`c56f0791`) |
+| 9/N | `feat/batch-1-fu7-client-cleanup` | `7392b76a` | #1986 |
+| 10/N | `feat/batch-1-fu8-task-names`, `feat/batch-1-fu9-concurrent-detach` (fu9 contains fu8) | fu8 `9bc3ded8`, fu9 `9ad5b1e0` | #1996 (fu9 branch) |
+| 11/N | `feat/batch-2-claim` (PR 2) | `b98257e6` | #1824 |
+| 12/N | `feat/batch-3-group-consumers` (PR 3) | `e05c037e` | #1988 |
+| 13/N | `feat/batch-4-group-quorum` (PR 4) | `5f4c1433` | #1989 |
+| 14/N | `feat/batch-5-release-group-76a8m3` (PR 5) | `b0a74253` | #1990 |
+| 15/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | `dd816aa9` | #1991 |
+| 16/N (inferred) | `feat/batch-transport-ltlfdm` | `3755e0ae` | not opened |
+| 17/N (inferred) | `feat/batch-reaper-ymtd6t` | `4dd8b21b` | not opened |
+| 18/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `7ed1ce5c` | not opened |
 
-The 7/N copies (`review/fu6-lease/*`) were synced at 2026-10-22 12:20 after Brian's OK: 6/N restack onto `255d15fc` (trees unchanged) plus a second fu6 commit, "let batch Lease requests see a token rotated in place" (CodeRabbit on #1985; the code is from 3/N, folded into 7/N as an exception, Brian 2026-10-22: "this can be an exception, just fold in the change into this PR"). At 20:28 the lease commit was amended to a shallow copy (Brian: "i approve 1 (lease client)"). At 20:46 plan C was synced after Brian approved the TLS and transport fixes ("i approve 2 and 3"): the TLS commit (with the async `_is_transport_error` it now introduces and the async watch using it) sits on fu6 as `feat/batch-ssl-eof-retry`, everything above is restacked on it, PR 2 no longer defines its own async helper, and transport checks the cached Sandbox's `sandbox_id` in `still_reaches`. 7/N merged at 20:50 as `d07e8941` (tree equal to fu6), so the stack from TLS up was restacked onto it mechanically (identical trees) at 20:51, and Brian opened the TLS PR as #2033. The open PR titles and first sentences were renumbered with `gh pr edit` at 20:53 (8/N to 14/N became 9/N to 15/N). At 22:04 the TLS commit was amended for Vicente's #2033 nit (`ssl.SSLEOFError` added to `_TRANSPORT_ERRORS`, and both helpers unwrap the TLS error so the EOF rule lives only in the tuple) and the branches above restacked; TLS head `0e586d47`, PR 7 head `deee6702`. The `review/planc/*`, `review/tls-eof/*` and `review/fix3/*` copies are superseded.
+The 7/N copies (`review/fu6-lease/*`) were synced at 2026-10-22 12:20 after Brian's OK: 6/N restack onto `255d15fc` (trees unchanged) plus a second fu6 commit, "let batch Lease requests see a token rotated in place" (CodeRabbit on #1985; the code is from 3/N, folded into 7/N as an exception, Brian 2026-10-22: "this can be an exception, just fold in the change into this PR"). At 20:28 the lease commit was amended to a shallow copy (Brian: "i approve 1 (lease client)"). At 20:46 plan C was synced after Brian approved the TLS and transport fixes ("i approve 2 and 3"): the TLS commit (with the async `_is_transport_error` it now introduces and the async watch using it) sits on fu6 as `feat/batch-ssl-eof-retry`, everything above is restacked on it, PR 2 no longer defines its own async helper, and transport checks the cached Sandbox's `sandbox_id` in `still_reaches`. 7/N merged at 20:50 as `d07e8941` (tree equal to fu6), so the stack from TLS up was restacked onto it mechanically (identical trees) at 20:51, and Brian opened the TLS PR as #2033. The open PR titles and first sentences were renumbered with `gh pr edit` at 20:53 (8/N to 14/N became 9/N to 15/N). At 22:04 the TLS commit was amended for Vicente's #2033 nit (`ssl.SSLEOFError` added to `_TRANSPORT_ERRORS`, and both helpers unwrap the TLS error so the EOF rule lives only in the tuple) and the branches above restacked; TLS head `0e586d47`, PR 7 head `deee6702`. The `review/planc/*`, `review/tls-eof/*` and `review/fix3/*` copies are superseded. 8/N merged at about 22:45 as `c56f0791` (tree equal to `0e586d47`). At 22:51 fu7 and everything above were restacked onto it mechanically (`review/restack-8n/*`, 37 commits, every per-commit tree identical, range-diff all `=`, mypy clean through PR 6 with only the known 4.4 error from transport up) and synced atomically. #1986 now shows only fu7's 8 files. Open fu7 items, proposals awaiting Brian: an E303 stray blank line fu7 adds before `if __name__` in `test_async_sandboxclient.py` (still present at PR 7), and two unneeded `assertLogs` logger narrowings in `test_sandbox_batch.py` (tests pass without them).
 
 **Plan C (Brian, 2026-10-22).** After 7/N, the TLS EOF fix (`feat/batch-ssl-eof-retry`) becomes **8/N**, inserted into the stack right after fu6; every later PR moves down one (fu7 9/N, fu9 10/N, PR 2 11/N, PR 3 12/N, PR 4 13/N, PR 5 14/N, PR 6 15/N; transport, reaper, PR 7 follow). The stack conversation renumbers the open PRs with `gh pr edit` (Brian: "github renumbering you do it"): the title's X/N and only the ordinal word in the description's first sentence.
 

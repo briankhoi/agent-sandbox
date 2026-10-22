@@ -129,7 +129,7 @@ This PR is the eighteenth in a series of PRs to implement a batch. It stops crea
 - `claim_batch` and `acquire()` read each warm pool's `status.readyReplicas` at the precheck and give that many creates no pacing slot, so only `max_in_flight` bounds them. The rest stay at `create_rps`.
 
 ## Notes
-- **Numbering (renumbered 2026-10-22 for plan C).** Merged: 5/N #1983, 6/N #1984, 7/N #1985. Open, titles renumbered with `gh pr edit` on 2026-10-22: 8/N TLS EOF #2033, 9/N fu7 #1986, 10/N fu9 #1996 (contains fu8), 11/N PR 2 #1824, 12/N PR 3 #1988, 13/N PR 4 #1989, 14/N PR 5 #1990, 15/N PR 6 #1991. Transport, reaper and PR 7 are not opened; 16/N to 18/N are inferred from the stack order.
+- **Numbering (renumbered 2026-10-22 for plan C).** Merged: 5/N #1983, 6/N #1984, 7/N #1985, 8/N TLS EOF #2033 (`c56f0791`). Open, titles renumbered with `gh pr edit` on 2026-10-22: 9/N fu7 #1986, 10/N fu9 #1996 (contains fu8), 11/N PR 2 #1824, 12/N PR 3 #1988, 13/N PR 4 #1989, 14/N PR 5 #1990, 15/N PR 6 #1991. Transport, reaper and PR 7 are not opened; 16/N to 18/N are inferred from the stack order.
 - The PR 7 text above was drafted from the commit titles ("skip create pacing for claims a warm pool covers", "skip acquire pacing ..."), not from Brian's wording. Check it against the code.- Titles use his "(k/N)" form with a literal N, numbered by stack position.
 - PR 1's diff against `origin/main` also lists upstream commits because the fork's main lags. The row covers only its five batch commits.
 - The follow-ups were split by topic on 2026-10-19. The old `feat/batch-1-fu4-group-order` and `feat/batch-1-fu5-logging` branches are stale; fu6 and fu7 replace them.
