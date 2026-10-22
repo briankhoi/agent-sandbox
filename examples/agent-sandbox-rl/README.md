@@ -510,6 +510,53 @@ process; `max_live_sandboxes` still caps each process's claims. Clean up the job
 once, at the end, with `reap(run_id=…)` — not from each process's exit hook,
 where it would sweep the other processes' resources too.
 
+### Batch claim mode (opt-in)
+
+`FleetConfig(claim_mode="batch")` claims sandboxes through the Python SDK's
+[batch claims](../../clients/python/agentic-sandbox-client/README.md#15-batch-claims)
+instead of one `create_sandbox` per acquire. `acquire`, `release`, `run()`, recycling
+and `AsyncSandboxFleet` keep the same API, since all of them claim through `acquire`.
+
+```python
+from agent_sandbox_rl import BatchClaimConfig, FleetConfig, SandboxFleet
+
+fleet = SandboxFleet(FleetConfig(
+    claim_mode="batch",
+    batch_claims=BatchClaimConfig(work_budget=2 * 3600),  # longest rollout, in seconds
+))
+```
+
+- Each fleet holds one batch per cluster, and the first acquire on a cluster opens
+  it. Every acquire adds one member to the batch. The batch's one watch reports
+  readiness for every member, so the fleet opens no watch per claim. The fleet
+  builds the handle from the member without reading the Sandbox or its pod.
+- `release` frees the member through the batch, and `teardown` releases every
+  batch the fleet opened, which deletes their remaining claims and their Leases.
+- With the SDK's [batch reaper](../../clients/python/agentic-sandbox-client/README.md#batch-reaper)
+  deployed, a driver that dies without tearing down loses its claims once its Lease
+  goes stale, so no `reap(run_id=…)` is needed for them. Without the reaper they
+  stay until their `shutdownTime`. `reap(run_id=…)` deletes them but leaves the
+  run's batch Leases, which carry the run id label, so delete those with
+  `kubectl delete lease -l agents.x-k8s.io/asrl-run-id=<run id>`.
+- A driver that stalls or loses the API server for longer than `lease_duration`
+  loses its Lease. The batch then stops and the reaper deletes its claims, so every
+  rollout still running on the batch fails. The next acquire opens a new batch.
+- An acquire with `snapshot_uid` or `pod_annotations` still creates its own claim,
+  because a batch member can't carry pod metadata.
+- The SDK sets a batch claim's `shutdownTime` when it creates the claim, to
+  `ready_timeout + work_budget + 600` seconds later. Set `work_budget` above the
+  longest time one rollout holds its sandbox. Recycling holds one claim for many
+  tasks, so it rotates a claim once the time left is less than twice its longest
+  task plus `reset_timeout`.
+- The driver needs the batch RBAC from the SDK's
+  [RBAC section](../../clients/python/agentic-sandbox-client/README.md#rbac), which
+  adds Leases to what per-claim needs.
+
+**BatchClaimConfig:** `work_budget` (3600), `lease_duration` (300, longer than the
+SDK's 60 because losing the Lease ends every rollout in flight on the batch, and each
+fleet process renews its own), `create_rps` and `max_in_flight` (None, the SDK's
+defaults of 50 and 20, which pace and cap creates only, not the wait for Ready).
+
 ## Configuration reference
 
 **FleetConfig:** `clusters`, `placement`, `max_concurrent` (1), `max_warmpool_size`
@@ -524,7 +571,9 @@ create burst; on controllers ≤ v0.5.3 also pair with a low
 [above](#adopting-warm-pools-someone-else-provisioned)), `run_isolation` (`none` |
 `names` | `namespace`, see [above](#concurrent-runs-on-one-cluster)) with
 `run_namespace_labels` and `run_namespace_setup`, `run_id` (None = random per fleet;
-set it to share one across a job's processes), `labels`. Disk-aware sizing (optional):
+set it to share one across a job's processes), `labels`, `claim_mode`
+(`per_claim` | `batch`) with `batch_claims` (`BatchClaimConfig`, see
+[above](#batch-claim-mode-opt-in)). Disk-aware sizing (optional):
 `avg_image_gb`, `node_ephemeral_gb`, `disk_headroom` (0.25), `cluster_nodes`
 (None) — when set, the auto window for `sliding`/`pipelined` is capped so resident
 images fit disk; `cluster_nodes` makes that the *whole pool's* disk (distinct images
