@@ -32,6 +32,7 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | fix | not created (branch off upstream `feature/batch-claim`) | fix(python-sdk): describe the errors get_batch raises for a failed request | planned, needs Brian's OK (CodeRabbit on #1996; the text is from merged 2/N #1924, so it can't go in the stack) | n/a | local agent |
 | RL | `feat/rl-batch-claim-mode` (4 commits on PR 7) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch | ready, not opened (needs Brian's review; sits on 18/N so it opens after the stack) | `166a15c8` | cloud (re-commit as Brian by local agent) |
 | RL | `feat/rl-sandbox-client-race` (1 commit on upstream main) | fix(rl): build Cluster.sandbox_client once under concurrent first use | ready, not opened (independent of the stack, targets `main`) | `834656b9` | cloud |
+| SDK fix | `fix/python-sdk-release-terminated-handles` (1 commit on upstream main `840fdfde`) | fix(python-sdk): stop the client from keeping terminated sandboxes (title draft) | in progress, not opened (targets `main`, outside the stack; design under Brian's review: the current lazy prune is being replaced by removal in `terminate()`, plus a second PR for the handle/connector cycle; see `work/coord1/2026-10-22-2350-leak-fix-decision.md`) | `2e02e420` | local agent (coordinator 1, item G) |
 
 Notes
 - fu8 has no PR of its own. It is folded into #1996 (fu9 branch contains it), so there are 10/N rows for two branches.
@@ -154,6 +155,11 @@ Planned scope from `work/pr8_plan.md`.
 
 ### get_batch error docstring fix (planned, needs Brian's OK)
 Not part of the numbered series. The `get_batch` docstrings in both clients say a network failure raises `ApiException`, but a failed request raises the transport's own error: sync `kubernetes` wraps only urllib3's `SSLError` (`rest.py:381-383`), and async `kubernetes_asyncio` wraps none of aiohttp's errors. The fix rewrites those docstring lines in both shells and regenerates `docs/python_sdk_reference.md`.
+
+### SDK fix: terminated sandbox handles (in progress, not opened, targets `main`)
+Draft; final text comes with the fix. The async client keeps every sandbox handle after `terminate()`, about 0.7 MiB each (an HTTP client with an SSL context), so a long-running driver grew from 94 MB to 1.75 GB over 2,400 sandboxes (measured, `bench/async-mem-probe`). The sync client keeps handles the same way (about 0.06 MiB each).
+- Planned shape (pending Brian's decision): `terminate()` removes its own entry from the client after a successful delete; a second change clears the handle-to-connector references at final close so a dropped handle is freed without waiting for a full GC.
+- Upstream issue text is drafted in `work/results/G2-memleak-decision.md` and `work/results/leak-fix-audit.md`; Brian files it.
 
 ### RL batch claim mode (ready, not opened)
 Branch `feat/rl-batch-claim-mode`, 4 commits on 18/N. Targets the RL library under `examples/agent-sandbox-rl/`.
