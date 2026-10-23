@@ -20,4 +20,7 @@ Then do Task 1 in tasks.md. Do not start a later task until Brian says to, excep
 Hard rules (the files repeat them): commits authored by Brian Nguyen <brianknguyen@google.com> with no Co-Authored-By or Claude-Session trailers, never --no-verify, run only new or changed tests (no full suite), push only to origin, never comment on GitHub or open a PR (Brian does), review copies before syncing open-PR branches, ask before creating or deleting kind clusters, base every claim on code you have read, and report short: summary, ranked findings, decisions last.
 ```
 
-Files here: `project_instructions.md`, `working_rules.md`, `state.md`, `tasks.md`, and `refs/` (cloud-only documents that tasks point to).
+Files here: `project_instructions.md`, `working_rules.md`, `state.md`, `tasks.md`, `pr_board.md`, and `refs/` (cloud-only documents that tasks point to).
+
+## Shared PR board
+[`pr_board.md`](pr_board.md) lists every PR (upstream number, branch, head, title, description, status, owner), for both the local agent and the cloud project. Whenever a PR's state changes (opened, renumbered, restacked, merged, retitled), update its row in the same commit and keep the cloud copy at `/mnt/project-files/pr-descriptions/pr_board.md` in sync. `refs/pr_table.md` is an old snapshot and is not maintained.
