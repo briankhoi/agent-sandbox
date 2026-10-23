@@ -18,19 +18,19 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 6/N | `feat/batch-1-fu5-connect-checks` | fix(python-sdk): check a batch member before returning its cached connection (6/N) | merged #1984 (`255d15fc`) | `e295ca75` | local agent |
 | 7/N | `feat/batch-1-fu6-group-order` | fix(python-sdk): keep a batch's group order when re-attaching (7/N) | merged #1985 (`d07e8941`) | `6e966b1d` | local agent |
 | 8/N | `feat/batch-ssl-eof-retry` | fix(python-sdk): retry the batch watch on a TLS EOF (8/N) | merged #2033 (`c56f0791`) | `0e586d47` | local agent |
-| 9/N | `feat/batch-1-fu7-client-cleanup` | fix(python-sdk): close cached batch connections on client cleanup (9/N) | open upstream #1986 (lowest open PR) | `a1e009ee` | local agent |
-| 10/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `ccbe4dfc`) | fix(python-sdk): name async batch tasks and let concurrent detach() calls both succeed (10/N) | open upstream #1996 | `337711d1` | local agent |
-| 11/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (11/N) | open upstream #1824 | `da7de0eb` | local agent |
-| 12/N | `feat/batch-3-group-consumers` (PR 3) | feat(python-sdk): add events and iter_ready_groups (12/N) | open upstream #1988 | `22535e8e` | local agent |
-| 13/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (13/N) | open upstream #1989 | `70cbdd60` | local agent |
-| 14/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (14/N) | open upstream #1990 | `99b2937f` | local agent |
-| 15/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (15/N) | open upstream #1991 | `7f901270` | local agent |
-| 16/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (16/N) | ready, not opened (mypy fix approved 2026-10-23: one-line `cast` folded into the pool commit; prompt `work/prompts/B2-types-fold.md`, review copies `review/types/*`, not run yet; the stack conversation syncs) | `d1f01d1a` | local agent (fix: coordinator 2) |
-| 17/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (17/N) | ready, not opened (B2 folds the reaper's own loose types into its commits: `lease_owner_reference`, `owner_references`, the Lease list kwargs) | `b2689893` | local agent (types: coordinator 2) |
-| 18/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (18/N) | ready, not opened | `8ebf8e33` | local agent |
+| 9/N | `feat/batch-1-fu7-client-cleanup` | fix(python-sdk): close cached batch connections on client cleanup (9/N) | merged #1986 (`b03ba91b`, tree equals `a1e009ee`) | `a1e009ee` | local agent |
+| 10/N (new) | `feat/batch-1-fu7b-cleanup-retry` | fix(python-sdk): keep closing batch connections when cleanup fails (10/N) | ready, not opened (9/N merged before its follow-ups; carries Vicente's and CodeRabbit's #1986 follow-ups and the get_batch docstring fix; once opened, #1996 to #1991 move to 11/N to 16/N and transport, reaper, PR 7 to 17/N to 19/N) | `6a1ba0ad` | local agent |
+| 10/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `59f527e0`) | fix(python-sdk): name async batch tasks and let concurrent detach() calls both succeed (10/N) | open upstream #1996 | `6ae93e53` | local agent |
+| 11/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (11/N) | open upstream #1824 | `1448d6d0` | local agent |
+| 12/N | `feat/batch-3-group-consumers` (PR 3) | feat(python-sdk): add events and iter_ready_groups (12/N) | open upstream #1988 | `3253835b` | local agent |
+| 13/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (13/N) | open upstream #1989 | `c82df992` | local agent |
+| 14/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (14/N) | open upstream #1990 | `c6a8a914` | local agent |
+| 15/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (15/N) | open upstream #1991 | `3a201bfb` | local agent |
+| 16/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (16/N) | ready, not opened (mypy fix approved 2026-10-23: one-line `cast` folded into the pool commit; prompt `work/prompts/B2-types-fold.md`, review copies `review/types/*`, not run yet; the stack conversation syncs) | `23155cbe` | local agent (fix: coordinator 2) |
+| 17/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (17/N) | ready, not opened (B2 folds the reaper's own loose types into its commits: `lease_owner_reference`, `owner_references`, the Lease list kwargs) | `1bfcedb9` | local agent (types: coordinator 2) |
+| 18/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (18/N) | ready, not opened | `d3bc3eda` | local agent |
 | 19/N | not created (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (19/N) | planned (plan `work/pr8_plan.md` verified 2026-10-22, accept with fixes; Part 3 approved, other decisions pending; starts after B2 syncs) | n/a | local agent (coordinator 2) |
 | 20/N | not created (types PR) | not drafted | planned (Brian approved 2026-10-23: one PR after PR 7 for loose types in open PRs and upstream code, including Lease typing; plan `work/type_tightening_plan.md`) | n/a | local agent (coordinator 2) |
-| fix | not created (branch off upstream `feature/batch-claim`) | fix(python-sdk): describe the errors get_batch raises for a failed request | planned, needs Brian's OK (CodeRabbit on #1996; the text is from merged 2/N #1924, so it can't go in the stack) | n/a | local agent |
 | RL | `feat/rl-batch-claim-mode` (4 commits on PR 7) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch | ready, not opened (needs Brian's review; sits on 18/N so it opens after the stack) | `166a15c8` | cloud (re-commit as Brian by local agent) |
 | RL | `feat/rl-sandbox-client-race` (1 commit on upstream main) | fix(rl): build Cluster.sandbox_client once under concurrent first use | ready, not opened (independent of the stack, targets `main`) | `834656b9` | cloud |
 | SDK fix | `fix/python-sdk-release-terminated-handles` (1 commit on upstream main `840fdfde`) | fix(python-sdk): stop the client from keeping terminated sandboxes (title draft) | in progress, not opened (targets `main`, outside the stack; design under Brian's review: the current lazy prune is being replaced by removal in `terminate()`, plus a second PR for the handle/connector cycle; see `work/coord1/2026-10-22-2350-leak-fix-decision.md`) | `2e02e420` | local agent (coordinator 1, item G) |
@@ -39,7 +39,7 @@ Notes
 - fu8 has no PR of its own. It is folded into #1996 (fu9 branch contains it), so there are 10/N rows for two branches.
 - 16/N to 19/N are inferred numbers. Renumber when Brian opens them.
 - Bench branches are not PRs. `bench/batch-claim` holds the SDK harness, `bench/rl-claim-mode` and `bench/rl-claim-mode-async` the RL runs, `bench/rl-sandbox-client-race` the race measurement.
-- Pending review rounds (local agent, 2026-10-23 00:30): `review/cr1996/*` (CodeRabbit on #1996, one test line in fu7 and PR 2) and `review/v1986/*`, being revised as `review/v1986b/*` (Vicente and CodeRabbit on #1986, cleanup closes connections even when the stop fails and keeps unclosed ones for a retry, plus a `close()`/`delete_all()` docstring line; carried through PR 2, PR 3, PR 5 and transport). Both await Brian's approval and will be synced together; until then the heads above are the live ones.
+- 2026-10-23 22:59: the approved review rounds for #1986 and #1996 were synced. Because 9/N merged first, the #1986 follow-ups went into the new 10/N branch `feat/batch-1-fu7b-cleanup-retry`, and every branch above was restacked on it (numbers in the rows above are the current GitHub titles until Brian opens the new PR and the open PRs are renumbered).
 - The rows above supersede `refs/pr_table.md`, which is a stale 2026-10-19 snapshot kept for history.
 
 ## Tasks
@@ -106,7 +106,7 @@ This PR is the eighth in a series of PRs to implement a batch. It retries the ba
 - `ssl.SSLEOFError` joins the transport errors the watch retries, so a server that closes the TLS stream without a close_notify no longer ends the watch.
 - The async watch uses the same helper as the sync one, so the EOF rule lives only in the error tuple.
 
-### 9/N fu7 (open #1986)
+### 9/N fu7 (merged #1986)
 This PR is the ninth in a series of PRs to implement a batch. It makes client cleanup close what batches leave open.
 - Cleanup closes each tracked batch's cached connections, which hold port-forward processes, and marks each batch detached.
 - The async client's `close()` and `delete_all()` share one `_stop_batches()`, and its atexit hook closes batch connections.
@@ -177,8 +177,12 @@ Planned scope from `work/pr8_plan.md`.
 ### 20/N Types PR (planned, no code)
 Not drafted. Replaces `Any` with exact types where an exact type exists, for code in the open PRs (typed `helper` parameters from PR 2, 5, 6) and in upstream code, including the Lease methods as `V1Lease` with a policy for a Lease without `spec`. Types introduced by transport, the reaper and PR 7 are folded into those branches instead (B2). Plan: `work/type_tightening_plan.md`.
 
-### get_batch error docstring fix (planned, needs Brian's OK)
-Not part of the numbered series. The `get_batch` docstrings in both clients say a network failure raises `ApiException`, but a failed request raises the transport's own error: sync `kubernetes` wraps only urllib3's `SSLError` (`rest.py:381-383`), and async `kubernetes_asyncio` wraps none of aiohttp's errors. The fix rewrites those docstring lines in both shells and regenerates `docs/python_sdk_reference.md`.
+### 10/N fu7b (ready, not opened)
+This PR is the tenth in a series of PRs to implement a batch. It finishes the client cleanup follow-ups from #1986.
+- Cleanup closes a batch's cached connections in a `finally`, so a failed stop can't leave port-forwards open.
+- A connection whose close fails or is cancelled stays on the handle, and the batch stays tracked, so a later `close()` or `delete_all()` retries it.
+- `close()` and `delete_all()` document that cleanup stops Lease renewal without releasing the Lease, so `get_batch` can't re-attach a batch that wasn't detached.
+- `get_batch` documents the transport errors a failed request raises.
 
 ### SDK fix: terminated sandbox handles (in progress, not opened, targets `main`)
 Draft; final text comes with the fix. The async client keeps every sandbox handle after `terminate()`, about 0.7 MiB each (an HTTP client with an SSL context), so a long-running driver grew from 94 MB to 1.75 GB over 2,400 sandboxes (measured, `bench/async-mem-probe`). The sync client keeps handles the same way (about 0.06 MiB each).

@@ -68,6 +68,9 @@ When Brian says to review a PR's comments: read them with `gh` yourself. For eac
 - A separate thread fixes the transport mypy error on its own copy, so after each restack tell Brian the new transport head.
 - For review comments and verification on future PRs, spawn `inherit` subagents (one to triage and fix, a fresh one to verify) to save the main context, and check their evidence before syncing.
 
+## "Explain" (Brian, 2026-10-22)
+When Brian says "explain", be concise: what is happening, the issue, and the proposed fix (or say a fix is being worked out).
+
 ## Self-check (replaces the cloud's independent-review thread)
 In the cloud, audits and reviews of a thread's work went to a fresh thread that formed its own findings first and was never shown the author's list. Locally, do the same with a fresh subagent (the Agent tool, general-purpose) when:
 - you finish a non-trivial code change (a restack with conflicts, a behavior fix, anything touching more than one commit's logic), or
