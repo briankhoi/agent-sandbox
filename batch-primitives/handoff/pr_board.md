@@ -131,7 +131,7 @@ This PR is the fifteenth in a series of PRs to implement a batch. It adds `acqui
 ### 16/N Transport (ready, not opened)
 This PR is the sixteenth in a series of PRs to implement a batch. It makes fan-out cheaper and safer.
 - `connect()` uses the pod IP the watch already knows, so it skips one Sandbox GET per member.
-- A cached connection closes when its member is lost, failed or moves to another IP.
+- A cached connection closes when its member is lost, failed, moves to another IP or is bound to another sandbox.
 - `claim_batch` fails early when the client's connection pool is smaller than `max_in_flight + 2`. `SandboxClient` and `AsyncSandboxClient` take `pool_size`.
 
 ### 17/N Reaper (ready, not opened)
