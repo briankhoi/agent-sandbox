@@ -29,6 +29,7 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 17/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (17/N) | ready, not opened | `b2689893` | local agent |
 | 18/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (18/N) | ready, not opened | `8ebf8e33` | local agent |
 | 19/N | not created (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (19/N) | planned (plan in `work/pr8_plan.md`, no code) | n/a | local agent |
+| fix | not created (branch off upstream `feature/batch-claim`) | fix(python-sdk): describe the errors get_batch raises for a failed request | planned, needs Brian's OK (CodeRabbit on #1996; the text is from merged 2/N #1924, so it can't go in the stack) | n/a | local agent |
 | RL | `feat/rl-batch-claim-mode` (4 commits on PR 7) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch | ready, not opened (needs Brian's review; sits on 18/N so it opens after the stack) | `166a15c8` | cloud (re-commit as Brian by local agent) |
 | RL | `feat/rl-sandbox-client-race` (1 commit on upstream main) | fix(rl): build Cluster.sandbox_client once under concurrent first use | ready, not opened (independent of the stack, targets `main`) | `834656b9` | cloud |
 
@@ -36,6 +37,7 @@ Notes
 - fu8 has no PR of its own. It is folded into #1996 (fu9 branch contains it), so there are 10/N rows for two branches.
 - 16/N to 19/N are inferred numbers. Renumber when Brian opens them.
 - Bench branches are not PRs. `bench/batch-claim` holds the SDK harness, `bench/rl-claim-mode` and `bench/rl-claim-mode-async` the RL runs, `bench/rl-sandbox-client-race` the race measurement.
+- Pending review rounds (local agent, 2026-10-23 00:30): `review/cr1996/*` (CodeRabbit on #1996, one test line in fu7 and PR 2) and `review/v1986/*`, being revised as `review/v1986b/*` (Vicente and CodeRabbit on #1986, cleanup closes connections even when the stop fails and keeps unclosed ones for a retry, plus a `close()`/`delete_all()` docstring line; carried through PR 2, PR 3, PR 5 and transport). Both await Brian's approval and will be synced together; until then the heads above are the live ones.
 - The rows above supersede `refs/pr_table.md`, which is a stale 2026-10-19 snapshot kept for history.
 
 ## Descriptions
@@ -149,6 +151,9 @@ Planned scope from `work/pr8_plan.md`.
 - Make the `release()` re-list metadata-only, and stop parsing the `deletecollection` response body.
 - The `members()` cache and wake-up items stay dropped.
 - Expected win is the transient part of the 69 MB peak at 5,000 claims (inferred, not measured). Needs before and after memory numbers.
+
+### get_batch error docstring fix (planned, needs Brian's OK)
+Not part of the numbered series. The `get_batch` docstrings in both clients say a network failure raises `ApiException`, but a failed request raises the transport's own error: sync `kubernetes` wraps only urllib3's `SSLError` (`rest.py:381-383`), and async `kubernetes_asyncio` wraps none of aiohttp's errors. The fix rewrites those docstring lines in both shells and regenerates `docs/python_sdk_reference.md`.
 
 ### RL batch claim mode (ready, not opened)
 Branch `feat/rl-batch-claim-mode`, 4 commits on 18/N. Targets the RL library under `examples/agent-sandbox-rl/`.
