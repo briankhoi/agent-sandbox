@@ -25,10 +25,11 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 13/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (13/N) | open upstream #1989 | `70cbdd60` | local agent |
 | 14/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (14/N) | open upstream #1990 | `99b2937f` | local agent |
 | 15/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (15/N) | open upstream #1991 | `7f901270` | local agent |
-| 16/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (16/N) | ready, not opened (transport mypy error being fixed, see `tasks.md`) | `d1f01d1a` | local agent |
-| 17/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (17/N) | ready, not opened | `b2689893` | local agent |
+| 16/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (16/N) | ready, not opened (mypy fix approved 2026-10-23: one-line `cast` folded into the pool commit; prompt `work/prompts/B2-types-fold.md`, review copies `review/types/*`, not run yet; the stack conversation syncs) | `d1f01d1a` | local agent (fix: coordinator 2) |
+| 17/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (17/N) | ready, not opened (B2 folds the reaper's own loose types into its commits: `lease_owner_reference`, `owner_references`, the Lease list kwargs) | `b2689893` | local agent (types: coordinator 2) |
 | 18/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (18/N) | ready, not opened | `8ebf8e33` | local agent |
-| 19/N | not created (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (19/N) | planned (plan in `work/pr8_plan.md`, no code) | n/a | local agent |
+| 19/N | not created (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (19/N) | planned (plan `work/pr8_plan.md` verified 2026-10-22, accept with fixes; Part 3 approved, other decisions pending; starts after B2 syncs) | n/a | local agent (coordinator 2) |
+| 20/N | not created (types PR) | not drafted | planned (Brian approved 2026-10-23: one PR after PR 7 for loose types in open PRs and upstream code, including Lease typing; plan `work/type_tightening_plan.md`) | n/a | local agent (coordinator 2) |
 | fix | not created (branch off upstream `feature/batch-claim`) | fix(python-sdk): describe the errors get_batch raises for a failed request | planned, needs Brian's OK (CodeRabbit on #1996; the text is from merged 2/N #1924, so it can't go in the stack) | n/a | local agent |
 | RL | `feat/rl-batch-claim-mode` (4 commits on PR 7) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch | ready, not opened (needs Brian's review; sits on 18/N so it opens after the stack) | `166a15c8` | cloud (re-commit as Brian by local agent) |
 | RL | `feat/rl-sandbox-client-race` (1 commit on upstream main) | fix(rl): build Cluster.sandbox_client once under concurrent first use | ready, not opened (independent of the stack, targets `main`) | `834656b9` | cloud |
@@ -152,6 +153,10 @@ Planned scope from `work/pr8_plan.md`.
 - Make the `release()` re-list metadata-only, and stop parsing the `deletecollection` response body.
 - The `members()` cache and wake-up items stay dropped.
 - Expected win is the transient part of the 69 MB peak at 5,000 claims (inferred, not measured). Needs before and after memory numbers.
+- Update 2026-10-23 (coordinator 2): the plan's new reading is that the `release()` peak is the deletecollection response, not the re-list (inferred from timing, to be measured). Async sends the metadata-only header on the existing client; the sync route (a dedicated client like `_api_client_without_retries`) awaits Brian. The pool check `max_in_flight + 2` needs no change (verified). Decisions: `work/coordinator2_decisions.md`.
+
+### 20/N Types PR (planned, no code)
+Not drafted. Replaces `Any` with exact types where an exact type exists, for code in the open PRs (typed `helper` parameters from PR 2, 5, 6) and in upstream code, including the Lease methods as `V1Lease` with a policy for a Lease without `spec`. Types introduced by transport, the reaper and PR 7 are folded into those branches instead (B2). Plan: `work/type_tightening_plan.md`.
 
 ### get_batch error docstring fix (planned, needs Brian's OK)
 Not part of the numbered series. The `get_batch` docstrings in both clients say a network failure raises `ApiException`, but a failed request raises the transport's own error: sync `kubernetes` wraps only urllib3's `SSLError` (`rest.py:381-383`), and async `kubernetes_asyncio` wraps none of aiohttp's errors. The fix rewrites those docstring lines in both shells and regenerates `docs/python_sdk_reference.md`.
