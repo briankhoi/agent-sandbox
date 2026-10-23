@@ -75,6 +75,9 @@ class Cluster:
     self._k8s_helper = None
     self._sandbox_client = None
     self._leases_injected = False             # see batch_sandbox_client
+    # Concurrent first acquires would otherwise each build a SandboxClient,
+    # and every build loads the kubeconfig.
+    self._sandbox_client_lock = threading.Lock()
     self.tracer_config = None                 # optional SDK SandboxTracerConfig
     # Placement / capacity bookkeeping. Mutated from parallel claim workers, so
     # guard with a per-cluster lock and only touch via the methods below.
@@ -119,17 +122,20 @@ class Cluster:
     suspend / resume / restore — see `agent_sandbox_rl.snapshots`), bound to
     this cluster's helper *before* its CRD check runs.
     """
-    if self._sandbox_client is None:
-      if getattr(self.config, "snapshots", False):
-        from .snapshots import build_snapshot_client
-        c = build_snapshot_client(self.k8s_helper, tracer_config=self.tracer_config)
-      else:
-        from k8s_agent_sandbox import SandboxClient
-        c = (SandboxClient(tracer_config=self.tracer_config)
-             if self.tracer_config is not None else SandboxClient())
-        c.k8s_helper = self.k8s_helper
-      self._sandbox_client = c
-    return self._sandbox_client
+    if self._sandbox_client is not None:
+      return self._sandbox_client
+    with self._sandbox_client_lock:
+      if self._sandbox_client is None:
+        if getattr(self.config, "snapshots", False):
+          from .snapshots import build_snapshot_client
+          c = build_snapshot_client(self.k8s_helper, tracer_config=self.tracer_config)
+        else:
+          from k8s_agent_sandbox import SandboxClient
+          c = (SandboxClient(tracer_config=self.tracer_config)
+               if self.tracer_config is not None else SandboxClient())
+          c.k8s_helper = self.k8s_helper
+        self._sandbox_client = c
+      return self._sandbox_client
 
   def batch_sandbox_client(self):
     """`sandbox_client` with its Lease API pointed at this cluster too.
