@@ -68,6 +68,10 @@ When Brian says to review a PR's comments: read them with `gh` yourself. For eac
 - A separate thread fixes the transport mypy error on its own copy, so after each restack tell Brian the new transport head.
 - For review comments and verification on future PRs, spawn `inherit` subagents (one to triage and fix, a fresh one to verify) to save the main context, and check their evidence before syncing.
 
+## Never scope things out (Brian, 2026-10-23)
+- Never scope a finding out. For every valid gap (from a reviewer, a verifier or yourself), either fold the fix into the owning PR or propose a separate PR, and put the choice to Brian. Never narrow a promise (a comment, docstring or contract) instead of fixing the gap without asking him.
+- For lifecycle or state fixes, write the rule the change promises in one sentence first, list every path that touches it (including concurrent interleavings), and give the verifier that list to check (lesson from #2049, where a scoped-out detach() path and an unchecked overlapping-cleanup race came back as CodeRabbit comments).
+
 ## "Explain" (Brian, 2026-10-22)
 When Brian says "explain", be concise: what is happening, the issue, and the proposed fix (or say a fix is being worked out).
 
