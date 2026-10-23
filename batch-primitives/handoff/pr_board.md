@@ -42,6 +42,25 @@ Notes
 - Pending review rounds (local agent, 2026-10-23 00:30): `review/cr1996/*` (CodeRabbit on #1996, one test line in fu7 and PR 2) and `review/v1986/*`, being revised as `review/v1986b/*` (Vicente and CodeRabbit on #1986, cleanup closes connections even when the stop fails and keeps unclosed ones for a retry, plus a `close()`/`delete_all()` docstring line; carried through PR 2, PR 3, PR 5 and transport). Both await Brian's approval and will be synced together; until then the heads above are the live ones.
 - The rows above supersede `refs/pr_table.md`, which is a stale 2026-10-19 snapshot kept for history.
 
+## Tasks
+
+Non-PR work items. Add a row when Brian asks, and fill the TBD cells only from his words.
+
+| Task | Status | Owner | Detail |
+| :-- | :-- | :-- | :-- |
+| Cloud-cluster (GKE) benchmark of batch claiming vs per-claim | planned (Brian has the strategy and a plan with his local agent; not yet recorded here) | TBD (Brian) | see below |
+
+### Cloud-cluster benchmark of batch claiming vs per-claim
+- Why: on kind at 160 sandboxes per step the speed gain is small once the RL client race is fixed (measured: fixed sync per-claim 1.37 s vs batch 1.27 s). Kind also floors at controller adoption (about 1.08 s) and about 400 pods per node, so it cannot show scale effects. The cost wins are real on kind (measured: 1 watch vs 160, 1.5 vs 4.0 requests per env), but whether they become a speed win needs a real cluster (inferred).
+- Compare: batch vs per-claim, sync and async, with the identical limiting mechanism on both arms and no-limit vs no-limit first (Brian 2026-10-21).
+- Strategy: TBD (Brian)
+- Scale (sandboxes per step, steps, runs): TBD (Brian)
+- Cluster and project: TBD (Brian)
+- Metrics: TBD (Brian)
+- Owner: TBD (Brian)
+- Prerequisites: the client race fix (`feat/rl-sandbox-client-race`) on the per-claim arm. The held controller-floor measurement (kind with more workers, GKE at 160 and 640) is the same item and folds in here.
+- Results: not run
+
 ## Descriptions
 
 Brian opens the PRs himself, so the attribution block is not included. Merged PRs keep their description for reference.
