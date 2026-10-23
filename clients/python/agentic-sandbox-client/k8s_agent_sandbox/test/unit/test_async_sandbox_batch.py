@@ -15,6 +15,7 @@
 """Unit tests for the async AsyncSandboxBatch handle and AsyncSandboxClient.get_batch."""
 
 import asyncio
+import contextlib
 import inspect
 import ssl
 import time
@@ -1071,18 +1072,77 @@ class TestClientClose(BaseAsyncBatchClientTest):
         for cleanup in ("close", "delete_all"):
             with self.subTest(cleanup):
                 handle = _make_handle(self.client)
-                handle._stop_background_tasks = AsyncMock()
+                # A failed stop must still leave the cached connection closed.
+                handle._stop_background_tasks = AsyncMock(side_effect=RuntimeError("stop failed"))
                 cached = MagicMock(close_connection=AsyncMock())
                 handle._connected["b1-0"] = cached
                 self.client._active_batches[("default", "b1")] = handle
 
                 await getattr(self.client, cleanup)()
 
-                handle._stop_background_tasks.assert_called_once()
+                handle._stop_background_tasks.assert_awaited_once()
                 cached.close_connection.assert_awaited_once()
                 self.assertEqual(self.client._active_batches, {})
                 with self.assertRaises(BatchError):
                     await handle.connect(MagicMock())
+
+    async def test_a_connection_that_fails_to_close_is_retried_by_the_next_cleanup(self):
+        self.mock_k8s_helper.close = AsyncMock()
+        for error in (RuntimeError("close failed"), asyncio.CancelledError()):
+            with self.subTest(type(error).__name__):
+                handle = _make_handle(self.client)
+                cached = MagicMock(close_connection=AsyncMock(side_effect=[error, None]))
+                handle._connected["b1-0"] = cached
+                self.client._active_batches[("default", "b1")] = handle
+
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.client.close()
+                self.assertEqual(handle._connected, {"b1-0": cached})
+                self.assertEqual(self.client._active_batches, {("default", "b1"): handle})
+
+                await self.client.close()
+                self.assertEqual(cached.close_connection.await_count, 2)
+                self.assertEqual(handle._connected, {})
+                self.assertEqual(self.client._active_batches, {})
+
+    async def test_a_close_that_fails_after_an_overlapping_cleanup_unregistered_the_batch_is_retried(self):
+        self.mock_k8s_helper.close = AsyncMock()
+        handle = _make_handle(self.client)
+
+        async def close_connection():
+            if cached.close_connection.await_count == 1:
+                # The overlapping cleanup finds no cached connection and unregisters the batch.
+                await self.client.close()
+                self.assertEqual(self.client._active_batches, {})
+                raise RuntimeError("close failed")
+
+        cached = MagicMock(close_connection=AsyncMock(side_effect=close_connection))
+        handle._connected["b1-0"] = cached
+        self.client._active_batches[("default", "b1")] = handle
+
+        await self.client.close()
+        self.assertEqual(handle._connected, {"b1-0": cached})
+        self.assertEqual(self.client._active_batches, {("default", "b1"): handle})
+
+        await self.client.close()
+        self.assertEqual(cached.close_connection.await_count, 2)
+        self.assertEqual(self.client._active_batches, {})
+
+    async def test_a_connection_that_fails_to_close_on_detach_is_retried_by_the_next_cleanup(self):
+        self.mock_k8s_helper.close = AsyncMock()
+        self.mock_k8s_helper.read_batch_lease = AsyncMock(return_value=None)
+        handle = _make_handle(self.client)
+        cached = MagicMock(close_connection=AsyncMock(side_effect=[RuntimeError("close failed"), None]))
+        handle._connected["b1-0"] = cached
+        self.client._active_batches[("default", "b1")] = handle
+
+        with self.assertLogs(level="WARNING"):
+            await handle.detach()
+        self.assertEqual(self.client._active_batches, {("default", "b1"): handle})
+
+        await self.client.close()
+        self.assertEqual(cached.close_connection.await_count, 2)
+        self.assertEqual(self.client._active_batches, {})
 
     def test_atexit_closes_batch_connections(self):
         handle = _make_handle(self.client)
