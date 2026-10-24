@@ -56,7 +56,7 @@ from .exceptions import (
     TerminalMemberError,
 )
 from .models import BatchEvent, BatchGroup, GroupReady, Member, MemberState
-from .utils import construct_sandbox_claim_lifecycle_spec
+from .utils import construct_sandbox_claim_lifecycle_spec, select_pod_ip
 
 if TYPE_CHECKING:
     from .async_sandbox import AsyncSandbox
@@ -149,7 +149,8 @@ class AsyncSandboxBatch:
         self._list_resource_version = list_resource_version
 
         self._lock = asyncio.Lock()
-        self._connected: dict[str, "AsyncSandbox"] = {}
+        # Each cached connection, with the pod IP it was made to.
+        self._connected: dict[str, tuple["AsyncSandbox", str | None]] = {}
         self._detached = False
         self._lease_released = False
         # The Lease duration detach() writes, the grace from the last detach() call that gave one or else
@@ -431,6 +432,12 @@ class AsyncSandboxBatch:
     async def connect(self, member: Member) -> "AsyncSandbox":
         """Returns a connected ``AsyncSandbox`` for a ready member. If this handle is already connected
         to the Sandbox, it reuses the existing connection, otherwise it creates a new one and caches it for future calls.
+        The connection starts from the pod IP the batch's watch reports, without reading the Sandbox.
+
+        The batch closes a cached connection once the member's pod is gone, meaning the member is
+        lost or failed or the watch reports another sandbox or pod IP for it, since the old IP may go to another
+        sandbox. Call ``connect`` again once the member is Ready to get a new one. A member that is
+        only not Ready keeps its connection.
 
         Raises ``SandboxNotReadyError`` if the member isn't ready, even while its connection is
         cached, and ``BatchError`` once ``err()`` is set, since the Lease may be lost and the cache
@@ -448,7 +455,7 @@ class AsyncSandboxBatch:
                 )
             cached = self._connected.get(member.claim_name)
             if cached is not None:
-                return cached
+                return cached[0]
             sandbox: AsyncSandbox = self._client.sandbox_class(
                 claim_name=member.claim_name,
                 sandbox_id=current.sandbox_name,
@@ -457,7 +464,10 @@ class AsyncSandboxBatch:
                 tracer_config=self._client.tracer_config,
                 k8s_helper=self._client.k8s_helper,
             )
-            self._connected[member.claim_name] = sandbox
+            # The watch already has the pod IP, so the first request needs no Sandbox GET.
+            pod_ip = select_pod_ip(current.pod_ips)
+            sandbox._seeded_pod_ip = pod_ip
+            self._connected[member.claim_name] = (sandbox, pod_ip)
             return sandbox
 
     def err(self) -> Exception | None:
@@ -934,24 +944,47 @@ class AsyncSandboxBatch:
             names = list(self._connected) if claim_names is None else claim_names
         for claim_name in names:
             async with self._lock:
-                sandbox = self._connected.pop(claim_name, None)
-            if sandbox is None:
+                entry = self._connected.pop(claim_name, None)
+            if entry is None:
                 continue
             closed = False
             try:
-                await sandbox.close_connection()
-                closed = True
-            except Exception as e:
-                logger.warning(
-                    f"Batch '{self.batch_id}' failed to close a cached sandbox connection "
-                    f"during {action}: {e}"
-                )
+                closed = await self._close_one(entry[0], action)
             finally:
                 if not closed:
                     # A connection that fails to close is kept on the handle rather than dropped, and the
                     # client keeps the handle for its next cleanup.
-                    self._connected.setdefault(claim_name, sandbox)
+                    self._connected.setdefault(claim_name, entry)
                     self._client._track_closing(self)
+
+    def _pop_stale_connections(self, claim_names: list[str]) -> list["AsyncSandbox"]:
+        """Removes and returns the cached connections that no longer reach their member, so the
+        caller can close them outside ``_lock``. Requires ``_lock``."""
+        stale = []
+        for claim_name in claim_names:
+            cached = self._connected.get(claim_name)
+            if cached is not None and not batch_state.still_reaches(
+                self._state.get_member(claim_name), cached[0].sandbox_id, cached[1]
+            ):
+                stale.append(self._connected.pop(claim_name)[0])
+        return stale
+
+    async def _close_connections(self, connected: list["AsyncSandbox"], action: str) -> None:
+        # A stale connection is dropped even if its close fails, since connect() must never hand it out.
+        for sandbox in connected:
+            await self._close_one(sandbox, action)
+
+    async def _close_one(self, sandbox: "AsyncSandbox", action: str) -> bool:
+        """Closes one cached connection and returns whether it closed."""
+        try:
+            await sandbox.close_connection()
+        except Exception as e:
+            logger.warning(
+                f"Batch '{self.batch_id}' failed to close a cached sandbox connection "
+                f"during {action}: {e}"
+            )
+            return False
+        return True
 
     def _detach_unfinished(self) -> bool:
         """Returns whether detach() started on this handle but hasn't released the Lease."""
@@ -1060,6 +1093,8 @@ class AsyncSandboxBatch:
                     async with self._lock:
                         self._state.resync_from_list(items)
                         self._changed.notify_all()
+                        stale = self._pop_stale_connections(list(self._connected))
+                    await self._close_connections(stale, "a re-list")
                     relist = False
                 watch_started = time.monotonic()
                 got_event = False
@@ -1075,12 +1110,15 @@ class AsyncSandboxBatch:
                         rv = seen_rv
                     if event_type == "BOOKMARK":
                         continue
+                    claim_name = (obj.get("metadata") or {}).get("name", "")
                     async with self._lock:
                         if event_type == "DELETED":
-                            self._state.mark_lost((obj.get("metadata") or {}).get("name", ""))
+                            self._state.mark_lost(claim_name)
                         elif event_type in ("ADDED", "MODIFIED"):
                             self._state.upsert_claim(obj)
                         self._changed.notify_all()
+                        stale = self._pop_stale_connections([claim_name])
+                    await self._close_connections(stale, "a watch event")
                 if not got_event and time.monotonic() - watch_started < _SHORT_WATCH_SECONDS:
                     failures += 1
                     await asyncio.sleep(batch_utils.retry_delay(failures, None))
