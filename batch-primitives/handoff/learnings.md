@@ -94,6 +94,12 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 - **Limits:** it is a safety net. Cleanup only runs on explicit close/delete_all, a context exit, or atexit with `cleanup=True`. Async atexit cannot await detach(). After a crash nothing runs, the Lease expires, and the reaper frees the batch. A late retry either completes the handoff or quietly finds the batch already reaped. `get_batch` then fails clearly (`BatchLeaseExpiredError` / `BatchNotFoundError`) rather than returning a cleaned-up batch.
 - **Takeaway:** cleanup must distinguish "abandoned" from "in the middle of a handoff", and honour the caller's latest intent. Destructive defaults need an explicit check of what the caller was trying to do.
 
+### 3.3b A shared field read twice across a lock gap
+- **What happened:** detach() resolved the grace under the lock, then read the field again at write time. release() clears that field when it starts, and it can run from another thread or task while detach() is between its lock block and its write.
+- **Issue:** detach() wrote a Lease with no duration. A retry loop added later read the field once more, which widened the window.
+- **Fix:** copy the value into a local inside the lock block, and use the local for every write attempt (PR 2).
+- **Takeaway:** a value decided under a lock must be carried in a local, not re-read from shared state after the lock is released. Every added retry or loop that re-reads shared state is a new race window.
+
 ### 3.4 Lease expiry is the leak guard; don't defeat it
 - **Option rejected:** restart Lease renewal after a failed detach() so the batch stays alive. It would keep a batch held for the whole process lifetime even if nobody retries.
 - **Takeaway:** a lease-based design needs something that eventually frees resources when the holder disappears. Don't add "keep alive on failure" paths that bypass it.
