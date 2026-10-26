@@ -86,7 +86,7 @@ G3_SHAS = {
 # Upstream main and a local merge of PR 1 (registry-bound hook), PR 3 (exit hook) and PR 2.
 G4_SHAS = {
     "main": "7f40dc1a9c8026a3ae4c0175ddad3c3045d7192e",
-    "all": "8735bb79c568f19bbe7aea857821f1a262a6cfc1",
+    "all": "4a9af230df2a10a6082a9664cbeb852207c4eb6f",
 }
 # Tiny sizes and one run per variant, for checking that every metric is recorded.
 SMOKE = os.environ.get("BENCH_SMOKE") == "1"
