@@ -1,0 +1,47 @@
+# G4. Leak fix: PR 1 hook bound to the registry, PR 3 exit hook, combined verification
+
+Paste the block below into conversation G (it has the worktrees, the bench branch and `par-mem`). Resumable: each step checks what already exists. All G3 rules still apply.
+
+````
+## Brian's decisions (2026-10-26)
+- PR 3 = option (e) from `handoff/work/results/exit-hook-audit.md`, both clients, one PR: "yes".
+- PR 1's hook must point at the registry, not the client (approved; confirmed by the independent audit `handoff/work/results/hook-registry-audit.md`, which measured the clash: with PR 1 as is, a dropped client with a tracked handle stays alive under PR 3, even after `gc.collect()`).
+- PR 2 keeps clearing the unused `_get_service_fqdn` field: "yes".
+- PR 2 sync use after close: accept and document (Brian leaned yes; the independent audit `handoff/work/results/use-after-close-audit.md` agrees). Issue 5 is to be filed now and linked from PR 2.
+- Test that the PRs interact as intended and that the core leak is fixed (Brian: "make sure we also test to make sure the interacts between PRs is as intended, and the core memory leak thing is fixed").
+
+## Rules (unchanged; all apply)
+Commits authored by `Brian Nguyen <brianknguyen@google.com>`, no trailers, never `--no-verify`. Push only to `origin`, your own branches; force only your own unopened branches with `--force-with-lease=<branch>:<sha>`. Never create GitHub issues or PRs or comment. Kind: `par-mem` only, separate kubeconfig, `--context`, `BENCH_CONTEXT`. Worktrees and scratch outside the repo; never touch `feat/batch-*`. SSH fallback to HTTPS with the gh token. Facts marked measured / verified / inferred. Every subagent uses the `inherit` model. Minimal fixes; reviewer briefs include "Is there a smaller change with the same behavior? Does it add state, duplicate data or logic, or widen a type without need?". Style: no em dashes, avoid colons in comments, comments explain why, identical sync/async comments, parity, one owning test per contract, each mutation-checked, no drive-by changes, merge-tree clean against fresh `upstream/main`.
+
+Read first: `results/hook-registry-audit.md`, `results/exit-hook-audit.md`, and the coordinator briefs `coord1/2026-10-26-2135-leak-fix-verdict.md` and `coord1/2026-10-26-2310-leak-items-2-3.md`. Re-verify every `file:line` on a freshly fetched `upstream/main`.
+
+## Step 1. PR 1: bind the hook to the registry (amend the single commit)
+On `fix/python-sdk-release-terminated-handles`, both clients: make `_untrack` a `@staticmethod` taking `(registry, sandbox)` and set `handle._on_terminated = functools.partial(self._untrack, self._active_connection_sandboxes)` at every place the client builds or inserts a handle (the audit found two per client). Behavior stays identical. A module-level function with `partial` is an equal alternative; pick one, same in both shells, one sentence why. Add one owning test per shell: a client (cleanup off) with a tracked handle, `del client`, a weakref to the client is dead with GC disabled (this fails on the current PR 1; mutation-check by restoring the bound method). Update the commit message and PR text only where they describe the hook. Rebase onto fresh `upstream/main` (it moved to about `7f40dc1a`; merge-tree with PR 1 and PR 2 was clean, measured by the reviewer), rerun changed tests and mypy, force-with-lease push. Because PR 1 is amended and rebased, also push a `review-diff/leakfix-pr1` commit (parent = a commit with the old tree `c2c006ee^{tree}`, tree = the new tree, built with `git commit-tree`) so Brian can see the old-to-new change in one compare.
+
+## Step 2. PR 2: description sentence only
+Add this sentence to PR 2's description (from the audit, section 4), and nothing else; no code change in PR 2:
+
+> Using a sandbox's connection after `close_connection()` or `terminate()` (for example through `sandbox.connector` or a `commands`/`files` object kept from before the close) is unsupported; after this change some connection modes raise or route without the pod IP instead of silently reconnecting, and a follow-up (#<issue 5>) will make the sync client refuse such use with a clear error, as the async client already does.
+
+Also update issue 5's text with the audit's measured facts (which modes change, the Gateway correction: only the optional pod-IP hint header is dropped and the router falls back to its normal lookup, and the port-forward that the quiet reconnect leaks on main, marked inferred).
+
+## Step 3. PR 3: exit hook holds only the data it needs
+New branch `fix/python-sdk-release-client-exit-hook`, stacked on the rebased PR 1 (PR 3's tests need PR 1's registry-bound hook to free a client with tracked handles). Both clients, one commit. Implement option (e) from `exit-hook-audit.md`. Write the rule in one sentence first (for example "exit cleanup reads only the registry data, never the client") and list every path that touches the registry or the exit hook (create, get, attach, terminate, close, `__exit__`, `delete_all`) in the results; the verifier gets both.
+- Registration form: prefer `atexit.register(functools.partial(_exit_fn, ...))` over `atexit.register(fn, *args)`, so existing tests that call `register.call_args.args[0]()` keep working (the four `test_adoption_lifecycle.py` sites ~:162, :523, :560, :584 then need no edit) and it matches PR 1's partial. Choose and give one sentence why.
+- Data per client (re-verify): async reads three things (the registry, `_explicit_claims`, `_injected_api_client`, ~`async_sandbox_client.py:530-597`); pass the ApiClient object itself, not a copy of its config (a test at ~:419 checks config and headers are read at exit time). Sync reads the registry and `_explicit_claims` (~`sandbox_client.py:401-411`); sync `__exit__` (~:118) must call the same function. Keep the existing log messages and the per-key try/except identical. The shared helper must still call `sandbox.terminate()` (the `test_adoption_lifecycle.py:162` case uses the sync snapshot client).
+- The registry dict must never be rebound after construction: add one comment at both registry assignments saying why (the exit function holds that dict).
+- Existing test churn (re-verify on fresh main): `test_async_sandboxclient.py` asserts `assert_called_once_with(client._atexit_cleanup)` (~:297, :303) and calls `client._atexit_cleanup()` directly about 12 times (~:326 to :602); many of those tests rebind `client._active_connection_sandboxes = {...}`, which a hook holding the original dict would silently ignore. Change those tests to fill the existing dict (or call the module function with their own dict), never replace it. `~:2130/:2138` run a real process exit; keep them passing. List every test you changed and why.
+- Owning tests, both shells, mutation-checked: a closed and dropped client is freed with an empty registry and with a non-empty registry (weakref dead after `del`; state the GC setting and why). Sync defaults to `cleanup=False` and has no `close()`, so the sync test uses `cleanup=True` with a `with` block or terminate. Exit cleanup on a dropped client deletes its tracked live sandboxes and only closes (does not delete) explicit claims; call the registered function through the patched `atexit.register`, never `atexit._run_exitfuncs`, and unregister in `finally`.
+
+## Step 4. Combined verification (the done criteria)
+1. **Interaction tests with all three PRs together** on a throwaway local merge (order: PR 1 rebased first, PR 3 rebased onto it, then PR 2 merged in unchanged after a merge-tree check against fresh main; record SHA and tree): run every test added by the three PRs plus `test_adoption_lifecycle.py`, the connector, snapshot-extension and client test files, in both shells. All pass; report counts.
+2. **Memory, end to end** on `par-mem`, one session, back to back, same method as G3: rolling 600 rollouts and Brian's case (create 100, terminate all, create none) on arm 1 `upstream/main` and arm 2 the three-PR merge. Success: rolling second-half slope at most 10% of main's; retained per handle in Brian's case at most 10% of main's. Plus the client micro-measurement (create and close 200 clients, retained per client, sync and async, traced memory, state the GC setting) on main vs the merge; success = at most about 500 B per client on the merge (the audit measured 480 B) vs main's about 1.4 KB unused and 8 KB used async, 9.4 KB sync.
+3. **Self-check**: one fresh `inherit` subagent per changed PR (PR 1 change, PR 3), given only base and head and the rules, plus one for the combined merge asked "do the three PRs interact as intended; does anything still pin a client or a handle?". Resolve findings by reading code.
+4. Push PR 1 (lease), PR 3 (new branch), bench branch.
+
+## Texts for Brian
+Update issue 4's text for option (e) and both clients; PR 1's text for the registry-bound hook; PR 3's title and description (only itself, "Fixes #<issue 4>", says it is stacked on PR 1); PR 2's text per Step 2.
+
+## Report
+`batch-primitives/handoff/work/results/G4-memleak-final.md` (pull --rebase, add only it and the pr_board leak row update, plain push); give Brian only the link and one line. Contents: summary; per PR the diff summary and choices with one-sentence reasons; tests and mutations; combined test counts; memory tables; self-check results; decisions for Brian; updated texts in fenced blocks; compare links (PR 1 vs its base, the `review-diff/leakfix-pr1` old-to-new compare, PR 3 vs PR 1, PR 2 unchanged).
+````
