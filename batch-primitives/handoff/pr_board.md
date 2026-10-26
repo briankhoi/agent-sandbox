@@ -20,7 +20,7 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 8/N | `feat/batch-ssl-eof-retry` | fix(python-sdk): retry the batch watch on a TLS EOF (8/N) | merged #2033 (`c56f0791`) | `0e586d47` | local agent |
 | 9/N | `feat/batch-1-fu7-client-cleanup` | fix(python-sdk): close cached batch connections on client cleanup (9/N) | merged #1986 (`b03ba91b`, tree equals `a1e009ee`) | `a1e009ee` | local agent |
 | 10/N | `feat/batch-1-fu7b-cleanup-retry` | fix(python-sdk): keep closing batch connections when cleanup fails (10/N) | merged #2049 (`74cd8fa5`, tree equals `078843dd`) | `078843dd` | local agent |
-| 11/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `2b1d9268`) | fix(python-sdk): name async batch tasks and let concurrent detach() calls both succeed (11/N) | open upstream #1996 | `cb59dcf0` | local agent |
+| 11/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `2b1d9268`) | fix(batch,python-sdk): concurrent detach() success, named batch tasks for debugging (11/N) | open upstream #1996 | `cb59dcf0` | local agent |
 | 12/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (12/N) | open upstream #1824 | `fc659690` | local agent |
 | 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(python-sdk): add events and iter_ready_groups (13/N) | open upstream #1988 | `5dd9a1d5` | local agent |
 | 14/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (14/N) | open upstream #1989 | `597dc977` | local agent |
