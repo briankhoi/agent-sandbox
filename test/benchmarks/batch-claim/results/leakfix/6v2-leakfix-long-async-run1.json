@@ -1,0 +1,2143 @@
+{
+ "rollouts": 2400,
+ "rollout_errors": 0,
+ "rollout_error_samples": [],
+ "rolling_wall_s": 680.2683777,
+ "rollouts_per_min": 211.68116102481005,
+ "acquire_ms": {
+  "n": 2400,
+  "first": 69.795152000097,
+  "p50": 909.6811085000809,
+  "p90": 1661.5527155999189,
+  "p99": 2761.020803850016,
+  "last": 2847.768599000119
+ },
+ "rolling_cpu_s": 115.25047521199983,
+ "rolling_cpu_cores": 0.1694191277884529,
+ "requests_rolling": {
+  "create sandboxclaims": 2400,
+  "watch sandboxclaims": 2400,
+  "get sandboxes": 7200,
+  "delete sandboxclaims": 2400
+ },
+ "requests_per_rollout": 6.0,
+ "rolling_start_s": 1.087970390999999,
+ "rolling_end_s": 681.3623253610001,
+ "malloc_probe": {
+  "before_trim": {
+   "rss_mb": 482.1875,
+   "mallinfo2": {
+    "arena": 425156608,
+    "ordblks": 6433,
+    "smblks": 5921,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 341120,
+    "uordblks": 151094848,
+    "fordblks": 274061760,
+    "keepcost": 160080
+   }
+  },
+  "malloc_trim_returned": 1,
+  "after_trim": {
+   "rss_mb": 243.859375,
+   "mallinfo2": {
+    "arena": 424996864,
+    "ordblks": 5497,
+    "smblks": 0,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 0,
+    "uordblks": 151025216,
+    "fordblks": 273971648,
+    "keepcost": 336
+   }
+  }
+ },
+ "sdk_file": "/opt/venv-2e02e42/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+ "sdk_version": "0.0.0+sdk.2e02e42",
+ "kubernetes_version": "37.0.1",
+ "kubernetes_asyncio_version": "33.3.0",
+ "python": "/opt/venv-2e02e42/bin/python",
+ "python_version": "3.12.15",
+ "platform": "Linux-7.1.6-1rodete1-amd64-x86_64-with-glibc2.41",
+ "malloc_arena_max": null,
+ "libc": [
+  "glibc",
+  "2.41"
+ ],
+ "settings": {
+  "create_rps": null,
+  "max_in_flight": null,
+  "pool_size": null,
+  "lease_duration": null,
+  "quorum_timeout": null,
+  "work_budget": null,
+  "concurrency": 40,
+  "baseline_pool": 1000
+ },
+ "effective_pool_size": 1000,
+ "rss_peak_mb": 486.9609375,
+ "ru_maxrss_mb": 483.6875,
+ "rss_series_mb": [
+  [
+   0.0,
+   96.44140625
+  ],
+  [
+   10.0,
+   156.046875
+  ],
+  [
+   20.1,
+   179.6953125
+  ],
+  [
+   30.1,
+   210.15234375
+  ],
+  [
+   40.1,
+   215.01171875
+  ],
+  [
+   50.2,
+   232.44921875
+  ],
+  [
+   60.1,
+   256.00390625
+  ],
+  [
+   70.1,
+   283.29296875
+  ],
+  [
+   80.0,
+   286.84375
+  ],
+  [
+   90.1,
+   300.25390625
+  ],
+  [
+   100.1,
+   304.4453125
+  ],
+  [
+   110.1,
+   332.32421875
+  ],
+  [
+   120.1,
+   339.7109375
+  ],
+  [
+   130.1,
+   361.33203125
+  ],
+  [
+   140.0,
+   369.4609375
+  ],
+  [
+   150.1,
+   381.86328125
+  ],
+  [
+   160.0,
+   390.4375
+  ],
+  [
+   170.1,
+   415.6484375
+  ],
+  [
+   180.0,
+   428.9296875
+  ],
+  [
+   190.0,
+   438.734375
+  ],
+  [
+   200.1,
+   451.44921875
+  ],
+  [
+   210.0,
+   469.3203125
+  ],
+  [
+   220.1,
+   485.2421875
+  ],
+  [
+   230.0,
+   485.26953125
+  ],
+  [
+   240.1,
+   485.33984375
+  ],
+  [
+   250.1,
+   485.37109375
+  ],
+  [
+   260.1,
+   485.375
+  ],
+  [
+   270.0,
+   485.3984375
+  ],
+  [
+   280.1,
+   485.42578125
+  ],
+  [
+   290.1,
+   485.48828125
+  ],
+  [
+   300.1,
+   485.5625
+  ],
+  [
+   310.0,
+   485.61328125
+  ],
+  [
+   320.0,
+   485.68359375
+  ],
+  [
+   330.1,
+   485.78515625
+  ],
+  [
+   340.0,
+   485.796875
+  ],
+  [
+   350.0,
+   485.8046875
+  ],
+  [
+   360.1,
+   485.81640625
+  ],
+  [
+   370.0,
+   485.83984375
+  ],
+  [
+   380.1,
+   485.875
+  ],
+  [
+   390.1,
+   485.98046875
+  ],
+  [
+   400.0,
+   486.08984375
+  ],
+  [
+   410.0,
+   486.1171875
+  ],
+  [
+   420.1,
+   486.15625
+  ],
+  [
+   430.1,
+   486.3359375
+  ],
+  [
+   440.6,
+   486.37109375
+  ],
+  [
+   450.0,
+   486.41796875
+  ],
+  [
+   460.0,
+   486.52734375
+  ],
+  [
+   470.0,
+   486.53515625
+  ],
+  [
+   480.1,
+   486.6015625
+  ],
+  [
+   490.1,
+   486.7109375
+  ],
+  [
+   500.1,
+   486.71484375
+  ],
+  [
+   510.1,
+   486.77734375
+  ],
+  [
+   520.1,
+   486.79296875
+  ],
+  [
+   530.0,
+   486.83203125
+  ],
+  [
+   540.0,
+   486.94140625
+  ],
+  [
+   550.1,
+   486.95703125
+  ],
+  [
+   560.1,
+   364.87109375
+  ],
+  [
+   570.0,
+   376.37890625
+  ],
+  [
+   580.1,
+   377.3046875
+  ],
+  [
+   590.0,
+   400.82421875
+  ],
+  [
+   600.1,
+   421.80859375
+  ],
+  [
+   610.1,
+   431.7265625
+  ],
+  [
+   620.1,
+   449.421875
+  ],
+  [
+   630.0,
+   456.1640625
+  ],
+  [
+   640.1,
+   481.83984375
+  ],
+  [
+   650.1,
+   482.32421875
+  ],
+  [
+   660.1,
+   482.34765625
+  ],
+  [
+   670.0,
+   482.359375
+  ],
+  [
+   680.0,
+   482.36328125
+  ]
+ ],
+ "mallinfo2_series": [
+  [
+   0.0,
+   {
+    "arena": 32530432,
+    "ordblks": 421,
+    "smblks": 0,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 0,
+    "uordblks": 32133968,
+    "fordblks": 396464,
+    "keepcost": 119088
+   }
+  ],
+  [
+   10.0,
+   {
+    "arena": 82092032,
+    "ordblks": 603,
+    "smblks": 458,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 38512,
+    "uordblks": 76232352,
+    "fordblks": 5859680,
+    "keepcost": 277584
+   }
+  ],
+  [
+   20.1,
+   {
+    "arena": 105193472,
+    "ordblks": 559,
+    "smblks": 768,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 52608,
+    "uordblks": 98696480,
+    "fordblks": 6496992,
+    "keepcost": 395248
+   }
+  ],
+  [
+   30.1,
+   {
+    "arena": 136712192,
+    "ordblks": 698,
+    "smblks": 907,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 60096,
+    "uordblks": 129643936,
+    "fordblks": 7068256,
+    "keepcost": 374144
+   }
+  ],
+  [
+   40.1,
+   {
+    "arena": 141787136,
+    "ordblks": 1202,
+    "smblks": 3242,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 186992,
+    "uordblks": 134973824,
+    "fordblks": 6813312,
+    "keepcost": 372416
+   }
+  ],
+  [
+   50.2,
+   {
+    "arena": 159997952,
+    "ordblks": 847,
+    "smblks": 1270,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 77936,
+    "uordblks": 153648112,
+    "fordblks": 6349840,
+    "keepcost": 395120
+   }
+  ],
+  [
+   60.1,
+   {
+    "arena": 184442880,
+    "ordblks": 1162,
+    "smblks": 962,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 59808,
+    "uordblks": 178096048,
+    "fordblks": 6346832,
+    "keepcost": 383760
+   }
+  ],
+  [
+   70.1,
+   {
+    "arena": 212885504,
+    "ordblks": 1134,
+    "smblks": 1018,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 63152,
+    "uordblks": 206590192,
+    "fordblks": 6295312,
+    "keepcost": 380144
+   }
+  ],
+  [
+   80.0,
+   {
+    "arena": 216514560,
+    "ordblks": 1100,
+    "smblks": 844,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 51328,
+    "uordblks": 206654544,
+    "fordblks": 9860016,
+    "keepcost": 340560
+   }
+  ],
+  [
+   90.1,
+   {
+    "arena": 230518784,
+    "ordblks": 8220,
+    "smblks": 4393,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 251488,
+    "uordblks": 213943440,
+    "fordblks": 16575344,
+    "keepcost": 343744
+   }
+  ],
+  [
+   100.1,
+   {
+    "arena": 234893312,
+    "ordblks": 1039,
+    "smblks": 1089,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 64160,
+    "uordblks": 228544864,
+    "fordblks": 6348448,
+    "keepcost": 383840
+   }
+  ],
+  [
+   110.1,
+   {
+    "arena": 263974912,
+    "ordblks": 923,
+    "smblks": 1023,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 61152,
+    "uordblks": 257621456,
+    "fordblks": 6353456,
+    "keepcost": 392448
+   }
+  ],
+  [
+   120.1,
+   {
+    "arena": 271646720,
+    "ordblks": 1296,
+    "smblks": 990,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 59328,
+    "uordblks": 258797552,
+    "fordblks": 12849168,
+    "keepcost": 377232
+   }
+  ],
+  [
+   130.1,
+   {
+    "arena": 293998592,
+    "ordblks": 1300,
+    "smblks": 953,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 61088,
+    "uordblks": 287757872,
+    "fordblks": 6240720,
+    "keepcost": 131376
+   }
+  ],
+  [
+   140.0,
+   {
+    "arena": 302657536,
+    "ordblks": 1232,
+    "smblks": 845,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 53648,
+    "uordblks": 289744432,
+    "fordblks": 12913104,
+    "keepcost": 336624
+   }
+  ],
+  [
+   150.1,
+   {
+    "arena": 315695104,
+    "ordblks": 9943,
+    "smblks": 3052,
+    "hblks": 4,
+    "hblkhd": 1761280,
+    "usmblks": 0,
+    "fsmblks": 175344,
+    "uordblks": 297789120,
+    "fordblks": 17905984,
+    "keepcost": 394160
+   }
+  ],
+  [
+   160.0,
+   {
+    "arena": 325435392,
+    "ordblks": 1185,
+    "smblks": 1301,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 77376,
+    "uordblks": 319444208,
+    "fordblks": 5991184,
+    "keepcost": 371072
+   }
+  ],
+  [
+   170.1,
+   {
+    "arena": 351686656,
+    "ordblks": 1103,
+    "smblks": 1363,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 80160,
+    "uordblks": 345724496,
+    "fordblks": 5962160,
+    "keepcost": 358976
+   }
+  ],
+  [
+   180.0,
+   {
+    "arena": 365592576,
+    "ordblks": 1528,
+    "smblks": 1150,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 68528,
+    "uordblks": 341058800,
+    "fordblks": 24533776,
+    "keepcost": 1182816
+   }
+  ],
+  [
+   190.0,
+   {
+    "arena": 375640064,
+    "ordblks": 1213,
+    "smblks": 1207,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 71440,
+    "uordblks": 369457792,
+    "fordblks": 6182272,
+    "keepcost": 393152
+   }
+  ],
+  [
+   200.1,
+   {
+    "arena": 388972544,
+    "ordblks": 1570,
+    "smblks": 1028,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 62544,
+    "uordblks": 372975808,
+    "fordblks": 15996736,
+    "keepcost": 380352
+   }
+  ],
+  [
+   210.0,
+   {
+    "arena": 407556096,
+    "ordblks": 1461,
+    "smblks": 740,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 44560,
+    "uordblks": 401388016,
+    "fordblks": 6168080,
+    "keepcost": 387680
+   }
+  ],
+  [
+   220.1,
+   {
+    "arena": 424226816,
+    "ordblks": 9963,
+    "smblks": 961,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 64688,
+    "uordblks": 85425024,
+    "fordblks": 338801792,
+    "keepcost": 656736
+   }
+  ],
+  [
+   230.0,
+   {
+    "arena": 424263680,
+    "ordblks": 7176,
+    "smblks": 1533,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 91168,
+    "uordblks": 96566240,
+    "fordblks": 327697440,
+    "keepcost": 656736
+   }
+  ],
+  [
+   240.1,
+   {
+    "arena": 424325120,
+    "ordblks": 4649,
+    "smblks": 1096,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 65616,
+    "uordblks": 124008112,
+    "fordblks": 300317008,
+    "keepcost": 656736
+   }
+  ],
+  [
+   250.1,
+   {
+    "arena": 424341504,
+    "ordblks": 4538,
+    "smblks": 897,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 53152,
+    "uordblks": 124037952,
+    "fordblks": 300303552,
+    "keepcost": 656736
+   }
+  ],
+  [
+   260.1,
+   {
+    "arena": 424341504,
+    "ordblks": 3435,
+    "smblks": 1001,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 58800,
+    "uordblks": 141658896,
+    "fordblks": 282682608,
+    "keepcost": 656736
+   }
+  ],
+  [
+   270.0,
+   {
+    "arena": 424366080,
+    "ordblks": 2453,
+    "smblks": 1026,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 58896,
+    "uordblks": 170657632,
+    "fordblks": 253708448,
+    "keepcost": 656736
+   }
+  ],
+  [
+   280.1,
+   {
+    "arena": 424370176,
+    "ordblks": 2569,
+    "smblks": 838,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 51360,
+    "uordblks": 178429504,
+    "fordblks": 245940672,
+    "keepcost": 656736
+   }
+  ],
+  [
+   290.1,
+   {
+    "arena": 424374272,
+    "ordblks": 2667,
+    "smblks": 2885,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 165824,
+    "uordblks": 205783872,
+    "fordblks": 218590400,
+    "keepcost": 656736
+   }
+  ],
+  [
+   300.1,
+   {
+    "arena": 424456192,
+    "ordblks": 2000,
+    "smblks": 1050,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 63280,
+    "uordblks": 213172144,
+    "fordblks": 211284048,
+    "keepcost": 656736
+   }
+  ],
+  [
+   310.0,
+   {
+    "arena": 424497152,
+    "ordblks": 2139,
+    "smblks": 911,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 54208,
+    "uordblks": 213554928,
+    "fordblks": 210942224,
+    "keepcost": 656736
+   }
+  ],
+  [
+   320.0,
+   {
+    "arena": 424583168,
+    "ordblks": 1840,
+    "smblks": 822,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 48704,
+    "uordblks": 234639104,
+    "fordblks": 189944064,
+    "keepcost": 656736
+   }
+  ],
+  [
+   330.1,
+   {
+    "arena": 424620032,
+    "ordblks": 1474,
+    "smblks": 1196,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 69424,
+    "uordblks": 265183888,
+    "fordblks": 159436144,
+    "keepcost": 656736
+   }
+  ],
+  [
+   340.0,
+   {
+    "arena": 424636416,
+    "ordblks": 1569,
+    "smblks": 1367,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 81216,
+    "uordblks": 266697664,
+    "fordblks": 157938752,
+    "keepcost": 656736
+   }
+  ],
+  [
+   350.0,
+   {
+    "arena": 424640512,
+    "ordblks": 1597,
+    "smblks": 820,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 55840,
+    "uordblks": 282922496,
+    "fordblks": 141718016,
+    "keepcost": 656736
+   }
+  ],
+  [
+   360.1,
+   {
+    "arena": 424640512,
+    "ordblks": 1981,
+    "smblks": 2163,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 123440,
+    "uordblks": 307764864,
+    "fordblks": 116875648,
+    "keepcost": 656736
+   }
+  ],
+  [
+   370.0,
+   {
+    "arena": 424665088,
+    "ordblks": 1361,
+    "smblks": 998,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 61488,
+    "uordblks": 318999136,
+    "fordblks": 105665952,
+    "keepcost": 656736
+   }
+  ],
+  [
+   380.1,
+   {
+    "arena": 424706048,
+    "ordblks": 1553,
+    "smblks": 1365,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 78832,
+    "uordblks": 321172432,
+    "fordblks": 103533616,
+    "keepcost": 656736
+   }
+  ],
+  [
+   390.1,
+   {
+    "arena": 424820736,
+    "ordblks": 1624,
+    "smblks": 922,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 55856,
+    "uordblks": 349899952,
+    "fordblks": 74920784,
+    "keepcost": 656736
+   }
+  ],
+  [
+   400.0,
+   {
+    "arena": 424898560,
+    "ordblks": 1976,
+    "smblks": 1044,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 61664,
+    "uordblks": 347487296,
+    "fordblks": 77411264,
+    "keepcost": 656736
+   }
+  ],
+  [
+   410.0,
+   {
+    "arena": 424914944,
+    "ordblks": 1588,
+    "smblks": 941,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 56704,
+    "uordblks": 375866944,
+    "fordblks": 49048000,
+    "keepcost": 656736
+   }
+  ],
+  [
+   420.1,
+   {
+    "arena": 424951808,
+    "ordblks": 3213,
+    "smblks": 1212,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 73232,
+    "uordblks": 371258688,
+    "fordblks": 53693120,
+    "keepcost": 656736
+   }
+  ],
+  [
+   430.1,
+   {
+    "arena": 424955904,
+    "ordblks": 1590,
+    "smblks": 901,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 55136,
+    "uordblks": 400195248,
+    "fordblks": 24760656,
+    "keepcost": 656736
+   }
+  ],
+  [
+   440.6,
+   {
+    "arena": 424976384,
+    "ordblks": 18158,
+    "smblks": 4702,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 335888,
+    "uordblks": 72501456,
+    "fordblks": 352474928,
+    "keepcost": 657936
+   }
+  ],
+  [
+   450.0,
+   {
+    "arena": 425013248,
+    "ordblks": 6770,
+    "smblks": 982,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 58928,
+    "uordblks": 96278144,
+    "fordblks": 328735104,
+    "keepcost": 657936
+   }
+  ],
+  [
+   460.0,
+   {
+    "arena": 425127936,
+    "ordblks": 5117,
+    "smblks": 1357,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 78208,
+    "uordblks": 124742128,
+    "fordblks": 300385808,
+    "keepcost": 657936
+   }
+  ],
+  [
+   470.0,
+   {
+    "arena": 425132032,
+    "ordblks": 5119,
+    "smblks": 1186,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 68048,
+    "uordblks": 122976192,
+    "fordblks": 302155840,
+    "keepcost": 657936
+   }
+  ],
+  [
+   480.1,
+   {
+    "arena": 425213952,
+    "ordblks": 3925,
+    "smblks": 974,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 56320,
+    "uordblks": 150421472,
+    "fordblks": 274792480,
+    "keepcost": 657936
+   }
+  ],
+  [
+   490.1,
+   {
+    "arena": 425328640,
+    "ordblks": 3328,
+    "smblks": 769,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 47968,
+    "uordblks": 180025952,
+    "fordblks": 245302688,
+    "keepcost": 657936
+   }
+  ],
+  [
+   500.1,
+   {
+    "arena": 425328640,
+    "ordblks": 3831,
+    "smblks": 2681,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 153984,
+    "uordblks": 178223744,
+    "fordblks": 247104896,
+    "keepcost": 657936
+   }
+  ],
+  [
+   510.1,
+   {
+    "arena": 425410560,
+    "ordblks": 3034,
+    "smblks": 754,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 46672,
+    "uordblks": 193155744,
+    "fordblks": 232254816,
+    "keepcost": 657936
+   }
+  ],
+  [
+   520.1,
+   {
+    "arena": 425410560,
+    "ordblks": 2494,
+    "smblks": 900,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 53952,
+    "uordblks": 206753168,
+    "fordblks": 218657392,
+    "keepcost": 657936
+   }
+  ],
+  [
+   530.0,
+   {
+    "arena": 425443328,
+    "ordblks": 2254,
+    "smblks": 853,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 52800,
+    "uordblks": 235867152,
+    "fordblks": 189576176,
+    "keepcost": 657936
+   }
+  ],
+  [
+   540.0,
+   {
+    "arena": 425558016,
+    "ordblks": 2556,
+    "smblks": 845,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 52304,
+    "uordblks": 235212240,
+    "fordblks": 190345776,
+    "keepcost": 657936
+   }
+  ],
+  [
+   550.1,
+   {
+    "arena": 425562112,
+    "ordblks": 2257,
+    "smblks": 986,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 62000,
+    "uordblks": 260951616,
+    "fordblks": 164610496,
+    "keepcost": 657936
+   }
+  ],
+  [
+   560.1,
+   {
+    "arena": 424923136,
+    "ordblks": 2108,
+    "smblks": 529,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 37872,
+    "uordblks": 288330080,
+    "fordblks": 136593056,
+    "keepcost": 2576
+   }
+  ],
+  [
+   570.0,
+   {
+    "arena": 424923136,
+    "ordblks": 13664,
+    "smblks": 2126,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 124464,
+    "uordblks": 273842208,
+    "fordblks": 151080928,
+    "keepcost": 2576
+   }
+  ],
+  [
+   580.1,
+   {
+    "arena": 424923136,
+    "ordblks": 1893,
+    "smblks": 585,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 33568,
+    "uordblks": 295880160,
+    "fordblks": 129042976,
+    "keepcost": 2576
+   }
+  ],
+  [
+   590.0,
+   {
+    "arena": 424976384,
+    "ordblks": 1875,
+    "smblks": 418,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 25440,
+    "uordblks": 323054960,
+    "fordblks": 101921424,
+    "keepcost": 2576
+   }
+  ],
+  [
+   600.1,
+   {
+    "arena": 425000960,
+    "ordblks": 2285,
+    "smblks": 467,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 28560,
+    "uordblks": 330466336,
+    "fordblks": 94534624,
+    "keepcost": 2576
+   }
+  ],
+  [
+   610.1,
+   {
+    "arena": 425000960,
+    "ordblks": 1866,
+    "smblks": 188,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 11008,
+    "uordblks": 360369024,
+    "fordblks": 64631936,
+    "keepcost": 2576
+   }
+  ],
+  [
+   620.1,
+   {
+    "arena": 425033728,
+    "ordblks": 1411,
+    "smblks": 252,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 20752,
+    "uordblks": 378355936,
+    "fordblks": 46677792,
+    "keepcost": 2576
+   }
+  ],
+  [
+   630.0,
+   {
+    "arena": 425046016,
+    "ordblks": 2006,
+    "smblks": 3082,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 175664,
+    "uordblks": 385956672,
+    "fordblks": 39089344,
+    "keepcost": 2576
+   }
+  ],
+  [
+   640.1,
+   {
+    "arena": 425156608,
+    "ordblks": 1488,
+    "smblks": 795,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 43280,
+    "uordblks": 413022032,
+    "fordblks": 12134576,
+    "keepcost": 2576
+   }
+  ],
+  [
+   650.1,
+   {
+    "arena": 425156608,
+    "ordblks": 8697,
+    "smblks": 279,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 18496,
+    "uordblks": 95846608,
+    "fordblks": 329310000,
+    "keepcost": 160080
+   }
+  ],
+  [
+   660.1,
+   {
+    "arena": 425156608,
+    "ordblks": 5916,
+    "smblks": 498,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 29584,
+    "uordblks": 123991744,
+    "fordblks": 301164864,
+    "keepcost": 160080
+   }
+  ],
+  [
+   670.0,
+   {
+    "arena": 425156608,
+    "ordblks": 4133,
+    "smblks": 526,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 33584,
+    "uordblks": 152699616,
+    "fordblks": 272456992,
+    "keepcost": 160080
+   }
+  ],
+  [
+   680.0,
+   {
+    "arena": 425156608,
+    "ordblks": 5300,
+    "smblks": 5375,
+    "hblks": 3,
+    "hblkhd": 798720,
+    "usmblks": 0,
+    "fsmblks": 301872,
+    "uordblks": 153015696,
+    "fordblks": 272140912,
+    "keepcost": 160080
+   }
+  ]
+ ],
+ "api_conns_peak": 40,
+ "pool_discard_warnings": 0,
+ "pool_discard_first": null,
+ "lease_degraded_ever": false,
+ "lease_failures": 0,
+ "watches_peak_sdk": 40,
+ "requests_total": {
+  "create sandboxclaims": 2400,
+  "watch sandboxclaims": 2400,
+  "get sandboxes": 7200,
+  "delete sandboxclaims": 2400
+ },
+ "sampler_cpu_s": 103.59620904200018,
+ "driver_exit": 0,
+ "driver_cmd": [
+  "kubectl",
+  "exec",
+  "-i",
+  "-n",
+  "batch-bench-driver",
+  "bench-driver",
+  "--",
+  "/opt/venv-2e02e42/bin/python",
+  "/src/test/benchmarks/batch-claim/bench.py",
+  "run",
+  "{\"scenario\": \"6v2\", \"variant\": \"leakfix-long\", \"shell\": \"async\", \"location\": \"pod\", \"code\": \"sha\", \"rollouts\": 2400, \"hold_s\": 10, \"concurrency\": 40, \"warm_series_pool\": \"warm-pool\", \"warm_interval_s\": 4, \"kind\": \"baseline_rolling\", \"claim_pools\": [\"warm-pool\"], \"baseline_pool\": 1000, \"malloc_probe\": true, \"code_sha\": \"2e02e42078d364917e80722ab8f4aaff8da8bcfe\"}"
+ ],
+ "run_wall_s": 687.397969206,
+ "apiserver": {
+  "start->rolled": {
+   "flowcontrol_rejected": 0,
+   "requests PUT leases": 1144,
+   "post sandboxclaims duration le=4": 2400,
+   "requests PATCH sandboxes": 14929,
+   "post sandboxclaims duration le=0.1": 2395,
+   "requests POST sandboxes": 2403,
+   "post sandboxclaims duration le=15": 2400,
+   "post sandboxclaims duration le=1.25": 2400,
+   "requests GET sandboxes": 9613,
+   "post sandboxclaims duration le=8": 2400,
+   "requests LIST leases": 0,
+   "requests WATCH leases": 3,
+   "post sandboxclaims duration le=+Inf": 2400,
+   "post sandboxclaims duration le=0.8": 2400,
+   "post sandboxclaims duration le=0.05": 2271,
+   "post sandboxclaims duration le=5": 2400,
+   "post sandboxclaims duration le=0.6": 2400,
+   "post sandboxclaims duration le=1": 2400,
+   "requests POST leases": 0,
+   "requests LIST sandboxes": 128,
+   "post sandboxclaims duration _count": 2400,
+   "post sandboxclaims duration le=0.005": 79,
+   "requests POST sandboxclaims": 2400,
+   "requests DELETE sandboxclaims": 2400,
+   "post sandboxclaims duration le=0.4": 2400,
+   "requests GET leases": 0,
+   "requests WATCH sandboxclaims": 2402,
+   "post sandboxclaims duration le=20": 2400,
+   "requests PUT sandboxclaims": 2400,
+   "post sandboxclaims duration le=0.025": 1788,
+   "requests DELETE sandboxes": 2403,
+   "post sandboxclaims duration le=60": 2400,
+   "post sandboxclaims duration le=6": 2400,
+   "post sandboxclaims duration le=30": 2400,
+   "post sandboxclaims duration le=0.2": 2400,
+   "post sandboxclaims duration le=45": 2400,
+   "requests DELETE leases": 0,
+   "requests LIST sandboxclaims": 0,
+   "requests_all": 140969,
+   "post sandboxclaims duration le=10": 2400,
+   "429s": 0,
+   "post sandboxclaims duration _sum": 49.239712077999954,
+   "requests PATCH sandboxclaims": 8395,
+   "requests WATCH sandboxes": 3,
+   "post sandboxclaims duration le=1.5": 2400,
+   "post sandboxclaims duration le=3": 2400,
+   "post sandboxclaims duration le=2": 2400
+  },
+  "rolled->released": {
+   "flowcontrol_rejected": 0,
+   "requests PUT leases": 3,
+   "post sandboxclaims duration le=4": 0,
+   "requests PATCH sandboxes": 17,
+   "post sandboxclaims duration le=0.1": 0,
+   "requests POST sandboxes": 0,
+   "post sandboxclaims duration le=15": 0,
+   "post sandboxclaims duration le=1.25": 0,
+   "requests GET sandboxes": 0,
+   "post sandboxclaims duration le=8": 0,
+   "requests LIST leases": 0,
+   "requests WATCH leases": 0,
+   "post sandboxclaims duration le=+Inf": 0,
+   "post sandboxclaims duration le=0.8": 0,
+   "post sandboxclaims duration le=0.05": 0,
+   "post sandboxclaims duration le=5": 0,
+   "post sandboxclaims duration le=0.6": 0,
+   "post sandboxclaims duration le=1": 0,
+   "requests POST leases": 0,
+   "requests LIST sandboxes": 1,
+   "post sandboxclaims duration _count": 0,
+   "post sandboxclaims duration le=0.005": 0,
+   "requests POST sandboxclaims": 0,
+   "requests DELETE sandboxclaims": 0,
+   "post sandboxclaims duration le=0.4": 0,
+   "requests GET leases": 0,
+   "requests WATCH sandboxclaims": 0,
+   "post sandboxclaims duration le=20": 0,
+   "requests PUT sandboxclaims": 0,
+   "post sandboxclaims duration le=0.025": 0,
+   "requests DELETE sandboxes": 0,
+   "post sandboxclaims duration le=60": 0,
+   "post sandboxclaims duration le=6": 0,
+   "post sandboxclaims duration le=30": 0,
+   "post sandboxclaims duration le=0.2": 0,
+   "post sandboxclaims duration le=45": 0,
+   "requests DELETE leases": 0,
+   "requests LIST sandboxclaims": 0,
+   "requests_all": 267,
+   "post sandboxclaims duration le=10": 0,
+   "429s": 0,
+   "post sandboxclaims duration _sum": 0.0,
+   "requests PATCH sandboxclaims": 0,
+   "requests WATCH sandboxes": 0,
+   "post sandboxclaims duration le=1.5": 0,
+   "post sandboxclaims duration le=3": 0,
+   "post sandboxclaims duration le=2": 0
+  },
+  "total": {
+   "flowcontrol_rejected": 0,
+   "requests PUT leases": 1147,
+   "post sandboxclaims duration le=4": 2400,
+   "requests PATCH sandboxes": 14946,
+   "post sandboxclaims duration le=0.1": 2395,
+   "requests POST sandboxes": 2403,
+   "post sandboxclaims duration le=15": 2400,
+   "post sandboxclaims duration le=1.25": 2400,
+   "requests GET sandboxes": 9613,
+   "post sandboxclaims duration le=8": 2400,
+   "requests LIST leases": 0,
+   "requests WATCH leases": 3,
+   "post sandboxclaims duration le=+Inf": 2400,
+   "post sandboxclaims duration le=0.8": 2400,
+   "post sandboxclaims duration le=0.05": 2271,
+   "post sandboxclaims duration le=5": 2400,
+   "post sandboxclaims duration le=0.6": 2400,
+   "post sandboxclaims duration le=1": 2400,
+   "requests POST leases": 0,
+   "requests LIST sandboxes": 129,
+   "post sandboxclaims duration _count": 2400,
+   "post sandboxclaims duration le=0.005": 79,
+   "requests POST sandboxclaims": 2400,
+   "requests DELETE sandboxclaims": 2400,
+   "post sandboxclaims duration le=0.4": 2400,
+   "requests GET leases": 0,
+   "requests WATCH sandboxclaims": 2402,
+   "post sandboxclaims duration le=20": 2400,
+   "requests PUT sandboxclaims": 2400,
+   "post sandboxclaims duration le=0.025": 1788,
+   "requests DELETE sandboxes": 2403,
+   "post sandboxclaims duration le=60": 2400,
+   "post sandboxclaims duration le=6": 2400,
+   "post sandboxclaims duration le=30": 2400,
+   "post sandboxclaims duration le=0.2": 2400,
+   "post sandboxclaims duration le=45": 2400,
+   "requests DELETE leases": 0,
+   "requests LIST sandboxclaims": 0,
+   "requests_all": 141236,
+   "post sandboxclaims duration le=10": 2400,
+   "429s": 0,
+   "post sandboxclaims duration _sum": 49.239712077999954,
+   "requests PATCH sandboxclaims": 8395,
+   "requests WATCH sandboxes": 3,
+   "post sandboxclaims duration le=1.5": 2400,
+   "post sandboxclaims duration le=3": 2400,
+   "post sandboxclaims duration le=2": 2400
+  }
+ },
+ "cleanup": {},
+ "apiserver_watch_peak": 25.0,
+ "apiserver_watch_idle": 2.0,
+ "cluster_pods_peak": 291,
+ "apiserver_post_claims": {
+  "count": 2400,
+  "mean_s": 0.02051654669916665,
+  "p99_le_s": 0.1
+ },
+ "warm_ready_series": [
+  [
+   0.2,
+   120
+  ],
+  [
+   5.6,
+   80
+  ],
+  [
+   10.2,
+   91
+  ],
+  [
+   15.7,
+   120
+  ],
+  [
+   20.0,
+   80
+  ],
+  [
+   25.5,
+   87
+  ],
+  [
+   30.0,
+   64
+  ],
+  [
+   35.7,
+   77
+  ],
+  [
+   41.2,
+   88
+  ],
+  [
+   47.0,
+   77
+  ],
+  [
+   52.5,
+   90
+  ],
+  [
+   57.1,
+   68
+  ],
+  [
+   62.5,
+   76
+  ],
+  [
+   67.2,
+   62
+  ],
+  [
+   72.8,
+   75
+  ],
+  [
+   77.2,
+   84
+  ],
+  [
+   81.8,
+   59
+  ],
+  [
+   87.4,
+   74
+  ],
+  [
+   91.9,
+   59
+  ],
+  [
+   97.5,
+   73
+  ],
+  [
+   103.1,
+   75
+  ],
+  [
+   107.8,
+   64
+  ],
+  [
+   113.2,
+   76
+  ],
+  [
+   118.0,
+   53
+  ],
+  [
+   123.6,
+   57
+  ],
+  [
+   128.2,
+   36
+  ],
+  [
+   133.9,
+   39
+  ],
+  [
+   138.6,
+   33
+  ],
+  [
+   143.2,
+   15
+  ],
+  [
+   148.7,
+   31
+  ],
+  [
+   153.1,
+   19
+  ],
+  [
+   157.7,
+   22
+  ],
+  [
+   163.3,
+   10
+  ],
+  [
+   168.9,
+   19
+  ],
+  [
+   174.6,
+   15
+  ],
+  [
+   180.2,
+   25
+  ],
+  [
+   185.7,
+   12
+  ],
+  [
+   191.2,
+   23
+  ],
+  [
+   196.8,
+   27
+  ],
+  [
+   202.5,
+   26
+  ],
+  [
+   208.2,
+   15
+  ],
+  [
+   213.7,
+   22
+  ],
+  [
+   218.1,
+   32
+  ],
+  [
+   223.8,
+   26
+  ],
+  [
+   229.5,
+   34
+  ],
+  [
+   235.2,
+   28
+  ],
+  [
+   240.6,
+   40
+  ],
+  [
+   245.0,
+   26
+  ],
+  [
+   250.7,
+   34
+  ],
+  [
+   255.1,
+   44
+  ],
+  [
+   259.7,
+   19
+  ],
+  [
+   265.3,
+   37
+  ],
+  [
+   270.9,
+   23
+  ],
+  [
+   276.5,
+   35
+  ],
+  [
+   282.1,
+   24
+  ],
+  [
+   287.7,
+   35
+  ],
+  [
+   292.1,
+   19
+  ],
+  [
+   297.6,
+   36
+  ],
+  [
+   302.1,
+   48
+  ],
+  [
+   307.7,
+   30
+  ],
+  [
+   313.2,
+   42
+  ],
+  [
+   317.8,
+   32
+  ],
+  [
+   323.3,
+   43
+  ],
+  [
+   329.0,
+   29
+  ],
+  [
+   334.4,
+   42
+  ],
+  [
+   340.0,
+   28
+  ],
+  [
+   345.5,
+   46
+  ],
+  [
+   351.2,
+   33
+  ],
+  [
+   356.5,
+   46
+  ],
+  [
+   361.1,
+   39
+  ],
+  [
+   366.6,
+   44
+  ],
+  [
+   372.2,
+   42
+  ],
+  [
+   377.7,
+   41
+  ],
+  [
+   383.4,
+   37
+  ],
+  [
+   389.0,
+   37
+  ],
+  [
+   394.5,
+   47
+  ],
+  [
+   399.0,
+   31
+  ],
+  [
+   404.6,
+   39
+  ],
+  [
+   410.1,
+   30
+  ],
+  [
+   415.6,
+   37
+  ],
+  [
+   421.1,
+   30
+  ],
+  [
+   426.7,
+   38
+  ],
+  [
+   432.3,
+   30
+  ],
+  [
+   437.8,
+   44
+  ],
+  [
+   443.3,
+   34
+  ],
+  [
+   449.0,
+   39
+  ],
+  [
+   453.6,
+   48
+  ],
+  [
+   458.0,
+   34
+  ],
+  [
+   463.6,
+   45
+  ],
+  [
+   469.3,
+   40
+  ],
+  [
+   474.9,
+   44
+  ],
+  [
+   480.6,
+   38
+  ],
+  [
+   485.0,
+   45
+  ],
+  [
+   490.6,
+   36
+  ],
+  [
+   496.2,
+   51
+  ],
+  [
+   502.0,
+   41
+  ],
+  [
+   507.7,
+   45
+  ],
+  [
+   513.3,
+   54
+  ],
+  [
+   519.3,
+   42
+  ],
+  [
+   523.7,
+   58
+  ],
+  [
+   529.2,
+   38
+  ],
+  [
+   534.8,
+   49
+  ],
+  [
+   540.5,
+   31
+  ],
+  [
+   546.3,
+   35
+  ],
+  [
+   552.1,
+   29
+  ],
+  [
+   557.5,
+   35
+  ],
+  [
+   562.3,
+   21
+  ],
+  [
+   567.8,
+   32
+  ],
+  [
+   573.4,
+   21
+  ],
+  [
+   578.9,
+   35
+  ],
+  [
+   584.4,
+   22
+  ],
+  [
+   590.1,
+   34
+  ],
+  [
+   595.6,
+   19
+  ],
+  [
+   601.2,
+   29
+  ],
+  [
+   607.0,
+   27
+  ],
+  [
+   612.6,
+   32
+  ],
+  [
+   618.1,
+   38
+  ],
+  [
+   622.8,
+   17
+  ],
+  [
+   628.4,
+   33
+  ],
+  [
+   633.0,
+   10
+  ],
+  [
+   638.7,
+   33
+  ],
+  [
+   643.3,
+   30
+  ],
+  [
+   649.0,
+   35
+  ],
+  [
+   653.4,
+   33
+  ],
+  [
+   659.1,
+   23
+  ],
+  [
+   664.7,
+   28
+  ],
+  [
+   669.2,
+   14
+  ],
+  [
+   674.8,
+   25
+  ],
+  [
+   679.2,
+   39
+  ],
+  [
+   684.3,
+   55
+  ]
+ ],
+ "warm_ready_min": 10,
+ "starved": false,
+ "scenario": "6v2",
+ "variant": "leakfix-long",
+ "shell": "async",
+ "run": 1,
+ "spec": {
+  "scenario": "6v2",
+  "variant": "leakfix-long",
+  "shell": "async",
+  "location": "pod",
+  "code": "sha",
+  "rollouts": 2400,
+  "hold_s": 10,
+  "concurrency": 40,
+  "warm_series_pool": "warm-pool",
+  "warm_interval_s": 4,
+  "kind": "baseline_rolling",
+  "claim_pools": [
+   "warm-pool"
+  ],
+  "baseline_pool": 1000,
+  "malloc_probe": true,
+  "code_sha": "2e02e42078d364917e80722ab8f4aaff8da8bcfe"
+ },
+ "driver_location": "pod",
+ "code": "sha",
+ "code_sha": "2e02e42078d364917e80722ab8f4aaff8da8bcfe",
+ "code_tree": "0447dbf31d475b094570a7208ce266ae4d465f4d",
+ "tip_branch_sha": "4dd8b21b78a7ac9ca44dd7b0e70c9398be6870ea",
+ "bench_head_sha": "84fdea22f17c26d8cc14fbcdae9e53b4e033cfe3",
+ "bench_dirty": false,
+ "controller_image": "kind.local/agent-sandbox-controller:bench",
+ "controller_image_id": "docker.io/library/import-2026-10-22@sha256:8be25e6d105f1adf7b892c145cda5b4912d35546559b24774f836fed0de3a92f",
+ "controller_pod": "agent-sandbox-controller-7469cb6dc6-ptqq6",
+ "finished_at": "2026-10-22T23:22:15"
+}

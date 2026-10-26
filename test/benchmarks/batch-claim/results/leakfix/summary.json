@@ -1,0 +1,86 @@
+{
+ "base": {
+  "code_sha": "840fdfde30129480050d025017651fafa70b33c2",
+  "code_tree": "c345fc1a7ee376cd76ce828e15a78d3660667ab6",
+  "sdk_file": "/opt/venv-840fdfd/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+  "sdk_version": "0.0.0+sdk.840fdfd",
+  "kubernetes_asyncio_version": "33.3.0",
+  "libc": [
+   "glibc",
+   "2.41"
+  ],
+  "python_version": "3.12.15",
+  "bench_head_sha": "ae64e09a5f6df529c4bd42b4c7b52fee014eafd8",
+  "bench_dirty": true,
+  "controller_image_id": "docker.io/library/import-2026-10-22@sha256:8be25e6d105f1adf7b892c145cda5b4912d35546559b24774f836fed0de3a92f",
+  "rollouts": 600,
+  "rolling_wall_s": 186.38713184000005,
+  "rollouts_per_min": 193.14638110802312,
+  "errors": {
+   "driver_exit": 0,
+   "rollout_errors": 0
+  },
+  "warm_ready_min": 3,
+  "starved": false,
+  "samples_in_window": 18,
+  "rss_window_first_mb": 156.13671875,
+  "rss_final_mb": 535.9140625,
+  "rss_peak_mb": 535.91796875,
+  "second_half_rss_slope_mb_per_s": 2.3172193698920647,
+  "second_half_rss_mb_per_100_rollouts_derived": 71.98331203304569,
+  "second_half_uordblks_mb_per_100_rollouts_derived": 71.74105812960525,
+  "uordblks_first_in_window_mb": 72.61566162109375,
+  "uordblks_last_in_window_mb": 448.0382843017578,
+  "uordblks_growth_in_window_mb": 375.42262268066406,
+  "probe_before_trim": {
+   "rss_mb": 535.74609375,
+   "uordblks_mb": 446.3841552734375,
+   "fordblks_mb": 8.1939697265625
+  }
+ },
+ "fix": {
+  "code_sha": "2e02e42078d364917e80722ab8f4aaff8da8bcfe",
+  "code_tree": "0447dbf31d475b094570a7208ce266ae4d465f4d",
+  "sdk_file": "/opt/venv-2e02e42/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py",
+  "sdk_version": "0.0.0+sdk.2e02e42",
+  "kubernetes_asyncio_version": "33.3.0",
+  "libc": [
+   "glibc",
+   "2.41"
+  ],
+  "python_version": "3.12.15",
+  "bench_head_sha": "ae64e09a5f6df529c4bd42b4c7b52fee014eafd8",
+  "bench_dirty": true,
+  "controller_image_id": "docker.io/library/import-2026-10-22@sha256:8be25e6d105f1adf7b892c145cda5b4912d35546559b24774f836fed0de3a92f",
+  "rollouts": 600,
+  "rolling_wall_s": 205.3936507379999,
+  "rollouts_per_min": 175.2731881956838,
+  "errors": {
+   "driver_exit": 0,
+   "rollout_errors": 0
+  },
+  "warm_ready_min": 0,
+  "starved": true,
+  "samples_in_window": 20,
+  "rss_window_first_mb": 155.72265625,
+  "rss_final_mb": 380.16015625,
+  "rss_peak_mb": 380.18359375,
+  "second_half_rss_slope_mb_per_s": 0.805090603623208,
+  "second_half_rss_mb_per_100_rollouts_derived": 27.56008304217178,
+  "second_half_uordblks_mb_per_100_rollouts_derived": 26.43244892970184,
+  "uordblks_first_in_window_mb": 72.63209533691406,
+  "uordblks_last_in_window_mb": 290.4315490722656,
+  "uordblks_growth_in_window_mb": 217.79945373535156,
+  "probe_before_trim": {
+   "rss_mb": 380.01953125,
+   "uordblks_mb": 290.2123718261719,
+   "fordblks_mb": 9.783721923828125
+  }
+ },
+ "criteria": {
+  "base_mb_per_rollout_from_uordblks": 0.6257043711344401,
+  "fix_slope_ratio": 0.3474382331184763,
+  "fix_slope_at_most_10pct": false,
+  "fix_uordblks_within_50mb": false
+ }
+}
