@@ -985,6 +985,24 @@ class TestDetach(unittest.TestCase):
                 self.assertIsNone(written.spec.holder_identity)
                 self.assertEqual(written.spec.lease_duration_seconds, 17)
 
+    def test_release_during_detach_keeps_the_detach_grace(self):
+        # release() clears the stored grace, which a detach() that is already writing must not pick up.
+        current = _lease(holder_identity=self.handle._holder_identity)
+
+        def release_then_conflict(*args, **kwargs):
+            if self.handle._detach_grace is not None:
+                self.handle._detach_grace = None
+                raise k8s_client.ApiException(status=409)
+
+        self.mock_client.k8s_helper.read_batch_lease.side_effect = [
+            _lease(holder_identity=self.handle._holder_identity), current
+        ]
+        self.mock_client.k8s_helper.replace_batch_lease.side_effect = release_then_conflict
+
+        self.handle.detach(grace=17)
+
+        self.assertEqual(current.spec.lease_duration_seconds, 17)
+
     def test_retryable_after_release_write_failure(self):
         self.mock_client.k8s_helper.read_batch_lease.return_value = _lease(
             holder_identity=self.handle._holder_identity

@@ -547,6 +547,8 @@ class AsyncSandboxBatch:
                 self._detach_grace = grace
             elif self._detach_grace is None:
                 self._detach_grace = self._lease_duration
+            # release() can clear _detach_grace while this call writes the Lease, so every write uses this copy.
+            grace = self._detach_grace
 
         await self._stop_background_tasks()
         await self._close_cached_connections("detach")
@@ -566,7 +568,7 @@ class AsyncSandboxBatch:
                     lease.spec.renew_time = batch_utils.lease_now()
                     # Refresh the Lease so it doesn't expire immediately after we release it,
                     # giving other clients a chance to acquire it.
-                    lease.spec.lease_duration_seconds = self._detach_grace
+                    lease.spec.lease_duration_seconds = grace
                     try:
                         await self._client.k8s_helper.replace_batch_lease(
                             self._lease_name,
