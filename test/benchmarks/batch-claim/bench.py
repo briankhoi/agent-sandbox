@@ -77,6 +77,12 @@ BASE_TREE = "588a31efbc306a7892c88f1ffd9e6c575019ad10"
 # Upstream main and the fix branch on it, for the 6v2-leak runs.
 LEAK_BASE_SHA = "840fdfde30129480050d025017651fafa70b33c2"
 LEAK_FIX_SHA = "2e02e42078d364917e80722ab8f4aaff8da8bcfe"
+# Upstream main, the registry fix (PR 1) on it, and a local merge of PR 1 and the cycle fix (PR 2).
+G3_SHAS = {
+    "main": "f83f2d87c1aeeb90407d8cfe9a0c1fad74044304",
+    "pr1": "4c792840ae96b26df5d0a9883946082ad0bdc88c",
+    "pr12": "2e637e61155c233869fbc8cce09e2fc6e274be51",
+}
 # Tiny sizes and one run per variant, for checking that every metric is recorded.
 SMOKE = os.environ.get("BENCH_SMOKE") == "1"
 PYTHONS = {
@@ -1552,23 +1558,28 @@ class Driver:
         self.phase("rolled")
         self.phase("released")
 
-    async def a_baseline_rolling(self):
-        """The baseline's rolling loop on the base code's AsyncSandboxClient, with an injected
-        ApiClient whose pool is ``baseline_pool``."""
+    async def _baseline_async_client(self):
+        """The base code's AsyncSandboxClient with an injected ApiClient whose pool is ``baseline_pool``."""
         from kubernetes_asyncio import client as k8s, config
 
         from k8s_agent_sandbox.async_sandbox_client import AsyncSandboxClient
 
-        spec = self.spec
         try:
             config.load_incluster_config()
         except config.ConfigException:
             await config.load_kube_config()
         configuration = k8s.Configuration.get_default_copy()
-        configuration.connection_pool_maxsize = spec["baseline_pool"]
+        configuration.connection_pool_maxsize = self.spec["baseline_pool"]
         client = AsyncSandboxClient(connection_config=self.connection_config(), api_client=k8s.ApiClient(configuration=configuration))
         self.probe.install(client.k8s_helper)
         self.client = client
+        return client
+
+    async def a_baseline_rolling(self):
+        """The baseline's rolling loop on the base code's AsyncSandboxClient, with an injected
+        ApiClient whose pool is ``baseline_pool``."""
+        spec = self.spec
+        client = await self._baseline_async_client()
         pool = spec["claim_pools"][0]
         await self.aphase("start")
         started = [0]
@@ -1598,6 +1609,66 @@ class Driver:
         self.result["rolling_end_s"] = time.monotonic() - self.sampler.started
         if spec.get("malloc_probe"):
             self.malloc_probe()
+        await self.aphase("rolled")
+        await client.close()
+        await self.aphase("released")
+
+    async def a_baseline_burst(self):
+        """Creates ``burst`` sandboxes, uses and terminates them all, creates nothing more, and then
+        samples memory for ``settle_s`` seconds with no references to the handles left here."""
+        spec = self.spec
+        client = await self._baseline_async_client()
+        pool = spec["claim_pools"][0]
+        gate = asyncio.Semaphore(spec["concurrency"])
+        errors = []
+
+        def mem(label):
+            info = _mallinfo2() or {}
+            return {"label": label, "t_s": round(time.monotonic() - self.sampler.started, 1),
+                    "rss_mb": self.proc.memory_info().rss / 2**20, "uordblks_mb": info.get("uordblks", 0) / 2**20}
+
+        async def create():
+            async with gate:
+                try:
+                    sandbox = await client.create_sandbox(pool, namespace=NS, sandbox_ready_timeout=900)
+                    await sandbox.get_pod_name()
+                    await sandbox.get_pod_ip()
+                    await sandbox.commands.run("echo ok")
+                    return sandbox
+                except Exception as e:
+                    errors.append(repr(e))
+
+        async def terminate(sandbox):
+            async with gate:
+                try:
+                    await sandbox.terminate()
+                except Exception as e:
+                    errors.append(repr(e))
+
+        await self.aphase("start")
+        # One sandbox first, so first-use imports and caches aren't counted against the burst.
+        warmup = await create()
+        if warmup is not None:
+            await terminate(warmup)
+        del warmup
+        points = [mem("before_create")]
+        sandboxes = [s for s in await asyncio.gather(*(create() for _ in range(spec["burst"]))) if s is not None]
+        points.append(mem("after_create"))
+        await asyncio.gather(*(terminate(s) for s in sandboxes))
+        created = len(sandboxes)
+        del sandboxes
+        points.append(mem("after_terminate"))
+        for _ in range(spec["settle_s"] // 5):
+            await asyncio.sleep(5)
+            points.append(mem("settling"))
+        r = self.result
+        r["burst_created"] = created
+        r["rollout_errors"] = len(errors)
+        r["rollout_error_samples"] = errors[:5]
+        r["burst_memory"] = points
+        r["tracked_after_settle"] = len(client._active_connection_sandboxes)
+        # Retained per handle once the settle window is over, from malloc's bytes in use.
+        r["retained_mb_per_handle"] = (points[-1]["uordblks_mb"] - points[0]["uordblks_mb"]) / spec["burst"]
         await self.aphase("rolled")
         await client.close()
         await self.aphase("released")
@@ -2141,6 +2212,13 @@ def run_plan():
     # plateau from growth.
     add("6v2", "leakbase-long", "async", {**leak, "code_sha": LEAK_BASE_SHA, "rollouts": 20 if SMOKE else 2400}, runs=1)
     add("6v2", "leakfix-long", "async", {**leak, "code_sha": LEAK_FIX_SHA, "rollouts": 20 if SMOKE else 2400}, runs=1)
+    # The rolling loop, then many sandboxes created and terminated with nothing created after, on
+    # upstream main, PR 1 and PR 1 with PR 2.
+    for name, sha in G3_SHAS.items():
+        add("6v2", f"g3-{name}", "async", {**leak, "code_sha": sha}, runs=1)
+    for name, sha in G3_SHAS.items():
+        add("6v2", f"g3burst-{name}", "async", {**leak, "kind": "baseline_burst", "code_sha": sha,
+                                                 "burst": 10 if SMOKE else 100, "settle_s": 10 if SMOKE else 60}, runs=1)
 
     # 1d: memory of the list and release paths at N = 5,000.
     add("1d", "n5000-memprobe", "sync", {**tip_host, "kind": "fill", "after": "memprobe", "extras": {},
@@ -2172,7 +2250,8 @@ STATUS_PATH = os.path.join(RESULTS_DIR, "STATUS.md")
 STEPS = {"0 (1a reruns)": ("1a-n1000-sync", "1a-n5000-sync"), "2 (3s)": ("3s-",), "3 (3a2)": ("3a2-",),
          "4 (6v2)": ("6v2a-", "6v2b-", "6v2c-", "6v2-baseline-pool1000"), "5 (memdiag)": ("6v2-memdiag-", "6v2-baseline-async"),
          "6 (1d)": ("1d-",), "7 (memprobe)": ("6v2-baseline-long-", "6v2-baseline-arena2-", "6v2-baseline-memray-"),
-         "8 (leakfix)": ("6v2-leakbase-", "6v2-leakfix-")}
+         "8 (leakfix)": ("6v2-leakbase-", "6v2-leakfix-"),
+         "9 (g3)": ("6v2-g3-", "6v2-g3burst-")}
 
 
 def run_errors(r):
