@@ -1,0 +1,15 @@
+[19:30:01] deleting 1 extra pools
+[19:30:01] creating 1 extra pools
+[19:30:38] 6v2-g3-main-async-run1 start
+[19:35:11] 6v2-g3-main-async-run1 done, starved (warm pool hit 0 Ready)
+[19:35:11] 6v2-g3-pr1-async-run1 start
+[19:39:06] 6v2-g3-pr1-async-run1 done, starved (warm pool hit 0 Ready)
+[19:39:07] 6v2-g3-pr12-async-run1 start
+[19:42:46] 6v2-g3-pr12-async-run1 done
+[19:42:50] 6v2-g3burst-main-async-run1 start
+[19:44:05] 6v2-g3burst-main-async-run1 done
+[19:44:06] 6v2-g3burst-pr1-async-run1 start
+[19:45:28] 6v2-g3burst-pr1-async-run1 done
+[19:45:28] 6v2-g3burst-pr12-async-run1 start
+[19:46:50] 6v2-g3burst-pr12-async-run1 done
+[19:46:50] suite finished

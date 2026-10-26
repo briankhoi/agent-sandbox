@@ -1,0 +1,5 @@
+ERROR:asyncio:Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x7f5022575ee0>
+ERROR:asyncio:Unclosed connector
+connections: ['deque([(<aiohttp.client_proto.ResponseHandler object at 0x7f501057ce50>, 249822.669519433), (<aiohttp.client_proto.ResponseHandler object at 0x7f50106635d0>, 249822.992599517)])']
+connector: <aiohttp.connector.TCPConnector object at 0x7f5022575c70>

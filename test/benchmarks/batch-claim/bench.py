@@ -2218,7 +2218,7 @@ def run_plan():
         add("6v2", f"g3-{name}", "async", {**leak, "code_sha": sha}, runs=1)
     for name, sha in G3_SHAS.items():
         add("6v2", f"g3burst-{name}", "async", {**leak, "kind": "baseline_burst", "code_sha": sha,
-                                                 "burst": 10 if SMOKE else 100, "settle_s": 10 if SMOKE else 60}, runs=1)
+                                                "burst": 10 if SMOKE else 100, "settle_s": 10 if SMOKE else 60}, runs=1)
 
     # 1d: memory of the list and release paths at N = 5,000.
     add("1d", "n5000-memprobe", "sync", {**tip_host, "kind": "fill", "after": "memprobe", "extras": {},
