@@ -77,13 +77,13 @@ change, so stack PR 3 on PR 1 (or land PR 1 first).
 
 | test | owner |
 |---|---|
-| (a) terminate removes the registry entry; replaced handle kept; failed terminate stays tracked (exist: `test_adoption_lifecycle.py:564-597`) | PR 1 |
+| (a) terminate removes the registry entry; replaced handle kept; failed terminate stays tracked (exist: `test_adoption_lifecycle.py:566-597`) | PR 1 |
 | (a') client (`cleanup=False`) with a tracked handle, caller keeps the handle, `del client` -> weakref dead with gc disabled. Fails on PR 1 today (measured row 1/last row) | PR 1 |
 | (b) closed handle freed without gc (exist in PR 2's `test_sandbox.py` / `test_async_sandbox.py`) | PR 2 |
 | (c) default `cleanup=True`, closed-and-dropped client freed with an empty registry and with a tracked handle; gc disabled | PR 3 |
 | (d) after `del client`, calling the registered exit function still deletes tracked non-explicit claims and closes explicit ones | PR 3 |
 
-PR 3 must also update `test_adoption_lifecycle.py:584` (`register.call_args.args[0]()` calls the hook with no args).
+PR 3 must also update `test_adoption_lifecycle.py:162,523,560,584` (`register.call_args.args[0]()` calls the hook with no args).
 
 What would make this wrong: (1) a reviewer wants handles to keep their client alive on purpose (no code relies on it:
 handles never reach the client except via the hook); (2) the registry dict becomes rebindable (then partial and exit hook
