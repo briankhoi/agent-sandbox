@@ -196,6 +196,8 @@ class Sandbox:
         self._pod_name = None
         # Close client side connection
         self.connector.close()
+        # A closed handle never reconnects, so its connector can let go of it.
+        self.connector._release_sandbox_callbacks()
         
         # Don't allow anymore further executions.
         self._commands = None
