@@ -83,6 +83,11 @@ G3_SHAS = {
     "pr1": "4c792840ae96b26df5d0a9883946082ad0bdc88c",
     "pr12": "2e637e61155c233869fbc8cce09e2fc6e274be51",
 }
+# Upstream main and a local merge of PR 1 (registry-bound hook), PR 3 (exit hook) and PR 2.
+G4_SHAS = {
+    "main": "7f40dc1a9c8026a3ae4c0175ddad3c3045d7192e",
+    "all": "8735bb79c568f19bbe7aea857821f1a262a6cfc1",
+}
 # Tiny sizes and one run per variant, for checking that every metric is recorded.
 SMOKE = os.environ.get("BENCH_SMOKE") == "1"
 PYTHONS = {
@@ -2219,6 +2224,11 @@ def run_plan():
     for name, sha in G3_SHAS.items():
         add("6v2", f"g3burst-{name}", "async", {**leak, "kind": "baseline_burst", "code_sha": sha,
                                                 "burst": 10 if SMOKE else 100, "settle_s": 10 if SMOKE else 60}, runs=1)
+    for name, sha in G4_SHAS.items():
+        add("6v2", f"g4-{name}", "async", {**leak, "code_sha": sha}, runs=1)
+    for name, sha in G4_SHAS.items():
+        add("6v2", f"g4burst-{name}", "async", {**leak, "kind": "baseline_burst", "code_sha": sha,
+                                                "burst": 10 if SMOKE else 100, "settle_s": 10 if SMOKE else 60}, runs=1)
 
     # 1d: memory of the list and release paths at N = 5,000.
     add("1d", "n5000-memprobe", "sync", {**tip_host, "kind": "fill", "after": "memprobe", "extras": {},
@@ -2251,7 +2261,7 @@ STEPS = {"0 (1a reruns)": ("1a-n1000-sync", "1a-n5000-sync"), "2 (3s)": ("3s-",)
          "4 (6v2)": ("6v2a-", "6v2b-", "6v2c-", "6v2-baseline-pool1000"), "5 (memdiag)": ("6v2-memdiag-", "6v2-baseline-async"),
          "6 (1d)": ("1d-",), "7 (memprobe)": ("6v2-baseline-long-", "6v2-baseline-arena2-", "6v2-baseline-memray-"),
          "8 (leakfix)": ("6v2-leakbase-", "6v2-leakfix-"),
-         "9 (g3)": ("6v2-g3-", "6v2-g3burst-")}
+         "9 (g3)": ("6v2-g3-", "6v2-g3burst-"), "10 (g4)": ("6v2-g4-", "6v2-g4burst-")}
 
 
 def run_errors(r):
