@@ -824,6 +824,25 @@ class SandboxConnector:
                     self._incluster_transport_token = object()
             return base_url
 
+    def _release_sandbox_callbacks(self) -> None:
+        # The callbacks are bound methods of the handle. Keeping them once the handle
+        # is closed for good makes the handle and its connector a reference cycle, which
+        # holds the connector's sessions until the cyclic garbage collector happens to run.
+        # Hold the transport lock, so a connect() on another thread never sees a
+        # callback cleared between checking it and calling it.
+        with self._transport_lock:
+            self._get_pod_ip = None
+            self._get_pod_name = None
+            self._get_service_fqdn = None
+            strategy = self.strategy
+            if isinstance(strategy, SandboxdPodTunnelStrategy):
+                strategy._get_pod_name = None
+            elif isinstance(strategy, SandboxdInClusterStrategy):
+                strategy._get_pod_ip = None
+                strategy._get_service_fqdn = None
+            elif isinstance(strategy, InClusterConnectionStrategy):
+                strategy._get_pod_ip = None
+
     def close(self) -> None:
         with self._transport_lock:
             self._incluster_transport_token = object()
