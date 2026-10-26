@@ -21,6 +21,7 @@ Checklist: pushed SHAs/trees/authors/no trailers; working rules (Minimal fixes: 
 - 2026-10-23 00:13: "stack has not settled"
 - 2026-10-23 00:16 (B): "and then for b, the stuff that needs types after PR 7 mainly reaper we just fold into their respective PRs right? if so, i approve B" (coordinator 2 confirmed the reading: unopened branches transport, reaper, PR 7 fold their own types; open PRs and upstream code go to one later types PR after PR 7)
 - 2026-10-23 00:21 (C): "okay i approve 3 then" (Part 3, don't parse the deletecollection response)
+- 2026-10-26 23:15 (B2 choices: BatchError raise, `dict[str, str]`, `_continue=` direct): "i approved of the b2 decisions"
 - 2026-10-22 (`temp-prompts/pr8_scope_and_pacing_answers.md`): "`members()` caching and wake-up changes stay dropped and are not in PR 8 (measured: `members()` 9 ms at 10k claims, wake-ups 0.05 to 0.08 cores). The metadata-only re-list in `release()` IS in PR 8." "PR 8 = claim-list pagination (attach and release re-list), metadata-only re-list in `release()`, and skip parsing the deletecollection body. Follow tasks.md 4.1." "The roadmap's Pacing PR stays, as a later, conditional item".
 
 ## B2 copies (10-26 23:01, verified)
