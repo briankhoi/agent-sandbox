@@ -24,3 +24,6 @@ Files here: `project_instructions.md`, `working_rules.md`, `state.md`, `tasks.md
 
 ## Shared PR board
 [`pr_board.md`](pr_board.md) lists every PR (upstream number, branch, head, title, description, status, owner), for both the local agent and the cloud project. Whenever a PR's state changes (opened, renumbered, restacked, merged, retitled), update its row in the same commit and keep the cloud copy at `/mnt/project-files/pr-descriptions/pr_board.md` in sync. `refs/pr_table.md` is an old snapshot and is not maintained.
+
+## Learnings board
+[`learnings.md`](learnings.md) collects edge cases, concurrency lessons, trade-offs and process lessons from this work, for reuse in other projects. Any agent may add entries in the same shape (what happened, issue, fix, takeaway).
