@@ -19,16 +19,16 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 7/N | `feat/batch-1-fu6-group-order` | fix(python-sdk): keep a batch's group order when re-attaching (7/N) | merged #1985 (`d07e8941`) | `6e966b1d` | local agent |
 | 8/N | `feat/batch-ssl-eof-retry` | fix(python-sdk): retry the batch watch on a TLS EOF (8/N) | merged #2033 (`c56f0791`) | `0e586d47` | local agent |
 | 9/N | `feat/batch-1-fu7-client-cleanup` | fix(python-sdk): close cached batch connections on client cleanup (9/N) | merged #1986 (`b03ba91b`, tree equals `a1e009ee`) | `a1e009ee` | local agent |
-| 10/N | `feat/batch-1-fu7b-cleanup-retry` | fix(python-sdk): keep closing batch connections when cleanup fails (10/N) | open upstream #2049 (lowest open PR; 9/N merged before its follow-ups, so they are here with the get_batch docstring fix) | `078843dd` | local agent |
-| 11/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `6b998512`) | fix(python-sdk): name async batch tasks and let concurrent detach() calls both succeed (11/N) | open upstream #1996 | `ed8217c6` | local agent |
-| 12/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (12/N) | open upstream #1824 | `c3c65353` | local agent |
-| 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(python-sdk): add events and iter_ready_groups (13/N) | open upstream #1988 | `64278831` | local agent |
-| 14/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (14/N) | open upstream #1989 | `e86e9fff` | local agent |
-| 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (15/N) | open upstream #1990 | `7d7ead67` | local agent |
-| 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (16/N) | open upstream #1991 | `c757f1ed` | local agent |
-| 17/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (17/N) | ready, not opened (mypy fix approved 2026-10-23: one-line `cast` folded into the pool commit; prompt `work/prompts/B2-types-fold.md`, review copies `review/types/*`, not run yet; the stack conversation syncs) | `046b4d3e` | local agent (fix: coordinator 2) |
-| 18/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (18/N) | ready, not opened (B2 folds the reaper's own loose types into its commits: `lease_owner_reference`, `owner_references`, the Lease list kwargs) | `2428ae5a` | local agent (types: coordinator 2) |
-| 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (19/N) | ready, not opened | `aa483bdb` | local agent |
+| 10/N | `feat/batch-1-fu7b-cleanup-retry` | fix(python-sdk): keep closing batch connections when cleanup fails (10/N) | merged #2049 (`74cd8fa5`, tree equals `078843dd`) | `078843dd` | local agent |
+| 11/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `2b1d9268`) | fix(python-sdk): name async batch tasks and let concurrent detach() calls both succeed (11/N) | open upstream #1996 | `cb59dcf0` | local agent |
+| 12/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (12/N) | open upstream #1824 | `fc659690` | local agent |
+| 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(python-sdk): add events and iter_ready_groups (13/N) | open upstream #1988 | `5dd9a1d5` | local agent |
+| 14/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (14/N) | open upstream #1989 | `597dc977` | local agent |
+| 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (15/N) | open upstream #1990 | `d2904454` | local agent |
+| 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (16/N) | open upstream #1991 | `fde1f963` | local agent |
+| 17/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (17/N) | ready, not opened (mypy fix approved 2026-10-23: one-line `cast` folded into the pool commit; prompt `work/prompts/B2-types-fold.md`, review copies `review/types/*`, not run yet; the stack conversation syncs) | `64bc8872` | local agent (fix: coordinator 2) |
+| 18/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (18/N) | ready, not opened (B2 folds the reaper's own loose types into its commits: `lease_owner_reference`, `owner_references`, the Lease list kwargs) | `f03fb3cb` | local agent (types: coordinator 2) |
+| 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (19/N) | ready, not opened | `fa10f75b` | local agent |
 | 20/N | not created (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (20/N) | planned (plan `work/pr8_plan.md` verified 2026-10-22, accept with fixes; Part 3 approved, other decisions pending; starts after B2 syncs) | n/a | local agent (coordinator 2) |
 | 21/N | not created (types PR) | not drafted | planned (Brian approved 2026-10-23: one PR after PR 7 for loose types in open PRs and upstream code, including Lease typing; plan `work/type_tightening_plan.md`) | n/a | local agent (coordinator 2) |
 | RL | `feat/rl-batch-claim-mode` (4 commits on PR 7) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch | ready, not opened (needs Brian's review; sits on 18/N so it opens after the stack) | `166a15c8` | cloud (re-commit as Brian by local agent) |
@@ -113,7 +113,7 @@ This PR is the ninth in a series of PRs to implement a batch. It makes client cl
 - `detach()` unregisters only its own handle, so a newer handle for the same batch stays tracked.
 - The sync client guards its tracked batches with a lock.
 
-### 10/N fu7b (open #2049)
+### 10/N fu7b (merged #2049)
 This PR is the tenth in a series of PRs to implement a batch. It finishes the client cleanup follow-ups from #1986.
 - Cleanup closes a batch's cached connections in a `finally`, so a failed stop can't leave port-forwards open.
 - A connection whose close fails or is cancelled stays on the handle, and the batch stays tracked, so a later `close()` or `delete_all()` retries it.
