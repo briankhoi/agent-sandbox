@@ -29,3 +29,6 @@ live -> copy: transport `64bc8872 -> 041c0b02`, reaper `f03fb3cb -> 64f38bf5` (B
 
 ## C status (10-26 23:00)
 Coordinator 2 changed its recommendation on the section 7 fact (release peak is the deletecollection reply): drop metadata-only re-list and metadata-only deletecollection; measure managedFields. Awaiting Brian.
+
+## B3 accepted (10-26 23:26, verified by subagent)
+Sync table for the stack conversation (live -> copy): `feat/batch-transport-ltlfdm` `64bc8872 -> 041c0b02`, `feat/batch-reaper-ymtd6t` `f03fb3cb -> 817d7554`, `feat/batch-7a-create-path` `fa10f75b -> bb23b672`. review-diff: transport `8a666513`, reaper `279bafe6`. Waiting for Brian's review of the copies, then the stack conversation syncs.
