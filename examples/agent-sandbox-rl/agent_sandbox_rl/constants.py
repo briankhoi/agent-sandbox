@@ -74,11 +74,13 @@ ON_DEMAND_ANNOTATION = "agent-sandbox-rl/on-demand"
 #   "namespace" — a per-run namespace `<namespace>-<run id>` is created on first
 #                 use and deleted at teardown; names stay stable per image.
 RUN_ISOLATION_MODES = ("none", "names", "namespace")
-# How `SandboxFleet.acquire` claims a sandbox (`FleetConfig.claim_mode`).
-#   "per_claim" makes one `create_sandbox` per acquire, each waiting on its own watch.
-#   "batch" keeps one SDK batch per cluster per fleet. Each acquire adds a member to
-#           it, so readiness comes from one shared watch, and a crashed driver's
-#           claims go away with the batch Lease (with the batch reaper deployed).
+# How `SandboxFleet.acquire` claims a sandbox, set by `FleetConfig.claim_mode`.
+#   "per_claim" calls `create_sandbox` once per acquire, and each call waits on
+#               its own watch.
+#   "batch" keeps one SDK batch per cluster per fleet. Each acquire adds a member
+#           to it, and one shared watch reports readiness for all of them. If the
+#           batch reaper is deployed, it deletes a crashed driver's claims once
+#           the batch Lease expires.
 CLAIM_MODES = ("per_claim", "batch")
 # Placeholder accepted in `template_name_prefix` / `pool_name_format`; the fleet
 # substitutes its run id at construction.

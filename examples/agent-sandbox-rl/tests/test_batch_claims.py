@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for FleetConfig(claim_mode="batch"): acquire/release/teardown through one
-SDK batch per cluster, against a fake batch."""
+"""Tests FleetConfig(claim_mode="batch") against a fake SDK batch. The fleet
+acquires, releases, and tears down through one batch per cluster."""
 
 import threading
 import time

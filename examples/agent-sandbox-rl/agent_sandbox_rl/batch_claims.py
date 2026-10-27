@@ -12,18 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Batch claiming behind `SandboxFleet.acquire` (``FleetConfig(claim_mode="batch")``).
+"""Claims sandboxes through SDK batches for ``FleetConfig(claim_mode="batch")``.
 
-Each fleet holds one SDK batch per cluster. An acquire adds one member to it with
-`SandboxBatch.acquire`, so every claim's readiness comes from the batch's one watch
-instead of a watch per claim, and the claims are owned by the batch Lease, so the
-batch reaper cleans up after a driver that dies without tearing down.
+Each fleet holds one SDK batch per cluster. Each `SandboxFleet.acquire` adds one
+member to that batch with `SandboxBatch.acquire`. The batch's one watch reports
+every member's readiness, so the fleet opens no watch per claim. The batch Lease
+owns the claims, so the batch reaper deletes them when a driver dies without
+tearing down.
 
-The batch is opened by the first acquire on its cluster, from that acquire's pool
-as a size-0 group. ``claim_batch`` checks every group's pool and template one
-after another before it returns, so opening it with every planned pool would put
-two GETs per image on the first acquire's thread; `SandboxBatch.acquire` checks
-each later pool once, on the thread of its own first acquire.
+The first acquire on a cluster opens the batch with one size-0 group for that
+acquire's pool. ``claim_batch`` checks every group's pool and template one after
+another before it returns. Opening the batch with every planned pool would put two
+GETs per image on the first acquire's thread. Instead, `SandboxBatch.acquire`
+checks each later pool once, on the thread of the first acquire that uses it.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ class BatchClaim:
 
 
 class BatchClaims:
-  """The batches one fleet claims through, one live batch per cluster."""
+  """Holds the batches one fleet claims through, with one live batch per cluster."""
 
   def __init__(self, settings: "BatchClaimConfig", *, ready_timeout: int,
                labels: dict[str, str]):
@@ -73,15 +74,18 @@ class BatchClaims:
     self._lock = threading.Lock()
     self._cluster_locks: dict[str, threading.Lock] = {}
     self._live: dict[str, "SandboxBatch"] = {}
-    # Every batch opened, including ones replaced after an error, so teardown
-    # releases their remaining claims and Leases.
+    # Every batch this fleet opened, including batches it replaced after an
+    # error. release_all releases each one, which deletes its remaining claims
+    # and its Lease.
     self._opened: list["SandboxBatch"] = []
-    # Set by release_all, so an acquire racing teardown can't open a batch that
-    # no later teardown would release and whose Lease would keep renewing.
+    # release_all sets this, so an acquire that races teardown can't open a new
+    # batch. No later teardown would release that batch, and its Lease would keep
+    # renewing.
     self._closed = False
 
   def reopen(self) -> None:
-    """Lets acquires open batches again after `release_all`, for a new setup()."""
+    """Lets acquires open batches again after `release_all`. `SandboxFleet.setup`
+    calls it."""
     with self._lock:
       self._closed = False
 
@@ -90,7 +94,7 @@ class BatchClaims:
       return self._cluster_locks.setdefault(name, threading.Lock())
 
   def _batch_for(self, cluster: "Cluster", pool: str) -> "SandboxBatch":
-    # Under the cluster's lock, so concurrent first acquires open one batch.
+    # The cluster's lock makes concurrent first acquires open only one batch.
     with self._cluster_lock(cluster.name):
       with self._lock:
         if self._closed:
@@ -100,10 +104,10 @@ class BatchClaims:
         error = batch.err()
         if error is None:
           return batch
-        # A stopped batch hands out nothing more, and its Lease may be gone, so
-        # its claims are the reaper's. Members already handed out keep working
-        # until then, and new acquires go to a fresh batch. It stays open until
-        # teardown releases it.
+        # A stopped batch hands out no new members. Its Lease may be gone, and
+        # then the batch reaper deletes its claims. Members it already handed
+        # out keep working until that happens. New acquires go to a fresh batch,
+        # and teardown still releases the stopped one.
         logger.warning("batch %s on cluster %s stopped (%s); opening a new one "
                        "for new acquires", batch.batch_id, cluster.name, error)
       s = self._settings
@@ -123,7 +127,8 @@ class BatchClaims:
           self._live[cluster.name] = batch
           self._opened.append(batch)
       if closed:
-        # Teardown ran while the batch was opening and won't see it.
+        # Teardown ran while this batch was opening and never saw it, so release
+        # it here.
         batch.release()
         raise FleetError("fleet was torn down; call setup() before acquiring again")
       logger.info("opened batch %s on cluster %s", batch.batch_id, cluster.name)
@@ -132,10 +137,10 @@ class BatchClaims:
   def acquire(self, cluster: "Cluster", pool: str) -> BatchClaim:
     """Claims one member from ``pool`` and waits until it is Ready.
 
-    Raises the SDK's ``BatchError`` (including ``TerminalMemberError`` and
-    ``BatchTimeoutError``) for anything that happens after the create is
-    started, and the pool, template and API errors of ``claim_batch`` otherwise.
-    Raises ``FleetError`` once `release_all` has run.
+    A failure after the create starts raises the SDK's ``BatchError``, which
+    covers ``TerminalMemberError`` and ``BatchTimeoutError``. A failure before it
+    raises the pool, template, and API errors of ``claim_batch``. After
+    `release_all`, it raises ``FleetError``.
     """
     batch = self._batch_for(cluster, pool)
     started = time.monotonic()
@@ -145,8 +150,8 @@ class BatchClaims:
     return BatchClaim(batch=batch, member=member, expires_at=expires_at)
 
   def release_all(self) -> None:
-    """Releases every batch this fleet opened. Errors are logged, so one cluster's
-    failure doesn't keep the others' claims alive."""
+    """Releases every batch this fleet opened. It logs a failed release and goes
+    on, so one cluster's failure doesn't keep the other clusters' claims alive."""
     with self._lock:
       self._closed = True
       opened, self._opened = self._opened, []

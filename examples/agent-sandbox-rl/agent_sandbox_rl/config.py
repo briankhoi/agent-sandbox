@@ -101,15 +101,16 @@ class ObservabilityConfig(BaseModel):
 
 
 class BatchClaimConfig(BaseModel):
-  """SDK batch settings for ``FleetConfig(claim_mode="batch")``. ``None`` keeps the
-  SDK's default."""
+  """SDK batch settings for ``FleetConfig(claim_mode="batch")``. A field left at
+  ``None`` uses the SDK's default."""
 
   create_rps: Annotated[float | None, Field(gt=0)] = None
   max_in_flight: Annotated[int | None, Field(ge=1)] = None
-  # Longer than the SDK's 60 s, because losing the Lease ends every in-flight
-  # rollout of the batch, and a driver that shares its process with a trainer can
-  # stall for tens of seconds. Renewals happen every lease_duration // 3 per
-  # fleet process. The SDK needs more than its clock skew margin.
+  # Longer than the SDK's 60 s default. Losing the Lease ends every rollout in
+  # flight on the batch, and a driver that shares its process with a trainer can
+  # stall for tens of seconds. Each fleet process renews its Lease every
+  # lease_duration // 3 seconds. The SDK requires a value above its clock skew
+  # margin.
   lease_duration: Annotated[int, Field(gt=CLOCK_SKEW_MARGIN)] = 300
   # Seconds one claim may be held after it is Ready; part of its shutdownTime.
   # Recycle rotates a claim before this runs out.
@@ -165,8 +166,8 @@ class FleetConfig(BaseModel):
   warm_per_task: bool = False
   window_size: int | None = None            # sliding: None = auto from max_concurrent
   ready_timeout: int = 900
-  # constants.CLAIM_MODES. "batch" claims through one SDK batch per cluster; see
-  # `batch_claims` for its settings.
+  # One of constants.CLAIM_MODES. "batch" claims through one SDK batch per
+  # cluster, and `batch_claims` holds that batch's settings.
   claim_mode: str = "per_claim"
   batch_claims: BatchClaimConfig = Field(default_factory=BatchClaimConfig)
   # Stage the warm fill in waves of <= this many sandbox creates in flight,
