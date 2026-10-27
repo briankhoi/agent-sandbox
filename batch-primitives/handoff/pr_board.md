@@ -34,8 +34,8 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | RL | `feat/rl-batch-claim-mode` (4 commits on PR 7) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch | ready, not opened (needs Brian's review; sits on 18/N so it opens after the stack) | `3bee2847` (restacked onto the renamed 18/N `a8f80aa6`, 2026-10-27) | cloud (re-commit as Brian by local agent) |
 | RL | `feat/rl-sandbox-client-race` (1 commit on upstream main) | fix(rl): build Cluster.sandbox_client once under concurrent first use | ready, not opened (independent of the stack, targets `main`) | `834656b9` | cloud |
 | SDK fix | `fix/python-sdk-release-terminated-handles` (1 commit on upstream main `7f40dc1a`) | fix(python-sdk): drop terminated sandboxes from the client (#<issue A>) | ready, not opened; verified by coordinator 1 (2026-10-27, `work/coord1/2026-10-27-0130-leak-fix-final.md`) (targets `main`; terminate() hook bound to the registry, see `work/results/G4-memleak-final.md`) | `0a54a028` | local agent (item G) |
-| SDK fix | `fix/python-sdk-free-closed-connectors` (1 commit on upstream main `c4ed9ba9`) | fix(python-sdk): free closed sandbox handles without the cyclic GC (#<issue B>) | ready, not opened (targets `main`; rebased in G5, description adds the use-after-close sentence) | `e62610f9` | local agent (item G) |
-| SDK fix | `fix/python-sdk-release-client-exit-hook` (1 commit stacked on PR 1 `0a54a028`) | fix(python-sdk): stop the exit hook from keeping closed clients alive (#<issue 4>) | ready, not opened (stacked on PR 1; option (e), both clients; exact types in G5) | `afae285e` | local agent (item G) |
+| SDK fix | `fix/python-sdk-free-closed-connectors` (1 commit on upstream main `c4ed9ba9`) | fix(python-sdk): free closed sandbox handles without the cyclic GC (#<issue B>) | ready, not opened; verified by coordinator 1 after G5 (2026-10-27 20:55) (targets `main`; rebased in G5, description adds the use-after-close sentence) | `e62610f9` | local agent (item G) |
+| SDK fix | `fix/python-sdk-release-client-exit-hook` (1 commit stacked on PR 1 `0a54a028`) | fix(python-sdk): stop the exit hook from keeping closed clients alive (#<issue 4>) | ready, not opened; verified by coordinator 1 after G5 (2026-10-27 20:55) (stacked on PR 1, open after PR 1; option (e), both clients; exact types in G5) | `afae285e` | local agent (item G) |
 
 Notes
 - fu8 has no PR of its own. It is folded into #1996 (fu9 branch contains it), so there are 10/N rows for two branches.
@@ -190,7 +190,7 @@ Owner: coordinator 1 (item G). A long-running async driver grew from 94 MB to 1.
 - PR 1 (issue A): `terminate()` removes its own registry entry through a hook bound to the registry (not the client). Both clients.
 - PR 2 (issue B): a closed handle's connector drops its links back to the handle, so it is freed without the cyclic GC. Async in the connector's final `close()`, sync in `Sandbox.close_connection()`. Description says use after close is unsupported and links issue 5.
 - PR 3 (issue 4): the exit hook holds only the registry data, not the client, so closed clients are freed; exit cleanup unchanged. Both clients; stacked on PR 1.
-- Issue texts (A, B, 3, 4, 5) and PR texts: `work/results/G3-memleak-fix2.md` and `work/results/G4-memleak-final.md`. Brian files issues and opens PRs. Before opening: G5 cleanups (`work/prompts/G5-memleak-cleanups.md`).
+- Issue texts (A, B, 3, 4, 5) and PR texts: `work/results/G3-memleak-fix2.md` and `work/results/G4-memleak-final.md`. Brian files issues and opens PRs. G5 cleanups done and verified (2026-10-27); all three are ready to open.
 
 ### RL batch claim mode (ready, not opened)
 Branch `feat/rl-batch-claim-mode`, 4 commits on 18/N. Targets the RL library under `examples/agent-sandbox-rl/`.

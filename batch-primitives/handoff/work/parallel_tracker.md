@@ -53,3 +53,4 @@ Brian paused this conversation while another agent renames major fields in PRs 1
 | B, C | owned by coordinator 2 | none for coordinator 1 |
 | `par-mem` kind cluster | still running (memory probe) | ask Brian before deleting |
 - 2026-10-27 20:40 Resumed after the group_outcomes rename sync. No local copies of renamed branches; nothing of coordinator 1's built on them. Task 6 step 10 (proposal, carryover, work_plan) and step 9 (pr_board) done in `492a556b`; step 11 Go done in `af1dd651` (old head 441ec93a). state.md, tasks.md, pr_table.md, project_instructions.md left to the stack conversation. Open question: Go-name prose `IterReadyGroups` in the proposal (lines ~90-182).
+- 2026-10-27 20:55 G5 verified PASS: PR 2 `e62610f9` on main `c4ed9ba9`, PR 3 `afae285e` on PR 1 `0a54a028`. All three ready for Brian to open; issues A, B, 4, 5 (3 optional) to file. D on hold until everything else is done (Brian). par-mem deletion pending Brian's yes.
