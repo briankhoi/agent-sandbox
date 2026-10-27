@@ -220,8 +220,9 @@ Nothing extends a claim's ``shutdownTime``, so a batch held for a whole run sets
 ``work_budget`` to the run's length.
 
 Of the errors below, only ``BatchExistsError`` is a ``BatchError``. The others mean a bad
-argument, a missing pool or template, or an API error. Failures after this call returns,
-such as a failed create, aren't raised here but show in ``members()`` and ``err()``.
+argument, a missing pool or template, or an API error. Failures after this call returns
+aren't raised here. A failed create shows in ``members()`` as a ``CreateFailed`` member, and
+an error that stops the watch or Lease renewal shows in ``err()``.
 
 **Arguments**:
 
@@ -254,11 +255,13 @@ such as a failed create, aren't raised here but show in ``members()`` and ``err(
   
   >>> client = SandboxClient()
   >>> batch = client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=4)])
-  >>> while not any(m.state is MemberState.READY for m in batch.members()):
-  ...     time.sleep(1)
-  >>> member = next(m for m in batch.members() if m.state is MemberState.READY)
-  >>> batch.connect(member).commands.run("echo hello")
-  >>> batch.release()
+  >>> try:
+  ...     while not any(m.state is MemberState.READY for m in batch.members()):
+  ...         time.sleep(1)
+  ...     member = next(m for m in batch.members() if m.state is MemberState.READY)
+  ...     batch.connect(member).commands.run("echo hello")
+  ... finally:
+  ...     batch.release()
 
 <a id="k8s_agent_sandbox.sandbox_client.SandboxClient.get_batch"></a>
 
@@ -831,6 +834,9 @@ def err() -> Exception | None
 Returns the error that stopped the batch's watch or background
 Lease renewal (e.g., ``BatchLeaseExpiredError``), or ``None`` while healthy.
 
+A failed claim create doesn't set it. That claim shows in ``members()`` as a ``FAILED``
+member with reason ``CreateFailed``.
+
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.lease_degraded"></a>
 
 ##### lease\_degraded
@@ -859,11 +865,17 @@ Claims are deleted with label-scoped deletecollection requests, re-listing betwe
 until no claim is left that isn't already being deleted. A transient error moves on to the
 next round, and release gives up after ``BATCH_RELEASE_MAX_IDLE_ROUNDS`` rounds in a row
 that delete nothing. On failure the Lease is kept, and calling ``release`` again retries.
+Each round first takes the batch's Lease for this handle, so no delete is sent while
+another handle holds it. While it runs, a ``detach()`` call raises ``BatchError``, and
+another ``release()`` call waits for it to finish.
 
 **Raises**:
 
-- `BatchError` - If this handle has been detached, or claims are still not being deleted
-  after the last round.
+- `BatchInUseError` - If another handle holds the batch's Lease, or the Lease changed hands
+  since this handle last held it. Nothing more is deleted, and this handle is done
+  with the batch.
+- `BatchError` - If this handle has been detached, an earlier call raised
+  ``BatchInUseError``, or claims are still not being deleted after the last round.
 - `ApiException` - For a non-transient error such as a 403, which is raised at once.
   After the last round, the last transient error is raised (an ``ApiException``
   or a transport error).
@@ -890,6 +902,6 @@ A batch that is still creating claims stops creating first, and every claim is l
 **Raises**:
 
 - `ValueError` - If ``grace`` is not a valid Lease duration.
-- `BatchError` - If this handle has been released.
+- `BatchError` - If a release has started on this handle, including one that failed.
 - `ApiException` - If the Lease release fails (an ``ApiException`` or a transport error).
 

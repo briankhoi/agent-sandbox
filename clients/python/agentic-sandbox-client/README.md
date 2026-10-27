@@ -694,21 +694,22 @@ batch = client.claim_batch(
     namespace="default",
 )
 
-while True:
-    members = batch.members()
-    if sum(m.state is MemberState.READY for m in members) >= 4:
-        break
-    if batch.err() is not None:
-        raise batch.err()
-    # Terminal members (including CreateFailed) and lost ones can never become Ready.
-    if batch.size - sum(m.state in (MemberState.FAILED, MemberState.LOST) for m in members) < 4:
-        raise RuntimeError("fewer than 4 members can still become Ready")
-    time.sleep(1)
-for member in batch.members():
-    if member.state is MemberState.READY:
-        batch.connect(member).commands.run("echo hello")
-
-batch.release()
+try:
+    while True:
+        members = batch.members()
+        if sum(m.state is MemberState.READY for m in members) >= 4:
+            break
+        if batch.err() is not None:
+            raise batch.err()
+        # Terminal members (including CreateFailed) and lost ones can never become Ready.
+        if batch.size - sum(m.state in (MemberState.FAILED, MemberState.LOST) for m in members) < 4:
+            raise RuntimeError("fewer than 4 members can still become Ready")
+        time.sleep(1)
+    for member in batch.members():
+        if member.state is MemberState.READY:
+            batch.connect(member).commands.run("echo hello")
+finally:
+    batch.release()
 ```
 
 `members()` shows each claim once the watch has seen it, and a claim whose create failed shows up as a
@@ -738,7 +739,8 @@ supports all of the above.
 - `err()`: the error that stopped the background watch/renewal, or `None`. Once it is set, no more claims
   are created.
 - `lease_degraded()`: whether Lease renewal is failing, from the first failed renewal until one succeeds.
-- `release()` deletes the batch's claims, then its Lease. Idempotent.
+- `release()` deletes the batch's claims, then its Lease. Idempotent. It raises `BatchInUseError` and deletes
+  nothing more if another handle holds the batch's Lease.
 - `detach(grace=None)`: stops the background tasks and releases the Lease so another `get_batch` can take over; idempotent.
 
 #### RBAC

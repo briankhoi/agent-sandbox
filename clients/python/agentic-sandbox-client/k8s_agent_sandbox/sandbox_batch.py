@@ -135,6 +135,10 @@ class SandboxBatch:
         self._list_resource_version = list_resource_version
 
         self._lock = threading.Lock()
+        # Held for all of release() and around detach()'s Lease writes, so whichever call starts first
+        # finishes before the other acts on the Lease. It's reentrant, so a call from a signal handler on
+        # the same thread doesn't hang.
+        self._lifecycle_lock = threading.RLock()
         self._connected: dict[str, "Sandbox"] = {}
         self._detached = False
         self._lease_released = False
@@ -423,6 +427,9 @@ class SandboxBatch:
     def err(self) -> Exception | None:
         """Returns the error that stopped the batch's watch or background
         Lease renewal (e.g., ``BatchLeaseExpiredError``), or ``None`` while healthy.
+
+        A failed claim create doesn't set it. That claim shows in ``members()`` as a ``FAILED``
+        member with reason ``CreateFailed``.
         """
         with self._lock:
             return self._state.error()
@@ -444,31 +451,55 @@ class SandboxBatch:
         until no claim is left that isn't already being deleted. A transient error moves on to the
         next round, and release gives up after ``BATCH_RELEASE_MAX_IDLE_ROUNDS`` rounds in a row
         that delete nothing. On failure the Lease is kept, and calling ``release`` again retries.
+        Each round first takes the batch's Lease for this handle, so no delete is sent while
+        another handle holds it. While it runs, a ``detach()`` call raises ``BatchError``, and
+        another ``release()`` call waits for it to finish.
 
         Raises:
-            BatchError: If this handle has been detached, or claims are still not being deleted
-                after the last round.
+            BatchInUseError: If another handle holds the batch's Lease, or the Lease changed hands
+                since this handle last held it. Nothing more is deleted, and this handle is done
+                with the batch.
+            BatchError: If this handle has been detached, an earlier call raised
+                ``BatchInUseError``, or claims are still not being deleted after the last round.
             ApiException: For a non-transient error such as a 403, which is raised at once.
                 After the last round, the last transient error is raised (an ``ApiException``
                 or a transport error).
         """
-        with self._lock:
-            if self._released:
-                return
-            if self._lease_released:
-                raise BatchError(f"batch '{self.batch_id}' has been detached")
-            self._detached = True
-            # A failed release is retried by client cleanup as a release, not as an earlier detach.
-            self._detach_grace = None
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._released:
+                    return
+                if self._lease_released:
+                    raise BatchError(f"batch '{self.batch_id}' has been detached or is held by another handle")
+                self._detached = True
+                # A failed release is retried by client cleanup as a release, not as an earlier detach.
+                self._detach_grace = None
 
-        self._stop_background_threads()
-        self._close_cached_connections("release")
-        _delete_batch_objects(self._client.k8s_helper, self.namespace, self.batch_id, self._lease_name)
+            self._stop_background_threads()
+            self._close_cached_connections("release")
+            with self._lock:
+                lease = self._lease
+            try:
+                _delete_batch_objects(
+                    self._client.k8s_helper,
+                    self.namespace,
+                    self.batch_id,
+                    self._lease_name,
+                    self._holder_identity,
+                    self._lease_duration,
+                    lease,
+                )
+            except BatchInUseError:
+                # The batch is another handle's now, so neither a retry nor client cleanup may delete anything.
+                with self._lock:
+                    self._lease_released = True
+                self._client._unregister_batch(self)
+                raise
 
-        with self._lock:
-            self._lease_released = True
-            self._released = True
-        self._client._unregister_batch(self)
+            with self._lock:
+                self._lease_released = True
+                self._released = True
+            self._client._unregister_batch(self)
 
     def _stop_background_threads(self) -> None:
         """Stops claim creators and stops the watcher and lease renewal loop."""
@@ -511,6 +542,17 @@ class SandboxBatch:
         """Returns whether detach() started on this handle but hasn't released the Lease."""
         return self._detach_grace is not None and not self._lease_released
 
+    def _release_started(self) -> bool:
+        """Returns whether release() started on this handle."""
+        return self._detached and self._detach_grace is None
+
+    def _detach_done(self) -> bool:
+        """Returns whether detach() already released the Lease, and raises ``BatchError`` once a
+        release has started. Requires ``_lock``."""
+        if self._release_started():
+            raise BatchError(f"batch '{self.batch_id}' has been released or is being released")
+        return self._lease_released
+
     def detach(self, grace: int | None = None) -> None:
         """Stops the background watch and Lease renewal, closes cached sandbox connections, and
         releases this handle's hold on the Lease. ``grace`` is the number of seconds to keep the
@@ -525,7 +567,7 @@ class SandboxBatch:
 
         Raises:
             ValueError: If ``grace`` is not a valid Lease duration.
-            BatchError: If this handle has been released.
+            BatchError: If a release has started on this handle, including one that failed.
             ApiException: If the Lease release fails (an ``ApiException`` or a transport error).
         """
         if grace is not None:
@@ -535,60 +577,66 @@ class SandboxBatch:
         # detach fully completed (i.e. the previous steps and the Lease release write succeeded), so callers
         # can retry detach() if the release fails.
         with self._lock:
-            if self._released:
-                raise BatchError(f"batch '{self.batch_id}' has been released")
-            if self._lease_released:
+            if self._detach_done():
                 return
             self._detached = True
             if grace is not None:
                 self._detach_grace = grace
             elif self._detach_grace is None:
                 self._detach_grace = self._lease_duration
-            # release() can clear _detach_grace while this call writes the Lease, so every write uses this copy.
+            # Another detach() call can change _detach_grace while this call writes the Lease, so every write
+            # uses this copy.
             grace = self._detach_grace
 
         self._stop_background_threads()
         self._close_cached_connections("detach")
 
-        lease = self._client.k8s_helper.read_batch_lease(
-            self._lease_name, self.namespace, _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
-        )
-        if lease is not None:
-            if lease.spec.holder_identity != self._holder_identity:
-                logger.info(
-                    f"Batch '{self.batch_id}' Lease is held by "
-                    f"'{lease.spec.holder_identity}', not this handle; treating as released"
-                )
-            else:
-                for attempt in range(2):
-                    lease.spec.holder_identity = None
-                    lease.spec.renew_time = batch_utils.lease_now()
-                    # Refresh the Lease so it doesn't expire immediately after we release it,
-                    # giving other clients a chance to acquire it.
-                    lease.spec.lease_duration_seconds = grace
-                    try:
-                        self._client.k8s_helper.replace_batch_lease(
-                            self._lease_name,
-                            self.namespace,
-                            lease,
-                            _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
-                        )
-                        break
-                    except ApiException as e:
-                        if e.status != 409 or attempt:
-                            raise
-                        # A 409 means the Lease changed after it was read. A concurrent detach() of this handle
-                        # leaves it released and a takeover leaves another holder, so both count as done. It can
-                        # still be held here only if one of this handle's own renewals landed late, so the release
-                        # is written once more.
-                        lease = self._client.k8s_helper.read_batch_lease(
-                            self._lease_name, self.namespace, _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
-                        )
-                        if lease is None or lease.spec.holder_identity != self._holder_identity:
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._detach_done():
+                    return
+            lease = self._client.k8s_helper.read_batch_lease(
+                self._lease_name, self.namespace, _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
+            )
+            if lease is not None:
+                if lease.spec.holder_identity != self._holder_identity:
+                    logger.info(
+                        f"Batch '{self.batch_id}' Lease is held by "
+                        f"'{lease.spec.holder_identity}', not this handle; treating as released"
+                    )
+                else:
+                    for attempt in range(2):
+                        lease.spec.holder_identity = None
+                        lease.spec.renew_time = batch_utils.lease_now()
+                        # Refresh the Lease so it doesn't expire immediately after we release it,
+                        # giving other clients a chance to acquire it.
+                        lease.spec.lease_duration_seconds = grace
+                        try:
+                            self._client.k8s_helper.replace_batch_lease(
+                                self._lease_name,
+                                self.namespace,
+                                lease,
+                                _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+                            )
                             break
+                        except ApiException as e:
+                            if e.status != 409 or attempt:
+                                raise
+                            # A 409 means the Lease changed after it was read. A write from an earlier detach() call
+                            # that timed out but landed, or a detach() that re-entered on this thread, leaves it
+                            # released, and a takeover leaves another holder, so all of these count as done. It can
+                            # still be held here only if one of this handle's own renewals landed late, so the release
+                            # is written once more.
+                            lease = self._client.k8s_helper.read_batch_lease(
+                                self._lease_name,
+                                self.namespace,
+                                _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+                            )
+                            if lease is None or lease.spec.holder_identity != self._holder_identity:
+                                break
 
-        with self._lock:
-            self._lease_released = True
+            with self._lock:
+                self._lease_released = True
         self._client._unregister_batch(self)
 
     def _watch_loop(self) -> None:
@@ -856,13 +904,76 @@ class SandboxBatch:
                 return
 
 
-def _delete_batch_objects(helper: Any, namespace: str, batch_id: str, lease_name: str) -> None:
+def _take_batch_lease(
+    helper: Any,
+    namespace: str,
+    batch_id: str,
+    lease_name: str,
+    holder_identity: str,
+    lease_duration: int,
+    last_lease: Any,
+) -> str | None:
+    """Writes the batch's Lease with ``holder_identity`` as its holder and returns the
+    resourceVersion written, or returns ``None`` if the Lease is missing. The write is
+    conditional, so it doesn't replace a Lease another client wrote after it was read.
+    ``last_lease`` is the Lease from that handle's last successful write.
+
+    Raises:
+        BatchInUseError: If another handle holds the Lease or writes it first, or the Lease
+            changed hands since ``last_lease`` was written.
+    """
+    timeout = batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
+    retried = False
+    while True:
+        lease = helper.read_batch_lease(lease_name, namespace, _request_timeout=timeout)
+        now = batch_utils.lease_now()
+        if lease is None:
+            return None
+        # An attach since this handle's last write bumps leaseTransitions, and a Lease that was deleted
+        # and created again has a new UID. Neither needs a holder the check below refuses, so both come first.
+        if lease.metadata.uid != last_lease.metadata.uid or (lease.spec.lease_transitions or 0) != (
+            last_lease.spec.lease_transitions or 0
+        ):
+            raise BatchInUseError(f"batch '{batch_id}' changed hands since this handle held it")
+        if lease.spec.holder_identity and lease.spec.holder_identity != holder_identity:
+            raise BatchInUseError(f"batch '{batch_id}' is held by '{lease.spec.holder_identity}'")
+        lease.spec.holder_identity = holder_identity
+        lease.spec.renew_time = now
+        lease.spec.lease_duration_seconds = lease_duration
+        try:
+            written = helper.replace_batch_lease(lease_name, namespace, lease, _request_timeout=timeout)
+        except ApiException as e:
+            if e.status != 409:
+                raise
+            if retried:
+                raise BatchInUseError(f"batch '{batch_id}' Lease was written by another client") from e
+            # A 409 means the Lease changed after it was read. It can still be held by this handle
+            # only if one of its own renewals landed late, so it is read and written once more.
+            retried = True
+            continue
+        return str(written.metadata.resource_version)
+
+
+def _delete_batch_objects(
+    helper: Any,
+    namespace: str,
+    batch_id: str,
+    lease_name: str,
+    holder_identity: str,
+    lease_duration: int,
+    last_lease: Any,
+) -> None:
     """Deletes a batch's claims in rounds, then its Lease once no claim is left that isn't
     already being deleted.
 
+    Each round first takes the Lease for ``holder_identity``, so every delete is sent while that
+    handle holds it or no Lease exists, and the Lease is deleted only at the resourceVersion that
+    handle wrote. ``last_lease`` is the Lease from that handle's last successful write.
     Also used by ``AsyncSandboxClient``'s atexit hook, which can't use the event loop.
 
     Raises:
+        BatchInUseError: If another handle holds the Lease or writes it first, or the Lease
+            changed hands since ``last_lease`` was written.
         BatchError: If claims are still not being deleted after the last round.
         ApiException: For a non-transient error at once, or the last transient error after
             the last round.
@@ -873,7 +984,13 @@ def _delete_batch_objects(helper: Any, namespace: str, batch_id: str, lease_name
     remaining_before: int | None = None
     while True:
         last_error: Exception | None = None
+        taken = False
+        resource_version: str | None = None
         try:
+            resource_version = _take_batch_lease(
+                helper, namespace, batch_id, lease_name, holder_identity, lease_duration, last_lease
+            )
+            taken = True
             # deletecollection deletes one claim at a time on the apiserver, so for a large batch
             # it can time out while deletion continues. For this case, we track it with the list below.
             helper.delete_sandbox_claims_by_label(
@@ -897,10 +1014,18 @@ def _delete_batch_objects(helper: Any, namespace: str, batch_id: str, lease_name
                 raise
             last_error = e
 
-        if live == []:
+        # A take that failed may still have written the Lease, and a delete at an older
+        # resourceVersion would then leave it in place, so only a round that took the Lease deletes it.
+        if live == [] and taken:
+            # A round that found no Lease has none to delete.
+            if resource_version is None:
+                return
             try:
                 helper.delete_batch_lease(
-                    lease_name, namespace, _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
+                    lease_name,
+                    namespace,
+                    _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+                    resource_version=resource_version,
                 )
                 return
             except Exception as e:
