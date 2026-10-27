@@ -99,6 +99,7 @@ class BaseBatchClientTest(unittest.TestCase):
     def setUp(self, MockK8sHelper):
         self.client = SandboxClient()
         self.mock_k8s_helper = self.client.k8s_helper
+        self.mock_k8s_helper.count_live_sandbox_claims.return_value = 0
         self.mock_sandbox_class = MagicMock()
         self.client.sandbox_class = self.mock_sandbox_class
 
@@ -1233,6 +1234,7 @@ class _Cluster:
         h.get_sandbox_warmpool.return_value = {"spec": {"sandboxTemplateRef": {"name": "tmpl"}}}
         h.get_sandbox_template.return_value = {"metadata": {"name": "tmpl"}}
         h.list_sandbox_claim_objects.return_value = ([], "7")
+        h.count_live_sandbox_claims.return_value = 0
         h.api_pool_size.return_value = None
         h.watch_sandbox_claims.side_effect = self._watch
         h.create_sandbox_claim.side_effect = self._create
@@ -1775,10 +1777,6 @@ class TestRelease(BaseClaimBatchTest):
     def test_release_stops_creates_then_deletes_claims_then_the_lease(self):
         batch = self.claim([BatchGroup(warmpool="pool-a", size=20)], create_rps=10)
         _wait_until(lambda: len(self.cluster.created) >= 1)
-        self.cluster.helper.list_sandbox_claim_objects.return_value = (
-            [_claim("b1-0") | {"metadata": {"name": "b1-0", "deletionTimestamp": "2026-01-01T00:00:00Z"}}],
-            "9",
-        )
         batch.release()
         time.sleep(0.3)  # Several pacing slots, in case a creator is still running.
         calls = self.cluster.calls
@@ -1819,30 +1817,27 @@ class TestRelease(BaseClaimBatchTest):
     def test_release_retries_rounds_until_no_progress(self):
         helper = self.cluster.helper
 
-        def live(n):
-            return ([_claim(f"b1-{i}") for i in range(n)], "9")
-
         unavailable = k8s_client.ApiException(status=503)
         cases = {
             "503 then success": (
                 {"delete_sandbox_claims_by_label": [unavailable, None]},
-                {"list_sandbox_claim_objects": [live(1), live(0)]},
+                {"count_live_sandbox_claims": [1, 0]},
                 None,
             ),
             "403 raises at once": ({"delete_sandbox_claims_by_label": [k8s_client.ApiException(status=403)]}, {}, k8s_client.ApiException),
-            "no progress raises BatchError": ({}, {"list_sandbox_claim_objects": [live(2)] * 4}, BatchError),
+            "no progress raises BatchError": ({}, {"count_live_sandbox_claims": [2] * 4}, BatchError),
             "no progress raises the last transient error": (
                 {"delete_sandbox_claims_by_label": [unavailable] * 4},
-                {"list_sandbox_claim_objects": [unavailable] * 4},
+                {"count_live_sandbox_claims": [unavailable] * 4},
                 k8s_client.ApiException,
             ),
-            "progress resets the idle rounds": ({}, {"list_sandbox_claim_objects": [live(5), live(5), live(4), live(4), live(4), live(0)]}, None),
+            "progress resets the idle rounds": ({}, {"count_live_sandbox_claims": [5, 5, 4, 4, 4, 0]}, None),
         }
-        for name, (delete_effects, list_effects, error) in cases.items():
+        for name, (delete_effects, count_effects, error) in cases.items():
             with self.subTest(name):
                 helper.reset_mock()
                 helper.delete_sandbox_claims_by_label.side_effect = delete_effects.get("delete_sandbox_claims_by_label")
-                helper.list_sandbox_claim_objects.side_effect = list_effects.get("list_sandbox_claim_objects", [live(0)] * 4)
+                helper.count_live_sandbox_claims.side_effect = count_effects.get("count_live_sandbox_claims", [0] * 4)
                 helper.delete_batch_lease.side_effect = None
                 handle = _make_handle(self.client)
                 if error is None:
@@ -1876,7 +1871,7 @@ class TestRelease(BaseClaimBatchTest):
         helper = self.cluster.helper
         self.assertEqual(helper.create_sandbox_claim.call_args.kwargs["_request_timeout"], 30)
         self.assertEqual(helper.delete_sandbox_claims_by_label.call_args.kwargs["_request_timeout"], 90)
-        self.assertEqual(helper.list_sandbox_claim_objects.call_args.kwargs["_request_timeout"], 90)
+        self.assertEqual(helper.count_live_sandbox_claims.call_args.kwargs["_request_timeout"], 90)
         self.assertEqual(helper.delete_batch_lease.call_args.kwargs["_request_timeout"], 30)
 
     def test_detach_stops_creates_and_deletes_nothing(self):

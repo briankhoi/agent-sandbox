@@ -653,6 +653,26 @@ class AsyncK8sHelper:
             items.extend(page.get("items", []))
         return items, resource_version
 
+    async def count_live_sandbox_claims(
+        self, namespace: str, label_selector: str, _request_timeout: float | None = None
+    ) -> int:
+        """Counts the SandboxClaims matching a label selector that aren't being deleted, holding
+        one page of the list at a time.
+
+        Args:
+            _request_timeout: Optional total timeout in seconds for each page, forwarded to kubernetes_asyncio.
+        """
+        await self._ensure_initialized()
+
+        live = 0
+        async for page, first in _claim_list_pages(
+            self.custom_objects_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
+        ):
+            if first:
+                live = 0
+            live += sum(1 for c in page.get("items", []) if not (c.get("metadata") or {}).get("deletionTimestamp"))
+        return live
+
     async def watch_sandbox_claims(
         self, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int,
         _request_timeout: float | None = None

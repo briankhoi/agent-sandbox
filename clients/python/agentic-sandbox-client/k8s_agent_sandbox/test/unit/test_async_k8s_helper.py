@@ -1126,6 +1126,19 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
             await self.helper.list_sandbox_claim_objects("default", "agents.x-k8s.io/batch-id=b1")
         self.assertEqual(raised.exception.status, 410)
 
+    async def test_count_live_sandbox_claims_counts_claims_not_being_deleted_across_pages(self):
+        live = {"metadata": {"name": "live"}}
+        deleting = {"metadata": {"name": "deleting", "deletionTimestamp": "2026-01-01T00:00:00Z"}}
+        self.helper.custom_objects_api.list_namespaced_custom_object = AsyncMock(side_effect=[
+            # A restart after an expired continue token drops the earlier pages from the count.
+            {"items": [live, live], "metadata": {"continue": "t0"}},
+            client.ApiException(status=410),
+            {"items": [live, deleting], "metadata": {"continue": "t1"}},
+            {"items": [deleting, live, live], "metadata": {}},
+        ])
+
+        self.assertEqual(await self.helper.count_live_sandbox_claims("default", "agents.x-k8s.io/batch-id=b1"), 3)
+
     @patch("k8s_agent_sandbox.async_k8s_helper.watch.Watch")
     async def test_watch_sandbox_claims_yields_events(self, mock_watch_class):
         mock_watch = MagicMock()
@@ -1274,6 +1287,10 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
                 "b1-0", "pool-a", "default", log_level=logging.DEBUG, _request_timeout=30),
              api.create_namespaced_custom_object, {"plural": "sandboxclaims"}),
             ("list_sandbox_claim_objects", lambda: helper.list_sandbox_claim_objects(
+                "default", selector, _request_timeout=30),
+             api.list_namespaced_custom_object,
+             {"plural": "sandboxclaims", "label_selector": selector}),
+            ("count_live_sandbox_claims", lambda: helper.count_live_sandbox_claims(
                 "default", selector, _request_timeout=30),
              api.list_namespaced_custom_object,
              {"plural": "sandboxclaims", "label_selector": selector}),
