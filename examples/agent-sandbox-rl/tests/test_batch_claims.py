@@ -345,12 +345,13 @@ async def test_async_fleet_claims_releases_and_tears_down_through_one_batch(make
 
 
 def _recycle_on_a_fake_clock(monkeypatch):
-  """Patches recycle and batch claims onto a clock that only each task advances, by
-  100 s, and returns the batch settings under which a claim lives 400 s.
+  """Puts recycle and batch claims on a fake clock that only tasks move, by 100 s
+  each. Returns the batch settings under which a claim lives 400 s.
 
-  After one task 300 s are left, more than twice the longest task plus the 5 s
-  reset_timeout (205 s), so the claim is reset and reused. After two, 200 s are
-  left, so it is rotated, and the third task runs on a second claim."""
+  After one task, 300 s are left. That is more than twice the longest task plus
+  the 5 s reset_timeout, which is 205 s, so recycling resets and reuses the claim.
+  After two tasks, 200 s are left, so recycling rotates the claim, and the third
+  task runs on a second claim."""
   monkeypatch.setattr("agent_sandbox_rl.preflight.preflight_cluster",
                       lambda cluster, **kw: MagicMock(ok=True, checks=[]))
   monkeypatch.setattr(SandboxHandle, "exec", lambda self, cmd: _CLEAN)

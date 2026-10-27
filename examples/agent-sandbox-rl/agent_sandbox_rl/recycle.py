@@ -54,14 +54,15 @@ _UNSET = object()
 
 
 def _claim_expiring(handle, longest_task_s: float, reset_timeout: float) -> bool:
-  """Whether the claim could reach its ``shutdownTime`` before another reset and
-  task finish on it.
+  """Returns whether the controller could delete the claim before one more reset
+  and task finish on it.
 
-  A batch claim's ``shutdownTime`` is fixed when it is created, but recycling
-  keeps one claim for many tasks, so it is rotated like a ``max_reuses`` claim
-  before the controller deletes it mid-task. Twice the longest task seen on this
-  group leaves room for a task that runs long. A claim with no ``shutdownTime``
-  never expires."""
+  The SDK fixes a batch claim's ``shutdownTime`` when it creates the claim.
+  Recycling keeps one claim for many tasks, so the caller rotates the claim early
+  when this returns True, as it does at ``max_reuses``. Otherwise the controller
+  could delete the claim in the middle of a task. The check budgets the next task
+  at twice the longest task this group has run so far, which leaves room for a
+  task that runs long. A claim with no ``shutdownTime`` never expires."""
   expires_at = handle.claim_expires_at
   if expires_at is None:
     return False

@@ -112,8 +112,9 @@ class BatchClaimConfig(BaseModel):
   # lease_duration // 3 seconds. The SDK requires a value above its clock skew
   # margin.
   lease_duration: Annotated[int, Field(gt=CLOCK_SKEW_MARGIN)] = 300
-  # Seconds one claim may be held after it is Ready; part of its shutdownTime.
-  # Recycle rotates a claim before this runs out.
+  # How many seconds a caller may hold one claim after it is Ready. The SDK adds
+  # it to the claim's shutdownTime. Recycling rotates a claim before this runs
+  # out.
   work_budget: Annotated[int, Field(ge=1)] = 3600
 
 

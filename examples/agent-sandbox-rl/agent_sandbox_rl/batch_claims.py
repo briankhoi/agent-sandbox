@@ -55,8 +55,9 @@ class BatchClaim:
 
   batch: "SandboxBatch"
   member: "Member"
-  # time.monotonic() by which the controller deletes the claim (its shutdownTime),
-  # measured from before the create, so it is never later than the real one.
+  # The time.monotonic() value at which the controller deletes the claim, which
+  # is the claim's shutdownTime. BatchClaims starts counting before the create,
+  # so this value is never later than the real shutdownTime.
   expires_at: float
 
   def release(self) -> None:
@@ -118,7 +119,8 @@ class BatchClaims:
           create_rps=s.create_rps,
           max_in_flight=s.max_in_flight,
           work_budget=s.work_budget,
-          # Part of each acquired claim's shutdownTime, which expires_at assumes.
+          # The SDK adds this to each acquired claim's shutdownTime, and
+          # acquire() adds the same when it computes expires_at.
           quorum_timeout=self._ready_timeout,
           lease_duration=s.lease_duration)
       with self._lock:

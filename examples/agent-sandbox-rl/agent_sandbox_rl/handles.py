@@ -215,8 +215,9 @@ class SandboxHandle:
 
   @property
   def claim_expires_at(self) -> Optional[float]:
-    """``time.monotonic()`` at or after which the controller deletes this claim (its
-    ``shutdownTime``), or ``None`` when the claim has none (claim_mode="per_claim")."""
+    """The ``time.monotonic()`` value at which the controller deletes this claim,
+    which is its ``shutdownTime``. ``None`` means the claim has no
+    ``shutdownTime``, which is true of every claim made outside a batch."""
     return None if self._batch_claim is None else self._batch_claim.expires_at
 
   def exec(self, command, timeout: float | None = None) -> str:
