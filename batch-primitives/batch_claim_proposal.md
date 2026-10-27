@@ -260,7 +260,7 @@ The reaper needs no permissions on claims. The ClusterRole is granted with a Rol
 - `release_group(warmpool)`: Deletes every claim the batch holds from one pool, initial-fill and acquired alike, pending ones included (an `acquire` still waiting on that pool raises `BatchError`), for any pool the batch has used, with label-scoped `deletecollection` rounds like `release`, and deletes on sight a claim of the group whose create lands afterwards. Its members are never handed out afterwards. Works in any consumption mode. A member whose create failed is never deleted by name by any release method, since that name may belong to another client's claim
 - `events`: A live channel of the initial fill's member transitions, closed once the fill settles, at the fill deadline, or when `err` is set
 - `lease_degraded`: Whether Lease renewal is currently failing. It can be polled at any time, including after `events` has closed
-- `iter_ready_groups`: A live channel yielding once per group, as soon as that group's own `min_ready` is met or becomes unreachable, independent of other groups. Mutually exclusive with `wait_for_quorum` on the same batch
+- `group_outcomes`: A live channel yielding once per group, as soon as that group's own `min_ready` is met or becomes unreachable, independent of other groups. Mutually exclusive with `wait_for_quorum` on the same batch
 - Cleanup
     - `release`: Stop the informer and renewal, `deletecollection` the batch label, delete the Lease
     - `detach`: Stops the informer and renewal but leaves the claims alive for a later `get_batch`.
@@ -304,8 +304,8 @@ class BatchEvent(BaseModel):
     member: Member
 
 @dataclass(frozen=True)
-class GroupReady:
-    """One group's own quorum outcome, yielded by iter_ready_groups()."""
+class GroupOutcome:
+    """One group's own quorum outcome, yielded by group_outcomes()."""
     warmpool: str
     members: list[Member]                             # this group's min_ready members
     error: Exception | None = None                    # QuorumUnreachableError or BatchTimeoutError, set instead of members
@@ -368,7 +368,7 @@ class AsyncSandboxBatch:
     size: int                                             # sum of the group sizes
 
     async def wait_for_quorum(self) -> list[Member]: ...
-    def iter_ready_groups(self) -> AsyncIterator[GroupReady]: ...         # mutually exclusive with wait_for_quorum
+    def group_outcomes(self) -> AsyncIterator[GroupOutcome]: ...         # mutually exclusive with wait_for_quorum
     def members(self, warmpool: str | None = None) -> list[Member]: ...   # current snapshot, without released members
     def events(self) -> AsyncIterator[BatchEvent]: ...
     def err(self) -> Exception | None: ...
@@ -391,7 +391,7 @@ class AsyncSandboxBatch:
 The Go SDK mirrors the Python SDK additions, with the following differences:
 - Extends the single client and adds a single `Batch` struct as there is no async/sync class differences
 - `claim_batch`'s keyword arguments become a `BatchOptions` struct, with the groups in a required `Groups []BatchGroup` field.
-- The `events` and `iter_ready_groups` iterators become receive-only channels
+- The `events` and `group_outcomes` iterators become receive-only channels
 
 ## SDK Usage
 
@@ -431,7 +431,7 @@ async def run_one(batch, member):
 
 #### 2. Per-group quorum example
 
-Each group starts its own cohort as soon as its own `min_ready` is met (via `iter_ready_groups`), without waiting on slower groups. A group whose quorum is unreachable doesn't stop the other groups: its `group.error` is collected instead of raised inline, and surfaced as an `ExceptionGroup` once every group has settled. `iter_ready_groups()` is called before the drain task first calls `events()`, since the task only starts running at the first `await`. That order matters, because `iter_ready_groups()` can't be called after `events()`.
+Each group starts its own cohort as soon as its own `min_ready` is met (via `group_outcomes`), without waiting on slower groups. A group whose quorum is unreachable doesn't stop the other groups: its `group.error` is collected instead of raised inline, and surfaced as an `ExceptionGroup` once every group has settled. `group_outcomes()` is called before the drain task first calls `events()`, since the task only starts running at the first `await`. That order matters, because `group_outcomes()` can't be called after `events()`.
 
 ```python
 pool = collections.defaultdict(list)
@@ -456,7 +456,7 @@ try:
 
         tg.create_task(drain_late_arrivals())
 
-        async for group in batch.iter_ready_groups():
+        async for group in batch.group_outcomes():
             if group.error is not None:
                 group_errors.append(group.error)   # surfaced below, not dropped; other groups keep flowing
                 await batch.release_group(group.warmpool)   # free its sandboxes now, not at release()
@@ -608,7 +608,7 @@ class RolloutDispatch(str, Enum):
     STREAM = "stream"
 ```
 - `RolloutDispatch.QUORUM` (Synchronous Joint-Batch RL): Uses `batch.wait_for_quorum()` to block until every group's `min_ready` members are Ready. Required when an on-policy training step mandates a fixed mixture ratio and joint normalization across all environments simultaneously before stepping (e.g. joint-batch PPO/GRPO).
-- `RolloutDispatch.GROUP` (Pipelined Domain / Task Cohorts): Uses `batch.iter_ready_groups()` so each pool's cohort dispatches as soon as its own `min_ready` is met. Ideal for GRPO prompt-group sampling or multi-task PPO with domain-specific advantage normalization and gradient accumulation, preventing slow warm pools from blocking faster cohorts. If a pool hits a terminal failure (`group.error`), only that pool's cohort fails, while healthy groups continue.
+- `RolloutDispatch.GROUP` (Pipelined Domain / Task Cohorts): Uses `batch.group_outcomes()` so each pool's cohort dispatches as soon as its own `min_ready` is met. Ideal for GRPO prompt-group sampling or multi-task PPO with domain-specific advantage normalization and gradient accumulation, preventing slow warm pools from blocking faster cohorts. If a pool hits a terminal failure (`group.error`), only that pool's cohort fails, while healthy groups continue.
 - `RolloutDispatch.STREAM` (Asynchronous Streaming Rollouts): Uses only `batch.events()` to receive Ready members individually, with no per-pool or per-batch gating at all (e.g. IMPALA/APPO actor loops or asynchronous replay buffers).
 
 The dispatch modes live on the pool, and `fleet.run(wave=True, dispatch=...)` selects them for callers that run through `fleet.run()`. Handing members to a trainer as they become Ready (`stream_step`) goes through the pool directly, since `run()` returns only once every task is done. The modes work together with recycling: a group of `K < G` sandboxes serves its `G` rollouts, `G/K` each, with a git restore between them.

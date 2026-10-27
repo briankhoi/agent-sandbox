@@ -22,7 +22,7 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 10/N | `feat/batch-1-fu7b-cleanup-retry` | fix(python-sdk): keep closing batch connections when cleanup fails (10/N) | merged #2049 (`74cd8fa5`, tree equals `078843dd`) | `078843dd` | local agent |
 | 11/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `2b1d9268`) | fix(batch,python-sdk): concurrent detach() success, named batch tasks for debugging (11/N) | merged #1996 (`7cfe8484`, tree equals `3e977d6a`) | `3e977d6a` | local agent |
 | 12/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (12/N) | open upstream #1824 | `386b39fc` | local agent |
-| 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(python-sdk): add events and iter_ready_groups (13/N) | open upstream #1988 | `a4592793` | local agent |
+| 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(python-sdk): add events and group_outcomes (13/N) | open upstream #1988 | `a4592793` | local agent |
 | 14/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (14/N) | open upstream #1989 | `fb136030` | local agent |
 | 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (15/N) | open upstream #1990 | `59da47af` | local agent |
 | 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (16/N) | open upstream #1991 | `37f3ed12` | local agent |
@@ -137,9 +137,8 @@ This PR is the twelfth in a series of PRs to implement a batch. It adds `claim_b
 ### 13/N PR 3 (open #1988)
 This PR is the thirteenth in a series of PRs to implement a batch. It adds the ways to consume a batch as it fills.
 - `events()` yields member events as they happen.
-- `iter_ready_groups()` yields each group once it has `min_ready` Ready members, or raises when it can't.
+- `group_outcomes()` yields each group once its outcome is known: its first `min_ready` Ready members, or an `error` (`QuorumUnreachableError` or `BatchTimeoutError`).
 - Fill accounting is O(1) per watch event.
-- Pending rename (Brian approved 2026-10-22): `iter_ready_groups`/`GroupReady` become `group_outcomes`/`GroupOutcome`. Update this row and title when the local agent applies it.
 
 ### 14/N PR 4 (open #1989)
 This PR is the fourteenth in a series of PRs to implement a batch. It adds `wait_for_quorum()`.
