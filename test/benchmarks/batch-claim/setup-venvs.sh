@@ -4,6 +4,8 @@
 #
 #   setup-venvs.sh host   venvs on this machine, in bin/bench-venv and bin/base-venv
 #   setup-venvs.sh pod    venvs in the driver pod, in /opt/venv and /opt/venv-base
+#   setup-venvs.sh sdk-host <sha>   the SDK at <sha>, in $BENCH_VENV_DIR/venv-<sha7> (default bin/)
+#   setup-venvs.sh sdk-pod <sha>    the same in the driver pod, in /opt/venv-<sha7>
 #
 # The base SDK comes from `git archive BASE_SHA` into bin/base-<sha>, inside the repo the kind
 # node mounts, so the driver pod can install it too.
@@ -42,8 +44,31 @@ case "${1:-}" in
     install /opt/venv "$SDK" "0.0.0+tip"
     install /opt/venv-base "$BASE_DIR/$SDK" "0.0.0+base.${BASE_SHA:0:7}"
     ;;
+  sdk-host)
+    # The SDK at any commit, for runs that pick their code by code_sha: extracted to
+    # bin/sdk-<sha7> (inside the repo the kind node mounts, for sdk-pod) and installed as
+    # $BENCH_VENV_DIR/venv-<sha7> for a driver on the host. BENCH_VENV_DIR defaults to bin/, the
+    # same default bench.py uses. The commit can be in any worktree of this repo's object store.
+    sha=${2:?usage: $0 sdk-host <sha>}
+    cd "$(git rev-parse --show-toplevel)"
+    sha=$(git rev-parse --verify "$sha^{commit}")
+    if [ ! -d "bin/sdk-${sha:0:7}/$SDK" ]; then
+      mkdir -p "bin/sdk-${sha:0:7}"
+      git archive "$sha" "$SDK" | tar -x -C "bin/sdk-${sha:0:7}"
+    fi
+    venv_dir=${BENCH_VENV_DIR:-$PWD/bin}
+    if [ ! -x "$venv_dir/venv-${sha:0:7}/bin/python" ]; then
+      install "$venv_dir/venv-${sha:0:7}" "bin/sdk-${sha:0:7}/$SDK" "0.0.0+sdk.${sha:0:7}"
+    fi
+    ;;
+  sdk-pod)
+    # Run inside the driver pod, after sdk-host has extracted the commit.
+    sha=${2:?usage: $0 sdk-pod <sha>}
+    cd /src
+    install "/opt/venv-${sha:0:7}" "bin/sdk-${sha:0:7}/$SDK" "0.0.0+sdk.${sha:0:7}"
+    ;;
   *)
-    echo "usage: $0 host|pod" >&2
+    echo "usage: $0 host|pod|sdk-host <sha>|sdk-pod <sha>" >&2
     exit 2
     ;;
 esac

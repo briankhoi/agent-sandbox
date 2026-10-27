@@ -23,6 +23,7 @@ Subcommands:
   setup          namespaces, the base pools, and the driver pod with the README's driver Role
   import-legacy  copies the earlier runs that still count into results/, marked imported
   suite          runs every scenario's runs that have no result file yet, in run_plan() order
+  arm            one 1d memprobe entry on a given SDK commit (--code-sha), run as suite runs it
   candidate      applies the default-pacing rule to the 3s and 3a2 runs and writes results/candidate.json
   errored        lists runs that finished with errors; --supersede moves first attempts to results/superseded/
   report         writes bench-report.md from results/
@@ -37,6 +38,7 @@ driver stops at phase boundaries while the orchestrator scrapes the apiserver's 
 
 import argparse
 import asyncio
+import functools
 import glob
 import inspect
 import json
@@ -81,6 +83,11 @@ PYTHONS = {
     ("pod", "tip"): "/opt/venv/bin/python",
     ("pod", "base"): "/opt/venv-base/bin/python",
 }
+# Where setup-venvs.sh sdk-host puts a code_sha run's host venv, as venv-<sha7>. Outside the repo
+# by choice, so several worktrees can share one set of per-commit venvs.
+HOST_VENV_DIR = os.environ.get("BENCH_VENV_DIR", os.path.join(REPO, "bin"))
+# The Accept header that asks the apiserver for a PartialObjectMetadataList, for the byte ratio.
+META_ACCEPT = "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1"
 EXTRA_LABEL = "bench/extra"
 
 
@@ -282,19 +289,44 @@ def classify_request(method, path, query):
 
 
 class RequestCounter:
-    """Counts every request either Kubernetes client sends, by verb and resource."""
+    """Counts every request either Kubernetes client sends, by verb and resource and by method and
+    path. It patches the ApiClient classes, so every instance is counted, a second ApiClient or a
+    direct call_api included. A list with the PartialObjectMetadataList Accept header counts under
+    its own '(meta)' key. While ``tracing`` is set it also keeps each collection request (list,
+    deletecollection) with its time and paging parameters, so a release's requests can be split
+    by round."""
+
+    TRACED_VERBS = ("list", "deletecollection")
 
     def __init__(self):
         self.lock = threading.Lock()
         self.counts = {}
+        self.by_path = {}
+        self.tracing = False
+        self.trace = []
 
-    def add(self, key):
+    def add(self, key, method="", path="", query=None, headers=None):
+        accept = str((headers or {}).get("Accept") or (headers or {}).get("accept") or "")
+        if "as=PartialObjectMetadata" in accept:
+            key += " (meta)"
+        path_key = f"{method.upper()} {path}"
         with self.lock:
             self.counts[key] = self.counts.get(key, 0) + 1
+            self.by_path[path_key] = self.by_path.get(path_key, 0) + 1
+            if self.tracing and key.split(" ", 1)[0] in self.TRACED_VERBS:
+                # As strings, since the sync client's come from the URL and the async client's are typed.
+                q = {k: str(v) for k, v in (query or {}).items()}
+                self.trace.append({"t": time.monotonic(), "key": key, "limit": q.get("limit"),
+                                   "continue": bool(q.get("continue")), "resourceVersion": q.get("resourceVersion"),
+                                   "timeoutSeconds": q.get("timeoutSeconds")})
 
     def snapshot(self):
         with self.lock:
             return dict(self.counts)
+
+    def snapshot_paths(self):
+        with self.lock:
+            return dict(self.by_path)
 
     @staticmethod
     def since(now, before):
@@ -310,7 +342,9 @@ class RequestCounter:
             def call_api(self, method, url, *args, **kwargs):
                 parsed = urlparse(url)
                 query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-                counter.add(classify_request(method, parsed.path, query))
+                headers = kwargs.get("header_params") or (args[0] if args else None)
+                counter.add(classify_request(method, parsed.path, query), method, parsed.path, query,
+                            headers if isinstance(headers, dict) else None)
                 return orig_sync(self, method, url, *args, **kwargs)
 
             SyncApiClient.call_api = call_api
@@ -325,12 +359,88 @@ class RequestCounter:
                 path = resource_path
                 for k, v in (path_params or {}).items():
                     path = path.replace("{" + k + "}", str(v))
-                counter.add(classify_request(method, path, dict(query_params or [])))
+                query = dict(query_params or [])
+                headers = kwargs.get("header_params") or (args[0] if args else None)
+                counter.add(classify_request(method, path, query), method, path, query,
+                            headers if isinstance(headers, dict) else None)
                 return orig_async(self, resource_path, method, path_params, query_params, *args, **kwargs)
 
             AsyncApiClient.call_api = call_api_async
         except ImportError:
             pass
+
+
+class PageRecorder:
+    """Keeps each full list response's resourceVersion, continue token presence and item count, by
+    wrapping CustomObjectsApi.list_namespaced_custom_object on the class. It reads only the
+    returned dict's metadata, so it adds no parsing to the traced memory. A watch call returns a
+    stream, not a dict, and is skipped. A list sent some other way (call_api directly) is not seen
+    here, only in RequestCounter's trace."""
+
+    MAX = 5000
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.pages = []
+        self.recording = True
+
+    def _record(self, start, kwargs, result):
+        if not self.recording or not isinstance(result, dict):
+            return
+        meta = result.get("metadata") or {}
+        with self.lock:
+            if len(self.pages) < self.MAX:
+                self.pages.append({"t": start, "end": time.monotonic(), "label_selector": kwargs.get("label_selector"),
+                                   "limit": kwargs.get("limit"), "continue_in": bool(kwargs.get("_continue")),
+                                   "resourceVersion": meta.get("resourceVersion"),
+                                   "continue_out": bool(meta.get("continue")),
+                                   "remainingItemCount": meta.get("remainingItemCount"),
+                                   "items": len(result.get("items") or [])})
+
+    def install(self):
+        recorder = self
+        try:
+            from kubernetes.client import CustomObjectsApi
+
+            orig = CustomObjectsApi.list_namespaced_custom_object
+
+            # wraps keeps the docstring, which Watch.stream reads for the return type.
+            @functools.wraps(orig)
+            def list_namespaced_custom_object(self, *args, **kwargs):
+                start = time.monotonic()
+                result = orig(self, *args, **kwargs)
+                recorder._record(start, kwargs, result)
+                return result
+
+            CustomObjectsApi.list_namespaced_custom_object = list_namespaced_custom_object
+        except ImportError:
+            pass
+        try:
+            from kubernetes_asyncio.client import CustomObjectsApi as AsyncCustomObjectsApi
+
+            orig_async = AsyncCustomObjectsApi.list_namespaced_custom_object
+
+            @functools.wraps(orig_async)
+            def list_async(self, *args, **kwargs):
+                result = orig_async(self, *args, **kwargs)
+                if kwargs.get("watch") or not inspect.isawaitable(result):
+                    return result
+
+                async def wrapped():
+                    start = time.monotonic()
+                    out = await result
+                    recorder._record(start, kwargs, out)
+                    return out
+
+                return wrapped()
+
+            AsyncCustomObjectsApi.list_namespaced_custom_object = list_async
+        except ImportError:
+            pass
+
+    def since(self, mark, t0):
+        with self.lock:
+            return [{**p, "t": round(p["t"] - t0, 3), "end": round(p["end"] - t0, 3)} for p in self.pages[mark:]]
 
 
 class Probe:
@@ -347,8 +457,10 @@ class Probe:
         self.lease_failures = 0
         # (start, end, item count)
         self.lists = []
-        # (start, end, status)
+        # (start, end, status, error type or None)
         self.deletecollections = []
+        # (start, end, status, returned count or None), from count_live_sandbox_claims.
+        self.counts = []
         self.watches_active = 0
         self.watches_peak = 0
 
@@ -358,6 +470,8 @@ class Probe:
         self._wrap(helper, "replace_batch_lease", self._on_lease)
         self._wrap(helper, "list_sandbox_claim_objects", self._on_list)
         self._wrap(helper, "delete_sandbox_claims_by_label", self._on_deletecollection)
+        # Only on SDKs whose release counts live claims instead of listing them.
+        self._wrap(helper, "count_live_sandbox_claims", self._on_count)
         # The batch's claim watch, and the single-claim API's per-claim wait.
         self._wrap_watch(helper, "watch_sandbox_claims")
         self._wrap_watch(helper, "_watch_claim")
@@ -374,7 +488,7 @@ class Probe:
                 try:
                     result = await fn(*args, **kwargs)
                 except BaseException as e:
-                    on_done(args, start, time.monotonic(), _status_of(e), None)
+                    on_done(args, start, time.monotonic(), _status_of(e), e)
                     raise
                 on_done(args, start, time.monotonic(), 0, result)
                 return result
@@ -386,7 +500,7 @@ class Probe:
                 try:
                     result = fn(*args, **kwargs)
                 except BaseException as e:
-                    on_done(args, start, time.monotonic(), _status_of(e), None)
+                    on_done(args, start, time.monotonic(), _status_of(e), e)
                     raise
                 on_done(args, start, time.monotonic(), 0, result)
                 return result
@@ -450,13 +564,22 @@ class Probe:
                 self.lease_failures += 1
 
     def _on_list(self, _args, start, end, status, result):
-        items = len(result[0]) if status == 0 and result else 0
+        items = 0
+        if status == 0 and not isinstance(result, BaseException) and result:
+            # (items, resourceVersion) on the SDKs here, a bare list allowed in case that changes.
+            items = len(result[0]) if isinstance(result, tuple) else len(result)
         with self.lock:
             self.lists.append((start, end, items))
 
-    def _on_deletecollection(self, _args, start, end, status, _result):
+    def _on_deletecollection(self, _args, start, end, status, result):
+        error = type(result).__name__ if isinstance(result, BaseException) else None
         with self.lock:
-            self.deletecollections.append((start, end, status))
+            self.deletecollections.append((start, end, status, error))
+
+    def _on_count(self, _args, start, end, status, result):
+        count = result if status == 0 and isinstance(result, int) else None
+        with self.lock:
+            self.counts.append((start, end, status, count))
 
     def created_names(self):
         with self.lock:
@@ -598,6 +721,26 @@ def _tcp_active_opens():
         return None
 
 
+def claim_bytes(item):
+    """One claim's compact JSON size with and without metadata.managedFields."""
+    full = len(json.dumps(item, separators=(",", ":")).encode())
+    meta = {k: v for k, v in (item.get("metadata") or {}).items() if k != "managedFields"}
+    stripped = len(json.dumps({**item, "metadata": meta}, separators=(",", ":")).encode())
+    return {"bytes": full, "bytes_without_managed_fields": stripped,
+            "managed_fields_share": (full - stripped) / full if full else None}
+
+
+def list_requests_per_round(trace, deletecollections):
+    """List requests (full or metadata-only) in each release round, a round running from one
+    deletecollection's start to the next one's, both on the release's clock."""
+    starts = [d["t"] for d in deletecollections]
+    out = []
+    for i, lo in enumerate(starts):
+        hi = starts[i + 1] if i + 1 < len(starts) else float("inf")
+        out.append(sum(1 for e in trace if e["key"].startswith("list ") and lo <= e["t"] < hi))
+    return out
+
+
 def _api_endpoints():
     if os.environ.get("KUBERNETES_SERVICE_HOST"):
         return {(os.environ["KUBERNETES_SERVICE_HOST"], int(os.environ.get("KUBERNETES_SERVICE_PORT", "443")))}
@@ -617,6 +760,8 @@ class Driver:
         logging.basicConfig(level=logging.WARNING)
         self.requests = RequestCounter()
         self.requests.install()
+        self.pages = PageRecorder()
+        self.pages.install()
         self.ready = ReadyRecorder()
         self.ready.install()
         self.probe = Probe()
@@ -753,6 +898,7 @@ class Driver:
         r["lease_failures"] = p.lease_failures
         r["watches_peak_sdk"] = p.watches_peak
         r["requests_total"] = self.requests.snapshot()
+        r["requests_by_path_total"] = self.requests.snapshot_paths()
         r["sampler_cpu_s"] = self.sampler.own_cpu
         print("@@RESULT " + json.dumps(r), flush=True)
 
@@ -834,6 +980,18 @@ class Driver:
         r[f"{prefix}_list_fraction"] = r[f"{prefix}_list_s"] / wall if wall else None
         r[f"{prefix}_deletecollection_fraction"] = r[f"{prefix}_deletecollection_s"] / wall if wall else None
         r[f"{prefix}_rss_delta_mb"] = rss_delta / 2**20
+        # Per round, on the release's clock: each deletecollection, list and live count with what it
+        # returned, so a round carried by a timed-out deletecollection and a paged count shows as such.
+        with p.lock:
+            counts = [c for c in p.counts if start <= c[0] <= end]
+        r[f"{prefix}_deletecollections"] = [{"t": round(s - start, 3), "s": round(e - s, 3), "status": st, "error": err}
+                                            for s, e, st, err in dcs]
+        r[f"{prefix}_lists"] = [{"t": round(s - start, 3), "s": round(e - s, 3), "items": n} for s, e, n in lists]
+        r[f"{prefix}_list_items"] = [n for _, _, n in lists]
+        r[f"{prefix}_counts"] = [{"t": round(s - start, 3), "s": round(e - s, 3), "status": st, "count": n}
+                                 for s, e, st, n in counts]
+        r[f"{prefix}_count_values"] = [n for _, _, _, n in counts]
+        r[f"{prefix}_count_s"] = sum(e - s for s, e, _, _ in counts)
 
     @staticmethod
     def groups_of(spec):
@@ -959,7 +1117,12 @@ class Driver:
 
     def memprobe(self, client, batch):
         """tracemalloc's peak and retained sizes for one direct list of the batch's claims, and
-        then for release(). Traced sizes are relative to the traced size just before each call."""
+        then for release(). Traced sizes are relative to the traced size just before each call.
+        Before both, the orchestrator measures the raw list's bytes with and without the metadata-only
+        Accept header (outside this process, so neither the traced memory nor the request counts
+        include it). ``collection_timeout_s`` in the spec replaces the SDK's collection request
+        timeout for the release, so deletecollection can time out and the re-list or count carries
+        the round."""
         import gc
         import tracemalloc
 
@@ -970,33 +1133,67 @@ class Driver:
         selector = f"{batch_utils.BATCH_ID_LABEL}={batch.batch_id}"
         r["memprobe_selector"] = selector
         mb = 2**20
+        self.measure_bytes(selector)
         gc.collect()
         tracemalloc.start()
         before = tracemalloc.get_traced_memory()[0]
+        req0, pages0 = self.requests.snapshot(), len(self.pages.pages)
+        self.requests.trace.clear()
+        self.requests.tracing = True
         t = time.monotonic()
-        items, _ = client.k8s_helper.list_sandbox_claim_objects(NS, selector)
+        listed = client.k8s_helper.list_sandbox_claim_objects(NS, selector)
         r["list_s"] = time.monotonic() - t
+        self.requests.tracing = False
+        items = listed[0] if isinstance(listed, tuple) else listed
         r["list_items"] = len(items)
         current, peak = tracemalloc.get_traced_memory()
         r["list_traced_peak_mb"] = (peak - before) / mb
         r["list_traced_with_result_mb"] = (current - before) / mb
-        del items
+        # After the traced sizes are read, so the copies made here don't count toward them.
+        r["list_requests"] = self.requests.since(self.requests.snapshot(), req0)
+        r["list_request_trace"] = [{**e, "t": round(e["t"] - t, 3)} for e in self.requests.trace]
+        r["list_pages"] = self.pages.since(pages0, t)
+        r["listed_claim_bytes"] = claim_bytes(items[0]) if items else None
+        del items, listed
         gc.collect()
         r["list_traced_retained_mb"] = (tracemalloc.get_traced_memory()[0] - before) / mb
+        r["collection_timeout_default_s"] = batch_utils.BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS
+        if self.spec.get("collection_timeout_s") is not None:
+            # Read by the release loop at call time (sandbox_batch.py), so setting it here is enough.
+            batch_utils.BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS = self.spec["collection_timeout_s"]
+        r["collection_timeout_s"] = batch_utils.BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS
         tracemalloc.reset_peak()
         before = tracemalloc.get_traced_memory()[0]
         mark = (len(self.probe.lists), len(self.probe.deletecollections))
         self.cleanup_start("release", "count")
         rss0 = self.sampler.window()
+        req0, paths0, pages0 = self.requests.snapshot(), self.requests.snapshot_paths(), len(self.pages.pages)
+        self.requests.trace.clear()
+        self.requests.tracing = True
         t = time.monotonic()
-        batch.release()
-        self.record_release(*mark, t, time.monotonic(), self.sampler.window_delta(rss0))
-        peak = tracemalloc.get_traced_memory()[1]
+        try:
+            batch.release()
+        finally:
+            self.requests.tracing = False
+            end = time.monotonic()
+            peak = tracemalloc.get_traced_memory()[1]
+            self.record_release(*mark, t, end, self.sampler.window_delta(rss0))
+            r["release_requests"] = self.requests.since(self.requests.snapshot(), req0)
+            r["release_requests_by_path"] = self.requests.since(self.requests.snapshot_paths(), paths0)
+            trace = [{**e, "t": round(e["t"] - t, 3)} for e in self.requests.trace]
+            r["release_request_trace"] = trace
+            r["release_pages"] = self.pages.since(pages0, t)
+            r["release_list_requests_per_round"] = list_requests_per_round(trace, r["release_deletecollections"])
         gc.collect()
         r["release_traced_peak_mb"] = (peak - before) / mb
         r["release_traced_retained_mb"] = (tracemalloc.get_traced_memory()[0] - before) / mb
         tracemalloc.stop()
         self.phase("released")
+
+    def measure_bytes(self, selector):
+        """Asks the orchestrator to measure the batch's list in bytes, full and metadata-only."""
+        print(f"@@BYTES {selector}", flush=True)
+        sys.stdin.readline()
 
     async def a_fill(self):
         spec, r = self.spec, self.result
@@ -1768,7 +1965,9 @@ def prepare_pools(extras, log):
 
 def gc_queue_depth():
     """kube-controller-manager's garbage_collector_attempt_to_delete queue depth, or None."""
-    out = subprocess.run(["bash", os.path.join(HERE, "gc-queue.sh")], capture_output=True, text=True).stdout
+    # The node container to read from; gc-queue.sh's default is another cluster's node.
+    node = os.environ.get("BENCH_KIND_NODE", "batch-bench-control-plane")
+    out = subprocess.run(["bash", os.path.join(HERE, "gc-queue.sh"), node], capture_output=True, text=True).stdout
     for line in out.splitlines():
         if line.startswith('workqueue_depth{name="garbage_collector_attempt_to_delete"}'):
             return float(line.rsplit(" ", 1)[1])
@@ -1821,17 +2020,83 @@ def wait_clean(warm_total, log, timeout=7200):
         time.sleep(3)
 
 
+def driver_python(spec):
+    """The interpreter a run's driver uses. A code_sha run uses that commit's venv, installed by
+    setup-venvs.sh sdk-host (on the host) or sdk-pod (in the driver pod)."""
+    sha = spec.get("code_sha")
+    if not sha:
+        return PYTHONS[(spec["location"], spec["code"])]
+    if spec["location"] == "pod":
+        return f"/opt/venv-{sha[:7]}/bin/python"
+    python = os.path.join(HOST_VENV_DIR, f"venv-{sha[:7]}", "bin", "python")
+    if not os.path.exists(python):
+        raise RuntimeError(f"{python} is missing; run setup-venvs.sh sdk-host {sha} with BENCH_VENV_DIR={HOST_VENV_DIR}")
+    return python
+
+
+def measure_list_bytes(selector):
+    """The batch's claim list in bytes, as the apiserver sends it with the default Accept header
+    and with the PartialObjectMetadataList one, through kubectl proxy so the request carries no
+    client library's parsing. Also the managedFields share of the first claim and of the whole
+    list (compact JSON re-serialized with and without metadata.managedFields)."""
+    import urllib.parse
+    import urllib.request
+
+    out = {"selector": selector}
+    ctx = os.environ.get("BENCH_CONTEXT")
+    proxy = subprocess.Popen(["kubectl", *(["--context", ctx] if ctx else []), "proxy", "--port=0"],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        # "Starting to serve on 127.0.0.1:<port>"
+        line = proxy.stdout.readline().strip()
+        base = "http://" + line.rsplit(" ", 1)[1]
+        url = (f"{base}/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/{NS}/sandboxclaims?"
+               + urllib.parse.urlencode({"labelSelector": selector}))
+        bodies = {}
+        for name, accept in (("full", "application/json"), ("meta", META_ACCEPT)):
+            t = time.monotonic()
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"Accept": accept}), timeout=300) as resp:
+                body = resp.read()
+                out[f"{name}_content_type"] = resp.headers.get("Content-Type")
+            out[f"{name}_s"] = time.monotonic() - t
+            out[f"{name}_bytes"] = len(body)
+            bodies[name] = body
+        full = json.loads(bodies["full"])
+        meta = json.loads(bodies["meta"])
+        out["full_kind"], out["meta_kind"] = full.get("kind"), meta.get("kind")
+        out["full_items"], out["meta_items"] = len(full.get("items") or []), len(meta.get("items") or [])
+        out["meta_to_full_ratio"] = out["meta_bytes"] / out["full_bytes"] if out["full_bytes"] else None
+        items = full.get("items") or []
+        out["first_claim"] = claim_bytes(items[0]) if items else None
+        if items:
+            whole = sum(claim_bytes(i)["bytes"] for i in items)
+            stripped = sum(claim_bytes(i)["bytes_without_managed_fields"] for i in items)
+            out["all_claims"] = {"bytes": whole, "bytes_without_managed_fields": stripped,
+                                 "managed_fields_share": (whole - stripped) / whole}
+    except Exception as e:
+        out["error"] = repr(e)
+    finally:
+        proxy.terminate()
+        proxy.wait()
+    return out
+
+
 def run_driver(spec, log_file):
     payload = json.dumps(spec)
     script = f"{POD_REPO_ROOT}/test/benchmarks/batch-claim/bench.py" if spec["location"] == "pod" else os.path.abspath(__file__)
-    python = PYTHONS[(spec["location"], spec["code"])]
+    python = driver_python(spec)
     cmd = [python, script, "run", payload]
+    # Through env(1), since the orchestrator's environment doesn't reach a driver in the pod.
+    env = spec.get("env") or {}
+    if env:
+        cmd = ["env", *(f"{k}={v}" for k, v in env.items()), *cmd]
     if spec["location"] == "pod":
         cmd = ["kubectl", "exec", "-i", "-n", DRIVER_NS, DRIVER_POD, "--", *cmd]
     gauges = Gauges(spec.get("warm_series_pool"), spec.get("warm_interval_s", 10))
     gauges.start()
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     phases, phase_at, trackers = {}, {}, {}
+    measured = {}
     result = None
     started = time.monotonic()
     for line in proc.stdout:
@@ -1843,6 +2108,8 @@ def run_driver(spec, log_file):
             tracker = CleanupTracker(parts[2], parts[3] if len(parts) > 3 else "")
             trackers[parts[1]] = tracker
             tracker.start()
+        elif line.startswith("@@BYTES "):
+            measured["list_bytes"] = measure_list_bytes(line.split(maxsplit=1)[1].strip())
         elif line.startswith("@@RESULT "):
             result = json.loads(line[len("@@RESULT "):])
             continue
@@ -1859,7 +2126,9 @@ def run_driver(spec, log_file):
     gauges.join()
     if result is None:
         raise RuntimeError(f"driver exited {proc.returncode} without a result")
+    result.update(measured)
     result["driver_exit"] = proc.returncode
+    result["driver_cmd"] = cmd
     result["run_wall_s"] = time.monotonic() - started
     names = list(phases)
     result["apiserver"] = {f"{a}->{b}": diff(phases[b], phases[a]) for a, b in zip(names, names[1:])}
@@ -2049,11 +2318,29 @@ def run_plan():
     add("6v2", "baseline", "async", {**base_pod, **rolling2, "kind": "baseline_rolling", "claim_pools": [WARM_POOL],
                                      "baseline_pool": 1000}, runs=1)
 
-    # 1d: memory of the list and release paths at N = 5,000.
-    add("1d", "n5000-memprobe", "sync", {**tip_host, "kind": "fill", "after": "memprobe", "extras": {},
-                                         "groups": [(UNSCHED_POOL, 50 if SMOKE else 5000)], "create_rps": 1000,
-                                         "max_in_flight": 100, "pool_size": 102, "lease_duration": 60})
+    # 1d: memory of the list and release paths at N = 5,000, and at 10,000 for PR 8.
+    add("1d", "n5000-memprobe", "sync", memprobe_spec(5000))
+    add("1d", "n10000-memprobe", "sync", memprobe_spec(10000))
     return plan
+
+
+def memprobe_spec(n, code_sha=None, collection_timeout_s=None):
+    """1d's spec at N claims, on the tip venv or, with ``code_sha``, on that commit's host venv."""
+    spec = {"location": "host", "code": "sha" if code_sha else "tip", "kind": "fill", "after": "memprobe",
+            "extras": {}, "groups": [(UNSCHED_POOL, 50 if SMOKE else n)], "create_rps": 1000,
+            "max_in_flight": 100, "pool_size": 102, "lease_duration": 60}
+    if code_sha:
+        spec["code_sha"] = code_sha
+    if collection_timeout_s is not None:
+        spec["collection_timeout_s"] = collection_timeout_s
+    return spec
+
+
+def arm_plan(args):
+    """One 1d entry for a PR 8 arm: 1d-n<N>-memprobe-<arm>[-ct<s>]-sync, run ``args.runs`` times."""
+    variant = f"n{args.n}-memprobe-{args.arm}" + (f"-ct{args.collection_timeout:g}" if args.collection_timeout is not None else "")
+    spec = memprobe_spec(args.n, args.code_sha, args.collection_timeout)
+    return [("1d", variant, "sync", 1 if SMOKE else args.runs, {"scenario": "1d", "variant": variant, "shell": "sync", **spec})]
 
 
 def run_label(scenario, variant, shell):
@@ -2159,12 +2446,23 @@ def tip_sha():
 
 
 def check_code():
-    """The tip branch's commit at run time, after checking both commits' trees are the ones under test."""
+    """The tip branch's commit at run time, after checking the pinned commits' trees are the ones
+    under test. The branch has moved on since, so only CODE_SHA's tree is checked, not the branch's."""
     tip = git("rev-parse", f"origin/{TIP_BRANCH}")
-    trees = git("rev-parse", f"{CODE_SHA}^{{tree}}", f"{tip}^{{tree}}", f"{BASE_SHA}^{{tree}}").split()
-    if trees != [CODE_TREE, CODE_TREE, BASE_TREE]:
-        raise SystemExit(f"trees {trees} aren't {[CODE_TREE, CODE_TREE, BASE_TREE]}; origin/{TIP_BRANCH} is {tip}")
+    trees = git("rev-parse", f"{CODE_SHA}^{{tree}}", f"{BASE_SHA}^{{tree}}").split()
+    if trees != [CODE_TREE, BASE_TREE]:
+        raise SystemExit(f"trees {trees} aren't {[CODE_TREE, BASE_TREE]}")
     return tip
+
+
+def check_context():
+    """Refuses to run unless BENCH_CONTEXT names the current kubectl context, since bench.py and
+    the scripts it calls follow KUBECONFIG and would otherwise run against any cluster."""
+    want = os.environ.get("BENCH_CONTEXT")
+    have = kubectl("config", "current-context", check=False).strip()
+    if not want or want != have:
+        raise SystemExit(f"BENCH_CONTEXT is {want!r} but the current context is {have!r}; set BENCH_CONTEXT to the "
+                         "benchmark cluster's context and KUBECONFIG to its kubeconfig")
 
 
 def controller_image():
@@ -2172,6 +2470,13 @@ def controller_image():
     status = pod["status"]["containerStatuses"][0]
     return {"controller_image": status["image"], "controller_image_id": status["imageID"],
             "controller_pod": pod["metadata"]["name"]}
+
+
+def host_ram_bytes():
+    """The host's RAM, from sysctl on macOS and sysconf elsewhere."""
+    if sys.platform == "darwin":
+        return int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True).stdout or 0)
+    return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
 
 
 def record_env():
@@ -2187,7 +2492,7 @@ def record_env():
     env = {
         "host": platform.platform(),
         "host_cpus": os.cpu_count(),
-        "host_ram_bytes": int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True).stdout or 0),
+        "host_ram_bytes": host_ram_bytes(),
         "docker_vm": subprocess.run(["docker", "info", "--format", "{{.NCPU}} cpus {{.MemTotal}} bytes"], capture_output=True, text=True).stdout.strip(),
         "kind": subprocess.run(["kind", "version"], capture_output=True, text=True).stdout.strip(),
         "kubernetes": node["status"]["nodeInfo"]["kubeletVersion"],
@@ -2204,6 +2509,9 @@ def record_env():
         "venvs": {},
     }
     for (location, code), python in PYTHONS.items():
+        # A host venv this checkout never built (a code_sha run doesn't need it) is left out.
+        if location == "host" and not os.path.exists(python):
+            continue
         cmd = [python, "-c", "import k8s_agent_sandbox, importlib.metadata as m; print(k8s_agent_sandbox.__file__, m.version('k8s-agent-sandbox'), m.version('kubernetes'), m.version('kubernetes_asyncio'))"]
         if location == "pod":
             cmd = ["kubectl", "exec", "-n", DRIVER_NS, DRIVER_POD, "--", *cmd]
@@ -2242,7 +2550,9 @@ def jobs(plan):
     return out
 
 
-def cmd_suite(args):
+def cmd_suite(args, plan=None):
+    """Runs ``plan`` (run_plan() by default) as the suite does."""
+    check_context()
     os.makedirs(LOGS_DIR, exist_ok=True)
     tip_branch_sha = check_code()
     record_env()
@@ -2254,10 +2564,13 @@ def cmd_suite(args):
         suite_log.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
         suite_log.flush()
 
-    plan = run_plan()
+    # In each result too, since env.json keeps its first value when the cluster is unchanged.
+    bench_head = git("rev-parse", "HEAD")
+    bench_dirty = bool(git("status", "--porcelain", "--", HERE + "/*.py", HERE + "/*.sh"))
+    plan = plan or run_plan()
     for (scenario, variant, shell, runs, spec), k in jobs(plan):
         label = run_label(scenario, variant, shell)
-        if args.only and not any(label.startswith(o) for o in args.only):
+        if getattr(args, "only", None) and not any(label.startswith(o) for o in args.only):
             continue
         path = result_path(label, k)
         key = f"{label}-run{k}"
@@ -2290,15 +2603,20 @@ def cmd_suite(args):
                 continue
         result.update({"scenario": scenario, "variant": variant, "shell": shell, "run": k, "spec": run_spec,
                        "driver_location": spec["location"], "code": spec["code"],
-                       "code_sha": BASE_SHA if spec["code"] == "base" else CODE_SHA,
-                       "code_tree": BASE_TREE if spec["code"] == "base" else CODE_TREE,
-                       "tip_branch_sha": tip_branch_sha, **controller_image(),
+                       "code_sha": spec.get("code_sha") or (BASE_SHA if spec["code"] == "base" else CODE_SHA),
+                       "code_tree": (git("rev-parse", f"{spec['code_sha']}^{{tree}}") if spec.get("code_sha")
+                                     else BASE_TREE if spec["code"] == "base" else CODE_TREE),
+                       "tip_branch_sha": tip_branch_sha, "bench_head_sha": bench_head, "bench_dirty": bench_dirty,
+                       **controller_image(),
                        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         # Written once, never overwritten: a finished run is one whose file exists.
         with open(path, "x") as f:
             json.dump(result, f, indent=1)
         # Failures of this suite left no file, so they're kept from before.
         statuses = statuses_from_disk() | {k2: v for k2, v in statuses.items() if v.startswith("failed")}
+        # An arm run isn't in run_plan(), so its line comes from its result here.
+        if key not in statuses:
+            statuses[key] = f"done with errors ({run_errors(result)})" if run_errors(result) else "done"
         write_status(statuses)
         log(f"{key} {statuses[key]}")
     log("suite finished")
@@ -2383,6 +2701,7 @@ def cmd_import_legacy(_args):
 
 
 def cmd_setup(_args):
+    check_context()
     kubectl("apply", "-f", "-", input=SETUP_MANIFEST)
     # The earlier setup bound cluster-admin; the README's Role replaces it.
     kubectl("delete", "clusterrolebinding", "bench-driver", "--ignore-not-found", check=False)
@@ -2401,6 +2720,13 @@ def main():
     sub.add_parser("candidate")
     errored = sub.add_parser("errored")
     errored.add_argument("--supersede", action="store_true")
+    arm = sub.add_parser("arm", help="one 1d memprobe entry on a given SDK commit, run as the suite runs it")
+    arm.add_argument("--arm", required=True, help="result name suffix, such as A or B")
+    arm.add_argument("--code-sha", required=True, help="SDK commit; its host venv comes from setup-venvs.sh sdk-host")
+    arm.add_argument("--n", type=int, default=5000, help="claims in the batch")
+    arm.add_argument("--collection-timeout", type=float, default=None,
+                     help="seconds for BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS during the release")
+    arm.add_argument("--runs", type=int, default=1)
     run = sub.add_parser("run")
     run.add_argument("spec")
     args = parser.parse_args()
@@ -2412,6 +2738,10 @@ def main():
         cmd_import_legacy(args)
     elif args.cmd == "suite":
         cmd_suite(args)
+    elif args.cmd == "arm":
+        if len(args.code_sha) != 40 or not git("rev-parse", "--verify", "-q", f"{args.code_sha}^{{commit}}"):
+            raise SystemExit(f"--code-sha {args.code_sha} isn't a full commit SHA this repo has")
+        cmd_suite(args, arm_plan(args))
     elif args.cmd == "errored":
         cmd_errored(args)
     elif args.cmd == "candidate":
