@@ -1,0 +1,13 @@
+# before, 2026-10-27T22:26:04Z
+nproc: 24
+               total        used        free      shared  buff/cache   available
+Mem:              94          40          35           7          27          54
+Swap:             24           1          22
+agent-sandbox
+par-pr8
+ 22:26:04 up 4 days, 14 min, 11 users,  load average: 19.87, 16.25, 13.68
+# after, 2026-10-27T22:30:21Z, arm command 0 in 257 s
+               total        used        free      shared  buff/cache   available
+Mem:              94          70           4           7          27          23
+Swap:             24           1          22
+ 22:30:21 up 4 days, 18 min, 11 users,  load average: 15.39, 15.50, 13.86
