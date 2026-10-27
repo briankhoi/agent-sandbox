@@ -78,6 +78,12 @@ def test_apiserver_delta_is_valid_only_when_claim_creates_match_the_driver():
     assert d["valid"] and d["mean_latency_ms"]["POST sandboxclaims"] == 50.0
     assert d["apf_wait_s"] == 0.25 and d["requests_all"] == 17
     assert d["claim_path_requests"] == 10
+    reads = g.parse_apiserver_metrics(
+        'apiserver_request_total{code="200",resource="sandboxes",verb="WATCH"} 3\n'
+        'apiserver_request_total{code="201",resource="sandboxes",verb="POST"} 7\n'
+        'apiserver_request_total{code="200",resource="leases",verb="PUT"} 5\n'
+        'apiserver_request_total{code="200",resource="sandboxclaims",verb="DELETE"} 2\n')
+    assert g.apiserver_delta(before, reads, 0)["claim_path_requests"] == 5
     assert not g.apiserver_delta(before, after, 9)["valid"]
     # A reset counter goes down while the claim creates still match.
     assert not g.apiserver_delta({**after, "requests_all": 100.0}, after, 0)["valid"]
