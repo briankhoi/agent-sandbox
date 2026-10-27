@@ -22,6 +22,7 @@ from typing import Any, cast
 
 import aiohttp
 from kubernetes_asyncio import client, config, watch
+from kubernetes_asyncio.client.rest import RESTResponse
 from .constants import (
     CLAIM_API_GROUP,
     CLAIM_API_VERSION,
@@ -779,14 +780,31 @@ class AsyncK8sHelper:
         """
         await self._ensure_initialized()
 
-        await self.custom_objects_api.delete_collection_namespaced_custom_object(
+        # The response lists every deleted claim and no caller needs it, so it is drained without being
+        # decoded. The sync client raises ApiException for a non-2xx response before returning it, while
+        # the async client returns an unread response without checking its status, so only the async
+        # helper checks the status here.
+        response = await self.custom_objects_api.delete_collection_namespaced_custom_object(
             group=CLAIM_API_GROUP,
             version=CLAIM_API_VERSION,
             namespace=namespace,
             plural=CLAIM_PLURAL_NAME,
             label_selector=label_selector,
+            _preload_content=False,
             _request_timeout=_request_timeout,
         )
+        try:
+            if not 200 <= response.status <= 299:
+                # Decoded like the body of the library's own errors.
+                body = (await response.read()).decode("utf-8")
+                # kubernetes_asyncio 36's stub types http_resp as an aiohttp response, though its own
+                # REST client passes a RESTResponse, as here.
+                raise client.ApiException(http_resp=cast(Any, RESTResponse(response, body)))
+            async for _ in response.content.iter_any():
+                pass
+        finally:
+            # An unreleased response keeps its pooled connection checked out.
+            response.release()
 
     async def get_sandbox_warmpool(
         self, name: str, namespace: str, _request_timeout: float | None = None
