@@ -1127,6 +1127,16 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
             await self.helper.list_sandbox_claim_objects("default", "agents.x-k8s.io/batch-id=b1")
         self.assertEqual(raised.exception.status, 410)
 
+    async def test_list_sandbox_claim_objects_drops_managed_fields(self):
+        self.helper.custom_objects_api.list_namespaced_custom_object = AsyncMock(return_value={
+            "items": [{"metadata": {"name": "b1-0", "managedFields": [{"manager": "sdk"}]}, "spec": {}}],
+            "metadata": {"resourceVersion": "42"},
+        })
+
+        items, _ = await self.helper.list_sandbox_claim_objects("default", "agents.x-k8s.io/batch-id=b1")
+
+        self.assertEqual(items, [{"metadata": {"name": "b1-0"}, "spec": {}}])
+
     async def test_count_live_sandbox_claims_counts_claims_not_being_deleted_across_pages(self):
         class _Page(dict):
             pass
