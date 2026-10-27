@@ -1,6 +1,6 @@
 """Handle-level golden traces: Python (rev 3.2: 4fa72e04; first 8a72827f) SandboxBatch._next wake-ups and consumer iteration.
 
-Each scenario builds a real SandboxBatch (only the fields events()/iter_ready_groups()/wait_for_quorum()
+Each scenario builds a real SandboxBatch (only the fields events()/group_outcomes()/wait_for_quorum()
 and _next read: _lock, _changed, _state = a real BatchState, _detached, _fill_deadline), starts ONE
 consumer thread on the real public method, and applies a timeline of ops from the main thread at
 t = k * UNIT under the batch's Condition (upsert/mark_lost/note_error + notify_all, or detach). The
@@ -76,7 +76,7 @@ def run(name, consumer, ops, fill_deadline_units=None):
                 for ev in b.events():
                     trace.append([at(), f"iter2 {ev.type.value}:{ev.member.claim_name}"])
             elif consumer == "groups":
-                for g in b.iter_ready_groups():
+                for g in b.group_outcomes():
                     if g.error is not None:
                         trace.append([at(), f"group:{g.warmpool}:ERR:{err_name(g.error)}"])
                     else:

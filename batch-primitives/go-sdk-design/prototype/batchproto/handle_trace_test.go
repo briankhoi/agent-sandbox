@@ -109,7 +109,7 @@ func TestHandleTraceParity(t *testing.T) {
 						}
 						rec("end")
 					case "groups":
-						for o, err := range h.ReadyGroups(ctx) {
+						for o, err := range h.GroupOutcomes(ctx) {
 							if err != nil {
 								rec("raise:" + errName(err))
 								return

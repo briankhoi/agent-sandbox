@@ -144,7 +144,7 @@ func (h *miniHandle) Events(ctx context.Context) iter.Seq2[BatchEvent, error] {
 	return consume(ctx, h, err, h.state.popEvent, h.state.eventsDone)
 }
 
-func (h *miniHandle) ReadyGroups(ctx context.Context) iter.Seq2[GroupReady, error] {
+func (h *miniHandle) GroupOutcomes(ctx context.Context) iter.Seq2[GroupOutcome, error] {
 	err := h.startConsumer(ModeGroup)
 	return consume(ctx, h, err, h.state.popGroupOutcome, h.state.groupsDone)
 }

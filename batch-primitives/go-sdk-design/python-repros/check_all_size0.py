@@ -6,7 +6,7 @@
 2. claim_batch leaves _fill_deadline None (no plan -> no creator sets it), so wait_for_quorum() on
    such a handle has nothing to wake it: it blocks until detach/release/err(). Shown with the real
    wait_for_quorum on a handle built with only the fields it reads.
-3. events() and iter_ready_groups() end at once.
+3. events() and group_outcomes() end at once.
 """
 import math
 import threading
@@ -54,4 +54,4 @@ print(f"2. wait_for_quorum after 3s: {'STILL BLOCKED' if t.is_alive() else res['
 b2 = handle()
 print(f"3. events()={list(b2.events())!r}")
 b3 = handle()
-print(f"   iter_ready_groups()={list(b3.iter_ready_groups())!r}")
+print(f"   group_outcomes()={list(b3.group_outcomes())!r}")

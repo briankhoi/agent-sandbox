@@ -22,7 +22,7 @@ const (
 	ModeQuorum
 )
 
-var consumerMethods = map[ConsumerMode]string{ModeStream: "events()", ModeGroup: "iter_ready_groups()", ModeQuorum: "wait_for_quorum()"}
+var consumerMethods = map[ConsumerMode]string{ModeStream: "events()", ModeGroup: "group_outcomes()", ModeQuorum: "wait_for_quorum()"}
 
 type BatchEventType string
 
@@ -37,7 +37,7 @@ type BatchEvent struct {
 	Member Member
 }
 
-type GroupReady struct {
+type GroupOutcome struct {
 	WarmPool string
 	Members  []Member
 	Err      error
@@ -119,9 +119,9 @@ type batchState struct {
 
 	neverCreated  int
 	readyCount    int
-	groupOutcomes map[string]GroupReady
+	groupOutcomes map[string]GroupOutcome
 	eventsQ       []BatchEvent
-	outcomesQ     []GroupReady
+	outcomesQ     []GroupOutcome
 	fillExpired   bool
 
 	quorumDecided bool // Python: _quorum_members is not None
@@ -143,7 +143,7 @@ func newBatchState(batchID string, groups []BatchGroup, nextOrdinal int) *batchS
 		memberOrder: newOrderedKeys(), members: map[string]Member{}, fillClaims: map[string]bool{},
 		groupByPool: map[string]BatchGroup{}, minReady: map[string]int{}, waiting: map[string]*orderedKeys{},
 		dispatched: map[string]bool{}, unable: map[string]bool{}, failed: map[string]int{}, lost: map[string]int{},
-		groupOutcomes: map[string]GroupReady{}, groupsShort: map[string]bool{}, released: map[string]bool{},
+		groupOutcomes: map[string]GroupOutcome{}, groupsShort: map[string]bool{}, released: map[string]bool{},
 		releasedCount: map[string]int{}, fillStoppedPools: map[string]bool{}, pendingDeletes: map[string]bool{},
 		acquiringOrder: newOrderedKeys(), acquiring: map[string]string{},
 	}
@@ -532,13 +532,13 @@ func (s *batchState) decideGroupOutcome(pool string) {
 			s.dispatched[n] = true
 			ms = append(ms, s.members[n])
 		}
-		s.setGroupOutcome(GroupReady{WarmPool: pool, Members: ms})
+		s.setGroupOutcome(GroupOutcome{WarmPool: pool, Members: ms})
 		for _, n := range names[mr:] {
 			s.dispatch(n)
 		}
 	} else if err := s.unreachableError(pool); err != nil {
 		w.clear()
-		s.setGroupOutcome(GroupReady{WarmPool: pool, Err: err})
+		s.setGroupOutcome(GroupOutcome{WarmPool: pool, Err: err})
 	}
 }
 
@@ -552,7 +552,7 @@ func (s *batchState) unreachableError(pool string) *QuorumUnreachableError {
 	return &QuorumUnreachableError{WarmPool: pool, Size: g.Size, MinReady: mr, Failed: s.failed[pool], Lost: s.lost[pool], Released: s.releasedCount[pool]}
 }
 
-func (s *batchState) setGroupOutcome(o GroupReady) {
+func (s *batchState) setGroupOutcome(o GroupOutcome) {
 	s.groupOutcomes[o.WarmPool] = o
 	s.outcomesQ = append(s.outcomesQ, o)
 }
@@ -561,7 +561,7 @@ func (s *batchState) timeOutUndecidedGroups() {
 	for _, p := range s.poolOrder {
 		if _, ok := s.groupOutcomes[p]; !ok {
 			s.waiting[p].clear()
-			s.setGroupOutcome(GroupReady{WarmPool: p, Err: fmt.Errorf("group quorum timed out: %w", ErrTimeout)})
+			s.setGroupOutcome(GroupOutcome{WarmPool: p, Err: fmt.Errorf("group quorum timed out: %w", ErrTimeout)})
 		}
 	}
 }
@@ -734,9 +734,9 @@ func (s *batchState) popEvent() (BatchEvent, bool) {
 	return BatchEvent{}, false
 }
 
-func (s *batchState) popGroupOutcome() (GroupReady, bool) {
+func (s *batchState) popGroupOutcome() (GroupOutcome, bool) {
 	if len(s.outcomesQ) == 0 {
-		return GroupReady{}, false
+		return GroupOutcome{}, false
 	}
 	o := s.outcomesQ[0]
 	s.outcomesQ = s.outcomesQ[1:]

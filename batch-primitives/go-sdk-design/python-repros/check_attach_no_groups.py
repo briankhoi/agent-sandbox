@@ -6,7 +6,7 @@ claim_batch, _attach sets the fill deadline to now + quorum_timeout (sandbox_bat
 
 Drives the REAL SandboxBatch._attach against a stub K8sHelper (Lease present, no holder, quorum-timeout 2 s)
 for two claim sets: none at all, and one acquire claim (no fill annotations). Then calls the real
-wait_for_quorum(), events() and iter_ready_groups().
+wait_for_quorum(), events() and group_outcomes().
 Usage (from clients/python/agentic-sandbox-client of the TOP checkout):
     PYTHONPATH=$PWD python check_attach_no_groups.py
 """
@@ -60,7 +60,7 @@ for label, claims in [("no claims", []), ("one acquire claim", [acquire_claim])]
     print(f"[{label}] events()={list(b2.events())!r} after {time.monotonic() - t0:.2f}s")
     b3 = sandbox_batch.SandboxBatch._attach(StubClient(helper), "ball0", "ns")
     t0 = time.monotonic()
-    print(f"[{label}] iter_ready_groups()={list(b3.iter_ready_groups())!r} after {time.monotonic() - t0:.2f}s")
+    print(f"[{label}] group_outcomes()={list(b3.group_outcomes())!r} after {time.monotonic() - t0:.2f}s")
     t0 = time.monotonic()
     try:
         r = b.wait_for_quorum()

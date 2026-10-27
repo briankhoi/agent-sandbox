@@ -80,7 +80,7 @@ the `async` extra's `<34` pin installs) and 36.1.0.
 |---|---|---|---|---|---|---|
 | A1 | Watch hot-loops on a 200 stream that ends at once | P1 | local | ✅ **fixed** (`fc008e70`), matches | empty-stream guard (B17, now shared) | `repro_watch_hotloop.py empty200 2` → 3 requests (was 46) |
 | A2 | Watch silently skips undecodable lines, then hot-loops (A1) | P2 | local | ✅ **fixed through A1** (`fc008e70`); interleaved garbage is still skipped (Part B, B-15) | undecodable line → retry (B19) | `check_watch_error_objects.py garbage` → 3 requests (was 46) |
-| A3 | `wait_for_quorum()` never returns on an all-size-0 `claim_batch` batch | P2 | local | ✅ **fixed** (`b3c49a08`), matches: `[]` at once on every handle (**B16 decided**) | `WaitForQuorum` `[]`, `ReadyGroups` ends at once, `ClaimBatch` or `GetBatch` | `check_all_size0.py` → `[]`; `check_attach_no_groups.py` → `[]` after 0.00 s |
+| A3 | `wait_for_quorum()` never returns on an all-size-0 `claim_batch` batch | P2 | local | ✅ **fixed** (`b3c49a08`), matches: `[]` at once on every handle (**B16 decided**) | `WaitForQuorum` `[]`, `GroupOutcomes` ends at once, `ClaimBatch` or `GetBatch` | `check_all_size0.py` → `[]`; `check_attach_no_groups.py` → `[]` after 0.00 s |
 | A4 | `Retry-After: 0` disables the backoff (watch hot loop) | P3 | local | ❌ **not fixed**, and **two layers** (`retry_delay` + urllib3); Python's own tests rely on it | Go has the first layer (F8) but not the second: client-go sends 11 requests per backoff step; **B23 (new)** proposes `MaxRetries(0)` | `check_retry_after_zero.py ra0 2` → 48 requests; `check_retry_after_zero_layers.py` → 12 with `> 0`, 3 with both |
 | A5 | A non-ASCII Retry-After digit kills the watch thread with `err()` unset | P4 | local | ✅ **fixed** (`924e8016`), matches | Go parses ASCII digits only | inline check below |
 | A6 | `client-first-requested-at` is stamped on every attempt | P3 | wire field, metric only | ❌ not fixed | stamped once per claim (B10) | code reading |
@@ -134,9 +134,9 @@ the `async` extra's `<34` pin installs) and 36.1.0.
 
 ### A3 — `wait_for_quorum()` never returns for an all-size-0 batch (P2, local) — ✅ fixed in `b3c49a08`, matches (B16 decided)
 - **Python now:** in `BatchState.set_mode(QUORUM)`, `if not self._group_by_pool: self._quorum_members = []`
-  (`batch_state.py:680-683`). `_group_by_pool` holds only groups of size > 0 (`:210`). `iter_ready_groups()` already
+  (`batch_state.py:680-683`). `_group_by_pool` holds only groups of size > 0 (`:210`). `group_outcomes()` already
   ended at once (no group to wait for).
-- **Shared target (decision B16, decided by you):** `wait_for_quorum()` returns `[]` and `iter_ready_groups()` ends
+- **Shared target (decision B16, decided by you):** `wait_for_quorum()` returns `[]` and `group_outcomes()` ends
   at once whenever no group has size > 0, **for every handle**, whether `claim_batch` or `get_batch` made it.
   Python matches on both paths:
   - `check_all_size0.py`: `wait_for_quorum after 3s: []`, `quorum_result()=([], None)`.

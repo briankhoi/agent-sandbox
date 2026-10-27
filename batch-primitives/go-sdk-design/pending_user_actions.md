@@ -54,7 +54,7 @@ Changes are marked *3.2*. Your workspace is untouched (`git status` clean); all 
 ### 2a. Decided
 | # | Decision |
 |---|---|
-| B16 | **DECIDED: `WaitForQuorum` returns `[]` and `ReadyGroups` ends at once when no group has size > 0, for every handle (`ClaimBatch` or `GetBatch`).** This was not among the options in the list you read (accept the `ClaimBatch`/`GetBatch` split, time out on both, or the `next_ordinal` heuristic); it replaces all three. It matches Python since `b3c49a08`. A re-attached handle can't detect a vanished group in either SDK today (the Lease doesn't record group sizes; recording them would be a possible future wire change, not planned), so the timeout never protected anything. The prototype now matches Python and its `knownStateDivergence` entry is gone |
+| B16 | **DECIDED: `WaitForQuorum` returns `[]` and `GroupOutcomes` ends at once when no group has size > 0, for every handle (`ClaimBatch` or `GetBatch`).** This was not among the options in the list you read (accept the `ClaimBatch`/`GetBatch` split, time out on both, or the `next_ordinal` heuristic); it replaces all three. It matches Python since `b3c49a08`. A re-attached handle can't detect a vanished group in either SDK today (the Lease doesn't record group sizes; recording them would be a possible future wire change, not planned), so the timeout never protected anything. The prototype now matches Python and its `knownStateDivergence` entry is gone |
 
 ### 2b. Changed since you read it (needs your confirmation)
 | # | Decision | Recommendation now | What changed since rev 3.1 |
