@@ -160,5 +160,58 @@ The proposal has no text for the two docstring edits, so nothing else changes th
 - `git grep -E 'iter_ready_groups|GroupReady'` on PR 7 and on `feat/rl-batch-claim-mode` is empty.
 
 ---
+## Task 7. Batch acquires with pod annotations and snapshot pins (Brian asked 2026-10-27; ask the two questions in step 0 first)
+
+**Why.** With `FleetConfig(claim_mode="batch")`, an RL `fleet.acquire(task, pod_annotations=...)` or `fleet.acquire(task, snapshot_uid=...)` falls back to its own per-claim create, because `SandboxBatch.acquire(warmpool, timeout)` takes no pod metadata. That claim then has its own watch, and the batch Lease doesn't own it, so the batch reaper won't clean it up after a crash. Brian, 2026-10-27: "i want to add annotation support to the RL library". The analysis is item 4 of `/mnt/project-files/rl-design/rl_pr_review_answers.md` in the cloud project. It is summarized here, so you don't need that file.
+
+**Read first.** `examples/agent-sandbox-rl/agent_sandbox_rl/{fleet.py,batch_claims.py,cluster.py}` and `examples/agent-sandbox-rl/tests/test_batch_claims.py` on the RL branch. Also `SandboxBatch.acquire` (`sandbox_batch.py:602` on PR 7 `91d5ffc4`) and its async twin.
+
+**Branch state (2026-10-27).** `feat/rl-batch-claim-mode` is `3bee2847`, on the old PR 7 `a8f80aa6`. Brian's review round is on `review/rl-review/feat/rl-batch-claim-mode` `7c320bef`, waiting for his sync OK. Start from whichever of the two is the live RL head after the sync, and `git fetch` first. Live PR 7 is `91d5ffc4`, so the RL branch needs restacking onto it as well.
+
+**Step 0. Ask Brian two questions, then start.**
+- How to bring in upstream main. Upstream #2035 (`7f40dc1a`, "build Cluster.sandbox_client once under concurrent first use") is on upstream `main`, but not on upstream `feature/batch-claim` as of 2026-10-27. Check with `git merge-base --is-ancestor 7f40dc1a <base>`. The choices are to merge `upstream/main` into the RL branch, or to wait until `feature/batch-claim` syncs main and then restack.
+- Where the SDK part goes. The options are a new small SDK PR on top of 19/N (recommended in the review answers, since 16/N is open and in review) or folding it into 16/N PR 6 (`feat/batch-6-acquire-nbbp5j`, open #1991), which owns `acquire()`.
+
+**Step 1. Prerequisite: bring in upstream main, then delete the Lease workaround.**
+With #2035, `Cluster.k8s_helper` builds `K8sHelper(api_client=self.api_client)`. The SDK then creates the helper's Lease API on that cluster's `ApiClient` with retries off (`k8s_helper.py:53-73,107`). So the RL code that does the same by hand has no job left. Delete:
+- In `cluster.py`: `_without_retries`, `import copy` if nothing else uses it, the `_leases_injected` field and its comment, and `batch_sandbox_client`.
+- In `batch_claims.py`: change `cluster.batch_sandbox_client().claim_batch(` to `cluster.sandbox_client.claim_batch(`.
+- In `tests/test_batch_claims.py`: delete `test_batch_sandbox_client_points_leases_at_the_cluster`, the `c.batch_sandbox_client = lambda: c.sandbox_client` line in `_batch_cluster`, and any imports left unused (`types`, `client`, `Cluster`, `ClusterConfig`; check each one).
+- Expect a conflict in `cluster.py`, because #2035 rewrites `k8s_helper` and `sandbox_client` right next to `batch_sandbox_client`. Keep #2035's version.
+- Before you delete anything, confirm on the merged tree that `Cluster(...).k8s_helper.coordination_v1_api.api_client.configuration.host` is the cluster's host and that `retries is False`. A quick script is enough, and you don't need to keep a test for it, because the SDK owns that contract.
+- Fold the deletions into the RL commit that added them, "feat(agent-sandbox-rl): add claim_mode and per-cluster batch claims", with `--fixup` and autosquash.
+
+**Step 2. SDK: `acquire()` takes pod annotations (~25 lines per shell).**
+- Add `pod_annotations: dict[str, str] | None = None` as a keyword-only parameter to `SandboxBatch.acquire` and `AsyncSandboxBatch.acquire`. Use the name `create_sandbox` already uses.
+- Build it with `build_pod_metadata(None, pod_annotations)` (`pod_metadata.py:69`) so validation matches `create_sandbox`.
+- Thread it through `_create_one` and `_send_create` into `k8s_helper.create_sandbox_claim(..., pod_metadata=...)`, which already accepts it (`k8s_helper.py:122`). Every create retry must carry it. The fill path passes `None`.
+- Update the `acquire` docstrings in both shells.
+- Tests: one owning test per shell, showing that the create body carries `spec.additionalPodMetadata.annotations`, including on a retried create. Mutation-check both. Then run `make generate-python-docs` and commit the result.
+
+**Step 3. RL: route annotated and pinned acquires through the batch (~15 lines).**
+- `BatchClaims.acquire(cluster, pool, pod_annotations=None)` passes the annotations to `batch.acquire`.
+- In `fleet.py` `_acquire_reserved`, delete the `if batch_claims is not None and annotations:` fallback block and `self._warned_pin_fallback`, which is set in `__init__`. Pass `annotations or None` to `batch_claims.acquire`.
+- `snapshot_uid` comes for free. `_acquire_reserved` already turns it into the pod annotation `podsnapshot.gke.io/ps-name` (`constants.PODSNAPSHOT_NAME_ANNOTATION`). The `PodRestored` check after the acquire (`pod_restore_status(cluster.core_api, pod, ...)`) works on batch handles unchanged, because the pod has the same name as its Sandbox (`pod = sandbox.sandbox_id`).
+- `AsyncSandboxFleet.acquire` already passes both arguments through (`async_fleet.py:169-172`), so it needs no code change.
+- Raise the `k8s-agent-sandbox` floor in `examples/agent-sandbox-rl/pyproject.toml` only if Brian says the RL PR depends on a released SDK. Otherwise leave it, and tell him the RL change needs the SDK PR first.
+- Update the `fleet.acquire` docstring paragraph and the README "Batch claim mode" bullet that say annotated or pinned acquires "still create their own claim".
+- Rewrite `test_pinned_acquire_keeps_the_per_claim_path`. It should assert that the annotations, including the `snapshot_uid` annotation, reach `FakeBatch.acquire`, that `create_sandbox` is not called, and that `claim_expires_at is not None`. Give `FakeBatch.acquire` a `pod_annotations=None` parameter. Add the same assertion to the async fleet test for parity. Mutation-check both.
+- Fold the changes into "feat(agent-sandbox-rl): claim through the batch in fleet.acquire" and the README into "docs(agent-sandbox-rl): document claim_mode".
+
+**Rules.** Everything in `project_instructions.md` and `working_rules.md` applies. In particular:
+- Brian is author and committer, with no trailers.
+- Work on `review/<branch>` copies and sync only after his OK.
+- Keep sync and async parity in surface, docstrings and tests.
+- Run lint and mypy (`MYPYPATH=clients/python/agentic-sandbox-client` for the RL lib, which uses 2-space indent).
+- Run only the changed tests, plus a mutation check.
+- Follow upstream AGENTS.md "Writing" in every new comment and docstring.
+
+**Done when.**
+- The RL branch has #2035 in its history and none of `batch_sandbox_client`, `_without_retries` or `_leases_injected` (`git grep` is empty).
+- The SDK `acquire` takes `pod_annotations` in both shells, with tests.
+- An annotated or pinned `fleet.acquire` in batch mode goes through the batch.
+- Brian has a compare link per step that shows only that change.
+
+---
 ## Not yours (stays in the cloud project)
-RL follow-ups: the RL integration prototype and its limits rerun; `fleet.prefetch` (only if a fill beats an acquire burst by more than 20%); a parallel precheck (only if prefetch ships); sandboxd exec as its own track; owner references on pools (only if leaks show up); the per-claim default acquire limit (mention at the TL meeting); the Lease-loss detection run. Changes to `examples/agent-sandbox-rl/`. If Brian pastes an SDK change request from that work, treat it as a normal task: owning PR, review copy, report.
+RL follow-ups: the RL integration prototype and its limits rerun; `fleet.prefetch` (only if a fill beats an acquire burst by more than 20%); a parallel precheck (only if prefetch ships); sandboxd exec as its own track; owner references on pools (only if leaks show up); the per-claim default acquire limit (mention at the TL meeting); the Lease-loss detection run. Changes to `examples/agent-sandbox-rl/`, except Task 7. If Brian pastes an SDK change request from that work, treat it as a normal task: owning PR, review copy, report.
