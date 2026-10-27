@@ -1,0 +1,1 @@
+- 6v2-g4-all-async-run1 and 6v2-g4burst-all-async-run1 ran on merge 8735bb79, which had PR 3 as module-level functions (96725c87). After review PR 3 became static methods (53765391, same behavior), so the arms were rerun on merge 4a9af230. Kept for reference; not used in the tables. (moved 2026-10-26T23:58Z)

@@ -1,0 +1,18 @@
+== venv-7f40dc1
+3.12.15 /opt/venv-7f40dc1/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py
+warm-up: 200/200 closed clients alive after gc.collect(), 9769 B traced per client
+warm-up: 200/200 closed clients alive after gc.collect(), 104305 B traced per client
+async cleanup=False, used: 0/200 closed clients alive after gc.collect(), 89 B traced per client
+async default (cleanup=True), never used: 200/200 closed clients alive after gc.collect(), 1369 B traced per client
+async default (cleanup=True), used then closed: 200/200 closed clients alive after gc.collect(), 9600 B traced per client
+sync cleanup=False, with block: 0/200 closed clients alive after gc.collect(), 90 B traced per client
+sync cleanup=True, with block: 200/200 closed clients alive after gc.collect(), 11407 B traced per client
+== venv-4a9af23
+3.12.15 /opt/venv-4a9af23/lib/python3.12/site-packages/k8s_agent_sandbox/__init__.py
+warm-up: 0/200 closed clients alive after gc.collect(), 671 B traced per client
+warm-up: 0/200 closed clients alive after gc.collect(), 93393 B traced per client
+async cleanup=False, used: 0/200 closed clients alive after gc.collect(), 91 B traced per client
+async default (cleanup=True), never used: 0/200 closed clients alive after gc.collect(), 609 B traced per client
+async default (cleanup=True), used then closed: 0/200 closed clients alive after gc.collect(), 621 B traced per client
+sync cleanup=False, with block: 0/200 closed clients alive after gc.collect(), 81 B traced per client
+sync cleanup=True, with block: 0/200 closed clients alive after gc.collect(), 606 B traced per client

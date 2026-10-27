@@ -1,0 +1,14 @@
+[23:47:25] 6v2-g4-main-async-run1 start
+[23:51:26] 6v2-g4-main-async-run1 done, starved (warm pool hit 0 Ready)
+[23:51:26] 6v2-g4-all-async-run1 start
+[23:55:48] 6v2-g4-all-async-run1 done, starved (warm pool hit 0 Ready)
+[23:55:48] 6v2-g4burst-main-async-run1 start
+[23:57:04] 6v2-g4burst-main-async-run1 done
+[23:57:04] 6v2-g4burst-all-async-run1 start
+[23:58:21] 6v2-g4burst-all-async-run1 done
+[23:58:21] suite finished
+[23:59:22] 6v2-g4-all-async-run1 start
+[00:03:31] 6v2-g4-all-async-run1 done, starved (warm pool hit 0 Ready), superseded once (see superseded/WHY.md)
+[00:03:52] 6v2-g4burst-all-async-run1 start
+[00:05:06] 6v2-g4burst-all-async-run1 done, superseded once (see superseded/WHY.md)
+[00:05:06] suite finished
