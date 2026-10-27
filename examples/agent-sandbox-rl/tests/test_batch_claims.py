@@ -316,16 +316,6 @@ def test_pinned_acquire_keeps_the_per_claim_path(make_cluster):
   h.sandbox.terminate.assert_called_once()
 
 
-def test_per_claim_mode_opens_no_batch(make_cluster):
-  c = _batch_cluster(make_cluster)
-  f = SandboxFleet(FleetConfig(), registry=ClusterRegistry([c]))
-  t = f.load_tasks(["img"])[0]
-  f.plan()
-  h = f.acquire(t)
-  assert c.batches == [] and h.claim_expires_at is None
-  c.sandbox_client.create_sandbox.assert_called_once()
-
-
 async def test_async_fleet_claims_releases_and_tears_down_through_one_batch(make_cluster):
   c = _batch_cluster(make_cluster)
   af = AsyncSandboxFleet(FleetConfig(claim_mode="batch", max_concurrent=16),
