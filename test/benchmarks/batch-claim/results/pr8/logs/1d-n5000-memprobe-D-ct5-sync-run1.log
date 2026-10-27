@@ -1,0 +1,43 @@
+WARNING:urllib3.connectionpool:Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='127.0.0.1', port=37285): Read timed out. (read timeout=4.9992682169540785)")': /apis/extensions.agents.x-k8s.io/v1beta1/namespaces/batch-bench/sandboxclaims?labelSelector=agents.x-k8s.io/batch-id%3Dbjjnm1mqwk94
+WARNING:urllib3.connectionpool:Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='127.0.0.1', port=37285): Read timed out. (read timeout=4.991773261979688)")': /apis/extensions.agents.x-k8s.io/v1beta1/namespaces/batch-bench/sandboxclaims?labelSelector=agents.x-k8s.io/batch-id%3Dbjjnm1mqwk94
+WARNING:urllib3.connectionpool:Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='127.0.0.1', port=37285): Read timed out. (read timeout=4.984489836962894)")': /apis/extensions.agents.x-k8s.io/v1beta1/namespaces/batch-bench/sandboxclaims?labelSelector=agents.x-k8s.io/batch-id%3Dbjjnm1mqwk94
+WARNING:urllib3.connectionpool:Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='127.0.0.1', port=37285): Read timed out. (read timeout=4.99219743401045)")': /apis/extensions.agents.x-k8s.io/v1beta1/namespaces/batch-bench/sandboxclaims?labelSelector=agents.x-k8s.io/batch-id%3Dbjjnm1mqwk94
+Traceback (most recent call last):
+  File "/usr/local/google/home/brianknguyen/agent-sandbox-par-pr8-bench/test/benchmarks/batch-claim/bench.py", line 2758, in <module>
+    main()
+    ~~~~^^
+  File "/usr/local/google/home/brianknguyen/agent-sandbox-par-pr8-bench/test/benchmarks/batch-claim/bench.py", line 2734, in main
+    Driver(json.loads(args.spec)).run()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/usr/local/google/home/brianknguyen/agent-sandbox-par-pr8-bench/test/benchmarks/batch-claim/bench.py", line 1016, in run
+    getattr(self, f"s_{kind}")()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/usr/local/google/home/brianknguyen/agent-sandbox-par-pr8-bench/test/benchmarks/batch-claim/bench.py", line 1094, in s_fill
+    self.memprobe(client, batch)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/usr/local/google/home/brianknguyen/agent-sandbox-par-pr8-bench/test/benchmarks/batch-claim/bench.py", line 1175, in memprobe
+    batch.release()
+    ~~~~~~~~~~~~~^^
+  File "/tmp/par-pr8/venv-a67bb21/lib/python3.13/site-packages/k8s_agent_sandbox/sandbox_batch.py", line 961, in release
+    _delete_batch_objects(self._client.k8s_helper, self.namespace, self.batch_id, self._lease_name)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/par-pr8/venv-a67bb21/lib/python3.13/site-packages/k8s_agent_sandbox/sandbox_batch.py", line 1541, in _delete_batch_objects
+    _delete_claims_in_rounds(
+    ~~~~~~~~~~~~~~~~~~~~~~~~^
+        helper,
+        ^^^^^^^
+    ...<5 lines>...
+        ),
+        ^^
+    )
+    ^
+  File "/tmp/par-pr8/venv-a67bb21/lib/python3.13/site-packages/k8s_agent_sandbox/sandbox_batch.py", line 1590, in _delete_claims_in_rounds
+    live = helper.count_live_sandbox_claims(
+        namespace, label_selector, _request_timeout=collection_timeout
+    )
+  File "/usr/local/google/home/brianknguyen/agent-sandbox-par-pr8-bench/test/benchmarks/batch-claim/bench.py", line 501, in wrapper
+    result = fn(*args, **kwargs)
+  File "/tmp/par-pr8/venv-a67bb21/lib/python3.13/site-packages/k8s_agent_sandbox/k8s_helper.py", line 657, in count_live_sandbox_claims
+    live += sum(1 for c in page.get("items", []) if not (c.get("metadata") or {}).get("deletionTimestamp"))
+                           ~~~~~~~~^^^^^^^^^^^^^
+TypeError: 'NoneType' object is not iterable
