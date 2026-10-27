@@ -85,4 +85,36 @@ file with its plain arm.
 
 ## Setup and provenance
 
-Filled in once the cluster is up (see the report for its state).
+- Cluster `par-pr8`, kind v0.32.0, Kubernetes v1.36.1, docker 29.8.0, created with
+  `kind create cluster --name par-pr8 --kubeconfig /tmp/par-pr8/kubeconfig --config
+  /tmp/par-pr8/kind-config.yaml`. That file is `../../kind-config.yaml` with the repo mount pointed
+  at this worktree and the kubeadm patch moved to `kubeadm.k8s.io/v1beta4` (extraArgs as
+  `name`/`value` lists), since kind v0.32 renders v1beta4 and drops a v1beta3 patch. Checked after
+  creation: the apiserver has `--enable-admission-plugins=NodeRestriction,OwnerReferencesPermissionEnforcement`,
+  the controller manager `--node-cidr-mask-size=22`, the node `10.244.0.0/22` and 400 allocatable pods.
+- Controller and sandboxd images built from this worktree at `8cbb70b6`, which differs from
+  `44fb487f` (the commit the earlier runs built from) only under `test/benchmarks/`,
+  with `dev/tools/push-images --image-prefix=kind.local/ --extra-image-tag=bench
+  --kind-cluster-name=par-pr8 --images agent-sandbox-controller sandboxd`, deployed with
+  `dev/tools/deploy-to-kube --image-prefix=kind.local/ --image-tag=bench --extensions` (plain
+  `kubectl apply`, so the KUBECONFIG's current context `kind-par-pr8`). Controller image ID
+  `docker.io/library/import-2026-10-27@sha256:042a64629121d4efa6d552459ed6805cc7b5a655698342247ae91be02b02303e`.
+  Then `bench.py setup`.
+- Host drivers on Python 3.13.15 from `/tmp/par-pr8/venv-<sha7>` (`BENCH_VENV_DIR=/tmp/par-pr8`),
+  each `0.0.0+sdk.<sha7>` with kubernetes 37.0.1 and kubernetes_asyncio 33.3.0. The orchestrator
+  runs on `bin/bench-venv`.
+- Host at the smoke run: 24 CPUs, 94 GiB RAM (73 used, 20 available), load average about 12 to
+  14 from other work, clusters `agent-sandbox` and `par-pr8`.
+
+## Smoke run
+
+`1d-n5000-memprobe-A-sync-run1` on arm A (`91d5ffc4`, PR 7 head), harness `8cbb70b6`. The `arm`
+command took 125 s, of which the driver ran 110 s (16 s fill, 45 s hold, the byte measurement,
+the list and a 47 s release). Before the next run `wait_clean` deletes the leftover Sandboxes and
+pods, which took 126 s after this one, so one N = 5,000 arm costs about 4 minutes end to end.
+
+All the fields above are in the result. Of note on arm A: `release_list_items` is `[0]` (one
+round, the deletecollection took 47 s and finished inside the 90 s timeout), yet
+`release_traced_peak_mb` (69.4) matches `list_traced_peak_mb` (69.4), which points at the parsed
+deletecollection response. `list_bytes.meta_to_full_ratio` is 0.84, since a metadata-only list
+still carries `managedFields`, which are 51% of a claim's bytes (`all_claims.managed_fields_share`).
