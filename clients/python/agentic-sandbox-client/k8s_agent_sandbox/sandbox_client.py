@@ -19,6 +19,7 @@ file I/O) via the Sandbox resource handle.
 
 import uuid
 import atexit
+import functools
 import logging
 from types import TracebackType
 from typing import Any, Dict, Generic, List, Self, Tuple, Type, TypeVar
@@ -258,7 +259,7 @@ class SandboxClient(Generic[T]):
             raise
 
         previous = self._active_connection_sandboxes.get((namespace, claim_name))
-        sandbox._on_terminated = self._untrack
+        sandbox._on_terminated = functools.partial(self._untrack, self._active_connection_sandboxes)
         self._active_connection_sandboxes[(namespace, claim_name)] = sandbox
         if previous is not None:
             previous.close_connection()
@@ -322,7 +323,7 @@ class SandboxClient(Generic[T]):
             **({"file_config": self.file_config} if self.file_config is not None else {}),
         )
 
-        new_handle._on_terminated = self._untrack
+        new_handle._on_terminated = functools.partial(self._untrack, self._active_connection_sandboxes)
         self._active_connection_sandboxes[key] = new_handle
         return new_handle
     
@@ -342,15 +343,18 @@ class SandboxClient(Generic[T]):
                 self._active_connection_sandboxes.pop(key, None)
         return list(self._active_connection_sandboxes.keys())
       
-    def _untrack(self, sandbox: Sandbox) -> None:
+    @staticmethod
+    def _untrack(registry: Dict[Tuple[str, str], T], sandbox: Sandbox) -> None:
         # Called by terminate() after a successful delete, while claim_name is still
         # set, so the None check only narrows its type. A newer handle may have
         # replaced this one for the same claim, so only this exact handle is removed.
+        # Static and bound to the registry with a partial, so a tracked handle never
+        # keeps the client alive; an instance method here would bring that back.
         if sandbox.claim_name is None:
             return
         key = (sandbox.namespace, sandbox.claim_name)
-        if self._active_connection_sandboxes.get(key) is sandbox:
-            del self._active_connection_sandboxes[key]
+        if registry.get(key) is sandbox:
+            del registry[key]
 
     def list_all_sandboxes(self, namespace: str = "default", label_selector: str | None = None) -> List[str]:
         """
