@@ -83,3 +83,5 @@ Brian's words are quoted where recorded. Everything else here was approved by hi
 
 ## Open threads in the cloud project (not yours)
 RL integration (Design C prototype, limits rerun on `bench/rl-claim-mode`, TL meeting). They may produce SDK change requests; Brian will paste those to you.
+
+**2026-10-27 23:10.** Round 2 on 12/N. Brian: "i lean toward agreeing with their #4, even if i did previous approve i think we should drop creation" (answers file `temp-prompts/pr2_round2_decisions.md`). Agreed with that file: #1 UID and `leaseTransitions` fence (completes D1), #2 keep PR 5's `err()` guard, #3 no change to the 409 handling (the stack conversation was wrong about both causes it gave). Open: N1, `detach()` racing `release()` on one handle (proposed per-handle lock, `RLock` in sync); round 3 review prompt `temp-prompts/pr2_round3_review_prompt.md`. A subagent is building #1, #4 and the Event race tests as `review/d1824b/*` on top of `review/d1824/*`. Brian asked to move fast (8 h on #1824); the proposal is to send later non-blocking findings to a follow-up PR.
