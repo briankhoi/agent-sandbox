@@ -626,6 +626,29 @@ class K8sHelper:
             items.extend(page.get("items", []))
         return items, resource_version
 
+    def count_live_sandbox_claims(
+        self,
+        namespace: str,
+        label_selector: str,
+        _request_timeout: float | tuple[float, float] | None = None,
+    ) -> int:
+        """Counts the SandboxClaims matching a label selector that aren't being deleted, holding
+        one page of the list at a time.
+
+        Args:
+            _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
+                pair) forwarded to the underlying urllib3 request of each page.
+        """
+        live = 0
+        for page, first in _claim_list_pages(
+            self.custom_objects_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
+        ):
+            if first:
+                live = 0
+            live += sum(1 for c in page.get("items", []) if not (c.get("metadata") or {}).get("deletionTimestamp"))
+            del page
+        return live
+
     def watch_sandbox_claims(
         self, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int,
         _request_timeout: float | tuple[float, float] | None = None

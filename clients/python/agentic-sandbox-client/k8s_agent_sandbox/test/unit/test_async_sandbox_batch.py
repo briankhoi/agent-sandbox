@@ -163,6 +163,7 @@ class BaseAsyncBatchClientTest(unittest.IsolatedAsyncioTestCase):
         config = SandboxDirectConnectionConfig(api_url="http://test-router:8080")
         self.client = AsyncSandboxClient(connection_config=config, cleanup=False)
         self.mock_k8s_helper = self.client.k8s_helper
+        self.mock_k8s_helper.count_live_sandbox_claims = AsyncMock(return_value=0)
         self.mock_sandbox_class = MagicMock()
         self.client.sandbox_class = self.mock_sandbox_class
 
@@ -1479,6 +1480,7 @@ class _Cluster:
         h.get_sandbox_template = AsyncMock(return_value={"metadata": {"name": "tmpl"}})
         h.create_batch_lease = AsyncMock(return_value=_lease())
         h.list_sandbox_claim_objects = AsyncMock(return_value=([], "7"))
+        h.count_live_sandbox_claims = AsyncMock(return_value=0)
         h.api_pool_size = AsyncMock(return_value=None)
         h.watch_sandbox_claims = MagicMock(side_effect=self._watch)
         h.create_sandbox_claim = AsyncMock(side_effect=self._create)
@@ -2122,10 +2124,6 @@ class TestRelease(BaseClaimBatchTest):
     async def test_release_stops_creates_then_deletes_claims_then_the_lease(self):
         batch = await self.claim([BatchGroup(warmpool="pool-a", size=20)], create_rps=10)
         await _wait_until(lambda: len(self.cluster.created) >= 1)
-        self.cluster.helper.list_sandbox_claim_objects.return_value = (
-            [{"metadata": {"name": "b1-0", "deletionTimestamp": "2026-01-01T00:00:00Z"}}],
-            "9",
-        )
         await batch.release()
         await asyncio.sleep(0.3)  # Several pacing slots, in case a creator is still running.
         calls = self.cluster.calls
@@ -2165,29 +2163,28 @@ class TestRelease(BaseClaimBatchTest):
     async def test_release_retries_rounds_until_no_progress(self, _):
         helper = self.cluster.helper
 
-        def live(n):
-            return ([_claim(f"b1-{i}") for i in range(n)], "9")
-
         unavailable = k8s_client.ApiException(status=503)
         cases = {
             "503 then success": (
                 {"delete_sandbox_claims_by_label": [unavailable, None]},
-                {"list_sandbox_claim_objects": [live(1), live(0)]},
+                {"count_live_sandbox_claims": [1, 0]},
                 None,
             ),
             "403 raises at once": ({"delete_sandbox_claims_by_label": [k8s_client.ApiException(status=403)]}, {}, k8s_client.ApiException),
-            "no progress raises BatchError": ({}, {"list_sandbox_claim_objects": [live(2)] * 4}, BatchError),
+            "no progress raises BatchError": ({}, {"count_live_sandbox_claims": [2] * 4}, BatchError),
             "no progress raises the last transient error": (
                 {"delete_sandbox_claims_by_label": [unavailable] * 4},
-                {"list_sandbox_claim_objects": [unavailable] * 4},
+                {"count_live_sandbox_claims": [unavailable] * 4},
                 k8s_client.ApiException,
             ),
-            "progress resets the idle rounds": ({}, {"list_sandbox_claim_objects": [live(5), live(5), live(4), live(4), live(4), live(0)]}, None),
+            "progress resets the idle rounds": ({}, {"count_live_sandbox_claims": [5, 5, 4, 4, 4, 0]}, None),
         }
-        for name, (delete_effects, list_effects, error) in cases.items():
+        for name, (delete_effects, count_effects, error) in cases.items():
             with self.subTest(name):
                 helper.delete_sandbox_claims_by_label = AsyncMock(side_effect=delete_effects.get("delete_sandbox_claims_by_label"))
-                helper.list_sandbox_claim_objects = AsyncMock(side_effect=list_effects.get("list_sandbox_claim_objects", [live(0)] * 4))
+                helper.count_live_sandbox_claims = AsyncMock(
+                    side_effect=count_effects.get("count_live_sandbox_claims", [0] * 4)
+                )
                 helper.delete_batch_lease = AsyncMock()
                 handle = _make_handle(self.client)
                 if error is None:
@@ -2206,7 +2203,7 @@ class TestRelease(BaseClaimBatchTest):
         helper = self.cluster.helper
         self.assertEqual(helper.create_sandbox_claim.call_args.kwargs["_request_timeout"], 30)
         self.assertEqual(helper.delete_sandbox_claims_by_label.call_args.kwargs["_request_timeout"], 90)
-        self.assertEqual(helper.list_sandbox_claim_objects.call_args.kwargs["_request_timeout"], 90)
+        self.assertEqual(helper.count_live_sandbox_claims.call_args.kwargs["_request_timeout"], 90)
         self.assertEqual(helper.delete_batch_lease.call_args.kwargs["_request_timeout"], 30)
 
     async def test_detach_stops_creates_and_deletes_nothing(self):
@@ -2235,7 +2232,7 @@ class TestRelease(BaseClaimBatchTest):
                 helper.reset_mock()
                 self.cluster.calls.clear()
                 helper.read_batch_lease.side_effect = reads
-                helper.list_sandbox_claim_objects.side_effect = [([_claim("b1-0")], "9"), ([], "9")]
+                helper.count_live_sandbox_claims.side_effect = [1, 0]
                 handle = _make_handle(self.client)
                 self.client._active_batches[("default", "b1")] = handle
 
@@ -2321,7 +2318,7 @@ class TestRelease(BaseClaimBatchTest):
 
                 helper.replace_batch_lease.side_effect = replace
                 # The second round's take fails, so only the third round deletes the Lease.
-                helper.list_sandbox_claim_objects.side_effect = [([_claim("b1-0")], "9"), ([], "9"), ([], "9")]
+                helper.count_live_sandbox_claims.side_effect = [1, 0, 0]
                 await handle.release()
                 self.assertEqual(
                     self.cluster.calls, ["take", "deletecollection", "take", "take", "deletecollection", "delete_lease"]
@@ -2478,7 +2475,7 @@ class TestReleaseMembers(BaseClaimBatchTest):
                 handle._state.upsert_claim(_claim("b1-0", conditions=_NOT_READY, annotations=_FILL))
                 lock = handle._lifecycle_lock = _SignalingLock(handle._lifecycle_lock)
                 helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
-                helper.list_sandbox_claim_objects.return_value = ([], "9")
+                helper.count_live_sandbox_claims.return_value = 0
 
                 async def block_delete(*args, **kwargs):
                     calls.append("delete")
