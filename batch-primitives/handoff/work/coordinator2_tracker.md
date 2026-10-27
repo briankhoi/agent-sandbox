@@ -45,3 +45,6 @@ Sync table for the stack conversation (live -> copy): `feat/batch-transport-ltlf
 - Live: PR 3 `469b8d77`, PR 4 `a85caf4d`, PR 5 `7f1d6d5d`, PR 6 `51c1814a`, transport `9a26b3c6`, reaper `75ad2006`, PR 7 `a8f80aa6`.
 - Types copies already rebased by the rename sync: transport `9fa22b54`, reaper `e531baf3`, PR 7 `91d5ffc4`. Verified by coordinator 2: `git diff a8f80aa6 91d5ffc4` equals the approved patch `git diff fa10f75b bb23b672` (index lines aside); range-diff `!` only on the pool, Lease-ownership and reaper commits; chain linear; 8 commits Brian, no trailers; mypy clean at `91d5ffc4` on 36.1.0 and 33.3.0. Local `review/types/*` refs reset to these. Sync only from these heads.
 - My notes and prompts contain no `iter_ready_groups`/`GroupReady` (grep). Task 6 steps 9 to 11 belong to the stack conversation (pr_table/pr_board PR 3 row, notes) and coordinator 1 (Go notes); not done here to avoid conflicting edits.
+
+## C1 verified 2026-10-27 23:37 (handoff written)
+PR 8 `feat/batch-8-list-memory` `e5367671` on `91d5ffc4`: ACCEPT WITH FIXES (no correctness bugs). Decisions open: optional commits 4/5/6, sync route, retried deletecollection (separate PR), `del page` two-page fix. Handoff to a fresh coordinator 2: `work/coordinator2_handoff.md`.
