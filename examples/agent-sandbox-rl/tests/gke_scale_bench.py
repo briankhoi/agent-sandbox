@@ -141,7 +141,9 @@ WARM_VARIANTS = [
     Variant("batch-default", "batch"),
     # The same driver semaphore on both arms, the size the kind runs used.
     Variant("per-claim-c50", "per-claim", acquire_concurrency=50),
-    Variant("batch-c50", "batch", acquire_concurrency=50),
+    # Batch lifts its own caps here too, so the shared semaphore is the only limit.
+    Variant("batch-c50", "batch", acquire_concurrency=50, create_rps=UNBOUNDED_RPS,
+            max_in_flight=UNBOUNDED_MIF),
     # One claim_batch per step with every group sized to its tasks (the group
     # size > 0 path a wave caller would use), envs fed from events(). Compared with
     # the acquire burst at the same settings, it measures the wave mode's gain.
@@ -199,10 +201,22 @@ def run_plan() -> list[PlannedRun]:
 # --------------------------------------------------------------------------- #
 APISERVER_RESOURCES = ("sandboxclaims", "sandboxes", "sandboxwarmpools",
                        "sandboxtemplates", "leases", "pods", "services")
-# The resources a claim's own requests touch, from any client (the controller's
-# included), so the count doesn't grow with the step's length the way every
-# request in the cluster does.
-CLAIM_PATH_RESOURCES = ("sandboxclaims", "sandboxes", "leases")
+# A claim's own API cost from any client (the controller's included): every
+# sandboxclaims request and the reads of sandboxes. Sandbox writes are left out,
+# because warm-pool refills write sandboxes inside the step, more of them in the
+# slower arm's window, and leases too, because node heartbeats are leases.
+CLAIM_PATH_VERBS = {"sandboxclaims": None, "sandboxes": ("GET", "LIST", "WATCH")}
+
+
+def _claim_path(key: str) -> bool:
+    """``key`` is ``requests VERB resource code``."""
+    parts = key.split(" ")
+    if len(parts) < 3 or parts[2] not in CLAIM_PATH_VERBS:
+        return False
+    verbs = CLAIM_PATH_VERBS[parts[2]]
+    return verbs is None or parts[1] in verbs
+
+
 _KEPT = ("apiserver_request_total", "apiserver_request_duration_seconds_sum",
          "apiserver_request_duration_seconds_count",
          "apiserver_flowcontrol_rejected_requests_total",
@@ -278,8 +292,7 @@ def apiserver_delta(before: dict[str, float] | None, after: dict[str, float] | N
         if k.startswith("latency_count ") and v:
             key = k[len("latency_count "):]
             latency_ms[key] = round(1000 * d.get(f"latency_sum {key}", 0.0) / v, 2)
-    claim_path = sum(v for k, v in d.items() if k.startswith("requests ")
-                     and k.split(" ")[2] in CLAIM_PATH_RESOURCES)
+    claim_path = sum(v for k, v in d.items() if k.startswith("requests ") and _claim_path(k))
     out = {"valid": int(creates) == driver_creates, "claim_creates": int(creates),
            "claim_path_requests": int(claim_path),
            "driver_creates": driver_creates, "requests": requests,
@@ -908,8 +921,10 @@ def cmd_report(args) -> int:
     lines += ["", "Requests and watches are the driver's own, from the step's start to its "
               "last exec, before release. API columns are the API server's counters over the "
               "same window, from steps whose claim creates matched the driver's. Claim-path "
-              "requests are sandboxclaims, sandboxes and leases from every client (the "
-              "controller included), the arm's API cost. All API requests per second covers "
+              "requests are every sandboxclaims request and the sandboxes reads, from every "
+              "client (the controller included), the arm's API cost; sandbox writes (warm-pool "
+              "refills) and leases (node heartbeats) are left out. All API requests per second "
+              "covers "
               "every client in the cluster (kubelets and refills too), so it leans against "
               "the slower arm: context only.", ""]
     with open(os.path.join(RESULTS, "summary.md"), "w") as f:
