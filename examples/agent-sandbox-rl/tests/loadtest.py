@@ -38,8 +38,8 @@ import json
 import os
 import time
 
-from agent_sandbox_rl import (AsyncSandboxFleet, ClusterConfig, FleetConfig,
-                              GitRestoreReset, ListSource, SandboxFleet,
+from agent_sandbox_rl import (AsyncSandboxFleet, BatchClaimConfig, ClusterConfig,
+                              FleetConfig, GitRestoreReset, ListSource, SandboxFleet,
                               STRATEGIES, Task, TemplateSpec,
                               reuse_git_restore_sandbox)
 
@@ -48,6 +48,14 @@ ALL_STRATEGIES = ["none", "naive", "sliding", "pipelined"]
 # explicit --strategies list (not in "all"); it warms all pools then recycles
 # one sandbox per image instead of claiming per task.
 _REUSE = "reuse"
+
+# --batch-claims presets for --claim-mode batch. "unbounded" is unpaced and
+# uncapped: 998 in flight is the most the RL library's 1000-connection pool lets
+# the SDK use. "defaults" is the SDK's own pacing (what users get).
+BATCH_CLAIMS = {
+    "unbounded": dict(create_rps=1e6, max_in_flight=998),
+    "defaults": {},
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -93,6 +101,16 @@ def resolve_strategies(spec: str) -> list[str]:
         raise ValueError(f"unknown strategies {bad}; choose from "
                          f"{sorted(allowed)}")
     return out
+
+
+def claim_settings(claim_mode: str, batch_claims: str) -> dict:
+    """FleetConfig kwargs for ``--claim-mode`` / ``--batch-claims``; every other
+    setting is shared, so arms differ only in how they claim."""
+    if batch_claims not in BATCH_CLAIMS:
+        raise ValueError(f"unknown batch_claims {batch_claims!r}; choose from "
+                         f"{sorted(BATCH_CLAIMS)}")
+    return {"claim_mode": claim_mode,
+            "batch_claims": BatchClaimConfig(**BATCH_CLAIMS[batch_claims])}
 
 
 def _phase(rep: dict, name: str) -> dict:
@@ -239,7 +257,7 @@ def format_report(params: dict, plan_entries: list[dict], env: dict,
     L.append("# SWE-bench load test\n")
     L.append("## Parameters\n")
     for k in ("images", "tasks_per_image", "total_tasks", "strategies",
-              "max_concurrent", "max_warmpool_size", "warm_per_task",
+              "claim_mode", "batch_claims", "max_concurrent", "max_warmpool_size", "warm_per_task",
               "colocate_replicas", "window_size", "task_duration_s",
               "image_template"):
         if k in params:
@@ -317,6 +335,7 @@ def _make_fleet(args) -> AsyncSandboxFleet:
     cluster = ClusterConfig(
         name="loadtest",
         context=args.context,
+        in_cluster=args.in_cluster,
         namespace=args.namespace,
         node_selector=parse_node_selector(args.node_selector),
         runtime_class=args.runtime_class,
@@ -330,6 +349,7 @@ def _make_fleet(args) -> AsyncSandboxFleet:
         ready_timeout=args.ready_timeout,
         template=TemplateSpec(runtime_class=args.runtime_class,
                               colocate_replicas=args.colocate),
+        **claim_settings(args.claim_mode, args.batch_claims),
     )
     return AsyncSandboxFleet(cfg)
 
@@ -346,7 +366,7 @@ def _run_reuse(args, tasks):
         return handle.pod_name
 
     cluster = ClusterConfig(name="loadtest", context=args.context,
-                            namespace=args.namespace,
+                            in_cluster=args.in_cluster, namespace=args.namespace,
                             node_selector=parse_node_selector(args.node_selector),
                             runtime_class=args.runtime_class)
     cfg = FleetConfig(clusters=[cluster], max_concurrent=args.max_concurrent,
@@ -354,7 +374,8 @@ def _run_reuse(args, tasks):
                       warm_per_task=args.warm_per_task,
                       ready_timeout=args.ready_timeout,
                       template=TemplateSpec(runtime_class=args.runtime_class,
-                                            colocate_replicas=args.colocate))
+                                            colocate_replicas=args.colocate),
+                      **claim_settings(args.claim_mode, args.batch_claims))
     fleet = SandboxFleet(cfg)
     reset = GitRestoreReset(check_env=args.check_env, check_config=args.check_env)
     entries = []
@@ -442,6 +463,8 @@ async def _main(args):
     params = {
         "images": args.images, "tasks_per_image": args.tasks_per_image,
         "total_tasks": len(tasks), "strategies": ",".join(strategies),
+        "claim_mode": args.claim_mode,
+        "batch_claims": args.batch_claims if args.claim_mode == "batch" else "-",
         "max_concurrent": args.max_concurrent,
         "max_warmpool_size": args.max_warmpool_size,
         "warm_per_task": args.warm_per_task, "colocate_replicas": args.colocate,
@@ -489,6 +512,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task-duration", type=float, default=0.0,
                    help="seconds to sleep in process_fn (simulate task work)")
     p.add_argument("--context", default=None, help="kube context (default: ambient)")
+    p.add_argument("--in-cluster", action="store_true",
+                   help="use the pod's service account instead of a kubeconfig")
+    p.add_argument("--claim-mode", default="per_claim", choices=["per_claim", "batch"],
+                   help="FleetConfig.claim_mode")
+    p.add_argument("--batch-claims", default="unbounded", choices=sorted(BATCH_CLAIMS),
+                   help="[batch] unbounded = create_rps 1e6, max_in_flight 998; "
+                        "defaults = the SDK's pacing")
     p.add_argument("--namespace", default="default")
     p.add_argument("--node-selector", action="append",
                    help="key=value (repeatable) to pin sandboxes to a node pool")

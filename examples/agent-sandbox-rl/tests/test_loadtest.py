@@ -170,3 +170,23 @@ def test_methodology_lists_only_requested_strategies():
       ["r/b:img0"])
   assert "- **none** —" in md and "- **pipelined** —" in md
   assert "- **naive** —" not in md          # not requested -> not described
+
+
+def test_claim_settings_presets():
+    per = loadtest.claim_settings("per_claim", "unbounded")
+    assert per["claim_mode"] == "per_claim"
+    unb = loadtest.claim_settings("batch", "unbounded")["batch_claims"]
+    assert (unb.create_rps, unb.max_in_flight) == (1e6, 998)
+    dflt = loadtest.claim_settings("batch", "defaults")["batch_claims"]
+    assert (dflt.create_rps, dflt.max_in_flight) == (None, None)
+    with pytest.raises(ValueError):
+        loadtest.claim_settings("batch", "fast")
+
+
+def test_parser_exposes_claim_mode_flags():
+    a = loadtest.build_parser().parse_args(
+        ["--images", "2", "--image-template", "r:{i}", "--in-cluster",
+         "--claim-mode", "batch", "--batch-claims", "defaults"])
+    assert (a.in_cluster, a.claim_mode, a.batch_claims) == (True, "batch", "defaults")
+    d = loadtest.build_parser().parse_args(["--images", "2", "--image-template", "r:{i}"])
+    assert (d.in_cluster, d.claim_mode, d.batch_claims) == (False, "per_claim", "unbounded")
