@@ -1163,6 +1163,7 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
             "response_types_map": {200: "object"},
             "auth_settings": ["BearerToken"],
             "_return_http_data_only": True,
+            "_preload_content": True,
             "_request_timeout": 30,
         })
         self.assertEqual(second.args[3], [("labelSelector", selector), ("limit", 500), ("continue", "t1")])
@@ -1180,13 +1181,20 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
 
         response = MagicMock(status=200)
         response.content.iter_any.side_effect = chunks
-        delete = self.helper.custom_objects_api.delete_collection_namespaced_custom_object = AsyncMock(
-            return_value=response
-        )
+        call_api = AsyncMock(return_value=response)
+        self.helper._api_client = MagicMock(call_api=call_api)
 
         await self.helper.delete_sandbox_claims_by_label("default", "agents.x-k8s.io/batch-id=b1")
 
-        self.assertIs(delete.call_args.kwargs["_preload_content"], False)
+        self.assertEqual(call_api.call_args.args, (
+            "/apis/{group}/{version}/namespaces/{namespace}/{plural}",
+            "DELETE",
+            {"group": "extensions.agents.x-k8s.io", "version": "v1beta1", "namespace": "default",
+             "plural": "sandboxclaims"},
+            [("labelSelector", "agents.x-k8s.io/batch-id=b1")],
+            {"Accept": "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1,application/json"},
+        ))
+        self.assertIs(call_api.call_args.kwargs["_preload_content"], False)
         self.assertEqual(len(drained), 2)
         response.release.assert_called_once()
 
@@ -1200,7 +1208,7 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
         # Without preloading, kubernetes_asyncio returns an error response without raising.
         response = MagicMock(status=429, reason="Too Many Requests", headers={"Retry-After": "7"})
         response.read = AsyncMock(return_value=b'{"kind": "Status", "code": 429}')
-        self.helper.custom_objects_api.delete_collection_namespaced_custom_object = AsyncMock(return_value=response)
+        self.helper._api_client = MagicMock(call_api=AsyncMock(return_value=response))
 
         with self.assertRaises(client.ApiException) as raised:
             await self.helper.delete_sandbox_claims_by_label("default", "agents.x-k8s.io/batch-id=b1")
@@ -1348,8 +1356,11 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
             "delete_namespaced_custom_object",
         ):
             setattr(api, method, AsyncMock(return_value={"items": [], "metadata": {}}))
-        api.delete_collection_namespaced_custom_object.return_value = MagicMock(status=200)
-        self.helper._api_client = MagicMock(call_api=AsyncMock(return_value={"items": [], "metadata": {}}))
+        self.helper._api_client = MagicMock(call_api=AsyncMock(
+            side_effect=lambda path, method, *args, **kwargs: (
+                MagicMock(status=200) if method == "DELETE" else {"items": [], "metadata": {}}
+            )
+        ))
         coord.create_namespaced_lease = AsyncMock()
         coord.delete_namespaced_lease = AsyncMock()
         helper = self.helper
@@ -1368,9 +1379,7 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
              helper._api_client.call_api, {}),
             ("delete_sandbox_claims_by_label", lambda: helper.delete_sandbox_claims_by_label(
                 "default", selector, _request_timeout=30),
-             api.delete_collection_namespaced_custom_object,
-             {"group": "extensions.agents.x-k8s.io", "plural": "sandboxclaims",
-              "label_selector": selector}),
+             helper._api_client.call_api, {}),
             ("get_sandbox_warmpool", lambda: helper.get_sandbox_warmpool(
                 "pool-a", "default", _request_timeout=30),
              api.get_namespaced_custom_object,

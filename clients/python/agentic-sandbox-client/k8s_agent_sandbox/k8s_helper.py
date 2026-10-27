@@ -156,7 +156,7 @@ class K8sHelper:
         self.core_v1_api = client.CoreV1Api(api_client)
         self.coordination_v1_api = client.CoordinationV1Api(_api_client_without_retries(api_client))
         # kubernetes 35 rejects a per-request Accept header and 37 changed call_api, so the
-        # metadata-only claim list goes through a client whose default Accept header asks for it.
+        # metadata-only claim requests go through a client whose default Accept header asks for it.
         metadata_api_client = _copy_api_client(api_client)
         metadata_api_client.set_default_header("Accept", PARTIAL_OBJECT_METADATA_LIST_ACCEPT)
         self._claim_metadata_api = client.CustomObjectsApi(metadata_api_client)
@@ -767,7 +767,8 @@ class K8sHelper:
         # decoded. The sync client raises ApiException for a non-2xx response before returning it, while
         # the async client returns an unread response without checking its status, so only the async
         # helper checks the status here.
-        response = cast(urllib3.HTTPResponse, self.custom_objects_api.delete_collection_namespaced_custom_object(
+        # Asking for metadata only also makes the drained body smaller.
+        response = cast(urllib3.HTTPResponse, self._claim_metadata_api.delete_collection_namespaced_custom_object(
             group=CLAIM_API_GROUP,
             version=CLAIM_API_VERSION,
             namespace=namespace,

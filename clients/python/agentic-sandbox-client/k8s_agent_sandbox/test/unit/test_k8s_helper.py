@@ -1161,6 +1161,15 @@ class TestClaimMetadataApiClient(unittest.TestCase):
         self.assertEqual(list_metadata.call_count, 2)
         list_full.assert_not_called()
 
+    def test_deletecollection_asks_for_metadata_only_through_the_metadata_client(self, _):
+        helper = K8sHelper(api_client=client.ApiClient(configuration=client.Configuration()))
+        metadata_api, full_api = helper._claim_metadata_api, helper.custom_objects_api
+        with patch.object(metadata_api, "delete_collection_namespaced_custom_object") as delete_metadata, \
+                patch.object(full_api, "delete_collection_namespaced_custom_object") as delete_full:
+            helper.delete_sandbox_claims_by_label("default", "agents.x-k8s.io/batch-id=b1")
+        self.assertIs(delete_metadata.call_args.kwargs["_preload_content"], False)
+        delete_full.assert_not_called()
+
 
 @patch("k8s_agent_sandbox.k8s_helper.config")
 class TestK8sHelperPoolSize(unittest.TestCase):
