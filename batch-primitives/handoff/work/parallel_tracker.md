@@ -52,3 +52,4 @@ Brian paused this conversation while another agent renames major fields in PRs 1
 | F step 11 (Go notes rename) | not started | after the stack's Task 6 rename and the new field rename; read the rename link first |
 | B, C | owned by coordinator 2 | none for coordinator 1 |
 | `par-mem` kind cluster | still running (memory probe) | ask Brian before deleting |
+- 2026-10-27 20:40 Resumed after the group_outcomes rename sync. No local copies of renamed branches; nothing of coordinator 1's built on them. Task 6 step 10 (proposal, carryover, work_plan) and step 9 (pr_board) done in `492a556b`; step 11 Go done in `af1dd651` (old head 441ec93a). state.md, tasks.md, pr_table.md, project_instructions.md left to the stack conversation. Open question: Go-name prose `IterReadyGroups` in the proposal (lines ~90-182).
