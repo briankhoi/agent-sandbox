@@ -118,3 +118,61 @@ round, the deletecollection took 47 s and finished inside the 90 s timeout), yet
 `release_traced_peak_mb` (69.4) matches `list_traced_peak_mb` (69.4), which points at the parsed
 deletecollection response. `list_bytes.meta_to_full_ratio` is 0.84, since a metadata-only list
 still carries `managedFields`, which are 51% of a claim's bytes (`all_claims.managed_fields_share`).
+
+## Campaign (2026-10-27)
+
+Arms, all from the local object store. B is a detached local commit, never pushed.
+
+| arm | commit | tree | what it adds |
+| --- | --- | --- | --- |
+| A | `91d5ffc485dbd13fd762e833c08af5ffdb9da02f` | `e305e548` | PR 7 head |
+| B2 | `dfa9d2f9ec40ad1715486085b014e9f58d62e9d6` | `beff60fb` | A plus the deletecollection change only |
+| C2 | `fb2a7e521d89346bd01d03901bfbb902208790ae` | `127a201a` | paged list, paged live count, deletecollection response not parsed |
+| D2 | `30e6fb2095e93be24ad797bb3feafb96f6000b3a` | `6d8f96f1` | C2 plus the live count from metadata-only pages |
+| E2 | `d8ec0178f1467eb3ef6e812445576be732de7440` | `ce0e790a` | D2 plus a metadata-only deletecollection response |
+| F2 | `e5367671765202883ebf9673a413b9bd4b3858e3` | `6ea16e4c` | E2 plus managedFields dropped from listed claims |
+
+Order. Forced-timeout runs (`--collection-timeout 5`) on C2 and D2, then three interleaved rounds
+of A, B2, C2, D2, E2, F2 at N = 5,000, then N = 10,000 on A and F2, all on harness `8cbb70b6`.
+A's interleaved runs are run2 to run4, since run1 is the smoke run from before. Host state around
+each run is in `host/<run>.txt`.
+
+Superseded data, kept as is. `1d-n5000-memprobe-C-ct5` and `-D-ct5` ran on the earlier C
+(`089c90d7`) and D (`a67bb210`), before review fixes changed commits 2 to 5. D's run exited 1 there.
+The count of the last, empty round read `page.get("items", [])` from a PartialObjectMetadataList
+whose `items` is `null` when nothing matches (the apiserver sends `"items": null` there and
+`"items": []` for a full list), which raised a TypeError. D2 has the fix.
+
+Medians at N = 5,000 (MB of tracemalloc, seconds).
+
+| arm | runs | list peak | list with result | release peak | release s | rounds |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| A | 4 | 69.5 | 46.3 | 69.41 | 33.3 | 1, 1, 1, 1 |
+| B2 | 3 | 69.4 | 46.3 | 0.21 | 40.8 | 1, 1, 1 |
+| C2 | 3 | 48.7 | 46.4 | 0.16 | 35.8 | 1, 1, 1 |
+| D2 | 3 | 48.7 | 46.4 | 0.21 | 33.1 | 1, 2, 1 |
+| E2 | 3 | 48.7 | 46.4 | 0.32 | 50.4 | 1, 1, 2 |
+| F2 | 3 | 24.1 | 18.9 | 0.31 | 33.0 | 1, 1, 1 |
+
+N = 10,000. A list peak 138.9, with result 92.7, release peak 138.8, release 61.6 s in 1 round.
+F2 list peak 43.6, with result 40.4, release peak 9.9, release 70.0 s in 2 rounds.
+
+Caveats.
+
+- Host load from other work was high throughout (load average mostly 11 to 20, 53 before F2
+  run3), so release seconds vary more with the host than with the arm. The traced sizes do not.
+- Three normal-path runs took 2 rounds: D2 run2, E2 run3 and F2 at N = 10,000. In each the first
+  deletecollection returned 504 after 60 s (the apiserver's request timeout, below the SDK's 90 s),
+  and the paged metadata count carried the round (4490, 3363 and 1513 claims left).
+- E2 run3's claims were smaller than every other run's. By the filled phase the apiserver had
+  served 2,679 claim PATCHes against about 15,000 in the other runs, so the controller had not yet
+  written most claims' status. Its full list was 8.5 MB instead of 11.5 MB, which explains its
+  lower list sizes (36.7 and 34.4). The E2 list medians above come from its two full-size runs,
+  and run3's list numbers should not be compared. At N = 10,000, F2's run had 18,057 PATCHes
+  against A's 22,868 (full list 21.3 MB against 22.9 MB), so its claims were a little smaller too.
+- With `--collection-timeout 5`, urllib3's default retries turn each timed-out deletecollection
+  into 4 attempts of 5 s, so a timed-out round takes about 20 s and ends in `MaxRetryError`. The
+  SDK-side counter sees one call per round. The apiserver's counts in `apiserver["filled->released"]`
+  show the attempts (A at ct5 had 3 SDK calls and 12 HTTP DELETEs). Its LIST count also includes
+  the controller's and the orchestrator's lists.
+- One run per timeout arm and per N = 10,000 arm.

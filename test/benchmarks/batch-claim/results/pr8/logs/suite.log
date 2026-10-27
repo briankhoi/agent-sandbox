@@ -1,3 +1,102 @@
 [21:23:59] 1d-n5000-memprobe-A-sync-run1 start
 [21:25:50] 1d-n5000-memprobe-A-sync-run1 done
 [21:25:50] suite finished
+[21:32:43] 1d-n5000-memprobe-A-ct5-sync-run1 start
+[21:34:50] 1d-n5000-memprobe-A-ct5-sync-run1 done
+[21:34:50] suite finished
+[21:36:55] waiting for the garbage collector's queue to drain (4630 items)
+[21:37:10] 1d-n5000-memprobe-C-ct5-sync-run1 start
+[21:38:39] 1d-n5000-memprobe-C-ct5-sync-run1 done
+[21:38:39] suite finished
+[21:40:29] waiting for the garbage collector's queue to drain (5416 items)
+[21:40:45] waiting for the garbage collector's queue to drain (4765 items)
+[21:41:00] 1d-n5000-memprobe-D-ct5-sync-run1 start
+[21:42:28] 1d-n5000-memprobe-D-ct5-sync-run1 done with errors (driver_exit=1)
+[21:42:28] suite finished
+[21:50:01] 1d-n5000-memprobe-C2-ct5-sync-run1 start
+[21:51:40] 1d-n5000-memprobe-C2-ct5-sync-run1 done
+[21:51:40] suite finished
+[21:53:53] 1d-n5000-memprobe-D2-ct5-sync-run1 start
+[21:55:20] 1d-n5000-memprobe-D2-ct5-sync-run1 done
+[21:55:20] suite finished
+[21:57:12] waiting for the garbage collector's queue to drain (5381 items)
+[21:57:27] waiting for the garbage collector's queue to drain (4732 items)
+[21:57:42] 1d-n5000-memprobe-A-sync-run2 start
+[21:59:09] 1d-n5000-memprobe-A-sync-run2 done
+[21:59:09] suite finished
+[22:01:07] waiting for the garbage collector's queue to drain (5115 items)
+[22:01:23] 1d-n5000-memprobe-B2-sync-run1 start
+[22:03:01] 1d-n5000-memprobe-B2-sync-run1 done
+[22:03:01] suite finished
+[22:05:00] waiting for the garbage collector's queue to drain (4967 items)
+[22:05:16] 1d-n5000-memprobe-C2-sync-run1 start
+[22:06:46] 1d-n5000-memprobe-C2-sync-run1 done
+[22:06:46] suite finished
+[22:08:41] waiting for the garbage collector's queue to drain (5280 items)
+[22:08:57] waiting for the garbage collector's queue to drain (4612 items)
+[22:09:12] 1d-n5000-memprobe-D2-sync-run1 start
+[22:10:43] 1d-n5000-memprobe-D2-sync-run1 done
+[22:10:43] suite finished
+[22:12:37] waiting for the garbage collector's queue to drain (5277 items)
+[22:12:52] waiting for the garbage collector's queue to drain (4615 items)
+[22:13:07] 1d-n5000-memprobe-E2-sync-run1 start
+[22:14:34] 1d-n5000-memprobe-E2-sync-run1 done
+[22:14:34] suite finished
+[22:16:29] waiting for the garbage collector's queue to drain (5344 items)
+[22:16:44] waiting for the garbage collector's queue to drain (4698 items)
+[22:16:59] 1d-n5000-memprobe-F2-sync-run1 start
+[22:18:25] 1d-n5000-memprobe-F2-sync-run1 done
+[22:18:25] suite finished
+[22:20:26] waiting for the garbage collector's queue to drain (5060 items)
+[22:20:42] 1d-n5000-memprobe-A-sync-run3 start
+[22:22:08] 1d-n5000-memprobe-A-sync-run3 done
+[22:22:08] suite finished
+[22:24:03] waiting for the garbage collector's queue to drain (5242 items)
+[22:24:19] 1d-n5000-memprobe-B2-sync-run2 start
+[22:26:04] 1d-n5000-memprobe-B2-sync-run2 done
+[22:26:04] suite finished
+[22:28:33] 1d-n5000-memprobe-C2-sync-run2 start
+[22:30:20] 1d-n5000-memprobe-C2-sync-run2 done
+[22:30:20] suite finished
+[22:32:42] 1d-n5000-memprobe-D2-sync-run2 start
+[22:35:08] 1d-n5000-memprobe-D2-sync-run2 done
+[22:35:08] suite finished
+[22:36:57] waiting for the garbage collector's queue to drain (4957 items)
+[22:37:12] 1d-n5000-memprobe-E2-sync-run2 start
+[22:38:59] 1d-n5000-memprobe-E2-sync-run2 done
+[22:38:59] suite finished
+[22:40:50] waiting for the garbage collector's queue to drain (4894 items)
+[22:41:05] 1d-n5000-memprobe-F2-sync-run2 start
+[22:42:35] 1d-n5000-memprobe-F2-sync-run2 done
+[22:42:35] suite finished
+[22:44:31] waiting for the garbage collector's queue to drain (5189 items)
+[22:44:46] 1d-n5000-memprobe-A-sync-run4 start
+[22:46:19] 1d-n5000-memprobe-A-sync-run4 done
+[22:46:19] suite finished
+[22:48:15] waiting for the garbage collector's queue to drain (5104 items)
+[22:48:31] 1d-n5000-memprobe-B2-sync-run3 start
+[22:49:58] 1d-n5000-memprobe-B2-sync-run3 done
+[22:49:58] suite finished
+[22:51:58] waiting for the garbage collector's queue to drain (5101 items)
+[22:52:14] 1d-n5000-memprobe-C2-sync-run3 start
+[22:53:47] 1d-n5000-memprobe-C2-sync-run3 done
+[22:53:47] suite finished
+[22:55:41] waiting for the garbage collector's queue to drain (5252 items)
+[22:55:57] waiting for the garbage collector's queue to drain (4593 items)
+[22:56:12] 1d-n5000-memprobe-D2-sync-run3 start
+[22:57:40] 1d-n5000-memprobe-D2-sync-run3 done
+[22:57:40] suite finished
+[22:59:40] waiting for the garbage collector's queue to drain (5043 items)
+[22:59:56] 1d-n5000-memprobe-E2-sync-run3 start
+[23:02:43] 1d-n5000-memprobe-E2-sync-run3 done
+[23:02:43] suite finished
+[23:05:04] 1d-n5000-memprobe-F2-sync-run3 start
+[23:06:49] 1d-n5000-memprobe-F2-sync-run3 done
+[23:06:49] suite finished
+[23:10:13] 1d-n10000-memprobe-A-sync-run1 start
+[23:12:22] 1d-n10000-memprobe-A-sync-run1 done
+[23:12:22] suite finished
+[23:16:30] waiting for the garbage collector's queue to drain (9899 items)
+[23:16:45] 1d-n10000-memprobe-F2-sync-run1 start
+[23:19:11] 1d-n10000-memprobe-F2-sync-run1 done
+[23:19:11] suite finished
