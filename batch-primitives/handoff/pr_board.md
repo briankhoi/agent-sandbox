@@ -20,15 +20,15 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 8/N | `feat/batch-ssl-eof-retry` | fix(python-sdk): retry the batch watch on a TLS EOF (8/N) | merged #2033 (`c56f0791`) | `0e586d47` | local agent |
 | 9/N | `feat/batch-1-fu7-client-cleanup` | fix(python-sdk): close cached batch connections on client cleanup (9/N) | merged #1986 (`b03ba91b`, tree equals `a1e009ee`) | `a1e009ee` | local agent |
 | 10/N | `feat/batch-1-fu7b-cleanup-retry` | fix(python-sdk): keep closing batch connections when cleanup fails (10/N) | merged #2049 (`74cd8fa5`, tree equals `078843dd`) | `078843dd` | local agent |
-| 11/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `2b1d9268`) | fix(batch,python-sdk): concurrent detach() success, named batch tasks for debugging (11/N) | open upstream #1996 | `3e977d6a` | local agent |
-| 12/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (12/N) | open upstream #1824 | `3aad6b2e` | local agent |
-| 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(python-sdk): add events and iter_ready_groups (13/N) | open upstream #1988 | `180de8db` | local agent |
-| 14/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (14/N) | open upstream #1989 | `71fa54ab` | local agent |
-| 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (15/N) | open upstream #1990 | `cca9ae2c` | local agent |
-| 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (16/N) | open upstream #1991 | `af6c4c74` | local agent |
-| 17/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (17/N) | ready, not opened (mypy fix approved 2026-10-23: one-line `cast` folded into the pool commit; prompt `work/prompts/B2-types-fold.md`, review copies `review/types/*`, not run yet; the stack conversation syncs) | `0ea8be13` | local agent (fix: coordinator 2) |
-| 18/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (18/N) | ready, not opened (B2 folds the reaper's own loose types into its commits: `lease_owner_reference`, `owner_references`, the Lease list kwargs) | `5beebfd4` | local agent (types: coordinator 2) |
-| 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (19/N) | ready, not opened | `dcc958c9` | local agent |
+| 11/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `2b1d9268`) | fix(batch,python-sdk): concurrent detach() success, named batch tasks for debugging (11/N) | merged #1996 (`7cfe8484`, tree equals `3e977d6a`) | `3e977d6a` | local agent |
+| 12/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (12/N) | open upstream #1824 | `386b39fc` | local agent |
+| 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(python-sdk): add events and iter_ready_groups (13/N) | open upstream #1988 | `a4592793` | local agent |
+| 14/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (14/N) | open upstream #1989 | `fb136030` | local agent |
+| 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (15/N) | open upstream #1990 | `59da47af` | local agent |
+| 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (16/N) | open upstream #1991 | `37f3ed12` | local agent |
+| 17/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (17/N) | ready, not opened (mypy fix approved 2026-10-23: one-line `cast` folded into the pool commit; prompt `work/prompts/B2-types-fold.md`, review copies `review/types/*`, not run yet; the stack conversation syncs) | `20f08f2b` | local agent (fix: coordinator 2) |
+| 18/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (18/N) | ready, not opened (B2 folds the reaper's own loose types into its commits: `lease_owner_reference`, `owner_references`, the Lease list kwargs) | `ede7f3b9` | local agent (types: coordinator 2) |
+| 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (19/N) | ready, not opened | `ec50d5e2` | local agent |
 | 20/N | not created (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (20/N) | planned (plan `work/pr8_plan.md` verified 2026-10-22, accept with fixes; Part 3 approved, other decisions pending; starts after B2 syncs) | n/a | local agent (coordinator 2) |
 | 21/N | not created (types PR) | not drafted | planned (Brian approved 2026-10-23: one PR after PR 7 for loose types in open PRs and upstream code, including Lease typing; plan `work/type_tightening_plan.md`) | n/a | local agent (coordinator 2) |
 | RL | `feat/rl-batch-claim-mode` (4 commits on PR 7) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch | ready, not opened (needs Brian's review; sits on 18/N so it opens after the stack) | `166a15c8` | cloud (re-commit as Brian by local agent) |
@@ -122,7 +122,7 @@ This PR is the tenth in a series of PRs to implement a batch. It finishes the cl
 - `close()` and `delete_all()` document that cleanup stops Lease renewal without releasing the Lease, so `get_batch` can't re-attach a batch that wasn't detached.
 - `get_batch` documents the transport errors a failed request raises.
 
-### 11/N fu8 + fu9 (open #1996)
+### 11/N fu8 + fu9 (merged #1996)
 This PR is the eleventh in a series of PRs to implement a batch. It names the async batch tasks and lets two `detach()` calls on the same handle both succeed.
 - The async handle's watch and Lease renewal start with `asyncio.create_task`, named `batch-<id>-watch` and `batch-<id>-renew`, so they are easy to tell apart in task dumps.
 - Both `detach()` calls can read the Lease while this handle holds it, so the second release write used to fail with a 409 even though the batch was released. On a 409, `detach()` now reads the Lease again and only raises if this handle still holds it.

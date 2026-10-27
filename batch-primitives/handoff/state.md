@@ -14,7 +14,7 @@ PR 1 #1742 (squashed as `3a1607bc`), fu1 (2/N), fu2 (3/N), merge-main #2005, fu3
 ## Branch order (linear, bottom to top)
 Each branch sits on the one before it. Upstream PR numbers from the project's tracking (Brian opens PRs himself, so check):
 
-| Upstream | Branch | Head (10-27 01:11) | Upstream PR |
+| Upstream | Branch | Head (10-27 01:16) | Upstream PR |
 | :-- | :-- | :-- | :-- |
 | 5/N | `feat/batch-1-fu4-terminating-claims` | `2b8424a1` | #1983 **merged** |
 | 6/N | `feat/batch-1-fu5-connect-checks` | `e295ca75` | #1984 **merged** (`255d15fc`) |
@@ -22,15 +22,15 @@ Each branch sits on the one before it. Upstream PR numbers from the project's tr
 | 8/N | `feat/batch-ssl-eof-retry` (TLS EOF) | `0e586d47` | #2033 **merged** (`c56f0791`) |
 | 9/N | `feat/batch-1-fu7-client-cleanup` | `a1e009ee` | #1986 **merged** (`b03ba91b`) |
 | 10/N | `feat/batch-1-fu7b-cleanup-retry` | `078843dd` | #2049 **merged** (`74cd8fa5`) |
-| 11/N | `feat/batch-1-fu8-task-names`, `feat/batch-1-fu9-concurrent-detach` (fu9 contains fu8) | fu8 `2b1d9268`, fu9 `3e977d6a` | #1996 (fu9 branch) |
-| 12/N | `feat/batch-2-claim` (PR 2) | `3aad6b2e` | #1824 |
-| 13/N | `feat/batch-3-group-consumers` (PR 3) | `180de8db` | #1988 |
-| 14/N | `feat/batch-4-group-quorum` (PR 4) | `71fa54ab` | #1989 |
-| 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | `cca9ae2c` | #1990 |
-| 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | `af6c4c74` | #1991 |
-| 17/N (inferred) | `feat/batch-transport-ltlfdm` | `0ea8be13` | not opened |
-| 18/N (inferred) | `feat/batch-reaper-ymtd6t` | `5beebfd4` | not opened |
-| 19/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `dcc958c9` | not opened |
+| 11/N | `feat/batch-1-fu8-task-names`, `feat/batch-1-fu9-concurrent-detach` (fu9 contains fu8) | fu8 `2b1d9268`, fu9 `3e977d6a` | #1996 **merged** (`7cfe8484`) |
+| 12/N | `feat/batch-2-claim` (PR 2) | `386b39fc` | #1824 |
+| 13/N | `feat/batch-3-group-consumers` (PR 3) | `a4592793` | #1988 |
+| 14/N | `feat/batch-4-group-quorum` (PR 4) | `fb136030` | #1989 |
+| 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | `59da47af` | #1990 |
+| 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | `37f3ed12` | #1991 |
+| 17/N (inferred) | `feat/batch-transport-ltlfdm` | `20f08f2b` | not opened |
+| 18/N (inferred) | `feat/batch-reaper-ymtd6t` | `ede7f3b9` | not opened |
+| 19/N (inferred) | `feat/batch-7a-create-path` (PR 7, top) | `ec50d5e2` | not opened |
 
 The 7/N copies (`review/fu6-lease/*`) were synced at 2026-10-22 12:20 after Brian's OK: 6/N restack onto `255d15fc` (trees unchanged) plus a second fu6 commit, "let batch Lease requests see a token rotated in place" (CodeRabbit on #1985; the code is from 3/N, folded into 7/N as an exception, Brian 2026-10-22: "this can be an exception, just fold in the change into this PR"). At 20:28 the lease commit was amended to a shallow copy (Brian: "i approve 1 (lease client)"). At 20:46 plan C was synced after Brian approved the TLS and transport fixes ("i approve 2 and 3"): the TLS commit (with the async `_is_transport_error` it now introduces and the async watch using it) sits on fu6 as `feat/batch-ssl-eof-retry`, everything above is restacked on it, PR 2 no longer defines its own async helper, and transport checks the cached Sandbox's `sandbox_id` in `still_reaches`. 7/N merged at 20:50 as `d07e8941` (tree equal to fu6), so the stack from TLS up was restacked onto it mechanically (identical trees) at 20:51, and Brian opened the TLS PR as #2033. The open PR titles and first sentences were renumbered with `gh pr edit` at 20:53 (8/N to 14/N became 9/N to 15/N). At 22:04 the TLS commit was amended for Vicente's #2033 nit (`ssl.SSLEOFError` added to `_TRANSPORT_ERRORS`, and both helpers unwrap the TLS error so the EOF rule lives only in the tuple) and the branches above restacked; TLS head `0e586d47`, PR 7 head `deee6702`. The `review/planc/*`, `review/tls-eof/*` and `review/fix3/*` copies are superseded. 8/N merged at about 22:45 as `c56f0791` (tree equal to `0e586d47`). At 22:51 fu7 and everything above were restacked onto it mechanically (`review/restack-8n/*`, 37 commits, every per-commit tree identical, range-diff all `=`, mypy clean through PR 6 with only the known 4.4 error from transport up) and synced atomically. #1986 now shows only fu7's 8 files. At 23:28, after Brian's OK ("i approve all 3"), the `review/cr1986/*` copies were synced atomically for CodeRabbit on #1986: fu7 now marks each batch detached on client cleanup (both shells), the sync client guards `_active_batches` with `_batches_lock` (registration, `_unregister_batch`, cleanup snapshot), and fu7 drops its stray E303 blank line and two unneeded `assertLogs` narrowings (Brian: "yes to both decisions"). Follow-ons in their owning commits: PR 2 takes `_batches_lock` in `claim_batch` and the `_release_batches` snapshot; PR 3 adds `_changed.notify_all()` to the async cleanup's detach so `events()` waiters wake on `client.close()`. Declined with replies (T3 `finally` in `delete_all`, O1 and O2 retry of failed connection closes). Rejected option: a `_mark_detached()` helper. New transport head `d1f01d1a` (Brian passes it to the thread fixing the transport mypy error).
 
@@ -47,6 +47,8 @@ Side branches: `feat/batch-ssl-eof-retry` (`8937ccdb`, TLS EOF retry, based on u
 **2026-10-26 19:13.** 10/N #2049 merged as `74cd8fa5` (tree equal to `078843dd`). fu8 to PR 7 were restacked onto it mechanically (36 commits, identical trees, range-diff all `=`) and synced atomically; new transport head `64bc8872`. The pending transport stale-close review copies were restacked the same way as `review/restack-10n-t/*` (transport `d405002f`, reaper `4a6a901c`, PR 7 `fa19af77`, trees equal to `review/tstale2/*`), awaiting Brian's approval. Lowest open PR is now 11/N #1996.
 
 **2026-10-26 23:51.** Synced after Brian's OK ("i approve of both"): 11/N #1996 retries detach()'s release write once when a 409 re-read shows this handle still holds the Lease (Vicente's optional follow-up; tests cover released, deleted, another holder, ours then 200, ours then 409, ours then 500), and 12/N #1824 makes detach() copy `_detach_grace` into a local inside its lock so a concurrent release() can't make it write a Lease with no duration (race found by the fixer, confirmed by the verifier). New transport head `c6951c81`. At 01:11 the transport stale-close round was synced after Brian's OK ("approve transport. and yes"), with the `_stale_connections` comment rewritten in active voice per upstream AGENTS.md "Writing": the watch moves stale connections to `_stale_connections`, which connect() never reads, and `_close_one(sandbox, action, keep)` puts back a connection whose close fails or is cancelled, so the next cleanup retries it. New transport head `0ea8be13` (reaper `5beebfd4`, PR 7 `dcc958c9`).
+
+**2026-10-27 01:16.** 11/N #1996 merged (Vicente) as `7cfe8484` (tree equal to `3e977d6a`). PR 2 to PR 7 restacked onto it mechanically (34 commits, identical trees, range-diff all `=`) and synced atomically (Brian: "can you rebase 12/n"). New transport head `20f08f2b`. Lowest open PR is 12/N #1824.
 
 ## What the stack contains (one line each)
 fu4 terminating claims become LOST. fu5 `connect()` checks readiness and `err()` before the cached connection. fu6 `get_batch` orders groups by lowest ordinal. fu7 client cleanup closes batch connections. fu8 names async tasks. fu9 concurrent `detach()`. PR 2 `claim_batch` and `release`, with the fill created **group by group in caller order, each group's first `min_ready` claims first** (moved here from PR 7 on 2026-10-21). PR 3 `events`, `iter_ready_groups`. PR 4 `wait_for_quorum`. PR 5 `release_member`, `release_group`, `release_not_ready`. PR 6 `acquire`, `size=0` groups, the next-ordinal annotation, a per-pool single-flight precheck (`_check_pool`, shared outcome). Transport: `connect()` seeds the pod IP, `pool_size`, `pool >= max_in_flight + 2`. Reaper: ownerReference on claims, `python -m k8s_agent_sandbox.batch_reaper` deletes only stale Leases. PR 7 (7a): warm-aware create and acquire pacing (warm credit from the precheck GET's `status.readyReplicas`).
