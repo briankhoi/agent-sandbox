@@ -1009,7 +1009,7 @@ class TestK8sHelperWatchResourceVersion(unittest.TestCase):
         self.assertEqual(mock_watch.stream.call_count, 2)
 
 
-@patch("k8s_agent_sandbox.k8s_helper._api_client_without_retries")
+@patch("k8s_agent_sandbox.k8s_helper._copy_api_client")
 @patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api")
 @patch("k8s_agent_sandbox.k8s_helper.client.CustomObjectsApi")
 @patch("k8s_agent_sandbox.k8s_helper.config")
@@ -1020,7 +1020,7 @@ class TestK8sHelperApiClientInjection(unittest.TestCase):
     ):
         sentinel = MagicMock(name="ApiClient")
         K8sHelper(api_client=sentinel)
-        mock_custom_cls.assert_called_once_with(sentinel)
+        mock_custom_cls.assert_any_call(sentinel)
         mock_core_cls.assert_called_once_with(sentinel)
         mock_config.load_incluster_config.assert_not_called()
         mock_config.load_kube_config.assert_not_called()
@@ -1125,6 +1125,41 @@ class TestLeaseApiClient(unittest.TestCase):
     def test_lease_requests_are_not_retried_with_the_default_client(self, _):
         lease_api_client = K8sHelper().coordination_v1_api.api_client
         self.assertIs(lease_api_client.configuration.retries, False)
+
+
+@patch("k8s_agent_sandbox.k8s_helper.config")
+class TestClaimMetadataApiClient(unittest.TestCase):
+
+    def test_live_claims_are_counted_from_metadata_through_a_copy_of_the_injected_client(self, _):
+        configuration = client.Configuration(host="https://cluster-b:6443")
+        injected = client.ApiClient(configuration=configuration, cookie="session=1")
+        injected.set_default_header("X-Test", "yes")
+        helper = K8sHelper(api_client=injected)
+        metadata_api = helper._claim_metadata_api
+        metadata_client = metadata_api.api_client
+        self.assertIsNot(metadata_client, injected)
+        self.assertEqual(
+            metadata_client.default_headers["Accept"],
+            "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1,application/json",
+        )
+        self.assertNotIn("Accept", injected.default_headers)
+        self.assertEqual(metadata_client.default_headers["X-Test"], "yes")
+        self.assertEqual(metadata_client.cookie, "session=1")
+        self.assertEqual(metadata_client.configuration.host, "https://cluster-b:6443")
+        # A re-list is a safe read, so it keeps the library's retries, unlike Lease requests.
+        self.assertIsNone(metadata_client.configuration.retries)
+
+        pages = [
+            {"items": [{"metadata": {"name": "b1-0"}}], "metadata": {"continue": "t1"}},
+            # A metadata-only list sends null items when nothing matches.
+            {"items": None, "metadata": {}},
+        ]
+        full_api = helper.custom_objects_api
+        with patch.object(metadata_api, "list_namespaced_custom_object", side_effect=pages) as list_metadata, \
+                patch.object(full_api, "list_namespaced_custom_object", return_value=pages[0]) as list_full:
+            self.assertEqual(helper.count_live_sandbox_claims("default", "agents.x-k8s.io/batch-id=b1"), 1)
+        self.assertEqual(list_metadata.call_count, 2)
+        list_full.assert_not_called()
 
 
 @patch("k8s_agent_sandbox.k8s_helper.config")

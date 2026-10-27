@@ -31,6 +31,7 @@ from .constants import (
     TEMPLATE_PLURAL_NAME,
     WARMPOOL_PLURAL_NAME,
     CLIENT_REQUEST_TIME_ANNOTATION,
+    PARTIAL_OBJECT_METADATA_LIST_ACCEPT,
     GATEWAY_API_GROUP,
     GATEWAY_API_VERSION,
     GATEWAY_PLURAL,
@@ -666,13 +667,46 @@ class AsyncK8sHelper:
         await self._ensure_initialized()
 
         live = 0
+        # Metadata is enough to tell whether a claim is being deleted, and a page of it is far smaller.
         async for page, first in _claim_list_pages(
-            self.custom_objects_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
+            self._list_claim_metadata_page, namespace, label_selector, _request_timeout
         ):
             if first:
                 live = 0
-            live += sum(1 for c in page.get("items", []) if not (c.get("metadata") or {}).get("deletionTimestamp"))
+            # A metadata-only list sends null items when nothing matches.
+            live += sum(1 for c in page.get("items") or [] if not (c.get("metadata") or {}).get("deletionTimestamp"))
         return live
+
+    async def _list_claim_metadata_page(
+        self,
+        *,
+        group: str,
+        version: str,
+        namespace: str,
+        plural: str,
+        label_selector: str,
+        limit: int,
+        _continue: str | None,
+        _request_timeout: float | None,
+    ) -> Any:
+        """Lists one page of claims as metadata only, taking the arguments of
+        ``list_namespaced_custom_object``."""
+        # The generated method overwrites any Accept header it is given, so the request is sent
+        # through the shared client directly.
+        query_params: list[tuple[str, Any]] = [("labelSelector", label_selector), ("limit", limit)]
+        if _continue is not None:
+            query_params.append(("continue", _continue))
+        return await cast(client.ApiClient, self._api_client).call_api(
+            "/apis/{group}/{version}/namespaces/{namespace}/{plural}",
+            "GET",
+            {"group": group, "version": version, "namespace": namespace, "plural": plural},
+            query_params,
+            {"Accept": PARTIAL_OBJECT_METADATA_LIST_ACCEPT},
+            response_types_map={200: "object"},
+            auth_settings=["BearerToken"],
+            _return_http_data_only=True,
+            _request_timeout=_request_timeout,
+        )
 
     async def watch_sandbox_claims(
         self, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int,
