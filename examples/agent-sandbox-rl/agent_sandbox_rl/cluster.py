@@ -74,7 +74,9 @@ class Cluster:
         self.custom_api, self.core_api, self.namespace, labels=labels)
     self._k8s_helper = None
     self._sandbox_client = None
-    self._leases_injected = False             # see batch_sandbox_client
+    # True once batch_sandbox_client has pointed k8s_helper's Lease API at
+    # this cluster, so later calls skip rebuilding it.
+    self._leases_injected = False
     self.tracer_config = None                 # optional SDK SandboxTracerConfig
     # Placement / capacity bookkeeping. Mutated from parallel claim workers, so
     # guard with a per-cluster lock and only touch via the methods below.
