@@ -128,28 +128,42 @@ class Shape:
 
 # Every warm claim is covered by its pool, so the SDK sends it unpaced and only
 # max_in_flight bounds the creates; create_rps applies to cold claims.
+# The SDK's own caps lifted, so the lead pair has no limit on either arm. The SDK
+# refuses a max_in_flight its connection pool can't hold (pool >= max_in_flight +
+# BATCH_POOL_HEADROOM), and the RL library's pool is 1000, so 998 is the most it
+# allows; per-claim meets the same pool as extra one-off connections past 1000.
+UNBOUNDED_MIF = 998
+UNBOUNDED_RPS = 1e6
 WARM_VARIANTS = [
     Variant("per-claim", "per-claim"),
+    Variant("batch-unbounded", "batch", create_rps=UNBOUNDED_RPS, max_in_flight=UNBOUNDED_MIF),
+    # What users get: the SDK's 20 in-flight creates (and 50/s, which warm claims skip).
     Variant("batch-default", "batch"),
     # The same driver semaphore on both arms, the size the kind runs used.
     Variant("per-claim-c50", "per-claim", acquire_concurrency=50),
     Variant("batch-c50", "batch", acquire_concurrency=50),
-    # Whether the default of 20 in-flight creates is what bounds batch at scale.
-    Variant("batch-mif100", "batch", max_in_flight=100),
     # One claim_batch per step with every group sized to its tasks (the group
-    # size > 0 path a cohort caller would use), envs fed from events().
+    # size > 0 path a wave caller would use), envs fed from events(). Compared with
+    # the acquire burst at the same settings, it measures the wave mode's gain.
+    Variant("fill-unbounded", "fill", create_rps=UNBOUNDED_RPS, max_in_flight=UNBOUNDED_MIF),
     Variant("fill-default", "fill"),
 ]
 ASYNC_VARIANTS = [
     Variant("async-per-claim", "per-claim", loop="async"),
-    Variant("async-batch-default", "batch", loop="async"),
+    Variant("async-batch-unbounded", "batch", create_rps=UNBOUNDED_RPS,
+            max_in_flight=UNBOUNDED_MIF, loop="async"),
 ]
 COLD_VARIANTS = [
     Variant("per-claim", "per-claim"),
+    Variant("batch-unbounded", "batch", create_rps=UNBOUNDED_RPS, max_in_flight=UNBOUNDED_MIF),
     # The SDK default paces cold creates at 50/s; per-claim sends them unpaced.
     Variant("batch-default", "batch"),
-    Variant("batch-rps500", "batch", create_rps=500),
 ]
+# Fixed before the run (rl_design_decision.md, the cohort rule): the wave path is a
+# clear gain when the fill's last start is more than 20% below the acquire burst's
+# at 640 sandboxes or more.
+WAVE_GAIN = 0.2
+WAVE_MIN_SIZE = 640
 
 
 @dataclass(frozen=True)
@@ -185,6 +199,10 @@ def run_plan() -> list[PlannedRun]:
 # --------------------------------------------------------------------------- #
 APISERVER_RESOURCES = ("sandboxclaims", "sandboxes", "sandboxwarmpools",
                        "sandboxtemplates", "leases", "pods", "services")
+# The resources a claim's own requests touch, from any client (the controller's
+# included), so the count doesn't grow with the step's length the way every
+# request in the cluster does.
+CLAIM_PATH_RESOURCES = ("sandboxclaims", "sandboxes", "leases")
 _KEPT = ("apiserver_request_total", "apiserver_request_duration_seconds_sum",
          "apiserver_request_duration_seconds_count",
          "apiserver_flowcontrol_rejected_requests_total",
@@ -260,7 +278,10 @@ def apiserver_delta(before: dict[str, float] | None, after: dict[str, float] | N
         if k.startswith("latency_count ") and v:
             key = k[len("latency_count "):]
             latency_ms[key] = round(1000 * d.get(f"latency_sum {key}", 0.0) / v, 2)
+    claim_path = sum(v for k, v in d.items() if k.startswith("requests ")
+                     and k.split(" ")[2] in CLAIM_PATH_RESOURCES)
     out = {"valid": int(creates) == driver_creates, "claim_creates": int(creates),
+           "claim_path_requests": int(claim_path),
            "driver_creates": driver_creates, "requests": requests,
            "requests_all": int(d.get("requests_all", 0)),
            "http_429_all": int(d.get("http_429_all", 0)),
@@ -333,7 +354,8 @@ def steady_of(steps: list[dict]) -> dict:
            if (s.get("apiserver") or {}).get("valid")]
     lat = [v for v in lat if v is not None]
     out["apiserver_create_ms"] = statistics.median(lat) if lat else None
-    for k in ("apf_wait_s", "requests_all", "apf_rejected", "http_429_all"):
+    for k in ("apf_wait_s", "requests_all", "claim_path_requests", "apf_rejected",
+              "http_429_all"):
         vals = [s["apiserver"][k] for s in use if (s.get("apiserver") or {}).get("valid")]
         out[f"apiserver_{k}"] = statistics.median(vals) if vals else None
     return out
@@ -394,14 +416,15 @@ def verdict(rows: dict) -> dict:
         def row(v, shape=shape):
             return rows.get(f"{shape}/{v}")
 
-        pairs = ([("no_limit", "batch-default", "per-claim"),
+        pairs = ([("no_limit", "batch-unbounded", "per-claim"),
+                  ("defaults", "batch-default", "per-claim"),
                   ("c50", "batch-c50", "per-claim-c50"),
-                  ("async_no_limit", "async-batch-default", "async-per-claim"),
-                  ("fill_vs_per_claim", "fill-default", "per-claim"),
-                  ("mif100_vs_batch_default", "batch-mif100", "batch-default")]
+                  ("async_no_limit", "async-batch-unbounded", "async-per-claim"),
+                  ("wave_unbounded", "fill-unbounded", "batch-unbounded"),
+                  ("wave_default", "fill-default", "batch-default")]
                  if shape[0] == "w" else
-                 [("no_limit", "batch-default", "per-claim"),
-                  ("rps500_vs_per_claim", "batch-rps500", "per-claim")])
+                 [("no_limit", "batch-unbounded", "per-claim"),
+                  ("defaults", "batch-default", "per-claim")])
         s = {}
         for name, b, p in pairs:
             rb, rp = row(b), row(p)
@@ -409,9 +432,15 @@ def verdict(rows: dict) -> dict:
                 continue
             s[name] = {"ratio": ratio(rb.get("ready_last"), rp.get("ready_last")),
                        "call": classify(rb, rp),
+                       "last_start_ratio": ratio(rb.get("last_start_s"),
+                                                 rp.get("last_start_s")),
                        "step1_ratio": ratio(rb.get("step1_ready_last"),
                                             rp.get("step1_ready_last"))}
-        b, p = row("batch-default"), row("per-claim")
+        for name in ("wave_unbounded", "wave_default"):
+            r = (s.get(name) or {}).get("last_start_ratio")
+            if r is not None and int(shape[1:]) >= WAVE_MIN_SIZE:
+                s[name]["gain_over_20pct"] = r < 1 - WAVE_GAIN
+        b, p = row("batch-unbounded"), row("per-claim")
         if b and p:
             s["requests_per_env"] = {
                 "batch": ratio(b.get("total_requests"), b.get("n")),
@@ -419,6 +448,8 @@ def verdict(rows: dict) -> dict:
             s["watches"] = {"batch": b.get("watches"), "per_claim": p.get("watches")}
             s["apiserver_create_ms"] = {"batch": b.get("apiserver_create_ms"),
                                         "per_claim": p.get("apiserver_create_ms")}
+            s["claim_path_requests"] = {"batch": b.get("apiserver_claim_path_requests"),
+                                        "per_claim": p.get("apiserver_claim_path_requests")}
             s["apf_wait_s"] = {"batch": b.get("apiserver_apf_wait_s"),
                                "per_claim": p.get("apiserver_apf_wait_s")}
             s["pool_full_discards"] = {"batch": b.get("pool_full_discards"),
@@ -429,6 +460,7 @@ def verdict(rows: dict) -> dict:
             if k[0] == "w" and (v.get("no_limit") or {}).get("ratio") is not None]
     warm.sort()
     out["warm_ratio_by_size"] = warm
+    # Context only: the two ends, with no noise test.
     out["win_grows_with_size"] = (warm[-1][1] < warm[0][1]) if len(warm) >= 2 else None
     return out
 
@@ -858,8 +890,8 @@ def cmd_report(args) -> int:
              "## Steady state", "",
              "| shape/variant | runs | errors | last Ready s (min-max) | Ready p50 s | "
              "Ready p99 s | last start s | step 1 last Ready s | requests/env | watches | "
-             "pool-full discards | CPU s | API create ms | APF wait s | API requests | "
-             "429s |", "|" + "---|" * 16]
+             "pool-full discards | CPU s | API create ms | APF wait s | API claim-path requests "
+             "| all API requests per s (context) | 429s |", "|" + "---|" * 17]
     for key in sorted(rows, key=lambda k: (k[0] != "w", int(k.split("/")[0][1:]), k)):
         r = rows[key]
         lines.append(
@@ -870,11 +902,16 @@ def cmd_report(args) -> int:
             f"{_fmt(ratio(r['total_requests'], r['n']))} | {_fmt(r['watches'], 0)} | "
             f"{_fmt(r['pool_full_discards'], 0)} | {_fmt(r['driver_cpu_s'])} | "
             f"{_fmt(r['apiserver_create_ms'])} | {_fmt(r['apiserver_apf_wait_s'])} | "
-            f"{_fmt(r['apiserver_requests_all'], 0)} | {_fmt(r['apiserver_http_429_all'], 0)} |")
+            f"{_fmt(r['apiserver_claim_path_requests'], 0)} | "
+            f"{_fmt(ratio(r['apiserver_requests_all'], r['last_start_s']), 0)} | "
+            f"{_fmt(r['apiserver_http_429_all'], 0)} |")
     lines += ["", "Requests and watches are the driver's own, from the step's start to its "
               "last exec, before release. API columns are the API server's counters over the "
-              "same window (all clients, the controller included), from steps whose claim "
-              "creates matched the driver's.", ""]
+              "same window, from steps whose claim creates matched the driver's. Claim-path "
+              "requests are sandboxclaims, sandboxes and leases from every client (the "
+              "controller included), the arm's API cost. All API requests per second covers "
+              "every client in the cluster (kubelets and refills too), so it leans against "
+              "the slower arm: context only.", ""]
     with open(os.path.join(RESULTS, "summary.md"), "w") as f:
         f.write("\n".join(lines))
     print(os.path.join(RESULTS, "summary.md"))

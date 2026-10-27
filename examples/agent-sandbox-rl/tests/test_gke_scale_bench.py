@@ -77,6 +77,7 @@ def test_apiserver_delta_is_valid_only_when_claim_creates_match_the_driver():
     d = g.apiserver_delta(before, after, 10)
     assert d["valid"] and d["mean_latency_ms"]["POST sandboxclaims"] == 50.0
     assert d["apf_wait_s"] == 0.25 and d["requests_all"] == 17
+    assert d["claim_path_requests"] == 10
     assert not g.apiserver_delta(before, after, 9)["valid"]
     # A reset counter goes down while the claim creates still match.
     assert not g.apiserver_delta({**after, "requests_all": 100.0}, after, 0)["valid"]
@@ -127,16 +128,29 @@ def test_classify_needs_the_margin_and_separate_ranges():
 
 def test_verdict_ratios_by_shape_and_whether_the_win_grows():
     rows = {"w160/per-claim": {**_row(2.0, 1.9, 2.1), "n": 160, "total_requests": 640},
-            "w160/batch-default": {**_row(1.8, 1.7, 1.9), "n": 160, "total_requests": 240},
+            "w160/batch-unbounded": {**_row(1.8, 1.7, 1.9), "n": 160, "total_requests": 240,
+                                     "last_start_s": 2.0},
             "w1280/per-claim": _row(8.0, 7.5, 8.5),
-            "w1280/batch-default": _row(4.0, 3.9, 4.1),
+            "w1280/batch-unbounded": {**_row(4.0, 3.9, 4.1), "last_start_s": 5.0},
+            "w1280/fill-unbounded": {**_row(3.5, 3.4, 3.6), "last_start_s": 3.9},
+            "w160/fill-unbounded": {**_row(1.0, 0.9, 1.1), "last_start_s": 1.0},
+            "w640/batch-unbounded": {**_row(2.0, 1.9, 2.1), "last_start_s": 2.0},
+            "w640/fill-unbounded": {**_row(1.8, 1.7, 1.9), "last_start_s": 1.8},
             "c160/per-claim": _row(5.0, 4.9, 5.1),
-            "c160/batch-default": _row(6.0, 5.8, 6.2)}
+            "c160/batch-unbounded": _row(6.0, 5.8, 6.2),
+            "c160/batch-default": _row(9.0, 8.8, 9.2)}
     v = g.verdict(rows)
     assert v["w160"]["no_limit"]["ratio"] == 0.9
     assert v["w160"]["requests_per_env"] == {"batch": 1.5, "per_claim": 4.0}
     assert v["w1280"]["no_limit"]["call"] == "batch wins"
     assert v["c160"]["no_limit"]["call"] == "batch loses"
+    assert v["c160"]["defaults"]["ratio"] == 1.8
+    # The wave rule is on last start, at 640 or more only.
+    assert v["w1280"]["wave_unbounded"]["last_start_ratio"] == 0.78
+    assert v["w1280"]["wave_unbounded"]["gain_over_20pct"] is True
+    assert v["w640"]["wave_unbounded"]["gain_over_20pct"] is False
+    assert v["w160"]["wave_unbounded"]["last_start_ratio"] == 0.5
+    assert "gain_over_20pct" not in v["w160"]["wave_unbounded"]
     assert v["warm_ratio_by_size"] == [(160, 0.9), (1280, 0.5)]
     assert v["win_grows_with_size"] is True
 
