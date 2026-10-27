@@ -33,9 +33,9 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 21/N | not created (types PR) | not drafted | planned (Brian approved 2026-10-23: one PR after PR 7 for loose types in open PRs and upstream code, including Lease typing; plan `work/type_tightening_plan.md`) | n/a | local agent (coordinator 2) |
 | RL | `feat/rl-batch-claim-mode` (4 commits on PR 7) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch | ready, not opened (needs Brian's review; sits on 18/N so it opens after the stack) | `166a15c8` | cloud (re-commit as Brian by local agent) |
 | RL | `feat/rl-sandbox-client-race` (1 commit on upstream main) | fix(rl): build Cluster.sandbox_client once under concurrent first use | ready, not opened (independent of the stack, targets `main`) | `834656b9` | cloud |
-| SDK fix | `fix/python-sdk-release-terminated-handles` (1 commit on upstream main `7f40dc1a`) | fix(python-sdk): drop terminated sandboxes from the client (#<issue A>) | ready, not opened (targets `main`; terminate() hook bound to the registry, see `work/results/G4-memleak-final.md`) | `0a54a028` | local agent (item G) |
-| SDK fix | `fix/python-sdk-free-closed-connectors` (1 commit on upstream main `96ef188e`, merges cleanly with `7f40dc1a`) | fix(python-sdk): free closed sandbox handles without the cyclic GC (#<issue B>) | ready, not opened (targets `main`; description adds the use-after-close sentence, see G4) | `b3574fa9` | local agent (item G) |
-| SDK fix | `fix/python-sdk-release-client-exit-hook` (1 commit stacked on PR 1 `0a54a028`) | fix(python-sdk): stop the exit hook from keeping closed clients alive (#<issue 4>) | ready, not opened (stacked on PR 1; option (e), both clients, see G4) | `53765391` | local agent (item G) |
+| SDK fix | `fix/python-sdk-release-terminated-handles` (1 commit on upstream main `7f40dc1a`) | fix(python-sdk): drop terminated sandboxes from the client (#<issue A>) | ready, not opened; verified by coordinator 1 (2026-10-27, `work/coord1/2026-10-27-0130-leak-fix-final.md`) (targets `main`; terminate() hook bound to the registry, see `work/results/G4-memleak-final.md`) | `0a54a028` | local agent (item G) |
+| SDK fix | `fix/python-sdk-free-closed-connectors` (1 commit on upstream main `96ef188e`, merges cleanly with `7f40dc1a`) | fix(python-sdk): free closed sandbox handles without the cyclic GC (#<issue B>) | verified; rebase onto current main pending (G5) before opening (targets `main`; description adds the use-after-close sentence and links issue 5, see G4) | `b3574fa9` | local agent (item G) |
+| SDK fix | `fix/python-sdk-release-client-exit-hook` (1 commit stacked on PR 1 `0a54a028`) | fix(python-sdk): stop the exit hook from keeping closed clients alive (#<issue 4>) | verified; one type cleanup pending (G5) before opening (stacked on PR 1; opens after PR 1; option (e), both clients, see G4) | `53765391` | local agent (item G) |
 
 Notes
 - fu8 has no PR of its own. It is folded into #1996 (fu9 branch contains it), so there are 10/N rows for two branches.
@@ -186,10 +186,12 @@ Planned scope from `work/pr8_plan.md`.
 ### 21/N Types PR (planned, no code)
 Not drafted. Replaces `Any` with exact types where an exact type exists, for code in the open PRs (typed `helper` parameters from PR 2, 5, 6) and in upstream code, including the Lease methods as `V1Lease` with a policy for a Lease without `spec`. Types introduced by transport, the reaper and PR 7 are folded into those branches instead (B2). Plan: `work/type_tightening_plan.md`.
 
-### SDK fix: terminated sandbox handles (in progress, not opened, targets `main`)
-Draft; final text comes with the fix. The async client keeps every sandbox handle after `terminate()`, about 0.7 MiB each (an HTTP client with an SSL context), so a long-running driver grew from 94 MB to 1.75 GB over 2,400 sandboxes (measured, `bench/async-mem-probe`). The sync client keeps handles the same way (about 0.06 MiB each).
-- Planned shape (pending Brian's decision): `terminate()` removes its own entry from the client after a successful delete; a second change clears the handle-to-connector references at final close so a dropped handle is freed without waiting for a full GC.
-- Upstream issue text is drafted in `work/results/G2-memleak-decision.md` and `work/results/leak-fix-audit.md`; Brian files it.
+### SDK fix: terminated-handle memory leak (three PRs, target `main`, not in the batch stack)
+Owner: coordinator 1 (item G). A long-running async driver grew from 94 MB to 1.75 GB over 2,400 sandboxes (measured, `bench/async-mem-probe`). With all three PRs, growth per 100 sandboxes went from 90.1 MB to 0.46 MB, and memory kept per terminated sandbox from 0.667 MB to 0.0001 MB (measured by G, verified by coordinator 1's checker).
+- PR 1 (issue A): `terminate()` removes its own registry entry through a hook bound to the registry (not the client). Both clients.
+- PR 2 (issue B): a closed handle's connector drops its links back to the handle, so it is freed without the cyclic GC. Async in the connector's final `close()`, sync in `Sandbox.close_connection()`. Description says use after close is unsupported and links issue 5.
+- PR 3 (issue 4): the exit hook holds only the registry data, not the client, so closed clients are freed; exit cleanup unchanged. Both clients; stacked on PR 1.
+- Issue texts (A, B, 3, 4, 5) and PR texts: `work/results/G3-memleak-fix2.md` and `work/results/G4-memleak-final.md`. Brian files issues and opens PRs. Before opening: G5 cleanups (`work/prompts/G5-memleak-cleanups.md`).
 
 ### RL batch claim mode (ready, not opened)
 Branch `feat/rl-batch-claim-mode`, 4 commits on 18/N. Targets the RL library under `examples/agent-sandbox-rl/`.

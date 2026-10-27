@@ -41,3 +41,14 @@ Verify in a fresh `inherit` subagent (never flash), given the pushed SHAs and th
 - 2026-10-26 19:08 Brian: PR 2 audit approach yes, PR 3 (exit hook) yes, issue 5 yes (not named in #1785). G3 filled and reviewed; PR 3 implementation waits for Brian to pick an option (async close() is not final; trade-offs).
 - 2026-10-26 21:35 G3 done: PR 1 `c2c006ee`, PR 2 `b3574fa9` verified PASS. Exit hook audit `results/exit-hook-audit.md` (`89419a66`) recommends option (e). Brief `coord1/2026-10-26-2135-leak-fix-verdict.md` with 5 decisions.
 - 2026-10-26 23:28 Hook audit `results/hook-registry-audit.md` and use-after-close audit `results/use-after-close-audit.md` agree with Brian. G4 prompt (PR 1 registry-bound hook, PR 2 sentence, PR 3 option e stacked on PR 1, combined verification) reviewed and pushed. After G4: coordinator runs a fresh verifier on the built branches.
+
+## Resume here (paused by Brian 2026-10-27 01:30 UTC)
+Brian paused this conversation while another agent renames major fields in PRs 13/N and up. **On resume, ask Brian for the rename link (commit or compare) and read it before any work on the stack or the Go notes.**
+
+| Item | State | Next |
+| :-- | :-- | :-- |
+| G leak fix (3 PRs on `main`) | verified PASS 01:25 (`coord1/2026-10-27-0130-leak-fix-final.md`); heads PR 1 `0a54a028`, PR 2 `b3574fa9`, PR 3 `53765391` | Brian pastes `prompts/G5-memleak-cleanups.md` into conversation G (rebase PR 2, PR 3 type nit); verify; Brian files issues A, B, 4, 5 (3 optional) and opens PR 1, PR 2, then PR 3 |
+| D small items | decisions brief `coord1/2026-10-22-2315-d-decisions.md`; #1990 base fixed by Brian | Brian's answers to items 2 to 7 (branch deletion of 49 stale `review/*` needs his explicit OK) |
+| F step 11 (Go notes rename) | not started | after the stack's Task 6 rename and the new field rename; read the rename link first |
+| B, C | owned by coordinator 2 | none for coordinator 1 |
+| `par-mem` kind cluster | still running (memory probe) | ask Brian before deleting |
