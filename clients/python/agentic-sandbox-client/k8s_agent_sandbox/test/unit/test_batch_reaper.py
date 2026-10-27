@@ -161,7 +161,7 @@ class TestReap(unittest.TestCase):
         self.assertEqual(reaped, [("default", "b1"), ("default", "b2")])
         first, second = (c.kwargs for c in lister.call_args_list)
         self.assertEqual(first["label_selector"], BATCH_ID_LABEL)
-        self.assertNotIn("_continue", first)
+        self.assertIsNone(first["_continue"])
         self.assertEqual(second["_continue"], "token")
         # A consistent list, so a Lease's resourceVersion is never older than the latest write.
         self.assertNotIn("resource_version", first)

@@ -72,7 +72,7 @@ def _lease(
     lease_duration_seconds=BATCH_DEFAULT_LEASE_DURATION_SECONDS,
     annotations=None,
     resource_version="10",
-    uid=None,
+    uid="lease-uid",
 ):
     return k8s_client.V1Lease(
         metadata=k8s_client.V1ObjectMeta(

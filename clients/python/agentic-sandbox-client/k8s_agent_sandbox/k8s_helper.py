@@ -121,7 +121,7 @@ class K8sHelper:
         volume_claim_templates: list[dict[str, Any]] | None = None,
         pod_metadata: AdditionalPodMetadata | dict[str, Any] | None = None,
         env: dict[str, str] | None = None,
-        owner_references: list[dict[str, Any]] | None = None,
+        owner_references: list[dict[str, str]] | None = None,
         *,
         log_level: int = logging.INFO,
         _request_timeout: float | tuple[float, float] | None = None,

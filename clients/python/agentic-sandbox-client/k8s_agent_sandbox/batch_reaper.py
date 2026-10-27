@@ -33,7 +33,7 @@ import sys
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from kubernetes import client
 from kubernetes.client.exceptions import ApiException
@@ -95,14 +95,13 @@ def find_stale_leases(
     stale: list[StaleLease] = []
     continue_token: str | None = None
     while True:
-        kwargs: dict[str, Any] = {
-            "label_selector": BATCH_ID_LABEL,
-            "limit": _LEASE_LIST_PAGE_SIZE,
-            "_request_timeout": batch_utils.BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS,
-        }
-        if continue_token:
-            kwargs["_continue"] = continue_token
-        page = helper.coordination_v1_api.list_namespaced_lease(namespace, **kwargs)
+        page = helper.coordination_v1_api.list_namespaced_lease(
+            namespace,
+            label_selector=BATCH_ID_LABEL,
+            limit=_LEASE_LIST_PAGE_SIZE,
+            _continue=continue_token,
+            _request_timeout=batch_utils.BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS,
+        )
         for lease in page.items:
             metadata, spec = lease.metadata, lease.spec
             batch_id = _batch_id_of(metadata) if metadata is not None else None

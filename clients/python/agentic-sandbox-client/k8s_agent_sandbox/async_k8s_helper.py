@@ -102,7 +102,7 @@ class AsyncK8sHelper:
         ``None`` if it is unbounded."""
         await self._ensure_initialized()
         # aiohttp treats a limit of 0 or None as no limit.
-        return self.custom_objects_api.api_client.configuration.connection_pool_maxsize or None
+        return cast(client.ApiClient, self._api_client).configuration.connection_pool_maxsize or None
 
     async def create_sandbox_claim(
         self,
@@ -115,7 +115,7 @@ class AsyncK8sHelper:
         volume_claim_templates: list[dict[str, Any]] | None = None,
         pod_metadata: AdditionalPodMetadata | dict[str, Any] | None = None,
         env: dict[str, str] | None = None,
-        owner_references: list[dict[str, Any]] | None = None,
+        owner_references: list[dict[str, str]] | None = None,
         *,
         log_level: int = logging.INFO,
         _request_timeout: float | None = None,
