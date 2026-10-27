@@ -2,17 +2,23 @@
 
 Answers to `temp-prompts/pr2_round3_review_prompt.md`. All four heads matched: PR 2 `4c67b14e`, PR 5 `2810ca65`, 7a `5f69ade8`, live `386b39fc`. The RL branch was read at `3bee2847`. Line numbers are in `sandbox_batch.py` at `4c67b14e` unless marked. "Verified" means read in the code. "Inferred" means reasoned, not run.
 
+## Brian's decision
+
+Brian, 2026-10-27 23:16 UTC, replying to these answers: "i agree with this."
+
+That approves every recommendation in this file. It covers N1 as written: a blocking `RLock` per handle (an `asyncio.Lock` in async), held for all of `release()` and only around `detach()`'s Lease I/O, with `detach()` refusing once a release has started. It also covers the side effect: a `detach()` after a failed `release()` now raises `BatchError`. #4 (drop Lease creation) was settled earlier. Combined with round 2, the stack agent builds the fence (#1), no change for #2 and #3, the drop of the create (#4), N1, and the tests in section 6.
+
 ## Summary
 
 | # | Answer | Needs Brian? |
 | :-- | :-- | :-- |
 | 1 | A plain `Lock` deadlocks only when the same thread calls in again, for example a signal handler that calls `detach()`. Nothing in the repo does that, but learnings 3.1 names exactly that case as the reason for 11/N. Serializing doesn't break the 11/N contract. | No |
 | 2 | **`RLock`, blocking.** A non-blocking acquire breaks 11/N, because a second concurrent `detach()` would raise. A plain `Lock` adds a hang for the same code. | No |
-| 3 | **Narrower than proposed.** `release()` holds the lock for its whole run. `detach()` holds it only around its Lease read and write, and refuses at once if a release has started. So `detach()` never waits minutes behind a release. | Part of N1 |
+| 3 | **Narrower than proposed.** `release()` holds the lock for its whole run. `detach()` holds it only around its Lease read and write, and refuses at once if a release has started. So `detach()` never waits minutes behind a release. | Approved with N1 |
 | 4 | With all three changes, (a) to (h) all keep the rule. Two gaps remain: the read-to-delete gap in one round, in (d) and (e), and (h) when the loop runs on a thread that is still alive. | No |
 | 5 | Minimal set: one lock, no new flag, the existing `self._lease`, and one widened return type. The holder check becomes redundant for SDK writers. Keep it. The flags can't replace the lock. | No |
 | 6 | Five tests per shell plus one sync-only re-entry test. They change or replace three existing tests. | No |
-| N1 | A side effect for your OK. A `detach()` after a `release()` that **failed** now raises instead of handing off a half-deleted batch. | **Yes**, with N1 |
+| N1 | A side effect for your OK. A `detach()` after a `release()` that **failed** now raises instead of handing off a half-deleted batch. | Approved (see above) |
 
 ## 1. Deadlock claim
 
