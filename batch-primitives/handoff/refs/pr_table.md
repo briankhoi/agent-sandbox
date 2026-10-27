@@ -19,7 +19,7 @@ Comment sources are Janet's five comments on #1742 (J1 to J5), CodeRabbit's four
 | 9 | `feat/batch-1-fu7-client-cleanup` | fix(python-sdk): close cached batch connections on client cleanup (9/N) | Client cleanup closes each tracked batch's cached connections. Async `close()` and `delete_all()` share `_stop_batches()`, and async atexit closes batch connections. `_unregister_batch` removes only its own handle. | J5 (cleanup leaks connections). C1 (async `_stop_batches()`). |
 | 10 | `feat/batch-1-fu9-concurrent-detach` (#1996, contains fu8) | fix(python-sdk): let concurrent detach() calls on a batch handle both succeed (10/N) | The async handle's watch and renewal tasks start with `asyncio.create_task` and are named (fu8). On a 409 from the release write, `detach()` re-reads the Lease and treats the release as done unless this handle still holds it. | barney-s's concurrent `detach()` comment on #1742. |
 | 11 | `feat/batch-2-claim` (#1824) | feat(python-sdk): add claim_batch and release (11/N) | `claim_batch` on both clients: prechecks, batch Lease, paced background creates with retries, `CreateFailed` members. `release()` with deletecollection rounds. Tracked handles are released by `delete_all()` and exit cleanup. | Carries the J5 atexit follow-through (atexit no longer skips batch-only clients). |
-| 12 | `feat/batch-3-group-consumers` | feat(python-sdk): add events and iter_ready_groups (12/N) | O(1) fill accounting in the batch state. `events()` and `iter_ready_groups()` with per-group quorum, `GroupReady`, `QuorumUnreachableError` and `BatchTimeoutError`. | None. |
+| 12 | `feat/batch-3-group-consumers` | feat(python-sdk): add events and group_outcomes (12/N) | O(1) fill accounting in the batch state. `events()` and `group_outcomes()` with per-group quorum, `GroupOutcome`, `QuorumUnreachableError` and `BatchTimeoutError`. | None. |
 | 13 | `feat/batch-4-group-quorum` | feat(python-sdk): add wait_for_quorum (13/N) | Batch-wide quorum mode in the state. `wait_for_quorum()` returns each group's first `min_ready` members at once. README example for the third mode. | None. |
 | 14 | `feat/batch-5-release-group-76a8m3` | feat(python-sdk): add release_member, release_group and release_not_ready (14/N) | Released members in the state. `release_member`, `release_group` (hashed group label, deletecollection) and `release_not_ready`. Unsent creates are skipped and late creates deleted. | Manager's group-release feedback: caller-called `release_group` replaces an automatic delete, with a per-group label and `deletecollection`. |
 | 15 | `feat/batch-6-acquire-nbbp5j` | feat(python-sdk): add acquire (15/N) | `acquire(warmpool)` adds one Ready member after the fill. `size=0` groups. `TerminalMemberError`. The Lease records labels, `create_rps` and the next ordinal for re-attach. | None. |
@@ -94,7 +94,7 @@ This PR is the eleventh in a series of PRs to implement a batch. It adds `claim_
 ### PR 3 (12/N)
 This PR is the twelfth in a series of PRs to implement a batch. It adds the ways to consume a batch as it fills.
 - `events()` yields member events as they happen.
-- `iter_ready_groups()` yields each group once it has `min_ready` Ready members, or raises when it can't.
+- `group_outcomes()` yields each group once its outcome is known: its first `min_ready` Ready members, or an `error` (`QuorumUnreachableError` or `BatchTimeoutError`).
 - Fill accounting is O(1) per watch event.
 
 ### PR 4 (13/N)

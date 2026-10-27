@@ -29,7 +29,7 @@ The text below was written for the cloud project. On your laptop:
     | Fork | `briankhoi/agent-sandbox` (remote `origin`). Upstream is `kubernetes-sigs/agent-sandbox`. |
     | PR 1 `get_batch`, `members`, `connect`, `err`, `detach` | `feat/batch-1-core`, upstream PR https://github.com/kubernetes-sigs/agent-sandbox/pull/1742 |
     | PR 2 `claim_batch`, `release`, client tracking | `feat/batch-2-claim` |
-    | PR 3 `events`, `iter_ready_groups`, fill accounting | `feat/batch-3-group-consumers` |
+    | PR 3 `events`, `group_outcomes`, fill accounting | `feat/batch-3-group-consumers` |
     | PR 4 `wait_for_quorum` | `feat/batch-4-group-quorum` |
     | Notes | branch `batch-primitives-notes`, directory `batch-primitives/`. Key files are `batch_claim_proposal.md` (the design), `review_carryover_notes.md` (rules, approved decisions, current roadmap), `reaper_contract.md`, the `pr*_implementation_spec.md` files, and `skills/test-audit/SKILL.md`. |
     | Design owner | The "Design owner" thread. It owns the notes files above and `/mnt/project-files/plan/work_plan.md`, and writes to `/mnt/project-files/design/`. `design/cut_audit.md` has the status of every removal or narrowing so far. |
