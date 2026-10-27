@@ -37,7 +37,7 @@ _CLEAN = "PRISTINE=abc\nHEAD=abc\nDIRTY=0\nENV=e1\nCFG=g1\nPROCS=5"
 
 
 class FakeBatch:
-  """Stands in for SandboxBatch: acquire hands out Ready members at once."""
+  """Stands in for SandboxBatch. Its acquire returns a Ready member at once."""
 
   def __init__(self, cluster, seq):
     self.batch_id = f"b-{cluster}-{seq}"
@@ -136,8 +136,8 @@ def test_first_acquire_opens_one_batch_from_its_pool(make_cluster):
   assert len(c.batches) == 1
   b = c.batches[0]
   pool_a = f.plan_.for_image("imgA").pool
-  # One size-0 group, from the first acquire's pool only: claim_batch prechecks
-  # every group serially, so the others are checked by acquire instead.
+  # The batch has one size-0 group, for the first acquire's pool. claim_batch
+  # checks every group one after another, so acquire checks the other pools.
   assert [(g.warmpool, g.size) for g in b.groups] == [(pool_a, 0)]
   assert b.kwargs["quorum_timeout"] == 120
   assert b.kwargs["lease_duration"] == 300
@@ -150,7 +150,8 @@ def test_first_acquire_opens_one_batch_from_its_pool(make_cluster):
   c.sandbox_client.create_sandbox.assert_not_called()
 
   h = handles[0]
-  # Identity comes from the member, with no Sandbox or pod GETs.
+  # The fleet builds the handle's identity from the member, without Sandbox or
+  # pod GETs.
   assert h.pod_name == h.sandbox_id == f"sb-{b.batch_id}-1"
   assert h.claim_name == f"{b.batch_id}-1"
   assert h.pod_ip == "10.1.0.5"
@@ -164,7 +165,7 @@ def test_concurrent_first_acquires_open_one_batch(make_cluster):
   open_batch = c.sandbox_client.claim_batch.side_effect
 
   def slow_open(groups, **kwargs):
-    time.sleep(0.05)                        # so the first acquires overlap the open
+    time.sleep(0.05)                        # lets the first acquires overlap the open
     return open_batch(groups, **kwargs)
   c.sandbox_client.claim_batch.side_effect = slow_open
   f = _fleet(ClusterRegistry([c]), max_concurrent=16)

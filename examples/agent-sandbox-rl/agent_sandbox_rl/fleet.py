@@ -1274,10 +1274,11 @@ class SandboxFleet:
     adopted, already-running warm member does not until its next pod
     (suspend → resume).
 
-    With ``claim_mode="batch"`` the claim is a member of the fleet's SDK batch on
-    its cluster (see `BatchClaimConfig`), and a claim that fails or isn't Ready
-    within ``ready_timeout`` raises the SDK's ``BatchError``. Acquires with
-    ``snapshot_uid`` or ``pod_annotations`` keep the per-claim path.
+    With ``claim_mode="batch"``, the claim joins the fleet's SDK batch on its
+    cluster, which `BatchClaimConfig` configures. A claim that fails, or isn't
+    Ready within ``ready_timeout``, raises the SDK's ``BatchError``. An acquire
+    with ``snapshot_uid`` or ``pod_annotations`` still creates its own claim,
+    because a batch member can't carry pod metadata.
 
     On any failure between claim creation and bookkeeping, the partially-created
     sandbox is terminated and the on-demand replica bump is rolled back, so a
@@ -1355,8 +1356,8 @@ class SandboxFleet:
     fam = repo_family(task)
     batch_claims = self._batch_claims
     if batch_claims is not None and annotations:
-      # SandboxBatch.acquire takes no pod metadata, so a pinned acquire keeps
-      # the per-claim path.
+      # SandboxBatch.acquire can't set pod metadata, so an acquire with pod
+      # annotations creates its own claim.
       if not self._warned_pin_fallback:
         self._warned_pin_fallback = True
         logger.info("claim_mode='batch': acquires with snapshot_uid or "
@@ -1368,9 +1369,10 @@ class SandboxFleet:
       with self._obs.phase("claim", cluster=cluster.name, family=fam):
         if batch_claims is not None:
           claim = batch_claims.acquire(cluster, pool)
-          # The batch's watch already reported the member's Sandbox and pod IP,
-          # so no GETs here. The pod is named after its Sandbox, and connect()
-          # gives the snapshot operations their Sandbox without a request.
+          # The batch's watch already reported the member's Sandbox name and
+          # pod IP, so this path sends no GETs. The pod has the same name as its
+          # Sandbox. connect() builds the Sandbox object that the snapshot
+          # operations need without sending a request.
           sandbox = claim.batch.connect(claim.member)
           claim_name = claim.member.claim_name
           pod = sandbox.sandbox_id

@@ -209,7 +209,8 @@ class SandboxHandle:
   _cluster: "Cluster" = field(default=None, repr=False)
   _session: Optional["SandboxSession"] = field(default=None, repr=False)
   _slot_released: bool = field(default=False, repr=False)
-  # Set when the claim is a member of the fleet's batch (claim_mode="batch").
+  # The fleet sets this when the claim is a member of its batch, which happens
+  # only with claim_mode="batch".
   _batch_claim: Optional["BatchClaim"] = field(default=None, repr=False)
 
   @property
@@ -406,8 +407,9 @@ class SandboxHandle:
     """
     self.close_session()                       # drop the persistent stream, if any
     if self._batch_claim is not None:
-      # Through the batch, so it stops tracking the member; terminating the
-      # connected Sandbox would delete the claim behind the batch's back.
+      # Release through the batch so that it stops tracking the member.
+      # Terminating the connected Sandbox would delete the claim without the
+      # batch knowing.
       self._batch_claim.release()
     elif self.sandbox is not None:
       self.sandbox.terminate()
