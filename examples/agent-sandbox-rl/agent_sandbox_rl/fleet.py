@@ -1683,9 +1683,9 @@ class SandboxFleet:
       self.release_all()
     finally:
       if self._batch_claims is not None:
-        # Deletes any member a handle didn't release, and each batch's Lease,
-        # even when a handle's release failed, since a live Lease keeps the
-        # batch reaper away.
+        # Runs even when a handle's release failed, because a live Lease keeps
+        # the batch reaper from deleting that batch's claims. Releasing a batch
+        # deletes the members no handle released, and then its Lease.
         self._batch_claims.release_all()
     if self._shared_run_id:
       # A sweep by a shared id would tear down the whole job; unwarm only what
