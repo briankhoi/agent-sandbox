@@ -526,10 +526,10 @@ fleet = SandboxFleet(FleetConfig(
 ))
 ```
 
-- Each fleet holds one batch per cluster, opened by the first acquire on that
-  cluster. Every acquire adds one member to it, so readiness comes from the batch's
-  one watch instead of a watch per claim, and the handle is built from the member
-  without reading the Sandbox or its pod.
+- Each fleet holds one batch per cluster, and the first acquire on a cluster opens
+  it. Every acquire adds one member to the batch. The batch's one watch reports
+  readiness for every member, so the fleet opens no watch per claim. The fleet
+  builds the handle from the member without reading the Sandbox or its pod.
 - `release` frees the member through the batch, and `teardown` releases every
   batch the fleet opened, which deletes their remaining claims and their Leases.
 - With the SDK's [batch reaper](../../clients/python/agentic-sandbox-client/README.md#batch-reaper)
@@ -540,13 +540,14 @@ fleet = SandboxFleet(FleetConfig(
   `kubectl delete lease -l agents.x-k8s.io/asrl-run-id=<run id>`.
 - A driver that stalls or loses the API server for longer than `lease_duration`
   loses its Lease. The batch then stops and the reaper deletes its claims, so every
-  rollout still running on it fails. The next acquire opens a new batch.
-- Acquires with `snapshot_uid` or `pod_annotations` keep the per-claim path, since
-  a batch member carries no pod metadata.
-- A batch claim's `shutdownTime` is fixed when it is created, at `ready_timeout +
-  work_budget + 600` seconds later. Set `work_budget` above the longest time one
-  rollout holds its sandbox. Recycling holds one claim for many tasks, so it
-  rotates a claim once less than twice its longest task plus `reset_timeout` is left.
+  rollout still running on the batch fails. The next acquire opens a new batch.
+- An acquire with `snapshot_uid` or `pod_annotations` still creates its own claim,
+  because a batch member can't carry pod metadata.
+- The SDK sets a batch claim's `shutdownTime` when it creates the claim, to
+  `ready_timeout + work_budget + 600` seconds later. Set `work_budget` above the
+  longest time one rollout holds its sandbox. Recycling holds one claim for many
+  tasks, so it rotates a claim once the time left is less than twice its longest
+  task plus `reset_timeout`.
 - The driver needs the batch RBAC from the SDK's
   [RBAC section](../../clients/python/agentic-sandbox-client/README.md#rbac), which
   adds Leases to what per-claim needs.
