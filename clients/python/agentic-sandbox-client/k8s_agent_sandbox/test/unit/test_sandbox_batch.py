@@ -42,7 +42,7 @@ from k8s_agent_sandbox.exceptions import (
     BatchNotFoundError,
     SandboxNotReadyError,
 )
-from k8s_agent_sandbox.models import BatchGroup, MemberState
+from k8s_agent_sandbox.models import BatchGroup, MemberState, SandboxFileConfig
 from k8s_agent_sandbox.sandbox_batch import SandboxBatch
 from k8s_agent_sandbox.sandbox_client import SandboxClient
 
@@ -796,6 +796,7 @@ class TestConnect(unittest.TestCase):
 
     def setUp(self):
         self.mock_client = MagicMock()
+        self.mock_client.file_config = None
         self.mock_sandbox_instance = MagicMock()
         self.mock_client.sandbox_class.return_value = self.mock_sandbox_instance
         self.handle = _make_handle(self.mock_client)
@@ -817,6 +818,25 @@ class TestConnect(unittest.TestCase):
         )
         self.mock_client.k8s_helper.resolve_sandbox_name.assert_not_called()
         self.mock_client.k8s_helper.get_sandbox.assert_not_called()
+        self.assertIs(sandbox, self.mock_sandbox_instance)
+
+    def test_forwards_client_file_config_when_set(self):
+        self.mock_client.file_config = SandboxFileConfig(max_download_size=1024)
+        self.handle._state.upsert_claim(
+            _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+        )
+        member = self.handle.members()[0]
+        sandbox = self.handle.connect(member)
+
+        self.mock_client.sandbox_class.assert_called_once_with(
+            claim_name="b1-0",
+            sandbox_id="sbx-1",
+            namespace="default",
+            connection_config=self.mock_client.connection_config,
+            tracer_config=self.mock_client.tracer_config,
+            k8s_helper=self.mock_client.k8s_helper,
+            file_config=self.mock_client.file_config,
+        )
         self.assertIs(sandbox, self.mock_sandbox_instance)
 
     def test_repeat_call_returns_same_handle(self):

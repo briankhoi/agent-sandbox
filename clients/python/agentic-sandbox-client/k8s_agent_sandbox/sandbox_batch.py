@@ -264,6 +264,7 @@ class SandboxBatch:
                 connection_config=self._client.connection_config,
                 tracer_config=self._client.tracer_config,
                 k8s_helper=self._client.k8s_helper,
+                **({"file_config": self._client.file_config} if self._client.file_config is not None else {}),
             )
             self._connected[member.claim_name] = sandbox
             return sandbox
