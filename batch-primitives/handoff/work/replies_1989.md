@@ -1,7 +1,7 @@
 # Paste-ready replies for #1989 (drafts, not posted)
 
 ## CodeRabbit thread PRRT_kwDOPcbYcc6vAxgU (latch fill settlement)
-> Good catch. `fill_settled()` recomputes its count on each call, so a Ready member that turns not-Ready un-settles the fill, and `events()` then waits until the fill deadline. This code belongs to #1988, so the fix lands there: a fill member that has resolved now counts toward settlement for good. #1988 also adds a regression test, and this PR is rebased on it.
+> Good catch. `fill_settled()` recomputed its count on each call, so a Ready member that turned not-Ready un-settled the fill, and `events()` then waited until the fill deadline. The fix lands in #1988, which owns this code. A fill member now counts toward settlement once its outcome is decided. That means it failed or was lost, its Ready event went out, or the SDK dropped it because its group or the quorum failed. A held member that flips back to not-Ready still keeps the fill open, so `events()` never skips its event. #1988 and this PR add regression tests for group and quorum mode.
 
 ## CodeRabbit thread PRRT_kwDOPcbYcc6ukWNV (`_stop_batches()` marks handles detached)
 > This is fixed on the current head. `_stop_batches()` now sets `batch._detached` and calls `notify_all()` under the batch lock before it stops the background tasks. A consumer blocked in `wait_for_quorum()`, `events()` or `group_outcomes()` wakes up and gets `BatchError`. The fix landed upstream in #1986 and is part of this stack's base.
@@ -10,7 +10,7 @@
 > I'm keeping `members` as a list. The class is now `GroupOutcome`, and the SDK reads only its `error` field internally, so a caller that mutates `members` changes only its own view and can't break batch state. A list also matches `wait_for_quorum()`, which returns `list[Member]`, so the two consumers stay consistent.
 
 ## tomergee review 5689391414 (3 nits)
-> Thanks. All three are in the latest push. Both `claim_batch` docstrings now say that `quorum_timeout` also bounds the batch quorum. Each handle has a test where `quorum_timeout` expires in quorum mode, and `TestQuorumMode` plus the README cover a batch where every group has `min_ready=0`. The fill-settlement latch you flagged lands in #1988.
+> Thanks. All three are in the latest push, and the handles also document that a quorum reached after the deadline, before any consumer checks it, still succeeds. Both `claim_batch` docstrings now say that `quorum_timeout` also bounds the batch quorum. Each handle has a test where `quorum_timeout` expires in quorum mode, and `TestQuorumMode` plus the README cover a batch where every group has `min_ready=0`. The fill-settlement latch you flagged lands in #1988.
 
 ## #1989 PR body ("What this PR does")
 > This PR is the fourteenth in a series of PRs to implement a batch. It adds `wait_for_quorum()` to `SandboxBatch` and `AsyncSandboxBatch`.
