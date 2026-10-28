@@ -278,9 +278,9 @@ Resumes batch lease renewal and starts a label-scoped watch that keeps
 ``members()`` up to date. Only a batch released with ``detach()`` can be re-attached,
 within its grace window.
 
-The client's exit cleanup doesn't release a batch attached here, except to retry a
-``release()`` call that failed. It detaches it with ``detach()``'s default grace, so call
-``release()`` to delete the batch.
+Client exit cleanup detaches a batch attached here with ``detach()``'s default grace instead
+of releasing it. Call ``release()`` to delete the batch. If a ``release()`` call fails,
+client cleanup retries it.
 
 The batch errors below are all ``BatchError``, so ``except BatchError`` handles a batch that
 can't be attached. ``ValueError`` means a bad batch id, ``ApiException`` an API error,

@@ -1671,7 +1671,7 @@ class TestRelease(BaseClaimBatchTest):
                 helper.read_batch_lease.side_effect = (
                     lambda *a, **k: _lease(holder_identity=holder, resource_version=resource_version)
                 )
-                # A refused connect reaches release as is, since urllib3 doesn't retry Lease requests.
+                # urllib3 doesn't retry Lease requests, so release() sees the raw connect error.
                 refused = urllib3.exceptions.NewConnectionError(None, "refused")
                 written = iter([_lease(resource_version="11"), refused, _lease(resource_version="13")])
 
@@ -1984,7 +1984,7 @@ class TestClientBatchCleanup(BaseClaimBatchTest):
         with self.assertLogs(level="ERROR"):
             self.client._delete_automatic_sandboxes()
 
-        # The only Lease write is the detach, and the handle stays registered so the next cleanup finishes it.
+        # The detach makes the only Lease write. The handle stays registered so the next cleanup finishes it.
         self.assertEqual([c.args[2].spec.holder_identity for c in helper.replace_batch_lease.call_args_list], [None])
         self.assertEqual(self.client._active_batches, {("default", "b1"): handle})
         helper.delete_sandbox_claims_by_label.assert_not_called()

@@ -726,11 +726,11 @@ time of the `claim_batch()` call plus `N / create_rps` seconds (rounded up) plus
 
 The client tracks every batch handle it returns. `delete_all()` releases every tracked batch. The client's
 exit cleanup (`cleanup=True`, or leaving a `with SandboxClient()` or `async with AsyncSandboxClient()`
-block) releases every tracked batch the client claimed with `claim_batch()`; call `detach()` first to hand
-a batch off instead. Exit cleanup detaches a batch attached with `get_batch()`, with `detach()`'s default
-grace, and releases it only to retry a `release()` call that failed, so call `release()` to delete it.
-The `AsyncSandboxClient` atexit hook can't await `detach()`, so it leaves an attached batch in place for
-its Lease to go stale.
+block) releases the batches the client claimed with `claim_batch()`. Call `detach()` first to hand such a
+batch off instead. Exit cleanup detaches a batch attached with `get_batch()` instead of releasing it, with
+`detach()`'s default grace. Call `release()` to delete an attached batch. If a `release()` call fails,
+client cleanup retries it. The `AsyncSandboxClient` atexit hook can't await `detach()`, so it leaves an
+attached batch in place until its Lease goes stale.
 
 `SandboxClient.get_batch()` attaches to an existing batch that was detached, returning a handle that
 supports all of the above.
