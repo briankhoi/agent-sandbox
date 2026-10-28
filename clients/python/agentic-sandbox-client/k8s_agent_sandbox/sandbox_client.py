@@ -47,7 +47,7 @@ from .models import (
 from .k8s_helper import K8sHelper
 from .pod_metadata import build_pod_metadata, validate_labels
 from .utils import construct_sandbox_claim_lifecycle_spec
-from .exceptions import SandboxMetadataError, SandboxNotFoundError
+from .exceptions import BatchInUseError, SandboxMetadataError, SandboxNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -393,8 +393,9 @@ class SandboxClient(Generic[T]):
         ``work_budget`` to the run's length.
 
         Of the errors below, only ``BatchExistsError`` is a ``BatchError``. The others mean a bad
-        argument, a missing pool or template, or an API error. Failures after this call returns,
-        such as a failed create, aren't raised here but show in ``members()`` and ``err()``.
+        argument, a missing pool or template, or an API error. Failures after this call returns
+        aren't raised here. A failed create shows in ``members()`` as a ``CreateFailed`` member, and
+        an error that stops the watch or Lease renewal shows in ``err()``.
 
         Args:
             groups: One ``BatchGroup`` per warm pool, each with ``size`` at least 1.
@@ -422,11 +423,13 @@ class SandboxClient(Generic[T]):
 
             >>> client = SandboxClient()
             >>> batch = client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=4)])
-            >>> while not any(m.state is MemberState.READY for m in batch.members()):
-            ...     time.sleep(1)
-            >>> member = next(m for m in batch.members() if m.state is MemberState.READY)
-            >>> batch.connect(member).commands.run("echo hello")
-            >>> batch.release()
+            >>> try:
+            ...     while not any(m.state is MemberState.READY for m in batch.members()):
+            ...         time.sleep(1)
+            ...     member = next(m for m in batch.members() if m.state is MemberState.READY)
+            ...     batch.connect(member).commands.run("echo hello")
+            ... finally:
+            ...     batch.release()
         """
         args = batch_utils.validate_claim_batch_args(
             groups, labels, batch_id, create_rps, max_in_flight, work_budget, quorum_timeout,
@@ -579,6 +582,9 @@ class SandboxClient(Generic[T]):
                 continue
             try:
                 batch.release()
+            except BatchInUseError as e:
+                # release() has unregistered the handle, since the batch is no longer its to delete.
+                logger.warning(f"Not releasing batch '{batch_id}' in namespace {namespace}: {e}")
             except Exception as e:
                 logger.error(f"Failed to release batch '{batch_id}' in namespace {namespace}: {e}")
 
