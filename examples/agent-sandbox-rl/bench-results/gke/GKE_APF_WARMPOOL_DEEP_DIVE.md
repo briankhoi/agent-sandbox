@@ -89,5 +89,63 @@ GKE enforces this intentionally so a user's runaway controller can never starve 
 
 You don't need custom APF manifests on GKE — you just want **background pool refills to stay out of the way while foreground claims are binding**:
 
-1. **Keep `--sandbox-warm-pool-concurrent-workers` low (`2`, from [`docs/performance-tuning.md`](../../../../docs/performance-tuning.md#L517)) + `--sandbox-warm-pool-max-refill-rate=100`** so background refills trickle smoothly through 2 lanes instead of stampeding all `165` APF seats.
-2. **Even better for bursty RL steps:** Add **`--sandbox-warm-pool-replenish-delay=5s`** (paired with **`claim_mode="batch"`**, which guarantees `0` claim creation failures). That tells the warm pool: *"Wait 5 quiet seconds before creating replacement pods"* — letting `100%` of your `165` APF lanes go to urgent claim binding first, and refilling the pools cleanly right after!
+1. **Keep `--sandbox-warm-pool-concurrent-workers` bounded (`2`–`50` depending on active pool count, rather than `100` with unpaced refills) + `--sandbox-warm-pool-max-refill-rate=25..100`** so background refills do not stampede all `165` `workload-low` APF seats during a claim burst.
+   * *Note on controller connection flags:* Also pair high worker counts with `--api-connections=4 --separate-watch-connection=true` so controller informer watches are isolated from write bursts and a single HTTP/2 connection's ~100-stream limit doesn't bottleneck reconcilers.
+2. **For synchronous bursty RL steps with `claim_mode="batch"`:** Optional `--sandbox-warm-pool-replenish-delay=5s` delays replacement pod creation until the foreground claim burst finishes. *(Caveat for `per_claim` callers: under `per_claim`, if transient claim failures drain a pool, a non-zero replenish delay holds back recovery — another reason `claim_mode="batch"`'s `0`-error pacing + retry is safer.)*
+
+---
+
+## 6. Companion Code & Config Fixes Discovered During the Distributed RL (`Tunix`) Audit
+
+Putting all follow-up fixes from our GKE + distributed RL (`google/tunix` `deepswe_dist`) audit in one place so we can review them together:
+
+### Fix A — Docs / Controller Flag Guidance (`examples/agent-sandbox-rl/README.md`)
+* **Current issue:** [`examples/agent-sandbox-rl/README.md`](../../README.md#L896) recommends `--sandbox-warm-pool-concurrent-workers=100` without noting Managed GKE's `workload-low` APF sharing or HTTP/2 connection flags.
+* **Proposed doc update:** Split the tuning guidance into:
+  * **Managed GKE profile (shared `workload-low` APF):** `--sandbox-concurrent-workers=400`, `--sandbox-claim-concurrent-workers=150..200`, `--sandbox-warm-pool-concurrent-workers=2..50` (sized to active pools, paired with `--sandbox-warm-pool-max-refill-rate=25..100`), `--sandbox-warm-pool-readiness-grace-period=15m`, `--api-connections=4`, `--separate-watch-connection=true`, `--disable-claim-events=true`, `--disable-claim-observability-annotations=true`, plus controller resources (`requests: cpu=2, memory=16Gi`).
+
+### Fix B — Avoid Redundant `_ensure_pool` Calls on Unplanned Distributed Workers (`agent_sandbox_rl/fleet.py`)
+* **Where it happens:** [`SandboxFleet._acquire_reserved`](../../agent_sandbox_rl/fleet.py#L1316-L1354).
+* **How distributed RL triggers it:** In multi-pod RL architectures like `google/tunix` (`deepswe_dist`), **1 central orchestrator pod** pre-warms `SandboxWarmPool`s via `PrewarmDatasetIterator`, while **`16–128` separate TPU `RolloutWorker` pods** lazily initialize their own singleton `SandboxFleet` (`shared_run_id`) and call `fleet.acquire(task)` per episode.
+  * When `PREWARM_IMAGES_FILE` is **not** set on the `RolloutWorker` pods (dynamic sliding-window dataset mode in `deepswe.py`), the worker's `init_global_fleet(tasks=None)` creates an empty `self.plan_` (`0` entries).
+  * On **every** `fleet.acquire(task)` call on that worker, `entry = self.plan_.for_image(task.image)` is `None` (`on_demand = True`), which currently calls `self._ensure_pool(cluster, task.image, 1)` **before** checking `(cluster.name, task.image) in self._ondemand`:
+    ```python
+    # Current code in agent_sandbox_rl/fleet.py (lines 1331-1341):
+    if on_demand:
+      cluster = self.placement.select(task.image, self.registry)
+      pool = self._ensure_pool(cluster, task.image, 1)   # <-- 2 API calls (ensure_template + create_warmpool 409) EVERY claim!
+      key = (cluster.name, task.image)
+      with self._lock:
+        created_pool = key not in self._ondemand
+        if created_pool:
+          self._ondemand.add(key)
+    ```
+  * Even though `create_warmpool(..., reconcile=False)` safely ignores the `409 Conflict` without shrinking the orchestrator's `16`-replica pool, running `_ensure_pool()` unconditionally adds **2 extra K8s API round-trips per claim** (`ensure_template` + `create_warmpool` 409) — defeating `SandboxBatch`'s `1.02–1.25 reqs/env` efficiency!
+* **Minimal fix in `fleet.py`:** Only call `self._ensure_pool(cluster, task.image, 1)` when `key not in self._ondemand` (with per-key synchronization so concurrent first claims for the same image wait until `_ensure_pool` finishes, and rolling `key` back out of `self._ondemand` if `_ensure_pool` raises):
+  ```python
+  if on_demand:
+    cluster = self.placement.select(task.image, self.registry)
+    key = (cluster.name, task.image)
+    pool = self.config.pool_name(task.image)
+    with self._lock:
+      created_pool = key not in self._ondemand
+    if created_pool:
+      pool = self._ensure_pool(cluster, task.image, 1)
+      with self._lock:
+        created_pool = key not in self._ondemand
+        if created_pool:
+          self._ondemand.add(key)
+  ```
+  *(Even cleaner on the Tunix side as well: pass `adopt_existing=True` on `RolloutWorker` pods or populate `init_global_fleet` on workers the same way `eval_worker.py` already does.)*
+
+### Fix C — Multi-Worker `BatchClaimConfig` Guidance for Distributed `RolloutWorker` Pods (`Tunix` `sandbox_utils.py`)
+* **Why it matters:** `SandboxBatch`'s default `max_in_flight=20` is tuned for a **single** client process. When **`R` distributed `RolloutWorker` pods** (`R = 16..128` in `mlperf_gbs1024_submission.sh`) each open one `SandboxBatch`, `128 × 20 = 2,560` aggregate in-flight `POST` capacity if all workers burst simultaneously at step 0.
+* **Recommended `sandbox_utils.py` wiring once `claim_mode="batch"` merges:**
+  ```python
+  BatchClaimConfig(
+      max_in_flight=max(4, min(20, math.ceil(256 / rollout_replicas))),
+      work_budget=max(3600, int(episode_timeout_secs + reward_timeout_secs + 300)),
+      lease_duration=300,
+  )
+  ```
+  This keeps cluster-wide `POST` concurrency inside GKE `workload-low`'s `165` seats across any number of rollout replicas, collapses `1,024–2,048` per-claim watches down to `R` (`1` per worker pod), auto-GCs crashed workers' claims via per-worker `Lease` `ownerReferences`, and guarantees `shutdownTime` outlives long multi-turn episodes.
