@@ -196,7 +196,7 @@ Please ensure that description is clear and comprehensive.
 For breaking changes, ensure you describe the required actions clearly and the PR is labeled with `release-note-action-required`.
 -->
 ```release-note
-The Python SDK now removes terminated sandbox handles from `SandboxClient` and `AsyncSandboxClient` registries so long-lived clients do not retain closed handles in memory.
+Fixed an unbounded memory leak in long-lived Python SDK clients by removing terminated sandbox handles from the internal connection registry.
 ```
 ````
 
@@ -234,7 +234,7 @@ Please ensure that description is clear and comprehensive.
 For breaking changes, ensure you describe the required actions clearly and the PR is labeled with `release-note-action-required`.
 -->
 ```release-note
-The Python SDK now clears stored handle callbacks when a sandbox handle closes so reference counting reclaims closed handles without waiting for cyclic garbage collection.
+Fixed delayed memory reclamation and elevated RSS peaks in the Python SDK by breaking the handle-to-connector reference cycle when a sandbox handle closes.
 ```
 ````
 
@@ -274,6 +274,6 @@ Please ensure that description is clear and comprehensive.
 For breaking changes, ensure you describe the required actions clearly and the PR is labeled with `release-note-action-required`.
 -->
 ```release-note
-The Python SDK no longer retains closed `SandboxClient` and `AsyncSandboxClient` instances in Python's global `atexit` registry until interpreter exit.
+Fixed a per-client memory leak in the Python SDK where `atexit` cleanup registration retained closed `SandboxClient` and `AsyncSandboxClient` instances until interpreter exit.
 ```
 ````
