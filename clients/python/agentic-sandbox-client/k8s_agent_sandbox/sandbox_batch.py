@@ -1138,6 +1138,7 @@ class SandboxBatch:
                         self.namespace,
                         _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
                         log_level=logging.DEBUG,
+                        batch=True,
                     )
                 break
             except Exception as e:
