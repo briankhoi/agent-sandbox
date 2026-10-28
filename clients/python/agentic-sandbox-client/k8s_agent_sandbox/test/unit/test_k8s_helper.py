@@ -14,6 +14,7 @@
 
 import logging
 import os
+import socket
 import tempfile
 import unittest
 import weakref
@@ -1010,7 +1011,7 @@ class TestK8sHelperWatchResourceVersion(unittest.TestCase):
         self.assertEqual(mock_watch.stream.call_count, 2)
 
 
-@patch("k8s_agent_sandbox.k8s_helper._api_client_without_retries")
+@patch("k8s_agent_sandbox.k8s_helper._api_client_with_retries")
 @patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api")
 @patch("k8s_agent_sandbox.k8s_helper.client.CustomObjectsApi")
 @patch("k8s_agent_sandbox.k8s_helper.config")
@@ -1021,7 +1022,7 @@ class TestK8sHelperApiClientInjection(unittest.TestCase):
     ):
         sentinel = MagicMock(name="ApiClient")
         K8sHelper(api_client=sentinel)
-        mock_custom_cls.assert_called_once_with(sentinel)
+        mock_custom_cls.assert_any_call(sentinel)
         mock_core_cls.assert_called_once_with(sentinel)
         mock_config.load_incluster_config.assert_not_called()
         mock_config.load_kube_config.assert_not_called()
@@ -1126,6 +1127,56 @@ class TestLeaseApiClient(unittest.TestCase):
     def test_lease_requests_are_not_retried_with_the_default_client(self, _):
         lease_api_client = K8sHelper().coordination_v1_api.api_client
         self.assertIs(lease_api_client.configuration.retries, False)
+
+    def test_claim_collection_requests_do_not_retry_reads_and_keep_the_injected_client_settings(self, _):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            host = f"http://127.0.0.1:{sock.getsockname()[1]}"
+            configuration = client.Configuration(host=host)
+            injected = client.ApiClient(configuration=configuration, cookie="session=1")
+            self.addCleanup(injected.close)
+            injected.set_default_header("X-Test", "yes")
+            helper = K8sHelper(api_client=injected)
+            self.addCleanup(helper.coordination_v1_api.api_client.close)
+            collection_api_client = helper._claim_collection_api.api_client
+            self.addCleanup(collection_api_client.close)
+
+            self.assertIsNot(collection_api_client, injected)
+            self.assertEqual(collection_api_client.configuration.host, host)
+            self.assertEqual(collection_api_client.cookie, "session=1")
+            self.assertEqual(collection_api_client.default_headers["X-Test"], "yes")
+            self.assertIsNone(configuration.retries)
+            configuration.api_key["authorization"] = "rotated"
+            configuration.api_key_prefix["authorization"] = "Bearer"
+            self.assertEqual(
+                collection_api_client.configuration.get_api_key_with_prefix("authorization"), "Bearer rotated"
+            )
+            for retries in (
+                collection_api_client.configuration.retries,
+                collection_api_client.rest_client.pool_manager.connection_pool_kw["retries"],
+            ):
+                self.assertIsInstance(retries, urllib3.Retry)
+                self.assertEqual(retries.total, 3)
+                self.assertIs(retries.read, False)
+
+            selector = "agents.x-k8s.io/batch-id=b1"
+            # Before listen(), connect is refused, proving connection retries wrap in MaxRetryError.
+            with self.assertRaises(urllib3.exceptions.MaxRetryError):
+                helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 0.02))
+
+            # Once listening without replying, a read timeout surfaces after one attempt without retrying.
+            sock.listen(8)
+            sock.setblocking(False)
+            for call in (
+                lambda: helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 0.02)),
+                lambda: helper.count_live_sandbox_claims("default", selector, _request_timeout=(5.0, 0.02)),
+            ):
+                with self.assertRaises(urllib3.exceptions.ReadTimeoutError):
+                    call()
+                conn, _ = sock.accept()
+                conn.close()
+                with self.assertRaises(BlockingIOError):
+                    sock.accept()
 
 
 @patch("k8s_agent_sandbox.k8s_helper.config")
