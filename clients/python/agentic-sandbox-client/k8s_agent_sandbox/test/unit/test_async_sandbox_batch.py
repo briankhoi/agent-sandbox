@@ -2190,6 +2190,76 @@ class TestReleaseMembers(BaseClaimBatchTest):
         created_at = dict(self.cluster.created)
         self.assertLess(created_at["b1-11"] - created_at["b1-10"], 0.6)
 
+    async def test_release_methods_and_detach_serialize_on_the_lifecycle_lock(self):
+        helper = self.cluster.helper
+        methods = (
+            ("release_member", lambda h: h.release_member(h.members()[0]), "delete_sandbox_claim"),
+            ("release_not_ready", lambda h: h.release_not_ready(), "delete_sandbox_claim"),
+            ("release_group", lambda h: h.release_group("pool-a"), "delete_sandbox_claims_by_label"),
+        )
+        for name, call_release, delete_rpc in methods:
+            with self.subTest(method=name, first="release_method"):
+                helper.reset_mock()
+                helper.delete_sandbox_claim.side_effect = None
+                helper.delete_sandbox_claims_by_label.side_effect = None
+                calls: list[str] = []
+                in_delete, unblock = asyncio.Event(), asyncio.Event()
+                handle = _make_handle(self.client)
+                handle._state.upsert_claim(_claim("b1-0", conditions=_NOT_READY, annotations=_FILL))
+                lock = handle._lifecycle_lock = _SignalingLock(handle._lifecycle_lock)
+                helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
+                helper.list_sandbox_claim_objects.return_value = ([], "9")
+
+                async def block_delete(*args, **kwargs):
+                    calls.append("delete")
+                    in_delete.set()
+                    await asyncio.wait_for(unblock.wait(), 5)
+
+                async def record_replace(*args, **kwargs):
+                    calls.append("replace_lease")
+                    return _lease(holder_identity=args[2].spec.holder_identity, resource_version="11")
+
+                getattr(helper, delete_rpc).side_effect = block_delete
+                helper.replace_batch_lease.side_effect = record_replace
+
+                release_task = asyncio.create_task(call_release(handle))
+                await asyncio.wait_for(in_delete.wait(), 5)
+                await lock.start_racing(handle.detach)
+                helper.replace_batch_lease.assert_not_awaited()
+
+                unblock.set()
+                await asyncio.gather(release_task, *lock.tasks)
+                self.assertEqual(calls, ["delete", "replace_lease"])
+
+            with self.subTest(method=name, first="detach"):
+                helper.reset_mock()
+                helper.delete_sandbox_claim.side_effect = None
+                helper.delete_sandbox_claims_by_label.side_effect = None
+                handle = _make_handle(self.client)
+                helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
+                helper.replace_batch_lease.side_effect = (
+                    lambda *a, **k: _lease(holder_identity=a[2].spec.holder_identity, resource_version="11")
+                )
+
+                async def detach_from_another_task():
+                    await asyncio.create_task(handle.detach())
+
+                self.mock_sandbox_class.return_value = MagicMock(
+                    close_connection=AsyncMock(side_effect=detach_from_another_task)
+                )
+                handle._state.upsert_claim(
+                    _claim("b1-0", conditions=_READY, sandbox={"name": "sbx"}, annotations=_FILL)
+                )
+                await handle.connect(handle.members()[0])
+                handle._state.upsert_claim(
+                    _claim("b1-0", conditions=_NOT_READY, sandbox={"name": "sbx"}, annotations=_FILL)
+                )
+                with self.assertRaises(BatchError):
+                    await call_release(handle)
+                self.assertTrue(handle._lease_released)
+                helper.delete_sandbox_claim.assert_not_awaited()
+                helper.delete_sandbox_claims_by_label.assert_not_awaited()
+
     @patch("k8s_agent_sandbox.batch_utils.retry_delay", return_value=0)
     async def test_release_methods_delete_nothing_once_err_is_set(self, _):
         helper = self.cluster.helper

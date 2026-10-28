@@ -144,9 +144,9 @@ class SandboxBatch:
         self._list_resource_version = list_resource_version
 
         self._lock = threading.Lock()
-        # Held for all of release() and around detach()'s Lease writes, so whichever call starts first
-        # finishes before the other acts on the Lease. It's reentrant, so a call from a signal handler on
-        # the same thread doesn't hang.
+        # Held for all of release(), around detach()'s Lease writes, and around member and group claim
+        # deletes, so whichever call starts first finishes before the other acts. It's reentrant, so a call
+        # from a signal handler on the same thread doesn't hang.
         self._lifecycle_lock = threading.RLock()
         self._connected: dict[str, "Sandbox"] = {}
         self._detached = False
@@ -419,9 +419,12 @@ class SandboxBatch:
             raise BatchError(f"batch '{self.batch_id}' has been detached or released")
 
     def _check_lease_held(self) -> None:
-        # Once err() is set, this handle may no longer hold the batch's Lease, and a batch recreated
-        # under the same id reuses the claim names and labels, so the handle deletes no more claims.
+        # Once detach() releases the Lease or err() is set, this handle may no longer hold the
+        # batch's Lease, and a batch recreated under the same id reuses the claim names and labels,
+        # so the handle deletes no more claims.
         with self._lock:
+            if self._lease_released:
+                raise BatchError(f"batch '{self.batch_id}' has been detached or released")
             if (error := self._state.error()) is not None:
                 raise BatchError(f"batch '{self.batch_id}' has stopped") from error
 
@@ -612,7 +615,8 @@ class SandboxBatch:
             self._changed.notify_all()
         self._close_cached_connections("release_member", [member.claim_name])
         if needs_delete:
-            self._delete_claim(member.claim_name)
+            with self._lifecycle_lock:
+                self._delete_claim(member.claim_name)
 
     def release_not_ready(self) -> None:
         """Ends the fill and deletes every initial claim that isn't Ready and was never handed out.
@@ -643,8 +647,9 @@ class SandboxBatch:
         self._close_cached_connections("release_not_ready", names)
         if not names:
             return
-        with ThreadPoolExecutor(min(len(names), batch_utils.BATCH_DEFAULT_MAX_IN_FLIGHT)) as pool:
-            futures = [pool.submit(self._delete_claim, name) for name in names]
+        with self._lifecycle_lock:
+            with ThreadPoolExecutor(min(len(names), batch_utils.BATCH_DEFAULT_MAX_IN_FLIGHT)) as pool:
+                futures = [pool.submit(self._delete_claim, name) for name in names]
         errors = [e for f in futures if (e := f.exception()) is not None]
         if errors:
             raise errors[0]
@@ -679,13 +684,14 @@ class SandboxBatch:
             names = self._state.release_group(warmpool)
             self._changed.notify_all()
         self._close_cached_connections("release_group", names)
-        _delete_claims_in_rounds(
-            self._client.k8s_helper,
-            self.namespace,
-            batch_utils.group_label_selector(self.batch_id, warmpool),
-            f"batch '{self.batch_id}' group '{warmpool}'",
-            hold=self._check_lease_held,
-        )
+        with self._lifecycle_lock:
+            _delete_claims_in_rounds(
+                self._client.k8s_helper,
+                self.namespace,
+                batch_utils.group_label_selector(self.batch_id, warmpool),
+                f"batch '{self.batch_id}' group '{warmpool}'",
+                hold=self._check_lease_held,
+            )
 
     def _drop_planned_creates(self, warmpool: str | None) -> None:
         """Releases the planned creates not yet sent, of one pool or of every pool, so they don't

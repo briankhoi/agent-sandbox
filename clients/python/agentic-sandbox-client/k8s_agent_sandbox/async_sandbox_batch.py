@@ -148,8 +148,8 @@ class AsyncSandboxBatch:
         self._list_resource_version = list_resource_version
 
         self._lock = asyncio.Lock()
-        # Held for all of release() and around detach()'s Lease writes, so whichever call starts first
-        # finishes before the other acts on the Lease.
+        # Held for all of release(), around detach()'s Lease writes, and around member and group claim
+        # deletes, so whichever call starts first finishes before the other acts.
         self._lifecycle_lock = asyncio.Lock()
         self._connected: dict[str, "AsyncSandbox"] = {}
         self._detached = False
@@ -438,10 +438,14 @@ class AsyncSandboxBatch:
             raise BatchError(f"batch '{self.batch_id}' has been detached or released")
 
     async def _check_lease_held(self) -> None:
-        # Once err() is set, this handle may no longer hold the batch's Lease, and a batch recreated
-        # under the same id reuses the claim names and labels, so the handle deletes no more claims.
-        if (error := self._state.error()) is not None:
-            raise BatchError(f"batch '{self.batch_id}' has stopped") from error
+        # Once detach() releases the Lease or err() is set, this handle may no longer hold the
+        # batch's Lease, and a batch recreated under the same id reuses the claim names and labels,
+        # so the handle deletes no more claims.
+        async with self._lock:
+            if self._lease_released:
+                raise BatchError(f"batch '{self.batch_id}' has been detached or released")
+            if (error := self._state.error()) is not None:
+                raise BatchError(f"batch '{self.batch_id}' has stopped") from error
 
     def members(self, warmpool: str | None = None) -> list[Member]:
         """Returns a snapshot of the batch's members, optionally filtered to one warm pool."""
@@ -627,7 +631,8 @@ class AsyncSandboxBatch:
             self._changed.notify_all()
         await self._close_cached_connections("release_member", [member.claim_name])
         if needs_delete:
-            await self._delete_claim(member.claim_name)
+            async with self._lifecycle_lock:
+                await self._delete_claim(member.claim_name)
 
     async def release_not_ready(self) -> None:
         """Ends the fill and deletes every initial claim that isn't Ready and was never handed out.
@@ -656,13 +661,16 @@ class AsyncSandboxBatch:
             names = self._state.release_not_ready()
             self._changed.notify_all()
         await self._close_cached_connections("release_not_ready", names)
+        if not names:
+            return
         in_flight = asyncio.Semaphore(batch_utils.BATCH_DEFAULT_MAX_IN_FLIGHT)
 
         async def delete(name: str) -> None:
             async with in_flight:
                 await self._delete_claim(name)
 
-        results = await asyncio.gather(*(delete(name) for name in names), return_exceptions=True)
+        async with self._lifecycle_lock:
+            results = await asyncio.gather(*(delete(name) for name in names), return_exceptions=True)
         errors = [r for r in results if isinstance(r, BaseException)]
         if errors:
             raise errors[0]
@@ -697,13 +705,14 @@ class AsyncSandboxBatch:
             names = self._state.release_group(warmpool)
             self._changed.notify_all()
         await self._close_cached_connections("release_group", names)
-        await _delete_claims_in_rounds(
-            self._client.k8s_helper,
-            self.namespace,
-            batch_utils.group_label_selector(self.batch_id, warmpool),
-            f"batch '{self.batch_id}' group '{warmpool}'",
-            hold=self._check_lease_held,
-        )
+        async with self._lifecycle_lock:
+            await _delete_claims_in_rounds(
+                self._client.k8s_helper,
+                self.namespace,
+                batch_utils.group_label_selector(self.batch_id, warmpool),
+                f"batch '{self.batch_id}' group '{warmpool}'",
+                hold=self._check_lease_held,
+            )
 
     def _drop_planned_creates(self, warmpool: str | None) -> None:
         """Releases the planned creates not yet sent, of one pool or of every pool, so they don't
