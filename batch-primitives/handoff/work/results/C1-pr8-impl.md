@@ -11,7 +11,7 @@ Branch `feat/batch-8-list-memory` = `e5367671`, 6 commits off live PR 7 `91d5ffc
   - Commit 5 (metadata-only deletecollection): about 15% fewer wire bytes, no traced-memory or timing effect.
   - Commit 6 (`managedFields` trim): halves the list peak, 48.7 to 24.1 MB.
 - The bench found a real bug, fixed in commit 4 with regression tests. For an empty result, a metadata-only list sends `items: null`, which crashed `release()` on arm D.
-- Pre-existing, not caused by PR 8: urllib3 retries a timed-out sync deletecollection 3 times, so one 90 s timeout can stretch to about 6 minutes per round. This needs a decision from you (decision 3).
+- Pre-existing, not caused by PR 8: urllib3 retries a sync deletecollection 3 times when a client read timeout fires before the apiserver responds (as in the 5 s forced-timeout run, 5 s to 20 s) or on `429`/`503` with `Retry-After`; at the default 90 s client timeout, the apiserver's own 60 s request timeout returns a `504` first, which urllib3 does not retry. This needs a decision from you (decision 3).
 
 ## 2. Findings (ranked)
 
@@ -64,7 +64,7 @@ Branch `feat/batch-8-list-memory` = `e5367671`, 6 commits off live PR 7 `91d5ffc
 |---|---|---|---|---|
 | 4: metadata-only count | Timeout path release peak (C2-ct5 vs D2-ct5) | 11.77 MB | 9.72 MB | 2.05 MB (17%) |
 | 4 | Normal path | 0.14 to 0.19 MB | 0.19 to 0.21 MB | none (the re-list is empty) |
-| 5: metadata-only deletecollection | Wire bytes | 9,492 B for 3 claims | 8,031 B | 15.4% |
+| 5: metadata-only deletecollection | Wire bytes (measured ad-hoc via `kubectl proxy` + `curl`, not from a committed JSON file, whereas the 5,000-claim `0.844` ratio is in the JSON files) | 9,492 B for 3 claims | 8,031 B | 15.4% |
 | 5 | Wire bytes at 5000 (inferred) | 11.5 MB | about 9.7 MB | about 15.6% |
 | 5 | `release_s` | D2 30.7 to 33.1 s | E2 29.1 to 50.4 s | not separable from host-load noise |
 | 6: `managedFields` trim | `list_traced_peak_mb` | 48.7 MB | 24.1 MB | 24.6 MB (50%) |
@@ -93,7 +93,7 @@ Branch `feat/batch-8-list-memory` = `e5367671`, 6 commits off live PR 7 `91d5ffc
   - urllib3 defaults to `Retry(3)` and includes DELETE among the retried methods (`urllib3/util/retry.py:199-200`, `:569`).
   - The reviewer saw the same thing for a 429 with Retry-After.
 - **Inferred:**
-  - In production a 90 s timeout can become about 360 s per round on the sync and async-atexit paths.
+  - At the default 90 s client timeout, the apiserver's own 60 s request timeout returns a `504` first (which urllib3 does not retry); the 4x stretch happens when a client read timeout fires before the server responds (as in the 5 s forced-timeout run, 5 s to 20 s) or on `429`/`503` with `Retry-After`, on the sync and async-atexit paths.
   - Async (aiohttp) doesn't retry.
 - **Not changed in PR 8:** the change would alter release timing, which is out of PR 8's scope. Options:
   - send deletecollection through a no-retries client;

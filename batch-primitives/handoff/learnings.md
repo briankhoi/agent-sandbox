@@ -189,3 +189,8 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 - Ask the verifier for mutation measurements, not opinions ("removing X must fail a test").
 - Ask explicitly: "Is there a smaller change with the same behavior? Does it add state, duplicate a rule, or widen a type?"
 - Briefs must carry the binding rules and exact heads, and must say what not to touch (no live-branch pushes, no GitHub posts). Verify heads before acting, because server restarts can interrupt work midway.
+
+### 7.1 A three-dot compare between stacked branches shows the whole PR
+- **What happened:** a review link compared the live PR branch with its review copy using `compare/<live>...<copy>`. Both sit on the same upstream base, so GitHub diffed from that base and showed +3k lines instead of the ~1k under review.
+- **Fix:** build a synthetic commit with the old commit as parent and the new tree (`git commit-tree`), push it as `review-diff/<topic>`, and check `git diff --shortstat` before sending.
+- **Takeaway:** a three-dot compare diffs from the merge base, not from the left commit. For rewritten history always link a synthetic commit, and check the size first.
