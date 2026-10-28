@@ -14,11 +14,13 @@ This runbook documents how to spin the exact GKE Standard gVisor + Image Streami
 | `bench-scripts/bootstrap_gke_bench.sh` | One-command GKE cluster creation, server-side AR image tagging (`g000..g639`), in-cluster driver pod + PVC setup, sandbox node-pool resize, and clean teardown. |
 | `bench-scripts/deploy_controller.sh` | Deploys `agent-sandbox-controller` pinned to `controller-pool` with `--profile stock` or `--profile config-h` (live `upstream/main` `docs/performance-tuning.md` Config H). |
 | `bench-scripts/loadtest_arms.sh` | Interleaved, order-rotated runner for `loadtest.py` across `per_claim`, `batch/unbounded`, and `batch/defaults`. |
+| `bench-scripts/run_shapes_bench.py` | Workload-shape wrapper running `w500` (`500 images × 1 task` SWE-bench Eval) and `w1024` (`16 images × 64 tasks` Deep-Group GRPO) on the existing warm pools. |
 | `bench-scripts/gke_gate.py` & `bench-scripts/check_results.py` | Control-plane APF readiness gate (`plan.md` §7) and JSON result integrity checker. |
-| `examples/agent-sandbox-rl/bench-results/gke/` | Stock controller results (`summary.md`, `STATUS.md`, `CHEATSHEET.md`, `PROVENANCE.md`, `plan.md`, raw `*.json`). |
-| `examples/agent-sandbox-rl/bench-results/gke-tuned/` | Live `upstream/main` Tuned (`Config H`, `wp=2`) controller results (`summary.md`, `STATUS.md`, raw `*.json`). |
+| `examples/agent-sandbox-rl/bench-results/gke/` | Default controller flags results (`summary.md`, `STATUS.md`, `WALKTHROUGH.md`, `CHEATSHEET.md`, `PROVENANCE.md`, `plan.md`, raw `*.json`). |
+| `examples/agent-sandbox-rl/bench-results/gke-tuned/` | Production Tuned (`Config H`, `wp=2`) controller results across `w160`, `w640`, `w1280`, `w2560` (`summary.md`, `STATUS.md`, raw `*.json`). |
+| `examples/agent-sandbox-rl/bench-results/gke-shapes/` | Production Tuned (`Config H`) workload-shape results for `w500` (`500×1` SWE-bench Eval) and `w1024` (`16×64` Deep-Group GRPO). |
 | `examples/agent-sandbox-rl/bench-results/gke-tuned-wp100/` | Empirical GKE multi-pool APF finding (`--sandbox-warm-pool-concurrent-workers=100` vs `wp=2`; see `WHY.md`). |
-| `examples/agent-sandbox-rl/bench-results/gke-scripts/` | `loadtest` (Stock) and `loadtest-tuned` (`Config H`) JSON + Markdown outputs. |
+| `examples/agent-sandbox-rl/bench-results/gke-scripts/` | `loadtest` (Default) and `loadtest-tuned` (`Config H`) JSON + Markdown outputs. |
 
 ---
 

@@ -1,8 +1,8 @@
 # RL Sandbox Claim-Mode Benchmark — Meeting Cheatsheet (`per_claim` vs `batch`)
 
-> **Snapshot status:** Sync #1 (`w160`, `w640`, `w1280`, `c640`, and `loadtest.py` across **Default Controller Flags** and **Tuned Controller Flags (`docs/performance-tuning.md` `Config H`)** — **both running our exact same `bench/rl-gke` code & controller binary, pre-`#1791`**). For a simpler plain-English narrative, start with [`WALKTHROUGH.md`](WALKTHROUGH.md)! `w2560` (48-node run testing past the 1,000-socket client pool) + wave `fill-unbounded` rows will be appended in Sync #2 tonight.
+> **Snapshot status:** Final Sync #2 (`w160`, `w640`, `w1280`, `w2560`, `c640`, `w500` `500×1` SWE-bench Eval, `w1024` `16×64` Deep-Group GRPO, and `loadtest.py` across **Default Controller Flags** and **Production Tuned Controller Flags (`docs/performance-tuning.md` `Config H`)** — **all running our exact same `bench/rl-gke` code & controller binary, pre-`#1791`**). For a simpler plain-English narrative, start with [`WALKTHROUGH.md`](WALKTHROUGH.md)!
 >
-> **Cluster:** GKE Standard `1.37.1-gke.1697000` (`us-central1-a`), 24 × `n2-standard-8` sandbox nodes (`gVisor` + Image Streaming, 128 max pods/node), 1 × `e2-standard-8` dedicated `controller-pool`, 1 × `n2-standard-8` dedicated `driver` node, **404 APF seats** (`workload-low` = 165 seats).
+> **Cluster:** GKE Standard `1.37.1-gke.1697000` (`us-central1-a`), 24 → 48 × `n2-standard-8` sandbox nodes (`gVisor` + Image Streaming, 128 max pods/node), 1 × `e2-standard-8` dedicated `controller-pool`, 1 × `n2-standard-8` dedicated `driver` node, **404 APF seats** (`workload-low` = 165 seats).
 
 ---
 
@@ -50,6 +50,15 @@
 | **`w1280` / `per-claim`** | `31.51s` (23.33–39.69)\* | `20.91s` / `31.19s` | `19.71s` (18.47–20.96) | `9.18s` / `19.60s` | `4.00` | `1,280` | **`218`** / `0` | **`105.66s`** / `24.64s` | `10,610` / `9,388` |
 | **`w1280` / `batch-unbounded`** | **`18.80s`** (17.48–20.11) ✅ | `9.82s` / **`18.58s`** | `20.14s` (16.86–23.41) | **`8.47s`** / **`19.16s`** | **`1.25–1.33`** | **`1`** | **`0`** / **`0`** | `12.53s` / **`11.26s`** | **`6,634`** / **`5,502`** |
 | **`w1280` / `batch-default`** | **`19.19s`** (17.65–20.74) ✅ | **`9.76s`** / `19.02s` | `24.59s` (18.57–30.61) | `10.20s` / `24.04s` | **`1.25`** | **`1–2`** | **`0`** / **`0`** | **`10.97s`** / `17.69s` | `6,719` / `5,529` |
+| **`w2560` / `per-claim`** *(48 nodes)* | — | — | `46.05s` (34.80–57.29, **`1` HTTP 429 err** ❌) | `17.94s` / `33.96s` | `4.00` | `2,560` | — / **`551`** | — / `44.42s` | — / `18,317` |
+| **`w2560` / `batch-unbounded`** *(48 nodes)* | — | — | `51.58s` (**`35.48s`**–67.68, **`0` errs** ✅) | `16.91s` / `37.58s` | **`1.13`** | **`2`** | — / **`0`** | — / `22.13s` | — / **`10,757`** |
+| **`w2560` / `batch-default`** *(48 nodes)* | — | — | **`47.40s`** (41.98–52.83, **`0` errs** ✅) | **`16.53s`** / **`33.67s`** | **`1.25`** | **`2`** | — / **`0`** | — / **`21.97s`** | — / **`10,668`** |
+| **`w500` (`500×1` Eval) / `per-claim`** | — | — | `7.27s` (Step 1: `33.51s`) | `4.05s` / `6.93s` | `4.00` | `500` | — / `0` | — / `8.51s` | — / `3,844` |
+| **`w500` (`500×1` Eval) / `batch-unbounded`** | — | — | **`7.01s`** (Step 1: **`6.75s`**, `5.0×` faster ✅) | `4.40s` / **`6.91s`** | **`2.01`** | **`4`** | — / `0` | — / `5.12s` | — / `2,342` |
+| **`w500` (`500×1` Eval) / `batch-default`** | — | — | `7.62s` (Step 1: **`7.95s`**, `4.2×` faster ✅) | **`3.71s`** / `7.46s` | **`2.01`** | **`4`** | — / `0` | — / **`4.41s`** | — / **`2,294`** |
+| **`w1024` (`16×64` GRPO) / `per-claim`** | — | — | `37.39s` (**`101` HTTP 429 errs** ❌) | `8.73s` / `32.41s` | `4.00` | `1,023` | — / **`24`** | — / `27.02s` | — / `8,676` |
+| **`w1024` (`16×64` GRPO) / `batch-unbounded`** | — | — | **`33.83s`** (**`0` errs** ✅) | `7.09s` / **`24.42s`** | **`1.02`** | **`3`** | — / **`0`** | — / `8.90s` | — / **`4,316`** |
+| **`w1024` (`16×64` GRPO) / `batch-default`** | — | — | `35.82s` (**`0` errs** ✅) | **`7.05s`** / `31.74s` | **`1.02`** | **`1`** | — / **`0`** | — / **`7.79s`** | — / `4,555` |
 | **`c640` (cold) / `per-claim`** | `27.04s` (25.47–28.60) | `16.92s` / `25.39s` | — | — | `4.00` | `640` | `0` | `12.03s` | `6,770` |
 | **`c640` (cold) / `batch-unbounded`** | **`25.28s`** (25.20–25.36) | **`16.17s`** / **`24.55s`** | — | — | **`1.25`** | **`1`** | `0` | **`6.21s`** | **`4,765`** |
 
