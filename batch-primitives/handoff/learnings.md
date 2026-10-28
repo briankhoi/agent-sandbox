@@ -172,6 +172,10 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 - **What happened:** a verifier noted that async `close()` did not take `_lifecycle_lock`, and a handoff recommended a separate PR to avoid scoping a finding out. Checking `__aexit__()`, `delete_all()`, and `aiohttp`/`httpx` afterwards showed that cluster-cleanup paths already waited on the lock and bare `close()` matched standard immediate transport teardown.
 - **Takeaway:** "never scope things out" applies after a gap is verified to be real. Check caller entrypoints, the documented contract, and standard library practice before proposing a fix or follow-up PR, and recommend no change when the behavior is intended.
 
+### 6.10 Audit cross-cutting lock invariants across the stack and against system bounds
+- **What happened:** adding `_lifecycle_lock` to 12/N (`detach()` and `release()`) surfaced follow-on findings in 15/N (`release_*`) and 16/N (`acquire()`) one round at a time. A verifier finding that `detach()` stops `_renew_loop` while waiting behind a slow delete was also proposed as a fix before checking that `get_batch` rejects an expired Lease and the reaper margin (`leaseDurationSeconds + 60s >= 120s`) exceeds the 90s max delete retry time. And putting an exclusive `_lifecycle_lock` around `release_member` serializes concurrent single-member HTTP deletes.
+- **Takeaway:** when introducing a new teardown lock at the base of a stack, audit every delete and teardown site across all PRs in one pass, check real timeout and TTL bounds before flagging a race as reachable, and check whether an exclusive lock serializes concurrent single-item I/O.
+
 ---
 
 ## 7. Stacked PRs and git
@@ -198,3 +202,8 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 - **What happened:** a review link compared the live PR branch with its review copy using `compare/<live>...<copy>`. Both sit on the same upstream base, so GitHub diffed from that base and showed +3k lines instead of the ~1k under review.
 - **Fix:** build a synthetic commit with the old commit as parent and the new tree (`git commit-tree`), push it as `review-diff/<topic>`, and check `git diff --shortstat` before sending.
 - **Takeaway:** a three-dot compare diffs from the merge base, not from the left commit. For rewritten history always link a synthetic commit, and check the size first.
+
+### 7.2 Re-check live stack heads and run a diff-of-diffs when multiple agents sync
+- **What happened:** while a review round on 12/N and 15/N waited for approval, another agent pushed per-claim `_acquire_waiters` to 16/N through 19/N and added 20/N (`feat/batch-8-list-memory`) on top of the pre-review 15/N head.
+- **Fix:** `git ls-remote` caught the moved and added branches before pushing. Rebasing the live 16/N through 20/N commits onto the new 15/N head and running `diff -u <(git diff old_top new_live_top) <(git diff our_old_top our_rebased_top)` caught two carry-forward hunks from the lower review round that would otherwise have been dropped.
+- **Takeaway:** when multiple agents push to a stack, always run `git ls-remote` across all stack branches right before syncing, rebase concurrent upper-branch commits onto the new lower head, and verify zero dropped hunks with a diff-of-diffs before pushing atomically.
