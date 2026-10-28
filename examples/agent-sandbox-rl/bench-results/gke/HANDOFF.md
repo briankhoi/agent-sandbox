@@ -171,7 +171,12 @@ target finish of 11 pm-12 am PDT (06:00-07:00 UTC). Follow plan.md §7 (warm-up,
 gate, schedule, late-running drop order). If the previous agent already started
 the warm-up, check `bench-results/gke-warmup/` and `~/rl-gke-bench/STATE.md`
 before redoing anything.
-1. (Done: choice made.)
+1. (Done: choice made.) Warm-up 1 started 00:14:43Z: `/work/warmup.sh bench-results/gke-warmup`
+   in the pod (w1280 lead pair, STEPS=2, controller metrics snapshotted to
+   `gke-warmup/ctrl-before.txt` / `ctrl-after.txt`; the log ends with WARMUP-DONE).
+   Gate: `kubectl exec ... -- /work/venv/bin/python /work/gate.py bench-results/gke-warmup`
+   (source ~/rl-gke-bench/gate.py) prints GATE PASS/FAIL. For a second warm-up use a
+   new dir (e.g. gke-warmup2). The 8 old runs are already superseded.
 2. If A:
    - `kubectl exec` mv the 8 `bench-results/gke/*.json` to `bench-results/gke/superseded/`,
      with WHY.md saying "ran on the pre-resize 122-seat control plane".
