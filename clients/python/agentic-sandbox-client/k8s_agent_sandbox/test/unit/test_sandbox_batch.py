@@ -1989,6 +1989,28 @@ class TestClientBatchCleanup(BaseClaimBatchTest):
         self.assertEqual(self.client._active_batches, {("default", "b1"): handle})
         helper.delete_sandbox_claims_by_label.assert_not_called()
 
+    def test_exit_cleanup_during_detach_detaches_an_attached_handle(self):
+        handle = _make_handle(self.client)
+        handle._attached = True
+        self.client._active_batches[("default", "b1")] = handle
+        helper = self.client.k8s_helper
+        helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
+        lock = handle._lock = _SignalingLock(handle._lock)
+
+        class CleanupBetweenDetachWrites(SandboxBatch):
+            def __setattr__(self, name, value):
+                super().__setattr__(name, value)
+                # Another thread's exit cleanup runs once detach() has set _detached but not yet _detach_grace.
+                if name == "_detached" and value and not lock.threads:
+                    lock.start_racing(self._client._delete_automatic_sandboxes)
+
+        handle.__class__ = CleanupBetweenDetachWrites
+        handle.detach()
+        lock.threads.pop().join()
+
+        helper.delete_sandbox_claims_by_label.assert_not_called()
+        self.assertEqual(self.client._active_batches, {})
+
     def test_a_failed_detach_retry_is_logged_and_keeps_the_handle_registered(self):
         handle = _make_handle(self.client)
         self.client._active_batches[("default", "b1")] = handle

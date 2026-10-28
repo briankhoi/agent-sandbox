@@ -606,9 +606,9 @@ class AsyncSandboxClient(Generic[T]):
         ``members()`` up to date. Only a batch released with ``detach()`` can be re-attached,
         within its grace window.
 
-        The client's exit cleanup doesn't release a batch attached here. Leaving ``async with``
-        detaches it with ``detach()``'s default grace, and the atexit hook leaves it in place, so call
-        ``release()`` to delete the batch.
+        The client's exit cleanup doesn't release a batch attached here, except to retry a
+        ``release()`` call that failed. Leaving ``async with`` detaches it with ``detach()``'s default
+        grace, and the atexit hook leaves it in place, so call ``release()`` to delete the batch.
 
         The batch errors below are all ``BatchError``, so ``except BatchError`` handles a batch that
         can't be attached. ``ValueError`` means a bad batch id, ``ApiException`` an API error,
@@ -729,7 +729,8 @@ class AsyncSandboxClient(Generic[T]):
                 try:
                     await batch.detach()
                 except Exception as e:
-                    # No release follows, since the handle stays registered and the next cleanup finishes the detach.
+                    # No release follows. A failed Lease write leaves the handle registered for the next cleanup to
+                    # finish the detach, and a BatchError means a release() call has started.
                     logger.error(f"Failed to detach batch '{batch_id}' in namespace {namespace}: {e}")
                 continue
             try:

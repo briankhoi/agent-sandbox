@@ -447,8 +447,9 @@ class SandboxClient(Generic[T]):
         ``members()`` up to date. Only a batch released with ``detach()`` can be re-attached,
         within its grace window.
 
-        The client's exit cleanup doesn't release a batch attached here. It detaches it with
-        ``detach()``'s default grace, so call ``release()`` to delete the batch.
+        The client's exit cleanup doesn't release a batch attached here, except to retry a
+        ``release()`` call that failed. It detaches it with ``detach()``'s default grace, so call
+        ``release()`` to delete the batch.
 
         The batch errors below are all ``BatchError``, so ``except BatchError`` handles a batch that
         can't be attached. ``ValueError`` means a bad batch id, ``ApiException`` an API error,
@@ -585,11 +586,16 @@ class SandboxClient(Generic[T]):
         for (namespace, batch_id), batch in batches:
             if self._finish_detach(batch):
                 continue
-            if exiting and batch._exit_detaches():
+            # detach() stores _detached and _detach_grace under the handle's lock, and a read between the two
+            # looks like a started release, so this reads the choice under that lock too.
+            with batch._lock:
+                detaches = exiting and batch._exit_detaches()
+            if detaches:
                 try:
                     batch.detach()
                 except Exception as e:
-                    # No release follows, since the handle stays registered and the next cleanup finishes the detach.
+                    # No release follows. A failed Lease write leaves the handle registered for the next cleanup to
+                    # finish the detach, and a BatchError means a release() call has started.
                     logger.error(f"Failed to detach batch '{batch_id}' in namespace {namespace}: {e}")
                 continue
             try:

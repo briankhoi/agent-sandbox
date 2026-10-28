@@ -728,8 +728,9 @@ The client tracks every batch handle it returns. `delete_all()` releases every t
 exit cleanup (`cleanup=True`, or leaving a `with SandboxClient()` or `async with AsyncSandboxClient()`
 block) releases every tracked batch the client claimed with `claim_batch()`; call `detach()` first to hand
 a batch off instead. Exit cleanup detaches a batch attached with `get_batch()`, with `detach()`'s default
-grace, so call `release()` to delete it. The `AsyncSandboxClient` atexit hook can't await `detach()`, so it
-leaves an attached batch in place for its Lease to go stale.
+grace, and releases it only to retry a `release()` call that failed, so call `release()` to delete it.
+The `AsyncSandboxClient` atexit hook can't await `detach()`, so it leaves an attached batch in place for
+its Lease to go stale.
 
 `SandboxClient.get_batch()` attaches to an existing batch that was detached, returning a handle that
 supports all of the above.
