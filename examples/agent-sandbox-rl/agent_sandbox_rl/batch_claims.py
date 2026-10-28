@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from k8s_agent_sandbox import BatchGroup
+from k8s_agent_sandbox.batch_state import still_reaches
+from k8s_agent_sandbox.utils import select_pod_ip
 
 from .exceptions import FleetError
 
@@ -52,6 +54,20 @@ class BatchClaim:
 
   batch: "SandboxBatch"
   member: "Member"
+  rebaselined: bool = False
+
+  def still_reaches(self) -> bool:
+    """Whether a healthy batch's watch still maps this claim to its acquired pod."""
+    # After refresh() the pod IP can differ from member.pod_ips, and a stopped
+    # batch's watch no longer updates, so is_alive() checks the pod instead.
+    if self.rebaselined or self.batch.err() is not None:
+      return True
+    current = next(
+        (m for m in self.batch.members(self.member.warmpool)
+         if m.claim_name == self.member.claim_name),
+        None)
+    return still_reaches(
+        current, self.member.sandbox_name, select_pod_ip(self.member.pod_ips))
 
   def release(self) -> None:
     self.batch.release_member(self.member)
