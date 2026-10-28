@@ -724,9 +724,12 @@ time of the `claim_batch()` call plus `N / create_rps` seconds (rounded up) plus
 `work_budget` is a hard cap. Nothing extends a claim's `shutdownTime`, so a batch held for a whole run sets
 `work_budget` to the run's length.
 
-The client tracks every batch handle it returns. `delete_all()`, and the client's exit cleanup
-(`cleanup=True`, or leaving `async with` for `AsyncSandboxClient`), release every tracked batch; call
-`detach()` first to hand a batch off instead.
+The client tracks every batch handle it returns. `delete_all()` releases every tracked batch. The client's
+exit cleanup (`cleanup=True`, or leaving a `with SandboxClient()` or `async with AsyncSandboxClient()`
+block) releases every tracked batch the client claimed with `claim_batch()`; call `detach()` first to hand
+a batch off instead. Exit cleanup detaches a batch attached with `get_batch()`, with `detach()`'s default
+grace, so call `release()` to delete it. The `AsyncSandboxClient` atexit hook can't await `detach()`, so it
+leaves an attached batch in place for its Lease to go stale.
 
 `SandboxClient.get_batch()` attaches to an existing batch that was detached, returning a handle that
 supports all of the above.
