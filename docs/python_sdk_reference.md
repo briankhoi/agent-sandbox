@@ -999,7 +999,10 @@ also fails if the wait ends with any other exception, such as a cancellation or
 ##### acquire
 
 ```python
-def acquire(warmpool: str, timeout: float | None = None) -> Member
+def acquire(warmpool: str,
+            timeout: float | None = None,
+            *,
+            pod_annotations: dict[str, str] | None = None) -> Member
 ```
 
 Adds a member from ``warmpool`` to the batch, waits until it is Ready, and returns it.
@@ -1032,11 +1035,16 @@ or a missing pool or template.
 - `warmpool` - The warm pool to claim the member from.
 - `timeout` - Seconds to wait for the member to be Ready. Defaults to the batch's
   ``quorum_timeout``.
+- `pod_annotations` - Optional annotations that ``acquire()`` writes to
+  ``spec.additionalPodMetadata.annotations`` so the controller propagates them onto
+  the sandbox pod. ``acquire()`` omits ``spec.additionalPodMetadata`` when
+  ``pod_annotations`` is ``None`` or empty.
   
 
 **Raises**:
 
-- `ValueError` - If ``timeout`` isn't a positive finite number.
+- `ValueError` - If ``timeout`` isn't a positive finite number, or ``pod_annotations`` is
+  invalid.
 - `SandboxWarmPoolNotFoundError` - If the warm pool doesn't exist.
 - `SandboxTemplateNotFoundError` - If the warm pool's template doesn't exist, or it names none.
 - `TerminalMemberError` - If the create fails (the member is ``FAILED`` with reason
