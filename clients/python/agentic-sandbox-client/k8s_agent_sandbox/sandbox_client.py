@@ -461,9 +461,9 @@ class SandboxClient(Generic[T]):
         within its grace window. A group whose claims are all gone is unknown to the new handle,
         so it isn't in ``groups`` and ``group_outcomes()`` doesn't yield it.
 
-        The client's exit cleanup doesn't release a batch attached here, except to retry a
-        ``release()`` call that failed. It detaches it with ``detach()``'s default grace, so call
-        ``release()`` to delete the batch.
+        Client exit cleanup detaches a batch attached here with ``detach()``'s default grace instead
+        of releasing it. Call ``release()`` to delete the batch. If a ``release()`` call fails,
+        client cleanup retries it.
 
         The batch errors below are all ``BatchError``, so ``except BatchError`` handles a batch that
         can't be attached. ``ValueError`` means a bad batch id, ``ApiException`` an API error,
@@ -591,25 +591,26 @@ class SandboxClient(Generic[T]):
         self._release_batches(exiting=True)
 
     def _release_batches(self, exiting: bool) -> None:
-        # A handle that exits without detach() has signaled no handoff, so exit cleanup releases a batch
-        # this client claimed. A batch attached with get_batch may be another client's, so exit cleanup
-        # detaches it, and only delete_all() releases it.
+        # A claimed batch that reaches exit without detach() has no handoff, so exit cleanup releases it.
+        # A batch attached with get_batch may belong to another client, so exit cleanup detaches it.
+        # delete_all() is an explicit request to delete, so it releases both.
         self._retry_closing_batches()
         with self._batches_lock:
             batches = list(self._active_batches.items())
         for (namespace, batch_id), batch in batches:
             if self._finish_detach(batch):
                 continue
-            # detach() stores _detached and _detach_grace under the handle's lock, and a read between the two
-            # looks like a started release, so this reads the choice under that lock too.
+            # detach() sets _detached and _detach_grace under the handle's lock. A read between the two writes
+            # looks like a started release, so cleanup makes its choice under the same lock.
             with batch._lock:
                 detaches = exiting and batch._exit_detaches()
             if detaches:
                 try:
                     batch.detach()
                 except Exception as e:
-                    # No release follows. A failed Lease write leaves the handle registered for the next cleanup to
-                    # finish the detach, and a BatchError means a release() call has started.
+                    # Cleanup never falls back to release() here. After a failed Lease write, the handle stays
+                    # registered and the next cleanup finishes the detach. A BatchError means a release() call
+                    # has started.
                     logger.error(f"Failed to detach batch '{batch_id}' in namespace {namespace}: {e}")
                 continue
             try:

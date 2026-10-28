@@ -291,9 +291,9 @@ Resumes batch lease renewal and starts a label-scoped watch that keeps
 within its grace window. A group whose claims are all gone is unknown to the new handle,
 so it isn't in ``groups`` and ``group_outcomes()`` doesn't yield it.
 
-The client's exit cleanup doesn't release a batch attached here, except to retry a
-``release()`` call that failed. It detaches it with ``detach()``'s default grace, so call
-``release()`` to delete the batch.
+Client exit cleanup detaches a batch attached here with ``detach()``'s default grace instead
+of releasing it. Call ``release()`` to delete the batch. If a ``release()`` call fails,
+client cleanup retries it.
 
 The batch errors below are all ``BatchError``, so ``except BatchError`` handles a batch that
 can't be attached. ``ValueError`` means a bad batch id, ``ApiException`` an API error,

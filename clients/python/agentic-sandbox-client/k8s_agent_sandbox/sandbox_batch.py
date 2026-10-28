@@ -82,8 +82,8 @@ _TRANSPORT_ERRORS = (
     urllib3.exceptions.ProtocolError,
     urllib3.exceptions.ReadTimeoutError,
     urllib3.exceptions.MaxRetryError,
-    # Lease requests aren't retried by urllib3, so a refused or timed-out connect comes as this error
-    # (NewConnectionError subclasses it) instead of a MaxRetryError.
+    # urllib3 doesn't retry Lease requests, so a refused or timed-out connect raises this error instead
+    # of a MaxRetryError. NewConnectionError subclasses it.
     urllib3.exceptions.ConnectTimeoutError,
     ConnectionError,
     # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
@@ -164,7 +164,8 @@ class SandboxBatch:
         # or pod IP. connect() reads only _connected, so it never hands out these connections. Each
         # connection stays here until it closes, so the next cleanup retries a close that failed.
         self._stale_connections: list["Sandbox"] = []
-        # Set by get_batch, so client exit cleanup detaches the handle rather than deleting a batch it may not own.
+        # get_batch sets this, so client exit cleanup detaches the handle instead of deleting a batch that
+        # another client may own.
         self._attached = False
         self._detached = False
         self._lease_released = False
@@ -1141,7 +1142,7 @@ class SandboxBatch:
 
     def _exit_detaches(self) -> bool:
         """Returns whether client exit cleanup detaches this handle instead of releasing its batch."""
-        # A release() that started on an attached handle is still retried as a release.
+        # Client cleanup retries a release() that already started, even on an attached handle.
         return self._attached and not self._release_started()
 
     def _detach_done(self) -> bool:
@@ -1640,9 +1641,9 @@ class SandboxBatch:
                 if outcome == batch_utils.CreateOutcome.SUCCESS:
                     return True
                 if outcome == batch_utils.CreateOutcome.RETRY:
-                    # A backoff is this create's own, so it waits here and then takes a normal pacing slot, as
-                    # client-go waits before its rate limiter. A Retry-After from the apiserver applies to its whole
-                    # priority level, so it moves the shared slot and every create waits for it.
+                    # A backoff belongs to this create alone, so the create waits it out here and then takes a
+                    # normal pacing slot. client-go retries the same way. The apiserver computes a Retry-After for a
+                    # whole priority level, so a Retry-After moves the shared slot and every create waits for it.
                     retry_after = batch_utils.retry_after_seconds(e)
                     if retry_after is None:
                         backoff = batch_utils.retry_delay(attempt, None)
@@ -1652,7 +1653,7 @@ class SandboxBatch:
                             return False
                     with self._lock:
                         earliest = time.monotonic() + (retry_after or 0.0)
-                        # Other creates kept taking slots during any backoff, so this checks the deadline after it.
+                        # Other creates keep taking slots during a backoff, so the create checks the deadline again.
                         self._check_retry_deadline(claim_name, deadline, earliest, e)
                         slot = self._reserve_create_slot(earliest)
                     if self._stop_creating.wait(max(0.0, slot - time.monotonic())):
