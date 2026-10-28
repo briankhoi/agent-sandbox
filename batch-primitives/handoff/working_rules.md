@@ -90,3 +90,12 @@ After a fix round took about an hour (full checks re-run in every round, and the
 - Restack the upper branches only after Brian approves the diff. Run the full per-commit check (mypy on every commit, docs at every head, author check) once, right before syncing.
 - Keep a fresh verifier for behavior and lifecycle changes, scoped to the rule and the paths that touch it. It doesn't re-run the builder's mechanical checks except as spot checks.
 - Skip the verifier for comment-only changes and mechanical restacks.
+
+## No PR references in commit messages (Brian, 2026-10-28)
+Brian: "stop linking PRs to commit mesaages, it keeps showing this in the PR and that's not what i want at all". GitHub turns `#1234` or `owner/repo#1234` in any commit message pushed to the fork, including notes-branch commits, into a "referenced this pull request" event on that PR.
+- Never write `#<number>` in a commit message, on any branch. Name the stack position instead, for example "12/N follow-ups" or "13/N review replies".
+- PR numbers are fine inside file contents (notes, drafted replies), because GitHub does not cross-link file contents.
+- Before every push, check the new commit messages with `git log --format=%B <old>..<new> | grep -nE '#[0-9]+'` and reword any hit.
+
+## Active voice everywhere (Brian, 2026-10-28)
+Brian: "always use active voice in response comments or in general." Use active voice in drafted GitHub replies, PR bodies, commit messages, code comments, docstrings, notes and messages to Brian. Say who does what.

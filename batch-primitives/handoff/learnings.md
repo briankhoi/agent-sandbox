@@ -207,3 +207,7 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 - **What happened:** while a review round on 12/N and 15/N waited for approval, another agent pushed per-claim `_acquire_waiters` to 16/N through 19/N and added 20/N (`feat/batch-8-list-memory`) on top of the pre-review 15/N head.
 - **Fix:** `git ls-remote` caught the moved and added branches before pushing. Rebasing the live 16/N through 20/N commits onto the new 15/N head and running `diff -u <(git diff old_top new_live_top) <(git diff our_old_top our_rebased_top)` caught two carry-forward hunks from the lower review round that would otherwise have been dropped.
 - **Takeaway:** when multiple agents push to a stack, always run `git ls-remote` across all stack branches right before syncing, rebase concurrent upper-branch commits onto the new lower head, and verify zero dropped hunks with a diff-of-diffs before pushing atomically.
+
+### 7.3 Commit messages that name a PR show up on that PR
+- **What happened:** notes-branch commits such as "paste-ready replies for #1824 and #1988" appeared on those upstream PRs as "briankhoi added a commit that referenced this pull request".
+- **Takeaway:** never put `#<number>` in a commit message on any branch of the fork. Refer to stack positions (13/N) instead, and grep new commit messages for `#[0-9]` before pushing.
