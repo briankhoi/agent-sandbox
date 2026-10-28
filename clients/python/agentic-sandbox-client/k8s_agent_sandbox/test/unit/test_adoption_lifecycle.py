@@ -571,6 +571,7 @@ async def test_terminate_stops_tracking_the_handle(sdk_client, tracked_by):
         sandbox = await invoke(client.get_sandbox, 'workflow-a')
     await invoke(sandbox.terminate)
     assert client._active_connection_sandboxes == {}
+    assert sandbox._on_terminated is None
 
 
 @pytest.mark.asyncio
