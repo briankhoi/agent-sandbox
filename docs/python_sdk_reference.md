@@ -865,9 +865,10 @@ Claims are deleted with label-scoped deletecollection requests, re-listing betwe
 until no claim is left that isn't already being deleted. A transient error moves on to the
 next round, and release gives up after ``BATCH_RELEASE_MAX_IDLE_ROUNDS`` rounds in a row
 that delete nothing. On failure the Lease is kept, and calling ``release`` again retries.
-Each round first takes the batch's Lease for this handle, so no delete is sent while
-another handle holds it. While it runs, a ``detach()`` call raises ``BatchError``, and
-another ``release()`` call waits for it to finish.
+Before each round, release writes the batch's Lease with this handle as its holder, so no
+other handle can attach while claims are deleted. If the batch is another handle's, it
+raises ``BatchInUseError`` and deletes nothing. While it runs, a ``detach()`` call raises
+``BatchError``, and another ``release()`` call waits for it to finish.
 
 **Raises**:
 

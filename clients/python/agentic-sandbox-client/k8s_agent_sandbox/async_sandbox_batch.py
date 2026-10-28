@@ -468,9 +468,10 @@ class AsyncSandboxBatch:
         until no claim is left that isn't already being deleted. A transient error moves on to the
         next round, and release gives up after ``BATCH_RELEASE_MAX_IDLE_ROUNDS`` rounds in a row
         that delete nothing. On failure the Lease is kept, and calling ``release`` again retries.
-        Each round first takes the batch's Lease for this handle, so no delete is sent while
-        another handle holds it. While it runs, a ``detach()`` call raises ``BatchError``, and
-        another ``release()`` call waits for it to finish.
+        Before each round, release writes the batch's Lease with this handle as its holder, so no
+        other handle can attach while claims are deleted. If the batch is another handle's, it
+        raises ``BatchInUseError`` and deletes nothing. While it runs, a ``detach()`` call raises
+        ``BatchError``, and another ``release()`` call waits for it to finish.
 
         Raises:
             BatchInUseError: If another handle holds the batch's Lease, or the Lease changed hands
@@ -920,6 +921,11 @@ async def _take_batch_lease(
     resourceVersion written, or returns ``None`` if the Lease is missing. The write is
     conditional, so it doesn't replace a Lease another client wrote after it was read.
     ``last_lease`` is the Lease from that handle's last successful write.
+    ``release()`` calls this before each delete round. By then renewal has stopped, and the
+    handle may have detached or let its Lease expire, so this checks that the batch is still the
+    one the handle owned and makes the handle its holder again. That keeps ``get_batch`` from
+    attaching another handle while claims are deleted. The other Lease writes check different
+    things, so they don't use it.
 
     Raises:
         BatchInUseError: If another handle holds the Lease or writes it first, or the Lease
@@ -927,13 +933,15 @@ async def _take_batch_lease(
     """
     timeout = batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
     retried = False
+    # This runs at most twice, because a second conflict raises.
     while True:
         lease = await helper.read_batch_lease(lease_name, namespace, _request_timeout=timeout)
         now = batch_utils.lease_now()
         if lease is None:
             return None
-        # An attach since this handle's last write bumps leaseTransitions, and a Lease that was deleted
-        # and created again has a new UID. Neither needs a holder the check below refuses, so both come first.
+        # Another handle that attached since this handle's last write raised leaseTransitions, and a
+        # Lease that was deleted and created again has a new UID. Either Lease can have no holder by
+        # now, so the holder check below wouldn't catch it.
         if lease.metadata.uid != last_lease.metadata.uid or (lease.spec.lease_transitions or 0) != (
             last_lease.spec.lease_transitions or 0
         ):
@@ -1016,10 +1024,10 @@ async def _delete_batch_objects(
                 raise
             last_error = e
 
-        # A take that failed may still have written the Lease, and a delete at an older
-        # resourceVersion would then leave it in place, so only a round that took the Lease deletes it.
+        # Only a round whose take succeeded can end the release. After a failed take the Lease may
+        # still exist, and this round has no resourceVersion to delete it at.
         if live == [] and taken:
-            # A round that found no Lease has none to delete.
+            # This round found no Lease, so there is none to delete.
             if resource_version is None:
                 return
             try:
