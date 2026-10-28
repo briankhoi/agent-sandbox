@@ -992,7 +992,10 @@ class AsyncSandboxBatch:
             try:
                 async with asyncio.timeout(request_timeout):
                     obj = await self._client.k8s_helper.get_sandbox_warmpool(
-                        warmpool, self.namespace, _request_timeout=request_timeout
+                        warmpool,
+                        self.namespace,
+                        _request_timeout=request_timeout,
+                        retry_connect=False,
                     )
                 ready = 0 if obj is None else batch_utils.warmpool_ready_replicas(obj)
             except asyncio.CancelledError:
@@ -1168,6 +1171,7 @@ class AsyncSandboxBatch:
                         self.namespace,
                         _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
                         log_level=logging.DEBUG,
+                        batch=True,
                     )
                 break
             except asyncio.CancelledError:
@@ -1814,6 +1818,7 @@ class AsyncSandboxBatch:
                 labels=labels,
                 lifecycle=lifecycle,
                 owner_references=self._owner_references,
+                batch=True,
                 log_level=logging.DEBUG,
                 _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
             )

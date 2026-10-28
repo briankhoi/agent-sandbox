@@ -82,8 +82,8 @@ _TRANSPORT_ERRORS = (
     urllib3.exceptions.ProtocolError,
     urllib3.exceptions.ReadTimeoutError,
     urllib3.exceptions.MaxRetryError,
-    # urllib3 doesn't retry Lease requests, so a refused or timed-out connect raises this error instead
-    # of a MaxRetryError. NewConnectionError subclasses it.
+    # urllib3 doesn't retry Lease or Lease-bounded batch requests, so a refused or timed-out connect
+    # raises this error instead of a MaxRetryError. NewConnectionError subclasses it.
     urllib3.exceptions.ConnectTimeoutError,
     ConnectionError,
     # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
@@ -966,7 +966,10 @@ class SandboxBatch:
                 request_timeout = min(float(batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS), remaining)
                 try:
                     obj = self._client.k8s_helper.get_sandbox_warmpool(
-                        warmpool, self.namespace, _request_timeout=request_timeout
+                        warmpool,
+                        self.namespace,
+                        _request_timeout=request_timeout,
+                        retry_connect=False,
                     )
                     ready = 0 if obj is None else batch_utils.warmpool_ready_replicas(obj)
                 except Exception as e:
@@ -1138,6 +1141,7 @@ class SandboxBatch:
                         self.namespace,
                         _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
                         log_level=logging.DEBUG,
+                        batch=True,
                     )
                 break
             except Exception as e:
@@ -1819,6 +1823,7 @@ class SandboxBatch:
                 labels=labels,
                 lifecycle=lifecycle,
                 owner_references=self._owner_references,
+                batch=True,
                 log_level=logging.DEBUG,
                 _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
             )

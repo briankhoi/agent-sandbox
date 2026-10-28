@@ -2335,7 +2335,8 @@ class TestRelease(BaseClaimBatchTest):
         await _wait_until(lambda: len(self.cluster.created) == 1)
         await batch.release()
         helper = self.cluster.helper
-        self.assertEqual(helper.create_sandbox_claim.call_args.kwargs["_request_timeout"], 30)
+        create_kwargs = helper.create_sandbox_claim.call_args.kwargs
+        self.assertEqual((create_kwargs["_request_timeout"], create_kwargs["batch"]), (30, True))
         self.assertEqual(helper.delete_sandbox_claims_by_label.call_args.kwargs["_request_timeout"], 90)
         self.assertEqual(helper.count_live_sandbox_claims.call_args.kwargs["_request_timeout"], 90)
         self.assertEqual(helper.delete_batch_lease.call_args.kwargs["_request_timeout"], 30)
@@ -2541,7 +2542,10 @@ class TestReleaseMembers(BaseClaimBatchTest):
                 sandbox.close_connection.assert_called_once()
                 self.assertEqual(helper.delete_sandbox_claim.call_count, attempts)
                 kwargs = helper.delete_sandbox_claim.call_args.kwargs
-                self.assertEqual((kwargs["_request_timeout"], kwargs["log_level"]), (30, logging.DEBUG))
+                self.assertEqual(
+                    (kwargs["_request_timeout"], kwargs["log_level"], kwargs["batch"]),
+                    (30, logging.DEBUG, True),
+                )
         with self.assertRaises(ValueError):
             await handle.release_member(MagicMock(claim_name="b1-9"))
 
@@ -3680,6 +3684,8 @@ class TestAcquire(BaseClaimBatchTest):
             # One read covers all three, which would otherwise wait for pacing slots.
             self.assertLess(max(t - start for _, t in self.cluster.created), 0.2)
             self.assertEqual(helper.get_sandbox_warmpool.call_count, 2)
+            self.assertTrue(helper.get_sandbox_warmpool.call_args_list[0].kwargs.get("retry_connect", True))
+            self.assertIs(helper.get_sandbox_warmpool.call_args_list[1].kwargs["retry_connect"], False)
 
             # When the next pacing slot is already free, acquire() starts at once without paying a
             # pool GET, while advancing _next_create_at for concurrent callers behind it.
