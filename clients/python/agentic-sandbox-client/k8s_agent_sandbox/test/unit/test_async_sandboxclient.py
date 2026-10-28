@@ -314,7 +314,7 @@ class TestAsyncSandboxClient(unittest.IsolatedAsyncioTestCase):
         self.assertIs(hook.args[2], api_client)
 
     def _exit_hook_for(self, api_client):
-        """A client with cleanup on and the exit hook it registered."""
+        """Returns a client with cleanup on and the exit hook it registered."""
         with patch("k8s_agent_sandbox.async_sandbox_client.atexit") as mock_atexit:
             client = AsyncSandboxClient(connection_config=self.config, api_client=api_client)
         return client, mock_atexit.register.call_args.args[0]

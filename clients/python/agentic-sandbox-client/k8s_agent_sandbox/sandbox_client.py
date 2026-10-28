@@ -99,14 +99,14 @@ class SandboxClient(Generic[T]):
         self.k8s_helper = K8sHelper(api_client=api_client)
         
         # Tracks all the active client side connections to the created sandbox claims
-        # The exit hook holds these two containers, so they are changed in place and never rebound.
+        # The exit hook holds these two containers, so the client changes them in place and never rebinds them.
         self._active_connection_sandboxes: Dict[Tuple[str, str], T] = {}
         self._explicit_claims: set[tuple[str, str]] = set()
         
         # Optional automatic cleanup of sandboxes on program termination
         if cleanup:
-            # Static and bound to the cleanup data with a partial, so the hook never keeps the
-            # client alive; registering a method of the client here would bring that back.
+            # Register a static method bound to the cleanup data with functools.partial, so the hook
+            # never keeps the client alive. A bound method of the client would keep it alive until exit.
             atexit.register(functools.partial(
                 self._delete_automatic_sandboxes, self._active_connection_sandboxes, self._explicit_claims
             ))
@@ -350,11 +350,11 @@ class SandboxClient(Generic[T]):
       
     @staticmethod
     def _untrack(registry: Dict[Tuple[str, str], T], sandbox: Sandbox) -> None:
-        # Called by terminate() after a successful delete, while claim_name is still
+        # terminate() calls this after a successful delete, while claim_name is still
         # set, so the None check only narrows its type. A newer handle may have
-        # replaced this one for the same claim, so only this exact handle is removed.
-        # Static and bound to the registry with a partial, so a tracked handle never
-        # keeps the client alive; an instance method here would bring that back.
+        # replaced this one for the same claim, so remove only this exact handle.
+        # This is static and bound to the registry with functools.partial, so a tracked
+        # handle never keeps the client alive. An instance method would keep it alive.
         if sandbox.claim_name is None:
             return
         key = (sandbox.namespace, sandbox.claim_name)
@@ -420,7 +420,7 @@ class SandboxClient(Generic[T]):
 
     @staticmethod
     def _delete_tracked_sandbox(registry: Dict[Tuple[str, str], T], key: Tuple[str, str], sandbox: Sandbox) -> None:
-        # Shared by delete_sandbox and exit cleanup, so the rule lives in one place.
+        # delete_sandbox and exit cleanup both call this, so they delete a tracked sandbox the same way.
         namespace, claim_name = key
         try:
             sandbox.terminate()

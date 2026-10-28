@@ -194,15 +194,15 @@ class AsyncSandboxClient(Generic[T]):
 
         self.k8s_helper = AsyncK8sHelper(api_client=api_client)
 
-        # The exit hook holds these two containers, so they are changed in place and never rebound.
+        # The exit hook holds these two containers, so the client changes them in place and never rebinds them.
         self._active_connection_sandboxes: dict[tuple[str, str], T] = {}
         self._explicit_claims: set[tuple[str, str]] = set()
         self._lock = asyncio.Lock()
 
         if cleanup:
-            # Static and bound to the cleanup data with a partial, so the hook never keeps the
-            # client alive; registering a method of the client here would bring that back.
-            # The api_client is passed itself, not a copy, so its settings are read at cleanup time.
+            # Register a static method bound to the cleanup data with functools.partial, so the hook
+            # never keeps the client alive. A bound method of the client would keep it alive until exit.
+            # Pass the api_client itself, not a copy, so exit cleanup reads its settings as they are at exit.
             atexit.register(functools.partial(
                 self._atexit_cleanup, self._active_connection_sandboxes, self._explicit_claims, api_client
             ))
@@ -490,11 +490,11 @@ class AsyncSandboxClient(Generic[T]):
 
     @staticmethod
     def _untrack(registry: dict[tuple[str, str], T], sandbox: AsyncSandbox) -> None:
-        # Called by terminate() after a successful delete, while claim_name is still
+        # terminate() calls this after a successful delete, while claim_name is still
         # set, so the None check only narrows its type. A newer handle may have
-        # replaced this one for the same claim, so only this exact handle is removed.
-        # Static and bound to the registry with a partial, so a tracked handle never
-        # keeps the client alive; an instance method here would bring that back.
+        # replaced this one for the same claim, so remove only this exact handle.
+        # This is static and bound to the registry with functools.partial, so a tracked
+        # handle never keeps the client alive. An instance method would keep it alive.
         if sandbox.claim_name is None:
             return
         key = (sandbox.namespace, sandbox.claim_name)
