@@ -196,7 +196,10 @@ class Sandbox:
         self._pod_name = None
         # Close client side connection
         self.connector.close()
-        # A closed handle never reconnects, so its connector can let go of it.
+        # SandboxConnector.close() also resets live connections on errors and
+        # during snapshot suspend and resume, so it keeps the sandbox callbacks.
+        # close_connection() drops them here once this Sandbox closes for good.
+        # AsyncSandboxConnector.close() is final and drops them itself.
         self.connector._release_sandbox_callbacks()
         
         # Don't allow anymore further executions.

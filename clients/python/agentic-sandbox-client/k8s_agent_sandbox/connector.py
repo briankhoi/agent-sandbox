@@ -828,7 +828,7 @@ class SandboxConnector:
         # The callbacks are bound methods of the handle. Keeping them once the handle
         # is closed for good makes the handle and its connector a reference cycle, which
         # holds the connector's sessions until the cyclic garbage collector happens to run.
-        # Under the transport lock, so a connect() on another thread never sees a
+        # Hold the transport lock, so a connect() on another thread never sees a
         # callback cleared between checking it and calling it.
         with self._transport_lock:
             self._get_pod_ip = None

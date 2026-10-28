@@ -469,7 +469,7 @@ def test_callbacks_are_released_only_between_transport_operations():
     config = SandboxdInClusterConnectionConfig(mode="in-cluster-pod-ip")
     sandbox = Sandbox("claim", "sandbox-id", "ns", connection_config=config, k8s_helper=MagicMock())
     connector = sandbox.connector
-    # Stands in for a connect() on another thread that is between checking a callback and calling it.
+    # Holding the lock stands in for a connect() on another thread that is between checking a callback and calling it.
     with connector._transport_lock:
         release = threading.Thread(target=connector._release_sandbox_callbacks)
         release.start()
