@@ -36,30 +36,32 @@ Write the report to `batch-primitives/handoff/work/results/<prompt file name>` o
 ## Your task: B5
 Prompt file name: `B5-types-pr.md` (report to `batch-primitives/handoff/work/results/B5-types-pr.md`).
 
-Build the 21/N Types PR (`refactor(python-sdk): replace Any with exact helper and Lease types in batch modules (21/N)`) as a new branch `feat/batch-9-types` off `origin/feat/batch-8-list-memory` (`219985c0`).
+Build the 21/N Types PR (`refactor(python-sdk): replace Any with exact helper and Lease types in batch modules (21/N)`) as a new branch `feat/batch-9-types` off the current live `origin/feat/batch-8-list-memory` (pinned at `1b061c53` after the 12/N–20/N stack sync; always fetch `origin` first and use the live `origin/feat/batch-8-list-memory` head).
 
 ### Brian's decisions (verbatim, 2026-10-23 to 10-28)
 - Separate types PR after PR 8: "and then for b, the stuff that needs types after PR 7 mainly reaper we just fold into their respective PRs right? if so, i approve B" and "for the separate types PR, i support your recommendation".
 - Lease `metadata`/`spec` narrowing (`lease_parts(lease)` raising plain `BatchError`) and `spec.holder_identity = cast(Any, None)` in `async_sandbox_batch.py` (`detach()`): "approve both".
 
-### Pinned state (verified at `origin/feat/batch-8-list-memory` `219985c0`)
+### Pinned state (verified at `origin/feat/batch-8-list-memory` `1b061c53`)
 SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
-1. Already folded into 17/N (transport) and 18/N (reaper) in B2/B3 (present in `219985c0`):
+1. Already folded into 17/N (transport) and 18/N (reaper) in B2/B3 (present in `1b061c53`):
    - `async_k8s_helper.py:149`: `cast(client.ApiClient, self._api_client)` in `api_pool_size()`.
    - `batch_utils.py:177-199`: `lease_owner_reference(lease: "V1Lease | AsyncV1Lease") -> dict[str, str]` raising `BatchError`.
    - `k8s_helper.py:167` and `async_k8s_helper.py:162`: `owner_references: list[dict[str, str]] | None = None`.
    - `batch_reaper.py`: 0 `Any` remain (`_continue=` passed directly).
-2. What remains for 21/N (18 `Any` annotations across 4 files, plus `lease_parts` in `batch_utils.py` and its call sites; all other `Any` in `batch_state.py`, `batch_utils.py`, `k8s_helper.py`, `async_k8s_helper.py`, `models.py`, and `SandboxClient[Any]` are true JSON/pydantic/generic boundaries and stay `Any`):
-   - **Typed `helper` parameters in `sandbox_batch.py` and `async_sandbox_batch.py` (6 annotations):**
+2. What remains for 21/N (24 `Any` annotations across 4 files, including `_take_batch_lease` and `last_lease` added in the 12/N–20/N stack sync, plus `lease_parts` in `batch_utils.py` and its call sites; all other `Any` in `batch_state.py`, `batch_utils.py`, `k8s_helper.py`, `async_k8s_helper.py`, `models.py`, and `SandboxClient[Any]` are true JSON/pydantic/generic boundaries and stay `Any`):
+   - **Typed `helper` parameters in `sandbox_batch.py` and `async_sandbox_batch.py` (8 annotations):**
      - `sandbox_batch.py`: add `from .k8s_helper import K8sHelper` under `if TYPE_CHECKING:` (`:57-59`). Change `helper: Any` to `helper: "K8sHelper"` in:
-       - `_precheck_pools` (`:1497`)
-       - `_delete_batch_objects` (`:1530`; called from `sandbox_client.py` and from `async_sandbox_client.py:812` `_atexit_cleanup` with a sync `K8sHelper`)
-       - `_delete_claims_in_rounds` (`:1553`)
+       - `_precheck_pools` (`:1602`)
+       - `_take_batch_lease` (`:1636`)
+       - `_delete_batch_objects` (`:1693`; called from `sandbox_client.py` and from `async_sandbox_client.py` `_atexit_cleanup` with a sync `K8sHelper`)
+       - `_delete_claims_in_rounds` (`:1745`)
      - `async_sandbox_batch.py`: add `from .async_k8s_helper import AsyncK8sHelper` under `if TYPE_CHECKING:` (`:62-64`). Change `helper: Any` to `helper: "AsyncK8sHelper"` in:
-       - `_precheck_pools` (`:1522`)
-       - `_delete_batch_objects` (`:1555`)
-       - `_delete_claims_in_rounds` (`:1576`)
-   - **Typed `V1Lease` methods and `lease_parts(lease)` (12 annotations + narrowing):**
+       - `_precheck_pools` (`:1613`)
+       - `_take_batch_lease` (`:1647`)
+       - `_delete_batch_objects` (`:1704`)
+       - `_delete_claims_in_rounds` (`:1755`)
+   - **Typed `V1Lease` methods, `last_lease` parameters, and `lease_parts(lease)` (16 annotations + narrowing):**
      - `k8s_helper.py`:
        - `read_batch_lease` (`:686-688`): return `-> client.V1Lease | None:` (was `-> Any:`)
        - `replace_batch_lease` (`:704-706`): `body: client.V1Lease`, return `-> client.V1Lease:` (was `body: Any`, `-> Any:`; wrap the signature across lines to stay `<= 120` chars for `pycodestyle`)
@@ -69,9 +71,13 @@ SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
        - `replace_batch_lease` (`:736-738`): `body: client.V1Lease`, return `-> client.V1Lease:` (was `body: Any`, `-> Any:`)
        - `create_batch_lease` (`:752`): `body: client.V1Lease`, return `-> client.V1Lease:` (was `body: Any`, `-> Any:`)
      - `sandbox_batch.py`:
-       - `_write_renewal` (`:1316`): `def _write_renewal(self, lease: V1Lease) -> tuple[float, V1Lease]:` (was `lease: Any`)
+       - `_write_renewal` (`:1421`): `def _write_renewal(self, lease: V1Lease) -> tuple[float, V1Lease]:` (was `lease: Any`)
+       - `_take_batch_lease` (`:1635-1643`): `last_lease: V1Lease` (`:1642`, was `last_lease: Any`)
+       - `_delete_batch_objects` (`:1692-1700`): `last_lease: V1Lease` (`:1699`, was `last_lease: Any`)
      - `async_sandbox_batch.py`:
-       - `_write_renewal` (`:1326`): `async def _write_renewal(self, lease: V1Lease) -> tuple[float, V1Lease]:` (was `lease: Any`)
+       - `_write_renewal` (`:1417`): `async def _write_renewal(self, lease: V1Lease) -> tuple[float, V1Lease]:` (was `lease: Any`)
+       - `_take_batch_lease` (`:1646-1654`): `last_lease: V1Lease` (`:1653`, was `last_lease: Any`)
+       - `_delete_batch_objects` (`:1703-1711`): `last_lease: V1Lease` (`:1710`, was `last_lease: Any`)
      - `batch_utils.py`:
        - Import `overload` from `typing` (`:32`), and under `if TYPE_CHECKING:` (`:48-51`) import `V1Lease, V1LeaseSpec, V1ObjectMeta` from `kubernetes.client` and `V1Lease as AsyncV1Lease, V1LeaseSpec as AsyncV1LeaseSpec, V1ObjectMeta as AsyncV1ObjectMeta` from `kubernetes_asyncio.client`.
        - Right after `lease_owner_reference` (`:177-199`), add `lease_parts`:
@@ -93,11 +99,11 @@ SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
              return lease.metadata, lease.spec
          ```
      - Call sites of `lease_parts` in `sandbox_batch.py` and `async_sandbox_batch.py` (keep sync and async identical except `await` and the one `cast(Any, None)` in async `detach()`):
-       1. `_attach` (`sandbox_batch.py:346-385`, `async_sandbox_batch.py:346-385`):
+       1. `_attach` (`sandbox_batch.py:344-394`, `async_sandbox_batch.py:343-393`):
           - Unpack `meta, spec = batch_utils.lease_parts(lease) if lease is not None else (None, None)`.
           - Use `meta` and `spec` for `labels`/`annotations`, `lease_duration_seconds`, `renew_time`, `holder_identity`, `acquire_time`, and `lease_transitions`.
-          - In the `BatchLeaseExpiredError` check (`:360-364`), add `or spec is None` right after `lease is None` (`if lease is None or spec is None or renew_time is None or spec_duration is None or ...:`) so `mypy` narrows both `lease` (for `replace_batch_lease` at `:386-388`) and `spec` (for `spec.holder_identity` at `:369,380`). When `lease is None`, `lease_parts` is skipped and `_attach` still raises `BatchLeaseExpiredError`.
-       2. `detach` (`sandbox_batch.py:1086-1123`, `async_sandbox_batch.py:1106-1143`):
+          - In the `BatchLeaseExpiredError` check (`sandbox_batch.py:366-373`, `async_sandbox_batch.py:365-372`), add `or spec is None` right after `lease is None` (`if lease is None or spec is None or renew_time is None or spec_duration is None or ...:`) so `mypy` narrows both `lease` (for `replace_batch_lease`) and `spec` (for `spec.holder_identity`). When `lease is None`, `lease_parts` is skipped and `_attach` still raises `BatchLeaseExpiredError`.
+       2. `detach` (`sandbox_batch.py:1170-1217`, `async_sandbox_batch.py:1190-1231`):
           - Under `if lease is not None:`, unpack `meta, spec = batch_utils.lease_parts(lease)` before checking `spec.holder_identity != self._holder_identity`.
           - Inside the `except ApiException` `409` handler after re-reading `lease`, unpack `meta, spec = batch_utils.lease_parts(lease)` again after `if lease is None: break`:
             ```python
@@ -114,10 +120,15 @@ SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
             spec.holder_identity = cast(Any, None)
             ```
             In `sandbox_batch.py` (`detach()`), write `spec.holder_identity = None` with no cast and no stub comment (the comment in `async_sandbox_batch.py` explains the `kubernetes_asyncio` `cast(Any, None)` that only exists there, matching `async_k8s_helper.py:148` and `:812`).
-       3. `_renew_once` (`sandbox_batch.py:1290-1297`, `async_sandbox_batch.py:1298-1305`):
+       3. `_renew_once` (`sandbox_batch.py:1390-1402`, `async_sandbox_batch.py:1384-1396`):
           `spec = batch_utils.lease_parts(lease)[1]` before checking `spec.holder_identity != self._holder_identity`.
-       4. `_write_renewal` (`sandbox_batch.py:1316-1328`, `async_sandbox_batch.py:1326-1338`):
+       4. `_write_renewal` (`sandbox_batch.py:1421-1433`, `async_sandbox_batch.py:1417-1429`):
           `spec = batch_utils.lease_parts(lease)[1]` before setting `spec.holder_identity`, `spec.renew_time`, `spec.lease_duration_seconds`.
+       5. `_take_batch_lease` (`sandbox_batch.py:1662-1689`, `async_sandbox_batch.py:1673-1700`):
+          - Unpack `meta, spec = batch_utils.lease_parts(lease)` and `last_meta, last_spec = batch_utils.lease_parts(last_lease)`.
+          - Compare `meta.uid != last_meta.uid or (spec.lease_transitions or 0) != (last_spec.lease_transitions or 0)` (`:1669-1670` / async `:1680-1681`).
+          - Use `spec.holder_identity`, `spec.renew_time`, and `spec.lease_duration_seconds` (`:1673-1677` / async `:1684-1688`).
+          - After `written = helper.replace_batch_lease(...)` (`:1679` / async `:1690`), unpack `written_meta, _ = batch_utils.lease_parts(written)` and `return str(written_meta.resource_version)` (`:1689` / async `:1700`).
      - Unit test in `test_batch_utils.py`:
        Update `from kubernetes.client import V1Lease, V1ObjectMeta` (`test_batch_utils.py:19`) to also import `V1LeaseSpec`, and add `TestLeaseParts` right after `TestLeaseOwnerReference` (`test_batch_utils.py:109-116`) testing:
        1. `lease_parts` returns `(lease.metadata, lease.spec)` when both are set.
@@ -131,22 +142,34 @@ SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
    G="git -c credential.helper= -c credential.helper=!gh\ auth\ git-credential"
    $G -C $R fetch https://github.com/briankhoi/agent-sandbox.git '+refs/heads/*:refs/remotes/origin/*'
    git -C /usr/local/google/home/brianknguyen/agent-sandbox-notes pull --rebase
-   git -C $R rev-parse origin/feat/batch-8-list-memory
+   OLD_BASE=$(git -C $R rev-parse origin/feat/batch-8-list-memory)
+   echo "Base SHA: $OLD_BASE"
    ```
-   Confirm `origin/feat/batch-8-list-memory` is `219985c0`. Create or reuse `$W` (`git -C $R worktree add -B feat/batch-9-types $W 219985c0`).
+   Create or reuse `$W` off `$OLD_BASE` (`git -C $R worktree add -B feat/batch-9-types $W $OLD_BASE`). If `$OLD_BASE` moved past `1b061c53` because another thread synced the stack, inspect `git -C $W diff 1b061c53..$OLD_BASE` first so you include any new methods on `$OLD_BASE` and never overwrite upstream changes.
 2. Implement the changes on `feat/batch-9-types` (1 commit or 2 clean commits: e.g. commit 1 typed `helper` parameters in `sandbox_batch.py` / `async_sandbox_batch.py`, commit 2 typed `V1Lease` methods and `lease_parts` with `TestLeaseParts` — or 1 combined commit; 2 commits is very clean to review):
    - Author `Brian Nguyen <brianknguyen@google.com>`, no trailers.
-3. Verify every commit in `219985c0..HEAD`:
+3. **Multi-agent rebase & diff-of-diffs check before pushing (CRITICAL):**
+   Other threads may sync or restack `origin/feat/batch-8-list-memory` while you work. Right before final verification and push:
+   ```sh
+   $G -C $W fetch https://github.com/briankhoi/agent-sandbox.git '+refs/heads/*:refs/remotes/origin/*'
+   NEW_BASE=$(git -C $W rev-parse origin/feat/batch-8-list-memory)
+   ```
+   If `$NEW_BASE != $OLD_BASE`:
+   - Save your pre-rebase head (`PRE_REBASE=$(git -C $W rev-parse HEAD)`).
+   - Rebase **only your own commits** onto `$NEW_BASE`: `git -C $W rebase --onto $NEW_BASE $OLD_BASE HEAD`.
+   - Verify ancestry (`git -C $W merge-base --is-ancestor $NEW_BASE HEAD`) and inspect `diff -u <(git -C $W diff $OLD_BASE $PRE_REBASE) <(git -C $W diff $NEW_BASE HEAD)` to prove your commit diff only contains your intended type changes and did not accidentally revert or drop any lines from `$OLD_BASE..$NEW_BASE`.
+   - Update `OLD_BASE=$NEW_BASE`. Never push to `feat/batch-8-list-memory` or any lower branch (`1/N`–`20/N`).
+4. Verify every commit in `$OLD_BASE..HEAD`:
    - `mypy` (`python -m mypy k8s_agent_sandbox`, cwd `$W/clients/python/agentic-sandbox-client`) in both `/usr/local/google/home/brianknguyen/.gemini/jetski/brain/91dd6bc1-8e34-4a1b-b684-50f3ca2ec8f8/scratch/venv` (36.1.0) and `/usr/local/google/home/brianknguyen/.gemini/jetski/brain/00bb279e-f865-4b5f-8655-867e51b8b486/scratch/venv33` (33.3.0): 0 errors.
    - Targeted pytest (`test_batch_utils.py`, `test_k8s_helper.py`, `test_async_k8s_helper.py`, `test_sandbox_batch.py`, `test_async_sandbox_batch.py`) in both venvs.
    - Mutation-check `TestLeaseParts` (remove `lease.metadata is None` check -> test fails; restore; remove `lease.spec is None` check -> test fails; restore).
    - `pycodestyle --max-line-length=120` on all changed lines: 0 hits.
    - Docs check: confirm `docs/python_sdk_reference.md` has no diff when regenerated.
-4. Self-check: spawn one fresh `inherit` subagent given `219985c0`, `HEAD`, this task section, and the rules. Resolve any findings. Apply `skills/test-audit/SKILL.md` (read-only) to `TestLeaseParts`.
-5. Push `feat/batch-9-types` to `origin`:
+5. Self-check: spawn one fresh `inherit` subagent given `$OLD_BASE`, `HEAD`, this task section, and the rules. Resolve any findings. Apply `skills/test-audit/SKILL.md` (read-only) to `TestLeaseParts`.
+6. Push `feat/batch-9-types` to `origin`:
    ```sh
    $G -C $W push https://github.com/briankhoi/agent-sandbox.git HEAD:refs/heads/feat/batch-9-types
    ```
    Remove `$W`.
-6. Write the report to `batch-primitives/handoff/work/results/B5-types-pr.md` (including draft PR 21/N title and description covering only this PR), pull --rebase, commit, and push to `batch-primitives-notes`.
+7. Write the report to `batch-primitives/handoff/work/results/B5-types-pr.md` (including draft PR 21/N title and description covering only this PR), pull --rebase, commit, and push to `batch-primitives-notes`.
 ````

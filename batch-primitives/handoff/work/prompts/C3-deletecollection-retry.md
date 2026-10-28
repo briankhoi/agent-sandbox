@@ -37,13 +37,13 @@ Write the report to `batch-primitives/handoff/work/results/<prompt file name>` o
 Prompt file name: `C3-deletecollection-retry.md` (report to `batch-primitives/handoff/work/results/C3-deletecollection-retry.md`).
 
 Build the 22/N PR (`fix(python-sdk): stop urllib3 from retrying timed-out claim deletecollection and count requests (22/N)`) as a new branch `feat/batch-10-deletecollection-retry`.
-Base branch: if `origin/feat/batch-9-types` exists on `origin` when you start, branch off `origin/feat/batch-9-types`; otherwise branch off `origin/feat/batch-8-list-memory` (`219985c0` — 21/N and 22/N touch completely non-overlapping lines, so coordinator 2 can rebase it onto 21/N in 1 second). Record the base branch and SHA you used.
+Base branch: if `origin/feat/batch-9-types` exists on `origin` when you start, branch off `origin/feat/batch-9-types`; otherwise branch off the current live `origin/feat/batch-8-list-memory` (pinned at `1b061c53` after the 12/N–20/N stack sync — 21/N and 22/N touch completely non-overlapping lines, so coordinator 2 can rebase it onto 21/N in 1 second). Record the base branch and SHA you used.
 
-### Background & Verified Facts (at `219985c0`)
+### Background & Verified Facts (at `1b061c53`)
 SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
 1. **Problem (measured in C1 `results/C1-pr8-impl.md` F6):**
    - `kubernetes` (`k37/kubernetes/client/rest.py:155-156`, `k35/kubernetes/client/rest.py:77-78`) passes `configuration.retries` to `urllib3.PoolManager` only when `configuration.retries is not None`. By default `configuration.retries` is `None`, so `urllib3` uses its default `Retry(3)`, which includes `DELETE` and `GET` in `DEFAULT_ALLOWED_METHODS` (`urllib3/util/retry.py:199-200`, `:569`).
-   - When `delete_sandbox_claims_by_label` or `count_live_sandbox_claims` in `_delete_claims_in_rounds` (`sandbox_batch.py:1575-1597`) hits a client read timeout (`ReadTimeoutError`), `urllib3` silently retries the request 3 times inside one SDK call (4 HTTP attempts total, stretching a 5 s timeout to 20 s per round in C1's forced-timeout run), bypassing `_delete_claims_in_rounds`'s own progress check and round accounting.
+   - When `delete_sandbox_claims_by_label` or `count_live_sandbox_claims` in `_delete_claims_in_rounds` (`sandbox_batch.py:1767-1789`) hits a client read timeout (`ReadTimeoutError`), `urllib3` silently retries the request 3 times inside one SDK call (4 HTTP attempts total, stretching a 5 s timeout to 20 s per round in C1's forced-timeout run), bypassing `_delete_claims_in_rounds`'s own progress check and round accounting.
    - Async (`aiohttp`) does not retry requests, so `AsyncK8sHelper` is unaffected.
 2. **Why `urllib3.Retry(3, read=False)` (and NOT `retries=False`):**
    - In `urllib3/util/retry.py:409-413, 507-510`, when `read=False` (must be `False`, not `0`, because `urllib3` checks `read is False`), `_is_read_error(error)` (`ReadTimeoutError`, `ProtocolError`) immediately re-raises the `ReadTimeoutError` / `ProtocolError` after 1 attempt without retrying.
@@ -85,13 +85,13 @@ SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
         ```
      3. In `K8sHelper.__init__` (`k8s_helper.py:148-150`), pass `_api_client_with_retries(api_client, retries=False)` to `CoordinationV1Api` and set:
         `self._claim_collection_api = client.CustomObjectsApi(_api_client_with_retries(api_client, _CLAIM_COLLECTION_RETRIES))`
-     4. Use `self._claim_collection_api` in `count_live_sandbox_claims` (`k8s_helper.py:648`) and `delete_sandbox_claims_by_label` (`k8s_helper.py:765` at `219985c0`, or `:769` on `feat/batch-9-types`).
+     4. Use `self._claim_collection_api` in `count_live_sandbox_claims` (`k8s_helper.py:648`) and `delete_sandbox_claims_by_label` (`k8s_helper.py:773` at `1b061c53`).
 4. **Unit tests in `test_k8s_helper.py`:**
    - In `TestK8sHelperApiClientInjection` (`test_k8s_helper.py:1013-1027`):
      - Update `@patch("k8s_agent_sandbox.k8s_helper._api_client_without_retries")` (`:1013`) to `@patch("k8s_agent_sandbox.k8s_helper._api_client_with_retries")`.
      - In `test_injected_api_client_used_and_no_config_loaded` (`:1024`), update `mock_custom_cls.assert_called_once_with(sentinel)` to `mock_custom_cls.assert_any_call(sentinel)` (since `CustomObjectsApi` is now constructed twice in `K8sHelper.__init__`).
    - Note that in `TestK8sHelperBatchMethods` (`test_k8s_helper.py:1154+`), `@patch("k8s_agent_sandbox.k8s_helper.client.CustomObjectsApi")` sets `mock_api_cls.return_value = mock_api`, so both `self.custom_objects_api` and `self._claim_collection_api` receive `mock_api` and all existing batch method tests pass unchanged.
-   - In `TestLeaseApiClient` (`test_k8s_helper.py:1109-1131`), add a test verifying:
+   - In `TestLeaseApiClient` (`test_k8s_helper.py:1109-1129`), add a test verifying:
      1. `K8sHelper(api_client=injected)._claim_collection_api.api_client` is a distinct `ApiClient` that preserves `host`, `cookie`, `default_headers`, and in-place rotated `api_key` from `injected`, leaves `injected.configuration.retries` as `None`, and sets its own `configuration.retries` (and `rest_client.pool_manager.connection_pool_kw["retries"]`) to a `urllib3.Retry` with `total == 3` and `read is False`.
      2. `delete_sandbox_claims_by_label` and `count_live_sandbox_claims` call `_claim_collection_api` (not `custom_objects_api`).
      3. Mutation-check: if `read=False` is removed (`urllib3.Retry(3)`) or if `delete_sandbox_claims_by_label` / `count_live_sandbox_claims` uses `self.custom_objects_api`, the test fails.
@@ -104,20 +104,43 @@ SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
    G="git -c credential.helper= -c credential.helper=!gh\ auth\ git-credential"
    $G -C $R fetch https://github.com/briankhoi/agent-sandbox.git '+refs/heads/*:refs/remotes/origin/*'
    git -C /usr/local/google/home/brianknguyen/agent-sandbox-notes pull --rebase
+   if git -C $R show-ref --verify --quiet refs/remotes/origin/feat/batch-9-types; then
+     BASE_REF=origin/feat/batch-9-types
+   else
+     BASE_REF=origin/feat/batch-8-list-memory
+   fi
+   OLD_BASE=$(git -C $R rev-parse $BASE_REF)
+   echo "Base: $BASE_REF ($OLD_BASE)"
    ```
-   If `origin/feat/batch-9-types` exists, set `BASE=origin/feat/batch-9-types`; otherwise set `BASE=origin/feat/batch-8-list-memory` (`219985c0`). Create or reuse `$W` (`git -C $R worktree add -B feat/batch-10-deletecollection-retry $W $BASE`).
+   Create or reuse `$W` (`git -C $R worktree add -B feat/batch-10-deletecollection-retry $W $OLD_BASE`).
 2. Implement the change in 1 commit (`fix(python-sdk): stop urllib3 from retrying timed-out claim deletecollection and count requests`), authored by `Brian Nguyen <brianknguyen@google.com>`, no trailers.
-3. Verify:
+3. **Multi-agent rebase & diff-of-diffs check before pushing (CRITICAL):**
+   Other threads may push `origin/feat/batch-9-types` or restack `origin/feat/batch-8-list-memory` while you work. Right before final verification and push:
+   ```sh
+   $G -C $W fetch https://github.com/briankhoi/agent-sandbox.git '+refs/heads/*:refs/remotes/origin/*'
+   if git -C $W show-ref --verify --quiet refs/remotes/origin/feat/batch-9-types; then
+     BASE_REF=origin/feat/batch-9-types
+   else
+     BASE_REF=origin/feat/batch-8-list-memory
+   fi
+   NEW_BASE=$(git -C $W rev-parse $BASE_REF)
+   ```
+   If `$NEW_BASE != $OLD_BASE`:
+   - Save your pre-rebase head (`PRE_REBASE=$(git -C $W rev-parse HEAD)`).
+   - Rebase **only your own commit** onto `$NEW_BASE`: `git -C $W rebase --onto $NEW_BASE $OLD_BASE HEAD`.
+   - Verify ancestry (`git -C $W merge-base --is-ancestor $NEW_BASE HEAD`) and inspect `diff -u <(git -C $W diff $OLD_BASE $PRE_REBASE) <(git -C $W diff $NEW_BASE HEAD)` to prove your commit diff only contains your intended `k8s_helper.py` / `test_k8s_helper.py` changes and did not accidentally revert or drop any lines from `$OLD_BASE..$NEW_BASE`.
+   - Update `OLD_BASE=$NEW_BASE`. Never push to `feat/batch-9-types`, `feat/batch-8-list-memory`, or any lower branch (`1/N`–`21/N`).
+4. Verify:
    - `mypy` (`python -m mypy k8s_agent_sandbox`, cwd `$W/clients/python/agentic-sandbox-client`) in both `/usr/local/google/home/brianknguyen/.gemini/jetski/brain/91dd6bc1-8e34-4a1b-b684-50f3ca2ec8f8/scratch/venv` (36.1.0) and `/usr/local/google/home/brianknguyen/.gemini/jetski/brain/00bb279e-f865-4b5f-8655-867e51b8b486/scratch/venv33` (33.3.0): 0 errors.
    - Targeted pytest (`test_k8s_helper.py`, `test_sandbox_batch.py`) in both venvs.
    - Mutation-check each new assertion.
    - `pycodestyle --max-line-length=120` on changed lines: 0 hits.
    - Docs check: confirm `docs/python_sdk_reference.md` has no diff when regenerated.
-4. Self-check: spawn one fresh `inherit` subagent given `$BASE`, `HEAD`, this task section, and the rules. Resolve any findings. Apply `skills/test-audit/SKILL.md` (read-only) to the new test.
-5. Push `feat/batch-10-deletecollection-retry` to `origin`:
+5. Self-check: spawn one fresh `inherit` subagent given `$OLD_BASE`, `HEAD`, this task section, and the rules. Resolve any findings. Apply `skills/test-audit/SKILL.md` (read-only) to the new test.
+6. Push `feat/batch-10-deletecollection-retry` to `origin`:
    ```sh
    $G -C $W push https://github.com/briankhoi/agent-sandbox.git HEAD:refs/heads/feat/batch-10-deletecollection-retry
    ```
    Remove `$W`.
-6. Write the report to `batch-primitives/handoff/work/results/C3-deletecollection-retry.md` (including draft PR 22/N title and description covering only this PR), pull --rebase, commit, and push to `batch-primitives-notes`.
+7. Write the report to `batch-primitives/handoff/work/results/C3-deletecollection-retry.md` (including draft PR 22/N title and description covering only this PR), pull --rebase, commit, and push to `batch-primitives-notes`.
 ````
