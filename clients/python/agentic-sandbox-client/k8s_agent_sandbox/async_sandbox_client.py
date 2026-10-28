@@ -806,6 +806,7 @@ class AsyncSandboxClient(Generic[T]):
                             batch._lease_name,
                             batch._holder_identity,
                             batch._lease_duration,
+                            batch._lease,
                         )
                     except Exception as e:
                         if sys.stderr is not None:
