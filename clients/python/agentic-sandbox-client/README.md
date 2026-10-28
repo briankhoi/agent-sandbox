@@ -713,7 +713,9 @@ A batch's claims are consumed in one of two modes, fixed by whichever method is 
   `min_ready` Ready members, in the order they became Ready, or an `error`. A group fails with `QuorumUnreachableError` once
   too few of its members can still become Ready, and with `BatchTimeoutError` if it hasn't reached `min_ready`
   within `quorum_timeout` of the batch's last claim create. A failed group is finished, so no more of its
-  claims are created and none of its members are handed out.
+  claims are created and none of its members are handed out. The handle checks the deadline only while a
+  consumer waits or claims are still being created, so a group that reaches `min_ready` after the deadline,
+  before any consumer checks it, still succeeds.
 - `events()` yields `BatchEvent`s. It yields `MEMBER_READY` once per claim that becomes Ready, `MEMBER_FAILED`
   and `MEMBER_LOST` for claims that fail or are deleted.
   Called first (stream mode), it streams every Ready member. Called after `group_outcomes()`, it hands out a

@@ -481,11 +481,12 @@ class SandboxBatch:
         ``group_outcomes()`` can't be called after ``events()``, since the first of the two to be
         called fixes how members are handed out.
 
-        The iterator ends once every initial claim is Ready or can't become Ready, once the fill
-        deadline (``quorum_timeout`` after the last claim create) has passed, or once ``err()`` is
-        set. A change after that, such as a handed-out member that fails, is yielded only by a later
-        call of ``events()``, which continues where the previous iterator stopped. ``members()``
-        always shows each claim's current state.
+        The iterator ends once every initial claim has been handed out, dropped with a failed group,
+        or can't become Ready, once the fill deadline (``quorum_timeout`` after the last claim create)
+        has passed, or once ``err()`` is set. A Ready member that a group holds until its outcome is
+        decided keeps the iterator open. A change after the iterator ends, such as a handed-out
+        member that fails, is yielded only by a later call of ``events()``, which continues where
+        the previous iterator stopped. ``members()`` always shows each claim's current state.
 
         Raises:
             BatchError: If this handle has been detached or released, when called or while waiting.
@@ -501,7 +502,9 @@ class SandboxBatch:
         A group yields its first ``min_ready`` Ready members, in the order they became Ready. A group that
         fails is still yielded, with ``error`` set to ``QuorumUnreachableError`` once too few
         of its members can still become Ready, or to ``BatchTimeoutError`` if it hasn't reached
-        ``min_ready`` within the quorum timeout.
+        ``min_ready`` within the quorum timeout. The handle checks that deadline only while a consumer
+        waits or claims are still being created, so a group that reaches ``min_ready`` after the
+        deadline, before any consumer checks it, still succeeds.
         The iterator ends once every group has yielded, or once ``err()`` is set. Calling it again
         continues with the groups that haven't yielded yet.
 

@@ -1737,6 +1737,14 @@ class TestConsumers(BaseClaimBatchTest):
             [(BatchEventType.MEMBER_READY, "b1-0"), (BatchEventType.MEMBER_READY, "b1-1")],
         )
 
+    async def test_events_end_when_a_ready_member_stops_being_ready_after_the_fill_settles(self):
+        batch = await self.claim([BatchGroup(warmpool="pool-a", size=1)], quorum_timeout=600)
+        events = batch.events()
+        self.assertEqual((await asyncio.wait_for(anext(events), 5)).member.claim_name, "b1-0")
+        self.cluster.push("b1-0", ready=False)
+        await _wait_until(lambda: batch._state.get_member("b1-0").state is MemberState.PENDING)
+        self.assertEqual(await _drain(events), [])
+
     async def test_groups_yield_when_ready_and_time_out_after_the_last_create(self):
         self.cluster.ready_on_create = False
         offset = [0.0]

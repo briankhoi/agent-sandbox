@@ -409,7 +409,8 @@ class SandboxClient(Generic[T]):
             work_budget: Seconds the caller expects to work with the batch after it is Ready;
                 part of each claim's ``shutdownTime``. Defaults to 3600.
             quorum_timeout: Seconds after the last claim create that a group may take to reach
-                ``min_ready``. Defaults to 600.
+                ``min_ready``. A group that reaches it later, before any consumer checks the
+                deadline, still succeeds. Defaults to 600.
             lease_duration: Seconds the batch Lease stays valid without renewal. Defaults to 60.
 
         Raises:
@@ -445,7 +446,8 @@ class SandboxClient(Generic[T]):
         Resumes batch lease renewal and starts a label-scoped watch that keeps
         ``members()`` up to date. Only a batch released with ``detach()`` can be re-attached,
         within its grace window. A group whose claims are all gone is unknown to the new handle,
-        so it isn't in ``groups`` and ``group_outcomes()`` doesn't yield it.
+        so it isn't in ``groups`` and ``group_outcomes()`` doesn't yield it. The new handle restarts
+        the fill deadline, which ends ``quorum_timeout`` seconds after the attach.
 
         Client exit cleanup detaches a batch attached here with ``detach()``'s default grace instead
         of releasing it. Call ``release()`` to delete the batch. If a ``release()`` call fails,

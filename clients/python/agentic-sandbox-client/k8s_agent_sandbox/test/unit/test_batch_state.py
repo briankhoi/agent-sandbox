@@ -497,6 +497,46 @@ class TestSettle(unittest.TestCase):
         _drain_events(state)
         self.assertTrue(state.events_done())
 
+    def test_settled_fill_stays_settled_when_a_ready_member_stops_being_ready(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=2), mode=batch_state.ConsumerMode.STREAM)
+        state.upsert_claim(_ready("b1-0"))
+        state.upsert_claim(_ready("b1-1"))
+        state.upsert_claim(_pending("b1-1"))
+        self.assertTrue(state.fill_settled())
+        _drain_events(state)
+        self.assertTrue(state.events_done())
+
+    def test_member_ready_before_the_others_resolve_still_counts_after_it_stops_being_ready(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=2), mode=batch_state.ConsumerMode.STREAM)
+        state.upsert_claim(_ready("b1-0"))
+        state.upsert_claim(_pending("b1-0"))
+        self.assertFalse(state.fill_settled())
+        state.record_create_failure("b1-1", "pool-a", "forbidden")
+        self.assertTrue(state.fill_settled())
+
+    def test_held_member_that_stops_being_ready_keeps_the_fill_open_until_it_is_handed_out(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=3, min_ready=2), mode=batch_state.ConsumerMode.GROUP)
+        state.upsert_claim(_ready("b1-0"))
+        state.upsert_claim(_pending("b1-0"))
+        state.upsert_claim(_ready("b1-1"))
+        state.upsert_claim(_ready("b1-2"))
+        self.assertEqual([m.claim_name for m in _drain_groups(state)[0].members], ["b1-1", "b1-2"])
+        self.assertFalse(state.events_done())
+        state.upsert_claim(_ready("b1-0"))
+        self.assertEqual(_drain_events(state), [(BatchEventType.MEMBER_READY, "b1-0")])
+        self.assertTrue(state.events_done())
+
+    def test_members_dropped_after_their_group_failed_count_when_they_stop_being_ready(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=4, min_ready=3), mode=batch_state.ConsumerMode.GROUP)
+        state.upsert_claim(_ready("b1-0"))
+        state.upsert_claim(_claim("b1-1", conditions=_TERMINAL, annotations=_FILL))
+        state.upsert_claim(_claim("b1-2", conditions=_TERMINAL, annotations=_FILL))
+        # The group failed, which dropped the held b1-0. b1-3 becomes Ready after that and is dropped too.
+        state.upsert_claim(_ready("b1-3"))
+        state.upsert_claim(_pending("b1-0"))
+        state.upsert_claim(_pending("b1-3"))
+        self.assertTrue(state.fill_settled())
+
 
 class TestReattachedFill(unittest.TestCase):
 
@@ -504,10 +544,26 @@ class TestReattachedFill(unittest.TestCase):
         state = _state(BatchGroup(warmpool="pool-a", size=3, min_ready=2))
         state.seed_from_claims([_ready("b1-0")])
         state.count_missing_fill_as_unable()
-        self.assertTrue(state.fill_settled())
         state.set_mode(batch_state.ConsumerMode.GROUP)
+        self.assertTrue(state.fill_settled())
         [result] = _drain_groups(state)
         self.assertIsInstance(result.error, QuorumUnreachableError)
+
+    def test_a_missing_claim_that_arrives_later_takes_back_its_missing_count(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=3, min_ready=2))
+        state.seed_from_claims([_ready("b1-0")])
+        state.count_missing_fill_as_unable()
+        state.upsert_claim(_ready("b1-1"))
+        state.set_mode(batch_state.ConsumerMode.GROUP)
+        [result] = _drain_groups(state)
+        self.assertEqual([m.claim_name for m in result.members], ["b1-0", "b1-1"])
+        # b1-2 still counts as missing, so the fill has settled. It reopens when b1-2 arrives too.
+        self.assertTrue(state.fill_settled())
+        state.upsert_claim(_pending("b1-2"))
+        self.assertFalse(state.fill_settled())
+        state.upsert_claim(_ready("b1-2"))
+        self.assertEqual(_drain_events(state), [(BatchEventType.MEMBER_READY, "b1-2")])
+        self.assertTrue(state.events_done())
 
     def test_a_group_with_no_claims_left_still_counts_the_other_groups_claims_as_fill(self):
         # Group pool-a had b1-0 and b1-1, both gone, so the new handle only knows pool-b's group.

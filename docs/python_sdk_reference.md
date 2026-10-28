@@ -237,7 +237,8 @@ an error that stops the watch or Lease renewal shows in ``err()``.
 - `work_budget` - Seconds the caller expects to work with the batch after it is Ready;
   part of each claim's ``shutdownTime``. Defaults to 3600.
 - `quorum_timeout` - Seconds after the last claim create that a group may take to reach
-  ``min_ready``. Defaults to 600.
+  ``min_ready``. A group that reaches it later, before any consumer checks the
+  deadline, still succeeds. Defaults to 600.
 - `lease_duration` - Seconds the batch Lease stays valid without renewal. Defaults to 60.
   
 
@@ -276,7 +277,8 @@ Attaches to an existing batch, taking over its Lease.
 Resumes batch lease renewal and starts a label-scoped watch that keeps
 ``members()`` up to date. Only a batch released with ``detach()`` can be re-attached,
 within its grace window. A group whose claims are all gone is unknown to the new handle,
-so it isn't in ``groups`` and ``group_outcomes()`` doesn't yield it.
+so it isn't in ``groups`` and ``group_outcomes()`` doesn't yield it. The new handle restarts
+the fill deadline, which ends ``quorum_timeout`` seconds after the attach.
 
 Client exit cleanup detaches a batch attached here with ``detach()``'s default grace instead
 of releasing it. Call ``release()`` to delete the batch. If a ``release()`` call fails,
@@ -909,11 +911,12 @@ only after that group has yielded successfully there, so a group that fails yiel
 ``group_outcomes()`` can't be called after ``events()``, since the first of the two to be
 called fixes how members are handed out.
 
-The iterator ends once every initial claim is Ready or can't become Ready, once the fill
-deadline (``quorum_timeout`` after the last claim create) has passed, or once ``err()`` is
-set. A change after that, such as a handed-out member that fails, is yielded only by a later
-call of ``events()``, which continues where the previous iterator stopped. ``members()``
-always shows each claim's current state.
+The iterator ends once every initial claim has been handed out, dropped with a failed group,
+or can't become Ready, once the fill deadline (``quorum_timeout`` after the last claim create)
+has passed, or once ``err()`` is set. A Ready member that a group holds until its outcome is
+decided keeps the iterator open. A change after the iterator ends, such as a handed-out
+member that fails, is yielded only by a later call of ``events()``, which continues where
+the previous iterator stopped. ``members()`` always shows each claim's current state.
 
 **Raises**:
 
@@ -932,7 +935,9 @@ Returns an iterator that yields one ``GroupOutcome`` per group, as soon as its o
 A group yields its first ``min_ready`` Ready members, in the order they became Ready. A group that
 fails is still yielded, with ``error`` set to ``QuorumUnreachableError`` once too few
 of its members can still become Ready, or to ``BatchTimeoutError`` if it hasn't reached
-``min_ready`` within the quorum timeout.
+``min_ready`` within the quorum timeout. The handle checks that deadline only while a consumer
+waits or claims are still being created, so a group that reaches ``min_ready`` after the
+deadline, before any consumer checks it, still succeeds.
 The iterator ends once every group has yielded, or once ``err()`` is set. Calling it again
 continues with the groups that haven't yielded yet.
 
