@@ -41,6 +41,7 @@ from .models import (
     AdditionalPodMetadata,
     BatchGroup,
     SandboxConnectionConfig,
+    SandboxFileConfig,
     SandboxLocalTunnelConnectionConfig,
     SandboxTracerConfig,
 )
@@ -68,6 +69,8 @@ class SandboxClient(Generic[T]):
         cleanup: bool = False,
         api_client: client.ApiClient | None = None,
         pool_size: int | None = None,
+        *,
+        file_config: SandboxFileConfig | None = None,
     ) -> None:
         """
         Initializes the SandboxClient.
@@ -88,9 +91,12 @@ class SandboxClient(Generic[T]):
             pool_size: Optional size of the Kubernetes API connection pool. A batch
                 needs at least its ``max_in_flight`` plus 2. Can't be combined with
                 ``api_client``; set ``connection_pool_maxsize`` on its configuration instead.
+            file_config: File download limits for created and attached sandboxes.
+                Defaults to unlimited downloads.
         """
         # Sandbox related configuration
         self.connection_config = connection_config or SandboxLocalTunnelConnectionConfig()
+        self.file_config = file_config
         
         # Tracer configuration
         self.tracer_config = tracer_config or SandboxTracerConfig()
@@ -255,6 +261,7 @@ class SandboxClient(Generic[T]):
                 connection_config=self.connection_config,
                 tracer_config=self.tracer_config,
                 k8s_helper=self.k8s_helper,
+                **({"file_config": self.file_config} if self.file_config is not None else {}),
             )
         except Exception:
             if cleanup_generated:
@@ -326,7 +333,8 @@ class SandboxClient(Generic[T]):
             namespace=namespace,
             connection_config=self.connection_config,
             tracer_config=self.tracer_config,
-            k8s_helper=self.k8s_helper
+            k8s_helper=self.k8s_helper,
+            **({"file_config": self.file_config} if self.file_config is not None else {}),
         )
 
         self._active_connection_sandboxes[key] = new_handle
