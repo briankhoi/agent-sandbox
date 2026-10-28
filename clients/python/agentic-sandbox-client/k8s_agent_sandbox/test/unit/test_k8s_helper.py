@@ -14,17 +14,19 @@
 
 import logging
 import os
+import socket
 import tempfile
+import threading
 import unittest
 import weakref
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from kubernetes import client
 from kubernetes.config import incluster_config
 import urllib3.exceptions
 from pydantic import ValidationError
 from k8s_agent_sandbox.models import AdditionalPodMetadata
-from k8s_agent_sandbox.k8s_helper import K8sHelper
+from k8s_agent_sandbox.k8s_helper import _CLAIM_COLLECTION_RETRIES, K8sHelper
 from k8s_agent_sandbox.exceptions import SandboxClaimFailedError, SandboxMetadataError, SandboxTemplateNotFoundError
 from k8s_agent_sandbox.constants import CLIENT_REQUEST_TIME_ANNOTATION
 from k8s_agent_sandbox.models import SandboxClaimEnvVar
@@ -1010,18 +1012,25 @@ class TestK8sHelperWatchResourceVersion(unittest.TestCase):
         self.assertEqual(mock_watch.stream.call_count, 2)
 
 
-@patch("k8s_agent_sandbox.k8s_helper._api_client_without_retries")
+@patch("k8s_agent_sandbox.k8s_helper._api_client_with_retries")
 @patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api")
 @patch("k8s_agent_sandbox.k8s_helper.client.CustomObjectsApi")
 @patch("k8s_agent_sandbox.k8s_helper.config")
 class TestK8sHelperApiClientInjection(unittest.TestCase):
 
     def test_injected_api_client_used_and_no_config_loaded(
-        self, mock_config, mock_custom_cls, mock_core_cls, _
+        self, mock_config, mock_custom_cls, mock_core_cls, mock_with_retries
     ):
         sentinel = MagicMock(name="ApiClient")
+        collection_client = MagicMock(name="CollectionApiClient")
+        lease_client = MagicMock(name="LeaseApiClient")
+        mock_with_retries.side_effect = [collection_client, lease_client]
         K8sHelper(api_client=sentinel)
-        mock_custom_cls.assert_called_once_with(sentinel)
+        self.assertEqual(mock_custom_cls.call_args_list, [call(sentinel), call(collection_client)])
+        self.assertEqual(
+            mock_with_retries.call_args_list,
+            [call(sentinel, _CLAIM_COLLECTION_RETRIES), call(sentinel, retries=False)],
+        )
         mock_core_cls.assert_called_once_with(sentinel)
         mock_config.load_incluster_config.assert_not_called()
         mock_config.load_kube_config.assert_not_called()
@@ -1109,32 +1118,123 @@ class TestK8sHelperWatchTimeout(unittest.TestCase):
 @patch("k8s_agent_sandbox.k8s_helper.config")
 class TestLeaseApiClient(unittest.TestCase):
 
-    def test_lease_requests_are_not_retried_and_keep_the_injected_client_settings(self, _):
-        configuration = client.Configuration(host="https://cluster-b:6443")
-        injected = client.ApiClient(configuration=configuration, cookie="session=1")
-        injected.set_default_header("X-Test", "yes")
-        lease_api_client = K8sHelper(api_client=injected).coordination_v1_api.api_client
-        self.assertIs(lease_api_client.configuration.retries, False)
-        self.assertEqual(lease_api_client.configuration.host, "https://cluster-b:6443")
-        self.assertEqual(lease_api_client.cookie, "session=1")
-        self.assertEqual(lease_api_client.default_headers["X-Test"], "yes")
+    def _assert_delegates_to_injected(self, derived_client, injected, configuration, host):
+        self.assertIsNot(derived_client, injected)
+        self.assertEqual(derived_client.configuration.host, host)
+        self.assertEqual(derived_client.cookie, "session=1")
+        self.assertEqual(derived_client.default_headers["X-Test"], "yes")
         self.assertIsNone(configuration.retries)
         configuration.api_key["authorization"] = "rotated"
         configuration.api_key_prefix["authorization"] = "Bearer"
-        self.assertEqual(lease_api_client.configuration.get_api_key_with_prefix("authorization"), "Bearer rotated")
+        self.assertEqual(
+            derived_client.configuration.get_api_key_with_prefix("authorization"), "Bearer rotated"
+        )
         injected.set_default_header("X-Rotated", "token-2")
         injected.cookie = "session=2"
-        self.assertEqual(lease_api_client.default_headers["X-Rotated"], "token-2")
-        self.assertEqual(lease_api_client.cookie, "session=2")
+        self.assertEqual(derived_client.default_headers["X-Rotated"], "token-2")
+        self.assertEqual(derived_client.cookie, "session=2")
+
+    def test_lease_requests_are_not_retried_and_keep_the_injected_client_settings(self, _):
+        configuration = client.Configuration(host="https://cluster-b:6443")
+        injected = client.ApiClient(configuration=configuration, cookie="session=1")
+        self.addCleanup(injected.close)
+        injected.set_default_header("X-Test", "yes")
+        helper = K8sHelper(api_client=injected)
+        self.addCleanup(helper._claim_collection_api.api_client.close)
+        lease_api_client = helper.coordination_v1_api.api_client
+        self.addCleanup(lease_api_client.close)
+        self.assertIs(lease_api_client.configuration.retries, False)
+        self._assert_delegates_to_injected(lease_api_client, injected, configuration, "https://cluster-b:6443")
         _, _, headers, _, _ = lease_api_client.param_serialize("GET", "/apis")
         self.assertEqual(headers["X-Rotated"], "token-2")
         self.assertEqual(headers["Cookie"], "session=2")
         injected.default_headers = {"X-Replaced": "1"}
         self.assertEqual(lease_api_client.default_headers, {"X-Replaced": "1"})
 
-    def test_lease_requests_are_not_retried_with_the_default_client(self, _):
-        lease_api_client = K8sHelper().coordination_v1_api.api_client
-        self.assertIs(lease_api_client.configuration.retries, False)
+    def test_lease_and_claim_collection_retries_apply_to_the_default_client(self, _):
+        helper = K8sHelper()
+        self.addCleanup(helper.custom_objects_api.api_client.close)
+        self.addCleanup(helper.core_v1_api.api_client.close)
+        self.addCleanup(helper._claim_collection_api.api_client.close)
+        self.addCleanup(helper.coordination_v1_api.api_client.close)
+        self.assertIs(helper.coordination_v1_api.api_client.configuration.retries, False)
+        self.assertIs(helper._claim_collection_api.api_client.configuration.retries, _CLAIM_COLLECTION_RETRIES)
+
+    def test_claim_collection_requests_do_not_retry_reads_or_retry_after_and_keep_injected_settings(self, _):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            host = f"http://127.0.0.1:{sock.getsockname()[1]}"
+            configuration = client.Configuration(host=host)
+            injected = client.ApiClient(configuration=configuration, cookie="session=1")
+            self.addCleanup(injected.close)
+            injected.set_default_header("X-Test", "yes")
+            helper = K8sHelper(api_client=injected)
+            self.addCleanup(helper.coordination_v1_api.api_client.close)
+            collection_api_client = helper._claim_collection_api.api_client
+            self.addCleanup(collection_api_client.close)
+
+            self._assert_delegates_to_injected(collection_api_client, injected, configuration, host)
+            for retries in (
+                collection_api_client.configuration.retries,
+                collection_api_client.rest_client.pool_manager.connection_pool_kw["retries"],
+            ):
+                self.assertIsInstance(retries, urllib3.Retry)
+                self.assertEqual(retries.total, 3)
+                self.assertIs(retries.read, False)
+                self.assertIs(retries.respect_retry_after_header, False)
+
+            selector = "agents.x-k8s.io/batch-id=b1"
+            # Before listen(), connect is refused, proving connection retries wrap in MaxRetryError.
+            with self.assertRaises(urllib3.exceptions.MaxRetryError):
+                helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 0.02))
+
+            # Once listening without replying, a read timeout surfaces after one attempt without retrying.
+            sock.listen(8)
+            sock.setblocking(False)
+            for call_fn in (
+                lambda: helper.list_sandbox_claim_objects("default", selector, _request_timeout=(5.0, 0.02)),
+                lambda: helper.count_live_sandbox_claims("default", selector, _request_timeout=(5.0, 0.02)),
+                lambda: helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 0.02)),
+            ):
+                with self.assertRaises(urllib3.exceptions.ReadTimeoutError):
+                    call_fn()
+                conn, _ = sock.accept()
+                conn.close()
+                with self.assertRaises(BlockingIOError):
+                    sock.accept()
+
+            # A 429 with Retry-After surfaces as ApiException after one attempt instead of retrying in urllib3.
+            sock.settimeout(1.0)
+            throttled_attempts = 0
+
+            def reply_throttled():
+                nonlocal throttled_attempts
+                while True:
+                    try:
+                        conn, _ = sock.accept()
+                    except OSError:
+                        return
+                    with conn:
+                        conn.recv(4096)
+                        throttled_attempts += 1
+                        conn.sendall(
+                            b"HTTP/1.1 429 Too Many Requests\r\n"
+                            b"Retry-After: 0\r\n"
+                            b"Content-Length: 2\r\n"
+                            b"Connection: close\r\n\r\n{}"
+                        )
+
+            server = threading.Thread(target=reply_throttled, daemon=True)
+            server.start()
+            try:
+                with self.assertRaises(client.ApiException) as raised:
+                    helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 1.0))
+                self.assertEqual(raised.exception.status, 429)
+                self.assertEqual(raised.exception.headers["Retry-After"], "0")
+                self.assertEqual(throttled_attempts, 1)
+            finally:
+                sock.close()
+                server.join(timeout=1.0)
 
 
 @patch("k8s_agent_sandbox.k8s_helper.config")
