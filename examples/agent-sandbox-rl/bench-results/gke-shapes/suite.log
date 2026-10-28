@@ -1,0 +1,16 @@
+=== 2026-10-28T08:59:43Z starting w500 (500x1 Eval) + w1024 (16x64 Deep GRPO) on Config H ===
+08:59:44 w500-per-claim-run1
+09:10:10 w500-batch-unbounded-run1
+09:13:25 w500-batch-default-run1
+09:16:36 w500-batch-unbounded-run2
+09:19:46 w500-batch-default-run2
+09:22:57 w500-per-claim-run2
+09:26:33 w1024-per-claim-run1
+09:32:15 w1024-batch-unbounded-run1
+09:38:57 w1024-batch-default-run1
+09:45:32 w1024-batch-unbounded-run2
+09:53:56 w1024-batch-default-run2
+10:00:28 w1024-per-claim-run2
+bench-results/gke-shapes/summary.md
+=== 2026-10-28T10:07:03Z draining warm pools to 0 ===
+=== 2026-10-28T10:07:14Z SHAPES-TUNED-DONE ===

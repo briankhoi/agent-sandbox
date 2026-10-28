@@ -44,3 +44,17 @@ Regenerated from the result files on every suite start and run.
 - [x] w1280-fill-unbounded-run2 ready_last=26.77s
 - [ ] w1280-fill-default-run2
 - [x] w1280-per-claim-run2 ready_last=18.47s
+- [x] w2560-per-claim-run1 ready_last=57.29s
+- [x] w2560-batch-unbounded-run1 ready_last=35.48s
+- [x] w2560-batch-default-run1 ready_last=41.98s
+- [ ] w2560-per-claim-c50-run1
+- [ ] w2560-batch-c50-run1
+- [ ] w2560-fill-unbounded-run1
+- [ ] w2560-fill-default-run1
+- [x] w2560-batch-unbounded-run2 ready_last=67.68s
+- [x] w2560-batch-default-run2 ready_last=52.83s
+- [ ] w2560-per-claim-c50-run2
+- [ ] w2560-batch-c50-run2
+- [ ] w2560-fill-unbounded-run2
+- [ ] w2560-fill-default-run2
+- [x] w2560-per-claim-run2 errors=1 ready_last=34.80s

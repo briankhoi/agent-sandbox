@@ -143,6 +143,45 @@ Steady state is the median over steps 2 to 2 of each run, then the median over r
   },
   "tail_p99_ratio": 0.9778181740702154
  },
+ "w2560": {
+  "no_limit": {
+   "ratio": 1.1201213084176291,
+   "call": null,
+   "last_start_ratio": 1.1197558372259404,
+   "step1_ratio": 1.168271661053858
+  },
+  "defaults": {
+   "ratio": 1.0294504698784122,
+   "call": null,
+   "last_start_ratio": 1.0294636057465198,
+   "step1_ratio": 1.2156706992950628
+  },
+  "requests_per_env": {
+   "batch": 1.130859375,
+   "per_claim": 3.999609375
+  },
+  "watches": {
+   "batch": 1.5,
+   "per_claim": 2559.5
+  },
+  "apiserver_create_ms": {
+   "batch": 256.155,
+   "per_claim": 177.19
+  },
+  "claim_path_requests": {
+   "batch": 10757.0,
+   "per_claim": 18317.0
+  },
+  "apf_wait_s": {
+   "batch": 2578.1985,
+   "per_claim": 2869.7875
+  },
+  "pool_full_discards": {
+   "batch": 0.0,
+   "per_claim": 551.0
+  },
+  "tail_p99_ratio": 1.1067733285181285
+ },
  "warm_ratio_by_size": [
   [
    160,
@@ -155,6 +194,10 @@ Steady state is the median over steps 2 to 2 of each run, then the median over r
   [
    1280,
    1.0215289236144027
+  ],
+  [
+   2560,
+   1.1201213084176291
   ]
  ],
  "win_grows_with_size": false
@@ -177,5 +220,8 @@ Steady state is the median over steps 2 to 2 of each run, then the median over r
 | w1280/batch-unbounded | 2 | 0 | 20.14 (16.86-23.41) | 8.47 | 19.16 | 20.29 | 27.62 | 1.25 | 1 | 0 | 11.26 | 257.36 | 970.84 | 5502 | 928 | 50 |
 | w1280/fill-unbounded | 2 | 0 | 25.24 (23.71-26.77) | 15.16 | 24.87 | 25.39 | 24.23 | 1.50 | 1 | 0 | 11.05 | 242.66 | 1520.19 | 5375 | 735 | 32 |
 | w1280/per-claim | 2 | 0 | 19.71 (18.47-20.96) | 9.18 | 19.60 | 19.85 | 23.65 | 4.00 | 1280 | 0 | 24.64 | 156.16 | 949.01 | 9388 | 1090 | 98 |
+| w2560/batch-default | 2 | 0 | 47.40 (41.98-52.83) | 16.53 | 33.67 | 47.54 | 60.11 | 1.25 | 2 | 0 | 21.97 | 88.28 | 1840.52 | 10668 | 891 | 77 |
+| w2560/batch-unbounded | 2 | 0 | 51.58 (35.48-67.68) | 16.91 | 37.58 | 51.71 | 57.76 | 1.13 | 2 | 0 | 22.13 | 256.15 | 2578.20 | 10757 | 884 | 82 |
+| w2560/per-claim | 2 | 1 | 46.05 (34.80-57.29) | 17.94 | 33.96 | 46.18 | 49.44 | 4.00 | 2560 | 551 | 44.42 | 177.19 | 2869.79 | 18317 | 1038 | 90 |
 
 Requests and watches are the driver's own, from the step's start to its last exec, before release. API columns are the API server's counters over the same window, from steps whose claim creates matched the driver's. Claim-path requests are every sandboxclaims request and the sandboxes reads, from every client (the controller included), the arm's API cost; sandbox writes (warm-pool refills) and leases (node heartbeats) are left out. All API requests per second covers every client in the cluster (kubelets and refills too), so it leans against the slower arm: context only.

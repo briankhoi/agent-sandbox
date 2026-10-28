@@ -29,3 +29,309 @@ bench-results/gke-tuned/summary.md
 06:53:34 w1280-fill-unbounded-run2
 bench-results/gke-tuned/summary.md
 === 2026-10-28T07:01:08Z TUNED-SUITE-DONE ===
+=== 2026-10-28T07:06:35Z running setup for RL_BENCH_SIZES=2560 ===
+not enough pod slots on the cluster's nodes
+node pod capacity 6584, pods scheduled 1818, setup and the largest warm step need 5140 more
+=== 2026-10-28T07:13:46Z draining existing 320 warm pools to 0 before RL_BENCH_SIZES=2560 setup ===
+{'warm_wait_s': 97.40588424100133, 'pods_in_namespace': 0, 'sandboxes_in_namespace': 0}
+=== 2026-10-28T07:15:30Z running setup for RL_BENCH_SIZES=2560 ===
+plan advisory: max_concurrent 2560 exceeds ~2000 the apiserver typically sustains for concurrent claims — expect 429s and possible over-creation; consider staging claims or a lower cap.
+WarmPool 'pool-rlb-9f6ebe7b25e0' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ad4d3ffb821c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-0f003c7dd919' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c409b8bd2b09' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ff4e351f62dc' not ready (0/1) within 300s
+WarmPool 'pool-rlb-52fa9ce3c851' not ready (0/1) within 300s
+WarmPool 'pool-rlb-4e61c9d979b8' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7f8d23da299a' not ready (0/1) within 300s
+WarmPool 'pool-rlb-75506d761caa' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ca14c438b94d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-5bff553f120c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-9ee3bf318832' not ready (0/1) within 300s
+WarmPool 'pool-rlb-bcef38296375' not ready (0/1) within 300s
+WarmPool 'pool-rlb-8526f60c924d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-f14b729a8950' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b48ebbc3aa2f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c10011204f6f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-3408174e73a6' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ef67267bcd7e' not ready (0/1) within 300s
+WarmPool 'pool-rlb-790a453f6965' not ready (0/1) within 300s
+WarmPool 'pool-rlb-f976488e79c9' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c644ca6c3a85' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b389c806dd86' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c81a00278346' not ready (0/1) within 300s
+WarmPool 'pool-rlb-e077f1583f5d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-29541d0eeeb6' not ready (0/1) within 300s
+WarmPool 'pool-rlb-833c38e8a078' not ready (0/1) within 300s
+WarmPool 'pool-rlb-98fbff509d6d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-d3403edb6a29' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b23c89bf558b' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b2f1a0b486c6' not ready (0/1) within 300s
+WarmPool 'pool-rlb-438a4d5edd1e' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b61569742ae5' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c2b09f10fdc8' not ready (0/1) within 300s
+WarmPool 'pool-rlb-659ee300f540' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c9d770fce3a9' not ready (0/1) within 300s
+WarmPool 'pool-rlb-213cd4e91caf' not ready (0/1) within 300s
+WarmPool 'pool-rlb-31dd7125ed17' not ready (0/1) within 300s
+WarmPool 'pool-rlb-45eb80fc25a9' not ready (0/1) within 300s
+WarmPool 'pool-rlb-310627121864' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ce133163ba2d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-5f80e5e0cb33' not ready (0/1) within 300s
+WarmPool 'pool-rlb-37d6b620e71e' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c905a16e03d6' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7e5cfb97150b' not ready (0/1) within 300s
+WarmPool 'pool-rlb-de5b8609275f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ffe3d6677ee3' not ready (0/1) within 300s
+WarmPool 'pool-rlb-85c2978917ab' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ddc03aa867c5' not ready (0/1) within 300s
+WarmPool 'pool-rlb-5b8fb8e5485a' not ready (0/1) within 300s
+WarmPool 'pool-rlb-eecfa213edc7' not ready (0/1) within 300s
+WarmPool 'pool-rlb-2513dea43ab9' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c9d39651420e' not ready (0/1) within 300s
+WarmPool 'pool-rlb-1af3338e498c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-41344c660de8' not ready (0/1) within 300s
+WarmPool 'pool-rlb-f8e508395137' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7be2dc1cc2fd' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c14f48321d10' not ready (0/1) within 300s
+WarmPool 'pool-rlb-8040a5f6f262' not ready (0/1) within 300s
+WarmPool 'pool-rlb-9702debbfed3' not ready (0/1) within 300s
+WarmPool 'pool-rlb-8ce4a46eda71' not ready (0/1) within 300s
+WarmPool 'pool-rlb-6cc6f7f867d0' not ready (0/1) within 300s
+WarmPool 'pool-rlb-8597cc7b2377' not ready (0/1) within 300s
+WarmPool 'pool-rlb-a9b4806d05fa' not ready (0/1) within 300s
+WarmPool 'pool-rlb-593eb1031372' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7c3372665885' not ready (0/1) within 300s
+WarmPool 'pool-rlb-0ce43ff81061' not ready (0/1) within 300s
+WarmPool 'pool-rlb-6694aafcce89' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b6f5a3e710a7' not ready (0/1) within 300s
+WarmPool 'pool-rlb-2d6958f77fad' not ready (0/1) within 300s
+WarmPool 'pool-rlb-df31b9302222' not ready (0/1) within 300s
+WarmPool 'pool-rlb-080d4def8013' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7bc376a1e15f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7aa0fcdcb5ce' not ready (0/1) within 300s
+WarmPool 'pool-rlb-4936d1f4c86d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-244bf21b919c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-2c0a0eeb5811' not ready (0/1) within 300s
+WarmPool 'pool-rlb-a48fc3e740ad' not ready (0/1) within 300s
+WarmPool 'pool-rlb-34024ea51a3a' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ea0baed5f6dd' not ready (0/1) within 300s
+WarmPool 'pool-rlb-871b2e1b46a5' not ready (0/1) within 300s
+WarmPool 'pool-rlb-015efc684f55' not ready (0/1) within 300s
+WarmPool 'pool-rlb-34b4962a1d89' not ready (0/1) within 300s
+WarmPool 'pool-rlb-abc8d756dc8f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-971700b71f8a' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7b795967af4e' not ready (0/1) within 300s
+WarmPool 'pool-rlb-3e870198a132' not ready (0/1) within 300s
+WarmPool 'pool-rlb-27555c5c2d11' not ready (0/1) within 300s
+WarmPool 'pool-rlb-5e7e90966211' not ready (0/1) within 300s
+WarmPool 'pool-rlb-d9901ba858e2' not ready (0/1) within 300s
+WarmPool 'pool-rlb-0210a31ec5bd' not ready (0/1) within 300s
+WarmPool 'pool-rlb-70f466f64e4f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-0d6d39648c8c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-4888b093146f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-f7c7fbcc3d52' not ready (0/1) within 300s
+WarmPool 'pool-rlb-dc3aceea3b07' not ready (0/1) within 300s
+WarmPool 'pool-rlb-f98c023fe1ea' not ready (0/1) within 300s
+WarmPool 'pool-rlb-cea693f2f9c3' not ready (0/1) within 300s
+WarmPool 'pool-rlb-5cb62af807ce' not ready (0/1) within 300s
+WarmPool 'pool-rlb-64cf27c7e806' not ready (0/1) within 300s
+WarmPool 'pool-rlb-193d2cbf6e48' not ready (0/1) within 300s
+WarmPool 'pool-rlb-a5970ec2f64d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7c2d87b0c48d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-e99aad446c15' not ready (0/1) within 300s
+WarmPool 'pool-rlb-68ab00191818' not ready (0/1) within 300s
+WarmPool 'pool-rlb-9ab8d99cde5c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-9a36ab0a9617' not ready (0/1) within 300s
+WarmPool 'pool-rlb-2acbcc81e1bb' not ready (0/1) within 300s
+WarmPool 'pool-rlb-e550cb28c479' not ready (0/1) within 300s
+WarmPool 'pool-rlb-aa80c91d7884' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ddadc0ebf4fa' not ready (0/1) within 300s
+WarmPool 'pool-rlb-641a9b45b817' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b800b84227b0' not ready (0/1) within 300s
+WarmPool 'pool-rlb-40035c8420c0' not ready (0/1) within 300s
+WarmPool 'pool-rlb-049980b01678' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b330690b376d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-65e95deacb93' not ready (0/1) within 300s
+WarmPool 'pool-rlb-850a5cafc4c9' not ready (0/1) within 300s
+WarmPool 'pool-rlb-d5c31b34516f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c9b3c3473ae3' not ready (0/1) within 300s
+WarmPool 'pool-rlb-685a0f73dcdf' not ready (0/1) within 300s
+WarmPool 'pool-rlb-08456f82e5b4' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ed1788062749' not ready (0/1) within 300s
+WarmPool 'pool-rlb-188d2070f5c4' not ready (0/1) within 300s
+WarmPool 'pool-rlb-6daed2a553ea' not ready (0/1) within 300s
+WarmPool 'pool-rlb-be9c3a6832ec' not ready (0/1) within 300s
+WarmPool 'pool-rlb-eabe335f494c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-161975a5b57c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ef0c1227af4d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-187b984ea8ae' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b8c51bb0a0c3' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7c3491bf5902' not ready (0/1) within 300s
+WarmPool 'pool-rlb-37e8d7221c4b' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b8c58a6e9c50' not ready (0/1) within 300s
+WarmPool 'pool-rlb-82dc45ce4cf4' not ready (0/1) within 300s
+WarmPool 'pool-rlb-95cdecc5908a' not ready (0/1) within 300s
+WarmPool 'pool-rlb-0c3f7c072fbd' not ready (0/1) within 300s
+WarmPool 'pool-rlb-2197955b12ed' not ready (0/1) within 300s
+WarmPool 'pool-rlb-22fd0bc62d54' not ready (0/1) within 300s
+WarmPool 'pool-rlb-0c173b2fc0bf' not ready (0/1) within 300s
+WarmPool 'pool-rlb-bb041672605f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-755aa021e6e2' not ready (0/1) within 300s
+WarmPool 'pool-rlb-06769cd153b0' not ready (0/1) within 300s
+WarmPool 'pool-rlb-9a3af1189474' not ready (0/1) within 300s
+WarmPool 'pool-rlb-67deeb92881d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-3379f1839150' not ready (0/1) within 300s
+WarmPool 'pool-rlb-5d4064dc9953' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b4122addf297' not ready (0/1) within 300s
+WarmPool 'pool-rlb-2f8ab4d7cee0' not ready (0/1) within 300s
+WarmPool 'pool-rlb-5e471a518c1d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-f25e8f963231' not ready (0/1) within 300s
+WarmPool 'pool-rlb-68db6fd536d8' not ready (0/1) within 300s
+WarmPool 'pool-rlb-dd12c0d01cbd' not ready (0/1) within 300s
+WarmPool 'pool-rlb-89df1a9dd2bd' not ready (0/1) within 300s
+WarmPool 'pool-rlb-a83c56d32db6' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b061e4178c95' not ready (0/1) within 300s
+WarmPool 'pool-rlb-30bebfbd52aa' not ready (0/1) within 300s
+WarmPool 'pool-rlb-1ad0b5c1368f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-93d70a64b9d6' not ready (0/1) within 300s
+WarmPool 'pool-rlb-af519e447701' not ready (0/1) within 300s
+WarmPool 'pool-rlb-4a205cdd9b5d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-2c4ab4dbd7a5' not ready (0/1) within 300s
+WarmPool 'pool-rlb-57da6dff2967' not ready (0/1) within 300s
+WarmPool 'pool-rlb-da40f1f79644' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ff921127eaeb' not ready (0/1) within 300s
+WarmPool 'pool-rlb-5e42412bd34c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-8d72060aa641' not ready (0/1) within 300s
+WarmPool 'pool-rlb-f13ac0811aa9' not ready (0/1) within 300s
+WarmPool 'pool-rlb-8cb8df74c10c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-207edf3ef95a' not ready (0/1) within 300s
+WarmPool 'pool-rlb-78f8c83cc40a' not ready (0/1) within 300s
+WarmPool 'pool-rlb-49dbd4b818c3' not ready (0/1) within 300s
+WarmPool 'pool-rlb-3b6c7024ff40' not ready (0/1) within 300s
+WarmPool 'pool-rlb-05ff617160a9' not ready (0/1) within 300s
+WarmPool 'pool-rlb-0915d3144830' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c27567c98e06' not ready (0/1) within 300s
+WarmPool 'pool-rlb-e1433a264306' not ready (0/1) within 300s
+WarmPool 'pool-rlb-d1151b1411f2' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7de3c469c960' not ready (0/1) within 300s
+WarmPool 'pool-rlb-172136c625ed' not ready (0/1) within 300s
+WarmPool 'pool-rlb-dc09ed702805' not ready (0/1) within 300s
+WarmPool 'pool-rlb-d78db2067500' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7c9b2d4bb9ff' not ready (0/1) within 300s
+WarmPool 'pool-rlb-6a842d9db0d3' not ready (0/1) within 300s
+WarmPool 'pool-rlb-d4a04df43e9d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-f40ff5ca0ecc' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b49582b742e6' not ready (0/1) within 300s
+WarmPool 'pool-rlb-a556758f0471' not ready (0/1) within 300s
+WarmPool 'pool-rlb-86847e8e2ed1' not ready (0/1) within 300s
+WarmPool 'pool-rlb-2d402759dca8' not ready (0/1) within 300s
+WarmPool 'pool-rlb-d6af4784d2fc' not ready (0/1) within 300s
+WarmPool 'pool-rlb-a2f7ff835d7d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-684c81f6e40e' not ready (0/1) within 300s
+WarmPool 'pool-rlb-5d608e929a9c' not ready (0/1) within 300s
+WarmPool 'pool-rlb-8e2703b348a8' not ready (0/1) within 300s
+WarmPool 'pool-rlb-d2607c54c5f0' not ready (0/1) within 300s
+WarmPool 'pool-rlb-175a99196b30' not ready (0/1) within 300s
+WarmPool 'pool-rlb-723bd6c94b96' not ready (0/1) within 300s
+WarmPool 'pool-rlb-56399d83e3c3' not ready (0/1) within 300s
+WarmPool 'pool-rlb-d4a15dcdb3f9' not ready (0/1) within 300s
+WarmPool 'pool-rlb-1cb877479e9b' not ready (0/1) within 300s
+WarmPool 'pool-rlb-2e06a97f4c70' not ready (0/1) within 300s
+WarmPool 'pool-rlb-e7fc1920e3ee' not ready (0/1) within 300s
+WarmPool 'pool-rlb-624381d32844' not ready (0/1) within 300s
+WarmPool 'pool-rlb-e7b870705253' not ready (0/1) within 300s
+WarmPool 'pool-rlb-4748a693cb24' not ready (0/1) within 300s
+WarmPool 'pool-rlb-9d7851b73514' not ready (0/1) within 300s
+WarmPool 'pool-rlb-1b4dd8bc7218' not ready (0/1) within 300s
+WarmPool 'pool-rlb-19aec051e51d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b95d25fcc5b2' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c3ba8f8797a4' not ready (0/1) within 300s
+WarmPool 'pool-rlb-bb8f093d60dc' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ac9658e76b0f' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b03edcc30029' not ready (0/1) within 300s
+WarmPool 'pool-rlb-55efa1e67b58' not ready (0/1) within 300s
+WarmPool 'pool-rlb-06a33be208dd' not ready (0/1) within 300s
+WarmPool 'pool-rlb-29ea884b44f7' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b3038b275f85' not ready (0/1) within 300s
+WarmPool 'pool-rlb-f1b12b8e0a3e' not ready (0/1) within 300s
+WarmPool 'pool-rlb-4d9b4f73ef49' not ready (0/1) within 300s
+WarmPool 'pool-rlb-1e79b789036b' not ready (0/1) within 300s
+WarmPool 'pool-rlb-46442a01c454' not ready (0/1) within 300s
+WarmPool 'pool-rlb-48c5af455bf1' not ready (0/1) within 300s
+WarmPool 'pool-rlb-7050fc130894' not ready (0/1) within 300s
+WarmPool 'pool-rlb-1a6de8b10334' not ready (0/1) within 300s
+WarmPool 'pool-rlb-df04503e1926' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b91673fcce09' not ready (0/1) within 300s
+WarmPool 'pool-rlb-8e4b6fd48a35' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c24e030f8bd0' not ready (0/1) within 300s
+WarmPool 'pool-rlb-60fe70e64de4' not ready (0/1) within 300s
+WarmPool 'pool-rlb-49a3e1430f35' not ready (0/1) within 300s
+WarmPool 'pool-rlb-a589e42ec0e8' not ready (0/1) within 300s
+WarmPool 'pool-rlb-b366cb189afc' not ready (0/1) within 300s
+WarmPool 'pool-rlb-3d989f1139ce' not ready (0/1) within 300s
+WarmPool 'pool-rlb-8b22c53414eb' not ready (0/1) within 300s
+WarmPool 'pool-rlb-9b8880ffc461' not ready (0/1) within 300s
+WarmPool 'pool-rlb-80750a989164' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c23c6ed1a717' not ready (0/1) within 300s
+WarmPool 'pool-rlb-78576e0a5dcf' not ready (0/1) within 300s
+WarmPool 'pool-rlb-3d838d0ad64d' not ready (0/1) within 300s
+WarmPool 'pool-rlb-50fba1f68374' not ready (0/1) within 300s
+WarmPool 'pool-rlb-55e0fce04d0e' not ready (0/1) within 300s
+WarmPool 'pool-rlb-e5c09ed8e705' not ready (0/1) within 300s
+WarmPool 'pool-rlb-80c9d97dc684' not ready (0/1) within 300s
+WarmPool 'pool-rlb-cbe08c9ffeff' not ready (0/1) within 300s
+WarmPool 'pool-rlb-c062fb8f38f5' not ready (0/1) within 300s
+WarmPool 'pool-rlb-84c75910f352' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ddec0e35b06e' not ready (0/1) within 300s
+WarmPool 'pool-rlb-caad94961ac5' not ready (0/1) within 300s
+WarmPool 'pool-rlb-ef9e640bf0e8' not ready (0/1) within 300s
+node pod capacity 6584, pods scheduled 538, setup and the largest warm step need 5140 more
+Traceback (most recent call last):
+  File "/work/repo/examples/agent-sandbox-rl/tests/gke_scale_bench.py", line 974, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/work/repo/examples/agent-sandbox-rl/tests/gke_scale_bench.py", line 969, in main
+    return {"images": cmd_images, "setup": cmd_setup, "suite": cmd_suite,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/repo/examples/agent-sandbox-rl/tests/gke_scale_bench.py", line 801, in cmd_setup
+    f.setup()
+  File "/work/repo/examples/agent-sandbox-rl/agent_sandbox_rl/fleet.py", line 1261, in setup
+    self.start_warmpools(wait=True, create_budget=create_budget)
+  File "/work/repo/examples/agent-sandbox-rl/agent_sandbox_rl/fleet.py", line 1042, in start_warmpools
+    self._warm_entries(wave, wait=True)   # wait so the cache converges first
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/repo/examples/agent-sandbox-rl/agent_sandbox_rl/fleet.py", line 1000, in _warm_entries
+    raise err
+  File "/work/repo/examples/agent-sandbox-rl/agent_sandbox_rl/fleet.py", line 996, in _warm_entries
+    f.result()
+  File "/usr/local/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/usr/local/lib/python3.12/concurrent/futures/thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/repo/examples/agent-sandbox-rl/agent_sandbox_rl/fleet.py", line 922, in _warm_entry
+    raise FleetError(
+agent_sandbox_rl.exceptions.FleetError: borrowed warm pool 'pool-rlb-9f6ebe7b25e0' on cluster 'gke' had no ready replica within 300s
+=== 2026-10-28T07:31:55Z running fresh setup for RL_BENCH_SIZES=2560 (640 pools) ===
+plan advisory: max_concurrent 2560 exceeds ~2000 the apiserver typically sustains for concurrent claims — expect 429s and possible over-creation; consider staging claims or a lower cap.
+node pod capacity 6584, pods scheduled 538, setup and the largest warm step need 5140 more
+created 640 warm pools in rl-bench, scaled to 0
+=== 2026-10-28T07:34:10Z starting w2560 on Config H (6 runs: per-claim, batch-unbounded, batch-default) ===
+07:34:12 w2560-per-claim-run1
+plan advisory: max_concurrent 2560 exceeds ~2000 the apiserver typically sustains for concurrent claims — expect 429s and possible over-creation; consider staging claims or a lower cap.
+07:44:38 w2560-batch-unbounded-run1
+plan advisory: max_concurrent 2560 exceeds ~2000 the apiserver typically sustains for concurrent claims — expect 429s and possible over-creation; consider staging claims or a lower cap.
+07:59:16 w2560-batch-default-run1
+plan advisory: max_concurrent 2560 exceeds ~2000 the apiserver typically sustains for concurrent claims — expect 429s and possible over-creation; consider staging claims or a lower cap.
+08:14:22 w2560-batch-unbounded-run2
+plan advisory: max_concurrent 2560 exceeds ~2000 the apiserver typically sustains for concurrent claims — expect 429s and possible over-creation; consider staging claims or a lower cap.
+08:29:57 w2560-batch-default-run2
+plan advisory: max_concurrent 2560 exceeds ~2000 the apiserver typically sustains for concurrent claims — expect 429s and possible over-creation; consider staging claims or a lower cap.
+08:45:09 w2560-per-claim-run2
+plan advisory: max_concurrent 2560 exceeds ~2000 the apiserver typically sustains for concurrent claims — expect 429s and possible over-creation; consider staging claims or a lower cap.
+bench-results/gke-tuned/summary.md
+=== 2026-10-28T08:59:39Z W2560-TUNED-DONE ===
