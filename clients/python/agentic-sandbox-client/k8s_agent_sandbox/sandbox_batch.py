@@ -481,11 +481,12 @@ class SandboxBatch:
         ``group_outcomes()`` can't be called after ``events()``, since the first of the two to be
         called fixes how members are handed out.
 
-        The iterator ends once every initial claim is Ready or can't become Ready, once the fill
-        deadline (``quorum_timeout`` after the last claim create) has passed, or once ``err()`` is
-        set. A change after that, such as a handed-out member that fails, is yielded only by a later
-        call of ``events()``, which continues where the previous iterator stopped. ``members()``
-        always shows each claim's current state.
+        The iterator ends once every initial claim has been handed out, dropped with a failed group,
+        or can't become Ready, once the fill deadline (``quorum_timeout`` after the last claim create)
+        has passed, or once ``err()`` is set. A Ready member that a group holds until its outcome is
+        decided keeps the iterator open. A change after the iterator ends, such as a handed-out
+        member that fails, is yielded only by a later call of ``events()``, which continues where
+        the previous iterator stopped. ``members()`` always shows each claim's current state.
 
         Raises:
             BatchError: If this handle has been detached or released, when called or while waiting.

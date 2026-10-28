@@ -378,7 +378,6 @@ class BatchState:
         """Gives every group without an outcome a ``BatchTimeoutError``."""
         for pool in self._group_by_pool:
             if pool not in self._group_outcomes:
-                self._resolved.update(self._waiting[pool])
                 self._waiting[pool].clear()
                 self._set_group_outcome(GroupOutcome(warmpool=pool, error=BatchTimeoutError("Group quorum timed out")))
 
