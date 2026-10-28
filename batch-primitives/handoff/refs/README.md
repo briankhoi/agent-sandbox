@@ -10,3 +10,4 @@ Copies of cloud-only documents that `tasks.md` points to. Paths written inside t
 | `benchmark_rerun_prompt.md` | The last benchmark run prompt, as a model for writing the validation run prompt. Harness: branch `origin/bench/batch-claim`, `test/benchmarks/batch-claim/`. |
 | `pr6_independent_audit.md` | The independent audit of PR 6 (`acquire`). Task 4.6(c) uses its agreement that the size-0 re-attach gap only needs documenting. |
 | `group_order_precheck_sync.md` | Record of the sync that Brian approved and that already ran on 2026-10-21. Do not rerun it; its leases are stale. |
+| `wave_mode_design.md` | Task 8: the cloud's wave mode design for `fleet.run` (QUORUM, GROUP, STREAM). A proposal for you to audit; nothing in it is approved. |

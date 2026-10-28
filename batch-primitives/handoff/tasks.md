@@ -213,5 +213,43 @@ With #2035, `Cluster.k8s_helper` builds `K8sHelper(api_client=self.api_client)`.
 - Brian has a compare link per step that shows only that change.
 
 ---
+## Task 8. Wave mode for `fleet.run` (QUORUM, GROUP, STREAM): audit, then implement and benchmark (Brian asked 2026-10-28; needs OK at each step)
+
+**Why.** Brian, 2026-10-27: "what if people don tuse a RL framework and just call fleet run? we still want them to have quorum features without handrolling right? so i think its worth implementing now (otherwise half of project is not used)". Brian, 2026-10-28: "for this design you can propose your design and i'll have the other agent audit it and do the implementation + benchmark as well". The design is the proposal's "Rollout Waves: Per-Step Cohorts" section (`batch_claim_proposal.md`, around lines 597-647), mapped onto the batch-backed `fleet.acquire` that the RL branch already has.
+
+**Read first.** `refs/wave_mode_design.md` (the full design, a cloud **proposal**, nothing in it approved). Then the RL files it names, at the live RL head: `fleet.py`, `batch_claims.py`, `strategies.py`, `async_fleet.py`, `handles.py`, `recycle.py` (entry points only), `tests/test_batch_claims.py`. Also the SDK `claim_batch`, `wait_for_quorum`, `group_outcomes`, `events`, `acquire` and `release_group` docstrings on the SDK copy under that head.
+
+**Order with Task 7.** Step 1 (audit) can run alongside Task 7. Steps 2-3 build on the RL head **after** Task 7 has synced, because both tasks edit `_acquire_reserved` in `fleet.py`, `batch_claims.py` (Task 7 renames `batch_sandbox_client` and adds `pod_annotations` to `acquire`) and `FakeBatch` in `tests/test_batch_claims.py`, and Task 7 folds its changes into the RL branch's existing commits.
+
+**Step 1. Independent audit (needs OK to start).**
+- Form your own findings first, from the code, before reading section 8 of the design.
+- Verify every `file:line`, API and claim in the design against the code at the live RL head (they were read at `3bee2847`).
+- Check especially: the GROUP rolling-batch bound; the `max_live_sandboxes` bulk reservation and slot return on every failure path; the teardown race in `_handle_for_member`; the fill `shutdownTime` formula used for `BatchClaim.expires_at`; the overcommit breaker with `wave_size > concurrency`; async parity.
+- Write the findings to `work/wave_mode_audit.md`: summary first, findings ranked, each with a recommendation, then the decisions Brian needs. Include the three in design section 8.
+- Give Brian the GitHub link. Don't change the design file. Propose edits in the audit.
+
+**Step 2. Implement (needs OK after the audit, with Brian's answers to the decisions).**
+- New branch from the post-Task-7 RL head, for example `feat/rl-wave-mode`.
+- Make the 5 commits in design section 5, with tests per section 6. One owning test per contract, sync and async, each mutation-checked.
+- Lint, and mypy with `MYPYPATH=clients/python/agentic-sandbox-client`. The RL lib uses 2-space indent.
+- Run only the changed tests.
+- Give Brian one compare link per commit.
+
+**Step 3. Benchmark (needs OK; reuse the GKE setup if a cluster is up, or ask before creating one).**
+- Run the arms, workloads and metrics in design section 7. Smoke test at 160 on kind first if that's cheaper.
+- Fairness rules apply: identical limiting on both arms, unlimited vs unlimited leads, steady steps only.
+- Push results to `bench/rl-wave` (or a branch Brian names), with a short report: summary, ranked findings, decisions.
+
+**Rules.** Everything in `project_instructions.md` and `working_rules.md` applies. In particular:
+- Brian is author and committer, with no trailers.
+- No SDK changes in this task. If the precheck cost matters, propose a separate SDK PR.
+- Keep sync and async parity.
+- Follow upstream AGENTS.md "Writing".
+
+**Done when.**
+- Brian has the audit, the 5 commits with links, and the benchmark report.
+- `fleet.run(wave=True, dispatch=...)` works in both fleets.
+
+---
 ## Not yours (stays in the cloud project)
-RL follow-ups: the RL integration prototype and its limits rerun; `fleet.prefetch` (only if a fill beats an acquire burst by more than 20%); a parallel precheck (only if prefetch ships); sandboxd exec as its own track; owner references on pools (only if leaks show up); the per-claim default acquire limit (mention at the TL meeting); the Lease-loss detection run. Changes to `examples/agent-sandbox-rl/`, except Task 7. If Brian pastes an SDK change request from that work, treat it as a normal task: owning PR, review copy, report.
+RL follow-ups: the RL integration prototype and its limits rerun; `fleet.prefetch` (only if a fill beats an acquire burst by more than 20%); a parallel precheck (only if prefetch ships); sandboxd exec as its own track; owner references on pools (only if leaks show up); the per-claim default acquire limit (mention at the TL meeting); the Lease-loss detection run. Changes to `examples/agent-sandbox-rl/`, except Tasks 7 and 8. If Brian pastes an SDK change request from that work, treat it as a normal task: owning PR, review copy, report.
