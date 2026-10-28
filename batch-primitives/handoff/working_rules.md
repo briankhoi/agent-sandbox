@@ -70,6 +70,7 @@ When Brian says to review a PR's comments: read them with `gh` yourself. For eac
 
 ## Never scope things out (Brian, 2026-10-23)
 - Never scope a finding out. For every valid gap (from a reviewer, a verifier or yourself), either fold the fix into the owning PR or propose a separate PR, and put the choice to Brian. Never narrow a promise (a comment, docstring or contract) instead of fixing the gap without asking him.
+- Verify a verifier note or handoff recommendation before treating it as a valid gap (Brian, 2026-10-28). Check all caller entrypoints, the method's documented contract, and standard library practice first, and recommend no change (while still reporting the finding) when the behavior is intended.
 - For lifecycle or state fixes, write the rule the change promises in one sentence first, list every path that touches it (including concurrent interleavings), and give the verifier that list to check (lesson from #2049, where a scoped-out detach() path and an unchecked overlapping-cleanup race came back as CodeRabbit comments).
 
 ## "Explain" (Brian, 2026-10-22)

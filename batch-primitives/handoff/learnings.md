@@ -168,6 +168,10 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 - **What happened:** a list of numbered findings without context confused the reader.
 - **Takeaway:** explain each item as what is happening, the issue, and the proposed fix (or "being worked out"). Never refer to "finding 3" without restating it.
 
+### 6.9 Verify a finding is a bug before proposing a PR for it
+- **What happened:** a verifier noted that async `close()` did not take `_lifecycle_lock`, and a handoff recommended a separate PR to avoid scoping a finding out. Checking `__aexit__()`, `delete_all()`, and `aiohttp`/`httpx` afterwards showed that cluster-cleanup paths already waited on the lock and bare `close()` matched standard immediate transport teardown.
+- **Takeaway:** "never scope things out" applies after a gap is verified to be real. Check caller entrypoints, the documented contract, and standard library practice before proposing a fix or follow-up PR, and recommend no change when the behavior is intended.
+
 ---
 
 ## 7. Stacked PRs and git
