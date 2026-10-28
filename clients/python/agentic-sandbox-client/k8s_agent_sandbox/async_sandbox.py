@@ -44,7 +44,7 @@ class AsyncSandbox:
     async client does not support ``SandboxLocalTunnelConnectionConfig``.
     """
 
-    # Set by the client that tracks this handle, so terminate() can drop the
+    # The client that tracks this handle sets this hook, so terminate() can drop the
     # client's entry once the claim is gone.
     _on_terminated: Callable[["AsyncSandbox"], None] | None = None
 
@@ -246,8 +246,8 @@ class AsyncSandbox:
 
         await self.k8s_helper.delete_sandbox_claim(self.claim_name, self.namespace)
 
-        # The client stops tracking the handle here because its claim is gone. It
-        # runs before claim_name is cleared since that name is the client's key.
+        # The client stops tracking the handle here because its claim is gone. Call
+        # _on_terminated before clearing claim_name, because that name is the client's key.
         if self._on_terminated is not None:
             self._on_terminated(self)
 

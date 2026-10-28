@@ -486,11 +486,11 @@ class AsyncSandboxClient(Generic[T]):
 
     @staticmethod
     def _untrack(registry: dict[tuple[str, str], T], sandbox: AsyncSandbox) -> None:
-        # Called by terminate() after a successful delete, while claim_name is still
+        # terminate() calls this after a successful delete, while claim_name is still
         # set, so the None check only narrows its type. A newer handle may have
-        # replaced this one for the same claim, so only this exact handle is removed.
-        # Static and bound to the registry with a partial, so a tracked handle never
-        # keeps the client alive; an instance method here would bring that back.
+        # replaced this one for the same claim, so remove only this exact handle.
+        # This is static and bound to the registry with functools.partial, so a tracked
+        # handle never keeps the client alive. An instance method would keep it alive.
         if sandbox.claim_name is None:
             return
         key = (sandbox.namespace, sandbox.claim_name)
