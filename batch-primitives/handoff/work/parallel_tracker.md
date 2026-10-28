@@ -47,7 +47,7 @@ Brian paused this conversation while another agent renames major fields in PRs 1
 
 | Item | State | Next |
 | :-- | :-- | :-- |
-| G leak fix (3 PRs on `main`) | verified PASS 01:25 (`coord1/2026-10-27-0130-leak-fix-final.md`); heads PR 1 `0a54a028`, PR 2 `b3574fa9`, PR 3 `53765391` | Brian pastes `prompts/G5-memleak-cleanups.md` into conversation G (rebase PR 2, PR 3 type nit); verify; Brian files issues A, B, 4, 5 (3 optional) and opens PR 1, PR 2, then PR 3 |
+| G leak fix (3 PRs on `main`) | G6 verified PASS (`coord1/2026-10-28-0615-g6-verified-ready-to-open.md`); heads PR 1 `9feeb8a9`, PR 2 `fbbbb944`, PR 3 `368cedb6` | Brian files issues A, B, 4, 5 (3 optional) from `results/issues-final.md`, opens PR 1, PR 2, then PR 3 after PR 1 (`results/G6-writing.md`), and gives numbers for `pr_board.md` |
 | D small items | decisions brief `coord1/2026-10-22-2315-d-decisions.md`; #1990 base fixed by Brian | Brian's answers to items 2 to 7 (branch deletion of 49 stale `review/*` needs his explicit OK) |
 | F step 11 (Go notes rename) | not started | after the stack's Task 6 rename and the new field rename; read the rename link first |
 | B, C | owned by coordinator 2 | none for coordinator 1 |
@@ -56,3 +56,4 @@ Brian paused this conversation while another agent renames major fields in PRs 1
 - 2026-10-27 20:55 G5 verified PASS: PR 2 `e62610f9` on main `c4ed9ba9`, PR 3 `afae285e` on PR 1 `0a54a028`. All three ready for Brian to open; issues A, B, 4, 5 (3 optional) to file. D on hold until everything else is done (Brian). par-mem deletion pending Brian's yes.
 - 2026-10-27 21:17 par-mem kind cluster deleted (Brian: "clean up par-mem"). kind-agent-sandbox untouched, context unchanged.
 - 2026-10-27 22:55 Brian: leave the ~0.5 KB per closed client as is ("leave as is for now"). Issues rewritten into the bug template with verified repro scripts (`results/issues-final.md`, `63f27ea1`, repro check PASS). Writing audit against upstream AGENTS.md Writing section (`results/writing-audit.md`); G6 prompt applies it plus the repro check's text fixes.
+- 2026-10-28 06:15 G6 verified PASS by fresh `inherit` verifier (`coord1/2026-10-28-0615-g6-verified-ready-to-open.md`): PR 1 `9feeb8a9`, PR 2 `fbbbb944` (includes `sandbox.py:199-202` sync/async split comment), PR 3 `368cedb6` on `9feeb8a9`, `bench/async-mem-probe` `2ec456da`. Zero AST diffs, tests/mypy/pycodestyle/merge-tree clean, Writing compliance verified across code, commits, PR texts, and all 5 issues. Ready for Brian to file issues A, B, 4, 5 (3 optional) and open PRs 1, 2, then 3.
