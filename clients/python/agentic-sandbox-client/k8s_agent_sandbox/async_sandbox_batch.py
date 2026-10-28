@@ -56,7 +56,8 @@ from .exceptions import (
     SandboxWarmPoolNotFoundError,
     TerminalMemberError,
 )
-from .models import BatchEvent, BatchGroup, GroupOutcome, Member, MemberState
+from .models import AdditionalPodMetadata, BatchEvent, BatchGroup, GroupOutcome, Member, MemberState
+from .pod_metadata import build_pod_metadata
 from .utils import construct_sandbox_claim_lifecycle_spec, select_pod_ip
 
 if TYPE_CHECKING:
@@ -648,7 +649,13 @@ class AsyncSandboxBatch:
         for waiter in self._acquire_waiters.values():
             waiter.set()
 
-    async def acquire(self, warmpool: str, timeout: float | None = None) -> Member:
+    async def acquire(
+        self,
+        warmpool: str,
+        timeout: float | None = None,
+        *,
+        pod_annotations: dict[str, str] | None = None,
+    ) -> Member:
         """Adds a member from ``warmpool`` to the batch, waits until it is Ready, and returns it.
 
         The pool can be any warm pool in the batch's namespace. A pool that isn't one of the batch's
@@ -678,9 +685,14 @@ class AsyncSandboxBatch:
             warmpool: The warm pool to claim the member from.
             timeout: Seconds to wait for the member to be Ready. Defaults to the batch's
                 ``quorum_timeout``.
+            pod_annotations: Optional annotations that ``acquire()`` writes to
+                ``spec.additionalPodMetadata.annotations`` so the controller propagates them onto
+                the sandbox pod. ``acquire()`` omits ``spec.additionalPodMetadata`` when
+                ``pod_annotations`` is ``None`` or empty.
 
         Raises:
-            ValueError: If ``timeout`` isn't a positive finite number.
+            ValueError: If ``timeout`` isn't a positive finite number, or ``pod_annotations`` is
+                invalid.
             SandboxWarmPoolNotFoundError: If the warm pool doesn't exist.
             SandboxTemplateNotFoundError: If the warm pool's template doesn't exist, or it names none.
             TerminalMemberError: If the create fails (the member is ``FAILED`` with reason
@@ -693,6 +705,7 @@ class AsyncSandboxBatch:
                 member before it is Ready.
         """
         wait = batch_utils.positive_number("timeout", timeout, self._quorum_timeout)
+        pod_metadata = build_pod_metadata(None, pod_annotations)
         deadline = time.monotonic() + wait
         await self._check_pool(warmpool, deadline, wait)
         # Reads nothing right after the pool's check, since that check just read the count.
@@ -734,6 +747,7 @@ class AsyncSandboxBatch:
                         {**self._labels, BATCH_GROUP_LABEL: batch_utils.group_label_value(warmpool)},
                         lifecycle,
                         deadline,
+                        pod_metadata=pod_metadata,
                     )
                 except BatchTimeoutError:
                     raise
@@ -1554,6 +1568,7 @@ class AsyncSandboxBatch:
         labels: dict[str, str],
         lifecycle: dict[str, str],
         deadline: float | None,
+        pod_metadata: AdditionalPodMetadata | None = None,
     ) -> None:
         """Sends one claim create while holding one of the ``max_in_flight`` slots.
 
@@ -1574,6 +1589,7 @@ class AsyncSandboxBatch:
                 annotations=annotations,
                 labels=labels,
                 lifecycle=lifecycle,
+                pod_metadata=pod_metadata,
                 owner_references=self._owner_references,
                 log_level=logging.DEBUG,
                 _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
@@ -1589,6 +1605,7 @@ class AsyncSandboxBatch:
         labels: dict[str, str],
         lifecycle: dict[str, str],
         deadline: float | None = None,
+        pod_metadata: AdditionalPodMetadata | None = None,
     ) -> bool:
         """Creates one claim, retrying transient errors, with each retry taking a pacing slot.
 
@@ -1602,7 +1619,15 @@ class AsyncSandboxBatch:
         attempt = 1
         while True:
             try:
-                await self._send_create(claim_name, warmpool, annotations, labels, lifecycle, deadline)
+                await self._send_create(
+                    claim_name,
+                    warmpool,
+                    annotations,
+                    labels,
+                    lifecycle,
+                    deadline,
+                    pod_metadata=pod_metadata,
+                )
                 return True
             except asyncio.CancelledError:
                 raise
