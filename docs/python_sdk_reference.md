@@ -1063,13 +1063,16 @@ Claims are deleted with label-scoped deletecollection requests, re-listing betwe
 until no claim is left that isn't already being deleted. A transient error moves on to the
 next round, and release gives up after ``BATCH_RELEASE_MAX_IDLE_ROUNDS`` rounds in a row
 that delete nothing. On failure the Lease is kept, and calling ``release`` again retries.
-Each round first takes the batch's Lease for this handle, creating it if it's missing, so
-no delete is sent while another handle holds it.
+Before each round, release writes the batch's Lease with this handle as its holder, so no
+other handle can attach while claims are deleted. If the batch is another handle's, it
+raises ``BatchInUseError`` and deletes nothing. While it runs, a ``detach()`` call raises
+``BatchError``, and another ``release()`` call waits for it to finish.
 
 **Raises**:
 
-- `BatchInUseError` - If another handle holds the batch's Lease. Nothing more is deleted,
-  and this handle is done with the batch.
+- `BatchInUseError` - If another handle holds the batch's Lease, or the Lease changed hands
+  since this handle last held it. Nothing more is deleted, and this handle is done
+  with the batch.
 - `BatchError` - If this handle has been detached, an earlier call raised
   ``BatchInUseError``, or claims are still not being deleted after the last round.
 - `ApiException` - For a non-transient error such as a 403, which is raised at once.
@@ -1098,6 +1101,6 @@ A batch that is still creating claims stops creating first, and every claim is l
 **Raises**:
 
 - `ValueError` - If ``grace`` is not a valid Lease duration.
-- `BatchError` - If this handle has been released.
+- `BatchError` - If a release has started on this handle, including one that failed.
 - `ApiException` - If the Lease release fails (an ``ApiException`` or a transport error).
 
