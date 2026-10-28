@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
+from k8s_agent_sandbox.batch_utils import CLOCK_SKEW_MARGIN
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import constants
@@ -136,6 +137,21 @@ class ObservabilityConfig(BaseModel):
   trace_service_name: str = "agent-sandbox-rl"
 
 
+class BatchClaimConfig(BaseModel):
+  """SDK batch settings for ``FleetConfig(claim_mode="batch")``. ``None`` keeps the
+  SDK's default."""
+
+  create_rps: Annotated[float | None, Field(gt=0)] = None
+  max_in_flight: Annotated[int | None, Field(ge=1)] = None
+  # Longer than the SDK's 60 s, because losing the Lease ends every in-flight
+  # rollout of the batch, and a driver that shares its process with a trainer can
+  # stall for tens of seconds. Renewals happen every lease_duration // 3 per
+  # fleet process. The SDK needs more than its clock skew margin.
+  lease_duration: Annotated[int, Field(gt=CLOCK_SKEW_MARGIN)] = 300
+  # Seconds one claim may be held after it is Ready; part of its shutdownTime.
+  work_budget: Annotated[int, Field(ge=1)] = 3600
+
+
 class ClusterConfig(BaseModel):
   """A single target cluster. Defaults to the ambient kube context."""
 
@@ -233,6 +249,10 @@ class FleetConfig(BaseModel):
   # recognised before the timeout.
   claim_timeout: int | None = None
   fail_fast: FailFastPolicy = Field(default_factory=FailFastPolicy)
+  # constants.CLAIM_MODES. "batch" claims through one SDK batch per cluster; see
+  # `batch_claims` for its settings.
+  claim_mode: str = "per_claim"
+  batch_claims: BatchClaimConfig = Field(default_factory=BatchClaimConfig)
   # Pre-pull (setup(prepull=True) / fleet.prepull()): images per DaemonSet pod,
   # how many DaemonSets pull at once per node, whether each is deleted once its
   # nodes are ready, and whether to drop the page cache afterwards (privileged
@@ -362,6 +382,14 @@ class FleetConfig(BaseModel):
     if v not in constants.RUN_ISOLATION_MODES:
       raise ValueError(f"unknown run_isolation '{v}'; choose from "
                        f"{list(constants.RUN_ISOLATION_MODES)}")
+    return v
+
+  @field_validator("claim_mode")
+  @classmethod
+  def _known_claim_mode(cls, v: str) -> str:
+    if v not in constants.CLAIM_MODES:
+      raise ValueError(f"unknown claim_mode '{v}'; choose from "
+                       f"{list(constants.CLAIM_MODES)}")
     return v
 
   @field_validator("run_id")

@@ -35,6 +35,7 @@ from .capacity import (
 )
 from .cluster import Cluster, ClusterRegistry, build_api_client
 from .config import (
+    BatchClaimConfig,
     ClusterConfig,
     FailFastPolicy,
     FleetConfig,
@@ -109,6 +110,7 @@ __all__ = [
     "TemplateSpec",
     "ResourceSpec",
     "ObservabilityConfig",
+    "BatchClaimConfig",
     "FailFastPolicy",
     # sizing
     "compute_replicas",
