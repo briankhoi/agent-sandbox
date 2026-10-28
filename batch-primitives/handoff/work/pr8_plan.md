@@ -1,6 +1,6 @@
 # PR 8 plan: claim-list memory (was "7b", tasks.md row 4.1)
 
-Status: built on `feat/batch-8-list-memory` (`e5367671` on PR 7 `91d5ffc4`) and measured on `review/pr8/bench` (`99ef5e56`, `work/results/C1-pr8-impl.md`). Verified 2026-10-27 (ACCEPT WITH FIXES). Decisions settled by Brian 2026-10-28: keep commits 1–3 and commit 6 (`managedFields` trim); drop commits 4 and 5 (`PartialObjectMetadataList` count and deletecollection) and the sync metadata `ApiClient`; fold `del page` (4 lines) and per-page `_request_timeout` docstrings into commits 1 and 2 (`work/prompts/C2-pr8-fixes.md`); handle pre-existing sync `deletecollection` urllib3 retries in a separate small PR.
+Status: **done** on `feat/batch-8-list-memory` (`219985c0`, 4 commits on PR 7 `91d5ffc4`; C1-to-C2 delta `review-diff/pr8-c2` `00ecc42d`) and measured on `review/pr8/bench` (`99ef5e56`, `work/results/C1-pr8-impl.md`, `work/results/C2-pr8-fixes.md`). Verified 2026-10-28 (ACCEPT). Decisions settled by Brian 2026-10-28: keep commits 1–3 and commit 6 (`managedFields` trim, now commit 4); drop commits 4 and 5 (`PartialObjectMetadataList` count and deletecollection) and the sync metadata `ApiClient`; fold `del page` (4 lines) and per-page `_request_timeout` docstrings into commits 1 and 2; handle pre-existing sync `deletecollection` urllib3 retries in 22/N.
 
 ## Pins
 - Code read at PR 7 head `a26979f1` (`origin/feat/batch-7a-create-path`, 2026-10-22 14:51). SDK paths below are under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.

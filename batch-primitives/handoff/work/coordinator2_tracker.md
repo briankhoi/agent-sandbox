@@ -5,7 +5,7 @@ Brief: `handoff/work/coordinator2_prompt.md`. Prompts in `handoff/work/prompts/`
 | Item | Prompt | Status | Last result | Open decisions |
 | :-- | :-- | :-- | :-- | :-- |
 | B. Task 4.4 type tightening + transport mypy fix | `prompts/B-types-plan.md`, `prompts/B2-types-fold.md` (ran 10-26; result `results/B2-types-fold.md` verified 23:05: ACCEPT WITH FIXES, missing Raises line), fix `prompts/B3-raises-docstring.md` (reviewed, pushed 23:07) | plan `type_tightening_plan.md` written (pinned at old heads); verified 22:59 (rerun after reboot): ACCEPT WITH FIXES (fix A larger than needed: one-line cast B or A2 smallest, all clean on 36.1.0 and 33.3.0 at `df4dbeb2` and `deee6702`; stub wording wrong; D5 must say the force-reinstall works around kubernetes 36.0.0, already excluded; re-pin SHAs 780b8aa8->df4dbeb2 etc.; typed helper in PR 6 conflicts with PR 7 `d99b3c46`; add `object` keep rows) | report pasted by Brian 22:17 | B approved 00:16 (one-line cast in transport; reaper's own loose types folded into reaper; open-PR and upstream types plus Lease typing in one types PR after PR 7, later). B3 and B5 not decided. Stack not settled (Brian 00:13) |
-| C. Task 4.1 PR 8 | `prompts/C-pr8-plan.md`, `prompts/C1-pr8-impl.md` (ran 10-27; result `results/C1-pr8-impl.md` verified 23:37: ACCEPT WITH FIXES), `prompts/C2-pr8-fixes.md` | PR 8 `feat/batch-8-list-memory` `e5367671` built and benchmarked on `review/pr8/bench` `99ef5e56`; verified 23:37: ACCEPT WITH FIXES. Decisions 1–4 settled 10-28 00:05 | `results/C1-pr8-impl.md` | Settled 10-28 00:05: keep commit 6 (`managedFields`), drop commits 4 & 5 (`PartialObjectMetadataList` count & deletecollection) and sync metadata route; fold `del page` (4 lines) + per-page timeout docstring into commits 1 & 2 (`C2-pr8-fixes.md`); separate small PR for sync `deletecollection` urllib3 retries (needs base/slot) |
+| C. Task 4.1 PR 8 | `prompts/C-pr8-plan.md`, `prompts/C1-pr8-impl.md` (ran 10-27), `prompts/C2-pr8-fixes.md` (ran 10-28; result `results/C2-pr8-fixes.md` verified 01:08: ACCEPT) | PR 8 `feat/batch-8-list-memory` `219985c0` (4 commits on `91d5ffc4`) verified and ready (`review-diff/pr8-c2` `00ecc42d`); bench on `review/pr8/bench` `99ef5e56` | `results/C2-pr8-fixes.md` | PR 8 (20/N) done. Next: 21/N types PR and 22/N sync `deletecollection` urllib3 retry PR (approved by Brian 10-28 01:00: "also, we can have it be 22/n for #3") |
 
 ## Live heads at start (2026-10-22 22:13)
 upstream `feature/batch-claim` `d07e8941`; TLS `0e586d47`; PR 2 `520a37b1`; PR 5 `defa5411`; PR 6 `b1e13656`; transport `760f8796` (pool commit `df4dbeb2`); reaper `ab0635f9`; PR 7 `deee6702`; `bench/batch-claim` `4a205e9f`; `bench/async-mem-probe` `2ad745c0`.
@@ -28,6 +28,7 @@ Checklist: pushed SHAs/trees/authors/no trailers; working rules (Minimal fixes: 
 - 2026-10-27 23:58: "can you be more concise please."
 - 2026-10-28 00:01: "this is perfect, please keep being this concise from now on. a few things - what is the harm in keeping these commits if they contribute toward optimization? 2, 3, 4 can you give me more context"
 - 2026-10-28 00:05 (C decisions 1–4): "i see. i approve of your recommendations for 1, 3, 4, which means we drop 2" (1: keep commit 6 `managedFields`, drop commits 4 and 5 metadata-only count and deletecollection; 2: drop sync metadata route with commits 4 and 5; 3: separate small PR for sync `deletecollection` urllib3 retries; 4: fold `del page` into commits 1 and 2).
+- 2026-10-28 01:00 (C2 & decision 3 slot): "also, we can have it be 22/n for #3" (sync `deletecollection` urllib3 retry PR is 22/N, after 21/N types PR).
 
 ## B2 copies (10-26 23:01, verified)
 live -> copy: transport `64bc8872 -> 041c0b02`, reaper `f03fb3cb -> 64f38bf5` (B3 will replace), PR 7 `fa10f75b -> 819458d6` (B3 will replace). PR 6 `fde1f963`. Verifier recommends keeping all three B2 choices (BatchError raise, `dict[str, str]`, `_continue=` direct).
@@ -54,3 +55,6 @@ PR 8 `feat/batch-8-list-memory` `e5367671` on `91d5ffc4`: ACCEPT WITH FIXES (no 
 
 ## C decisions settled 2026-10-28 00:05
 Brian approved recommendations for 1, 3, 4 and dropped 2 ("i see. i approve of your recommendations for 1, 3, 4, which means we drop 2"). Writing and reviewing `prompts/C2-pr8-fixes.md` to drop commits 4 & 5, keep commit 6 as commit 4, and fold `del page` and the per-page `_request_timeout` docstring into commits 1 & 2.
+
+## C2 verified 2026-10-28 01:08 (ACCEPT)
+PR 8 `feat/batch-8-list-memory` `219985c0` (4 commits on `91d5ffc4`, C1-to-C2 delta `review-diff/pr8-c2` `00ecc42d`): verified by fresh subagent (`2357fa77`), ACCEPT with 0 blockers/violations. Brian approved 22/N for the sync `deletecollection` retry PR ("also, we can have it be 22/n for #3").
