@@ -1,6 +1,6 @@
 # Type tightening plan (task 4.4), proposal only
 
-Status: awaiting Brian's OK. No code was changed. Nothing here goes into an open PR until Brian approves it.
+Status: 17/N (`async_k8s_helper.py` `cast`) and 18/N (`lease_owner_reference`, `owner_references`, reaper `_continue=`) folded and synced 2026-10-27 (`9fa22b54`, `e531baf3`). 21/N (`feat/batch-9-types`: typed `helper` parameters, `V1Lease` methods, and `lease_parts(lease)` raising `BatchError`) approved by Brian 2026-10-28; implementation prompt ready at `work/prompts/B5-types-pr.md`. B4 (`work/prompts/B4-asyncio-stub-fix.md`) deferred per Brian 2026-10-28.
 
 - Pinned (2026-10-22 14:50Z): PR 7 `a26979f1`, transport `5affc426`, reaper `d4fa3400`, PR 6 `43c0999f`, PR 5 `ad2317c9`, PR 2 `f3b61c61`, fu6 `5c51feca`, upstream base `255d15fc`.
 - Re-checked after the reboot and restack (2026-10-22 22:50Z): PR 7 `deee6702`, transport `760f8796`, PR 6 `b1e13656`. The restack adds or removes no `Any`, `cast(` or ignore (verified, diff grep). `async_k8s_helper.py` is unchanged. Line numbers shift in `k8s_helper.py` (-2 after line 61, so the pool cast is now `:111` and the Lease methods `:613-648`), `sandbox_batch.py` (+4) and `async_sandbox_batch.py` (`helper: Any` at `:1474,1507,1528`, `_write_renewal` at `:1278`). Section 1 was re-measured on the new heads with a freshly built 33.3.0 venv: same results.
