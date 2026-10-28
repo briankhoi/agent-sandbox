@@ -1,0 +1,11 @@
+=== 2026-10-28T04:58:46Z starting Stage 1 (18 core warm runs: w160, w640, w1280 x per-claim, batch-unbounded, batch-default) ===
+04:58:47 w160-per-claim-run1
+04:59:38 w160-batch-unbounded-run1
+05:00:37 w160-batch-default-run1
+05:01:37 w160-batch-unbounded-run2
+05:02:36 w160-batch-default-run2
+05:03:36 w160-per-claim-run2
+05:04:37 w640-per-claim-run1
+05:07:35 w640-batch-unbounded-run1
+05:11:33 w640-batch-default-run1
+05:15:34 w640-batch-unbounded-run2

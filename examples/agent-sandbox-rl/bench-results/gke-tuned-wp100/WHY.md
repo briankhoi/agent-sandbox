@@ -1,0 +1,3 @@
+Partial run with --sandbox-warm-pool-concurrent-workers=100 (matching examples/agent-sandbox-rl/README.md) on top of docs/performance-tuning.md Config H.
+At w640, 100 concurrent warm-pool workers immediately refilling 160 pools inside GKE workload-low (where custom APF PriorityLevelConfigurations are capped/blocked by GKE guardrails) drove apf_wait_s from 9.49s (stock, wp=1) to 1473.03s (155x) and triggered 49-104 HTTP 429s on controller PATCH sandboxclaims/sandboxes (42.7ms -> 290.2ms).
+Archived as an empirical multi-pool APF finding; switched bench-results/gke-tuned to Config H warm-pool-concurrent-workers=2 (with 200 sandbox & 200 claim workers).

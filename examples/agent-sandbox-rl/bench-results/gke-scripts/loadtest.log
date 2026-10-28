@@ -1,0 +1,24 @@
+=== 2026-10-28T04:26:46Z draining rl-bench pools to 0 ===
+drained rl-bench: {'warm_wait_s': 86.91655143400203, 'pods_in_namespace': 0, 'sandboxes_in_namespace': 0}
+=== 2026-10-28T04:28:20Z starting stock loadtest_arms.sh (LT_RUNS=2) ===
+04:28:20 mc160-per-claim-run1
+  exit=0 naive: wall=8.1s ok=160/160 peak=160
+04:28:30 mc160-batch-unbounded-run1
+  exit=0 naive: wall=12.0s ok=160/160 peak=160
+04:28:43 mc160-batch-defaults-run1
+  exit=0 naive: wall=9.6s ok=160/160 peak=160
+04:28:54 mc40-per-claim-run1
+  exit=0 naive: wall=49.7s ok=160/160 peak=160
+04:29:46 mc40-batch-unbounded-run1
+  exit=0 naive: wall=12.2s ok=160/160 peak=160
+04:29:59 mc160-batch-unbounded-run2
+  exit=0 naive: wall=12.4s ok=160/160 peak=160
+04:30:13 mc160-batch-defaults-run2
+  exit=0 naive: wall=59.2s ok=160/160 peak=160
+04:31:14 mc40-per-claim-run2
+  exit=0 naive: wall=13.3s ok=160/160 peak=160
+04:31:29 mc40-batch-unbounded-run2
+  exit=0 naive: wall=14.2s ok=160/160 peak=160
+04:31:44 mc160-per-claim-run2
+  exit=0 naive: wall=62.6s ok=160/160 peak=160
+=== 2026-10-28T04:32:48Z STOCK-LOADTEST-DONE ===

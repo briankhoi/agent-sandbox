@@ -1,0 +1,49 @@
+23:35:27 w160-per-claim-run1
+23:38:02 w160-batch-unbounded-run1
+23:40:41 w160-batch-default-run1
+23:43:08 w160-per-claim-c50-run1
+23:45:34 w160-batch-c50-run1
+23:48:25 w160-fill-unbounded-run1
+23:51:16 w160-fill-default-run1
+23:53:59 w160-batch-unbounded-run2
+23:56:33 w160-batch-default-run2
+=== paused 23:58:06 for APF diagnostic (in-flight run discarded)
+01:52:17 w160-per-claim-run1
+01:53:05 w160-batch-unbounded-run1
+01:54:01 w160-batch-default-run1
+01:54:57 w160-per-claim-c50-run1
+01:56:43 w160-batch-c50-run1
+01:57:51 w160-fill-unbounded-run1
+01:59:07 w160-batch-unbounded-run2
+02:00:17 w160-batch-default-run2
+02:01:15 w160-per-claim-c50-run2
+02:02:14 w160-batch-c50-run2
+02:03:13 w160-fill-unbounded-run2
+02:04:15 w160-per-claim-run2
+02:05:13 w640-per-claim-run1
+02:08:03 w640-batch-unbounded-run1
+02:13:06 w640-batch-default-run1
+02:17:43 w640-fill-unbounded-run1
+02:21:40 w640-batch-unbounded-run2
+02:26:18 w640-batch-default-run2
+02:31:03 w640-fill-unbounded-run2
+02:34:57 w640-per-claim-run2
+02:38:52 w1280-per-claim-run1
+02:44:51 w1280-batch-unbounded-run1
+02:52:24 w1280-batch-default-run1
+03:01:36 w1280-fill-unbounded-run1
+03:09:14 w1280-batch-unbounded-run2
+03:21:46 w1280-batch-default-run2
+03:29:12 w1280-fill-unbounded-run2
+03:40:24 w1280-per-claim-run2
+03:48:37 c640-per-claim-run1
+03:55:47 c640-batch-unbounded-run1
+04:00:02 c640-batch-unbounded-run2
+04:04:25 c640-per-claim-run2
+=== 2026-10-28T04:08:51Z SUITE-DONE ===
+=== 2026-10-28T04:10:40Z retrying w1280-per-claim-run1 once ===
+04:10:41 w1280-per-claim-run1
+=== 2026-10-28T04:16:35Z RETRY-DONE; draining rl-bench pools to 0 ===
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+AttributeError: module 'tests.gke_scale_bench' has no attribute 'parse_args'

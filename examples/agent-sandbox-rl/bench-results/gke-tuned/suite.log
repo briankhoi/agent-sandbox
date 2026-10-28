@@ -1,0 +1,24 @@
+=== 2026-10-28T05:20:35Z starting Stage 1 (18 core warm runs: w160, w640, w1280 x per-claim, batch-unbounded, batch-default) ===
+deleting 0 claims and 1 Leases left by an earlier run
+05:20:36 w160-per-claim-run1
+05:21:41 w160-batch-unbounded-run1
+05:22:39 w160-batch-default-run1
+05:23:38 w160-batch-unbounded-run2
+05:24:36 w160-batch-default-run2
+05:25:35 w160-per-claim-run2
+05:26:34 w640-per-claim-run1
+05:29:38 w640-batch-unbounded-run1
+05:33:44 w640-batch-default-run1
+05:37:28 w640-batch-unbounded-run2
+05:41:30 w640-batch-default-run2
+05:45:23 w640-per-claim-run2
+05:49:22 w1280-per-claim-run1
+05:55:22 w1280-batch-unbounded-run1
+06:02:55 w1280-batch-default-run1
+06:10:52 w1280-batch-unbounded-run2
+06:18:32 w1280-batch-default-run2
+06:26:04 w1280-per-claim-run2
+bench-results/gke-tuned/summary.md
+=== 2026-10-28T06:33:31Z STAGE1-CORE-DONE ===
+=== 2026-10-28T06:33:31Z starting Stage 2 (6 fill-unbounded wave runs: w160, w640, w1280) ===
+06:33:32 w160-fill-unbounded-run1

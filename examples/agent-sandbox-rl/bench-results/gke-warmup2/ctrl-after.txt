@@ -1,0 +1,10 @@
+rest_client_request_duration_seconds_sum{host="34.118.224.1:443",verb="DELETE"} 84.03729911399992
+rest_client_request_duration_seconds_count{host="34.118.224.1:443",verb="DELETE"} 1595
+rest_client_request_duration_seconds_sum{host="34.118.224.1:443",verb="GET"} 1079.4570363579971
+rest_client_request_duration_seconds_count{host="34.118.224.1:443",verb="GET"} 5204
+rest_client_request_duration_seconds_sum{host="34.118.224.1:443",verb="PATCH"} 66080.64558161273
+rest_client_request_duration_seconds_count{host="34.118.224.1:443",verb="PATCH"} 225164
+rest_client_request_duration_seconds_sum{host="34.118.224.1:443",verb="POST"} 20177.374500171267
+rest_client_request_duration_seconds_count{host="34.118.224.1:443",verb="POST"} 101713
+rest_client_request_duration_seconds_sum{host="34.118.224.1:443",verb="PUT"} 6076.546999834014
+rest_client_request_duration_seconds_count{host="34.118.224.1:443",verb="PUT"} 18387

@@ -1,0 +1,37 @@
+load test: 40 images x 4 = 160 tasks; strategies=['naive']
+  running naive …
+    naive: wall=12.4s ok=160/160 peak=160
+
+wrote bench-results/gke-scripts/loadtest/mc160-batch-unbounded-run2.md
+
+ — per stage, per strategy
+
+> **wall** is the true end-to-end time for the whole batch. Per-phase columns are **summed across concurrency**, so they exceed the wall-clock — the `avg` figures are the per-task experience. **claim avg/max** is the *time-to-sandbox* (request → ready, claimed sandbox); **efficiency** = fastest strategy's wall ÷ this strategy's wall.
+
+| strategy | wall | prep (create+wait) | pool-ready avg/max | claim avg/max | claims | net task Σ/avg | warm pools (peak/total/created) | ok | efficiency |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **naive** | 12.4s | 245.3s | 6.0/9s | 1.6/3s | 160 | 0.0/0.00s | 160/160/40 | 160/160 | 100% |
+
+## Metric glossary
+
+Each line in a strategy's RunReport reads `phase  total_s  (n=count, max=slowest)`:
+
+| field | meaning |
+|---|---|
+| `total_s` | wall-time **summed across all concurrent workers** spent in this phase |
+| `n` | how many times the phase ran (one per pool, or one per task) |
+| `max` | the slowest single occurrence — the tail latency for that phase |
+
+| phase | what it measures |
+|---|---|
+| `preflight` | one-time cluster checks (API reachable, namespace, CRDs) before any work |
+| `plan` | compute the image→warm-pool plan (in-memory; ~0s) |
+| `create_warmpool` | issue the `SandboxWarmPool` create calls (n = pools created) |
+| `wait_pool_ready` | block until a pool replica is Ready — the **image pull + pod start** cost |
+| `prefetch` | *(pipelined only)* background warm of the next window, overlapped with execution |
+| `claim` | request a sandbox → have a claimed, ready one — **time-to-sandbox** |
+| `process` | time inside `process_fn` (the task itself; 0s here by design) |
+| `release` | return the sandbox / claim to the pool |
+| `teardown` | delete pools + templates at the end of the run |
+
+

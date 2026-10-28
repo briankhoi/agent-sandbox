@@ -1,0 +1,362 @@
+{
+  "params": {
+    "images": 40,
+    "tasks_per_image": 4,
+    "total_tasks": 160,
+    "strategies": "naive",
+    "claim_mode": "batch",
+    "batch_claims": "unbounded",
+    "max_concurrent": 40,
+    "max_warmpool_size": 8,
+    "warm_per_task": true,
+    "colocate_replicas": false,
+    "window_size": null,
+    "task_duration_s": 0.0,
+    "image_template": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g{i:03d}"
+  },
+  "plan": [
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g000",
+      "pool": "pool-r2e-img-c409b8bd2b09",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g001",
+      "pool": "pool-r2e-img-0f003c7dd919",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g002",
+      "pool": "pool-r2e-img-f976488e79c9",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g003",
+      "pool": "pool-r2e-img-9ee3bf318832",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g004",
+      "pool": "pool-r2e-img-9f6ebe7b25e0",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g005",
+      "pool": "pool-r2e-img-52fa9ce3c851",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g006",
+      "pool": "pool-r2e-img-4e61c9d979b8",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g007",
+      "pool": "pool-r2e-img-ad4d3ffb821c",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g008",
+      "pool": "pool-r2e-img-ca14c438b94d",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g009",
+      "pool": "pool-r2e-img-75506d761caa",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g010",
+      "pool": "pool-r2e-img-bcef38296375",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g011",
+      "pool": "pool-r2e-img-ff4e351f62dc",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g012",
+      "pool": "pool-r2e-img-7f8d23da299a",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g013",
+      "pool": "pool-r2e-img-8526f60c924d",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g014",
+      "pool": "pool-r2e-img-c10011204f6f",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g015",
+      "pool": "pool-r2e-img-b48ebbc3aa2f",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g016",
+      "pool": "pool-r2e-img-5bff553f120c",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g017",
+      "pool": "pool-r2e-img-3408174e73a6",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g018",
+      "pool": "pool-r2e-img-790a453f6965",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g019",
+      "pool": "pool-r2e-img-f14b729a8950",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g020",
+      "pool": "pool-r2e-img-ef67267bcd7e",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g021",
+      "pool": "pool-r2e-img-b389c806dd86",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g022",
+      "pool": "pool-r2e-img-d3403edb6a29",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g023",
+      "pool": "pool-r2e-img-833c38e8a078",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g024",
+      "pool": "pool-r2e-img-c644ca6c3a85",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g025",
+      "pool": "pool-r2e-img-29541d0eeeb6",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g026",
+      "pool": "pool-r2e-img-e077f1583f5d",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g027",
+      "pool": "pool-r2e-img-b23c89bf558b",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g028",
+      "pool": "pool-r2e-img-b2f1a0b486c6",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g029",
+      "pool": "pool-r2e-img-98fbff509d6d",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g030",
+      "pool": "pool-r2e-img-c81a00278346",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g031",
+      "pool": "pool-r2e-img-438a4d5edd1e",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g032",
+      "pool": "pool-r2e-img-b61569742ae5",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g033",
+      "pool": "pool-r2e-img-659ee300f540",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g034",
+      "pool": "pool-r2e-img-c2b09f10fdc8",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g035",
+      "pool": "pool-r2e-img-c9d770fce3a9",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g036",
+      "pool": "pool-r2e-img-213cd4e91caf",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g037",
+      "pool": "pool-r2e-img-ce133163ba2d",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g038",
+      "pool": "pool-r2e-img-31dd7125ed17",
+      "replicas": 4,
+      "cluster": "loadtest"
+    },
+    {
+      "image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/rl-task:g039",
+      "pool": "pool-r2e-img-45eb80fc25a9",
+      "replicas": 4,
+      "cluster": "loadtest"
+    }
+  ],
+  "environment": {
+    "loadtest": {
+      "context": "(ambient)",
+      "namespace": "rl-loadtest",
+      "k8s_version": "v1.37.1-gke.1697000",
+      "nodes": 28,
+      "node_pools": [
+        "controller-pool",
+        "default-pool",
+        "driver",
+        "sandbox"
+      ],
+      "instance_types": [
+        "e2-standard-4",
+        "e2-standard-8",
+        "n2-standard-8"
+      ],
+      "region": "us-central1"
+    }
+  },
+  "results": [
+    {
+      "strategy": "naive",
+      "wall_s": 22.64,
+      "ok": 160,
+      "total": 160,
+      "report": {
+        "strategy": "naive",
+        "total_s": 22.64,
+        "phases": {
+          "preflight": {
+            "count": 1,
+            "total_s": 0.21,
+            "max_s": 0.21
+          },
+          "plan": {
+            "count": 1,
+            "total_s": 0.0,
+            "max_s": 0.0
+          },
+          "create_warmpool": {
+            "count": 40,
+            "total_s": 6.27,
+            "max_s": 0.27
+          },
+          "wait_pool_ready": {
+            "count": 40,
+            "total_s": 611.06,
+            "max_s": 17.97
+          },
+          "claim": {
+            "count": 160,
+            "total_s": 113.03,
+            "max_s": 1.71
+          },
+          "process": {
+            "count": 160,
+            "total_s": 0.0,
+            "max_s": 0.0
+          },
+          "release": {
+            "count": 160,
+            "total_s": 14.51,
+            "max_s": 0.23
+          },
+          "teardown": {
+            "count": 1,
+            "total_s": 0.56,
+            "max_s": 0.56
+          }
+        },
+        "claims": 160,
+        "tasks_ok": 160,
+        "tasks_err": 0,
+        "warm_replicas_total": 160,
+        "warm_replicas_peak": 160,
+        "snapshots": {
+          "restored": 0,
+          "cold": 0
+        },
+        "environment": {
+          "loadtest": {
+            "context": "(ambient)",
+            "namespace": "rl-loadtest",
+            "k8s_version": "v1.37.1-gke.1697000",
+            "nodes": 28,
+            "node_pools": [
+              "controller-pool",
+              "default-pool",
+              "driver",
+              "sandbox"
+            ],
+            "instance_types": [
+              "e2-standard-4",
+              "e2-standard-8",
+              "n2-standard-8"
+            ],
+            "region": "us-central1"
+          }
+        }
+      }
+    }
+  ]
+}

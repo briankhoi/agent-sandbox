@@ -1,0 +1,46 @@
+# GKE claim-mode bench status
+
+Regenerated from the result files on every suite start and run.
+
+- [x] w160-per-claim-run1 ready_last=2.97s
+- [x] w160-batch-unbounded-run1 ready_last=2.74s
+- [x] w160-batch-default-run1 ready_last=2.72s
+- [ ] w160-per-claim-c50-run1
+- [ ] w160-batch-c50-run1
+- [ ] w160-fill-unbounded-run1
+- [ ] w160-fill-default-run1
+- [x] w160-batch-unbounded-run2 ready_last=2.67s
+- [x] w160-batch-default-run2 ready_last=2.76s
+- [ ] w160-per-claim-c50-run2
+- [ ] w160-batch-c50-run2
+- [ ] w160-fill-unbounded-run2
+- [ ] w160-fill-default-run2
+- [x] w160-per-claim-run2 ready_last=3.49s
+- [x] w640-per-claim-run1 ready_last=13.05s
+- [x] w640-batch-unbounded-run1 ready_last=19.28s
+- [x] w640-batch-default-run1 ready_last=12.30s
+- [ ] w640-per-claim-c50-run1
+- [ ] w640-batch-c50-run1
+- [ ] w640-fill-unbounded-run1
+- [ ] w640-fill-default-run1
+- [ ] w640-batch-unbounded-run2
+- [ ] w640-batch-default-run2
+- [ ] w640-per-claim-c50-run2
+- [ ] w640-batch-c50-run2
+- [ ] w640-fill-unbounded-run2
+- [ ] w640-fill-default-run2
+- [ ] w640-per-claim-run2
+- [ ] w1280-per-claim-run1
+- [ ] w1280-batch-unbounded-run1
+- [ ] w1280-batch-default-run1
+- [ ] w1280-per-claim-c50-run1
+- [ ] w1280-batch-c50-run1
+- [ ] w1280-fill-unbounded-run1
+- [ ] w1280-fill-default-run1
+- [ ] w1280-batch-unbounded-run2
+- [ ] w1280-batch-default-run2
+- [ ] w1280-per-claim-c50-run2
+- [ ] w1280-batch-c50-run2
+- [ ] w1280-fill-unbounded-run2
+- [ ] w1280-fill-default-run2
+- [ ] w1280-per-claim-run2

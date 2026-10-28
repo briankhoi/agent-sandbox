@@ -1,0 +1,2 @@
+All 8 w160 runs (w160-per-claim-run1, w160-batch-unbounded-run1/run2, w160-batch-default-run1, w160-per-claim-c50-run1, w160-batch-c50-run1, w160-fill-unbounded-run1, w160-fill-default-run1): ran on the pre-resize GKE control plane (122 APF seats, 23:35-23:57Z) before GKE grew it to 243 seats; w160-batch-unbounded-run2 also overlapped the 23:52Z RESIZE_CLUSTER. Superseded per plan.md section 7 (Brian chose option A, 2026-10-28T00:13Z).
+w1280-per-claim-run1.json: step 1 hit 14 HTTP 429 Too Many Requests errors (started 1266/1280); retried once per benchmark protocol.

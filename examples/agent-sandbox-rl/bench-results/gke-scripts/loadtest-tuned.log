@@ -1,0 +1,23 @@
+=== 2026-10-28T04:38:48Z starting tuned loadtest_arms.sh (mc40 & mc160, LT_RUNS=2) ===
+04:38:48 mc160-per-claim-run1
+  exit=0 naive: wall=10.6s ok=160/160 peak=160
+04:39:00 mc160-batch-unbounded-run1
+  exit=0 naive: wall=17.7s ok=160/160 peak=160
+04:39:19 mc160-batch-defaults-run1
+  exit=0 naive: wall=21.1s ok=160/160 peak=160
+04:39:42 mc40-per-claim-run1
+  exit=0 naive: wall=55.9s ok=160/160 peak=160
+04:40:39 mc40-batch-unbounded-run1
+  exit=0 naive: wall=22.6s ok=160/160 peak=160
+04:41:03 mc160-batch-unbounded-run2
+  exit=0 naive: wall=69.0s ok=160/160 peak=160
+04:42:14 mc160-batch-defaults-run2
+  exit=0 naive: wall=22.1s ok=160/160 peak=160
+04:42:37 mc40-per-claim-run2
+  exit=0 naive: wall=67.4s ok=160/160 peak=160
+04:43:46 mc40-batch-unbounded-run2
+  exit=0 naive: wall=25.2s ok=160/160 peak=160
+04:44:13 mc160-per-claim-run2
+  exit=0 naive: wall=67.0s ok=160/160 peak=160
+=== 2026-10-28T04:45:22Z starting tuned high-scale loadtest.py (mc640 & mc1280, RUNS=2) ===
+04:45:22 mc640-per-claim-run1
