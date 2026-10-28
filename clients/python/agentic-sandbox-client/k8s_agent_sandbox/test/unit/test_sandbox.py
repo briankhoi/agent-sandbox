@@ -480,5 +480,19 @@ def test_callbacks_are_released_only_between_transport_operations():
     sandbox.close_connection()
 
 
+def test_request_keeps_the_pod_ip_callback_it_connected_with():
+    config = SandboxDirectConnectionConfig(api_url="http://sandbox.invalid")
+    sandbox = Sandbox("claim", "sandbox-id", "ns", connection_config=config, k8s_helper=MagicMock())
+    sandbox.k8s_helper.get_sandbox.return_value = {"status": {"podIPs": [{"ip": "10.0.0.5"}]}}
+    connector = sandbox.connector
+    connector.session = MagicMock()
+    connector.session.request.return_value = MagicMock(is_redirect=False, status_code=200)
+    # The release stands in for a close_connection() on another thread right after the request connected.
+    with patch.object(connector.strategy, "verify_connection", side_effect=connector._release_sandbox_callbacks):
+        connector.send_request("GET", "health")
+    assert connector.session.request.call_args.kwargs["headers"]["X-Sandbox-Pod-IP"] == "10.0.0.5"
+    sandbox.close_connection()
+
+
 if __name__ == '__main__':
     unittest.main()
