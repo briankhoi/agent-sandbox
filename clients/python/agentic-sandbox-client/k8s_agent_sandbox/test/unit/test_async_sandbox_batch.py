@@ -65,15 +65,18 @@ def _lease(
     lease_duration_seconds=BATCH_DEFAULT_LEASE_DURATION_SECONDS,
     annotations=None,
     resource_version="10",
+    uid=None,
+    lease_transitions=None,
 ):
     return k8s_client.V1Lease(
         metadata=k8s_client.V1ObjectMeta(
-            name="batch-b1", resource_version=resource_version, annotations=annotations or {}
+            name="batch-b1", resource_version=resource_version, annotations=annotations or {}, uid=uid
         ),
         spec=k8s_client.V1LeaseSpec(
             holder_identity=holder_identity,
             renew_time=renew_time,
             lease_duration_seconds=lease_duration_seconds,
+            lease_transitions=lease_transitions,
         ),
     )
 
@@ -1003,8 +1006,9 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
         self.mock_client.k8s_helper.replace_batch_lease.assert_called_once()
 
     async def test_release_conflict_succeeds_only_once_the_lease_is_not_held(self):
-        # A concurrent detach() can release the Lease between this call's read and write, and a late renewal
-        # of this handle can leave it held, which detach() releases with one more write.
+        # A write from an earlier detach() call that timed out but landed can release the Lease between this
+        # call's read and write, and a late renewal of this handle can leave it held, which detach() releases
+        # with one more write.
         for after_conflict, writes, released in (
             ("released", [409], True),
             ("deleted", [409], True),
@@ -1041,19 +1045,20 @@ class TestDetach(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(written.spec.holder_identity)
                 self.assertEqual(written.spec.lease_duration_seconds, 17)
 
-    async def test_release_during_detach_keeps_the_detach_grace(self):
-        # release() clears the stored grace, which a detach() that is already writing must not pick up.
+    async def test_another_detach_during_the_write_keeps_this_calls_grace(self):
+        # Another detach(grace=99) stores its grace while this call writes the Lease, and this call's
+        # writes must keep the grace it started with.
         current = _lease(holder_identity=self.handle._holder_identity)
 
-        def release_then_conflict(*args, **kwargs):
-            if self.handle._detach_grace is not None:
-                self.handle._detach_grace = None
+        def other_detach_then_conflict(*args, **kwargs):
+            if self.handle._detach_grace != 99:
+                self.handle._detach_grace = 99
                 raise k8s_client.ApiException(status=409)
 
         self.mock_client.k8s_helper.read_batch_lease = AsyncMock(side_effect=[
             _lease(holder_identity=self.handle._holder_identity), current
         ])
-        self.mock_client.k8s_helper.replace_batch_lease = AsyncMock(side_effect=release_then_conflict)
+        self.mock_client.k8s_helper.replace_batch_lease = AsyncMock(side_effect=other_detach_then_conflict)
 
         await self.handle.detach(grace=17)
 
@@ -1165,6 +1170,8 @@ class TestClientClose(BaseAsyncBatchClientTest):
         self.assertEqual(self.client._active_batches, {})
         with self.assertRaises(BatchError):
             await handle.connect(MagicMock())
+        with self.assertRaises(BatchError):
+            await handle.detach()
 
     async def test_a_connection_that_fails_to_close_is_retried_by_the_next_cleanup(self):
         self.mock_k8s_helper.close = AsyncMock()
@@ -1328,13 +1335,14 @@ class _Cluster:
         h = self.helper
         h.get_sandbox_warmpool = AsyncMock(return_value={"spec": {"sandboxTemplateRef": {"name": "tmpl"}}})
         h.get_sandbox_template = AsyncMock(return_value={"metadata": {"name": "tmpl"}})
-        h.create_batch_lease = AsyncMock()
+        h.create_batch_lease = AsyncMock(return_value=_lease())
         h.list_sandbox_claim_objects = AsyncMock(return_value=([], "7"))
         h.watch_sandbox_claims = MagicMock(side_effect=self._watch)
         h.create_sandbox_claim = AsyncMock(side_effect=self._create)
         h.delete_sandbox_claims_by_label = AsyncMock(side_effect=lambda *a, **k: self.calls.append("deletecollection"))
         h.delete_batch_lease = AsyncMock(side_effect=lambda *a, **k: self.calls.append("delete_lease"))
-        h.read_batch_lease = AsyncMock()
+        # A Lease no handle holds, so release() takes it for its handle.
+        h.read_batch_lease = AsyncMock(return_value=_lease())
         h.replace_batch_lease = AsyncMock()
 
     async def _watch(self, *args, **kwargs):
@@ -1382,6 +1390,34 @@ async def _wait_until(condition, timeout=5.0):
         if time.monotonic() > deadline:
             raise AssertionError("condition not met in time")
         await asyncio.sleep(0.01)
+
+
+class _SignalingLock:
+    """Wraps a lock for a race test. ``start_racing`` runs a call in another task and returns
+    once that task waits for this lock or finishes, so the test needs no timed wait."""
+
+    def __init__(self, lock):
+        self._lock = lock
+        self._blocked_or_done = asyncio.Event()
+        self.tasks: list[asyncio.Task] = []
+
+    async def __aenter__(self):
+        if self._lock.locked():
+            self._blocked_or_done.set()
+        await self._lock.acquire()
+
+    async def __aexit__(self, *exc_info):
+        self._lock.release()
+
+    async def start_racing(self, target, *args):
+        async def run():
+            try:
+                await target(*args)
+            finally:
+                self._blocked_or_done.set()
+
+        self.tasks.append(asyncio.create_task(run()))
+        await asyncio.wait_for(self._blocked_or_done.wait(), 5)
 
 
 class BaseClaimBatchTest(BaseAsyncBatchClientTest):
@@ -1717,6 +1753,165 @@ class TestRelease(BaseClaimBatchTest):
         self.cluster.helper.delete_sandbox_claims_by_label.assert_not_called()
         self.cluster.helper.delete_batch_lease.assert_not_called()
 
+    @patch("k8s_agent_sandbox.batch_utils.retry_delay", return_value=0)
+    async def test_release_deletes_nothing_while_another_handle_holds_the_lease(self, _):
+        helper = self.cluster.helper
+        for name, reads, deletes in (
+            ("another holder", [_lease(holder_identity="other-handle")] * 2, []),
+            # Another handle attached and then detached, so the Lease has no holder.
+            ("an attach since this handle's last write", [_lease(lease_transitions=1)] * 2, []),
+            # The first round found no Lease. The Lease created after it belongs to another batch.
+            ("a Lease created again after a round", [None, _lease(uid="another-uid")], ["deletecollection"]),
+        ):
+            with self.subTest(name):
+                helper.reset_mock()
+                self.cluster.calls.clear()
+                helper.read_batch_lease.side_effect = reads
+                helper.list_sandbox_claim_objects.side_effect = [([_claim("b1-0")], "9"), ([], "9")]
+                handle = _make_handle(self.client)
+                self.client._active_batches[("default", "b1")] = handle
+
+                with self.assertRaises(BatchInUseError):
+                    await handle.release()
+                helper.replace_batch_lease.assert_not_awaited()
+                self.assertEqual(self.cluster.calls, deletes)
+                self.assertEqual(self.client._active_batches, {})
+
+                helper.reset_mock()
+                with self.assertRaises(BatchError):
+                    await handle.release()
+                helper.read_batch_lease.assert_not_awaited()
+
+    async def test_release_retries_one_lease_conflict_then_raises_in_use(self):
+        helper = self.cluster.helper
+        conflict = k8s_client.ApiException(status=409)
+        for name, replace_effects, error in (
+            ("a late renewal of this handle", [conflict, _lease(resource_version="11")], None),
+            ("another writer", [conflict, conflict], BatchInUseError),
+        ):
+            with self.subTest(name):
+                helper.reset_mock()
+                handle = _make_handle(self.client)
+                helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
+                helper.replace_batch_lease.side_effect = replace_effects
+                if error is None:
+                    await handle.release()
+                    helper.delete_sandbox_claims_by_label.assert_awaited_once()
+                else:
+                    with self.assertRaises(error):
+                        await handle.release()
+                    helper.delete_sandbox_claims_by_label.assert_not_awaited()
+                    helper.delete_batch_lease.assert_not_awaited()
+
+    @patch("k8s_agent_sandbox.batch_utils.retry_delay", return_value=0)
+    async def test_release_with_no_lease_deletes_the_claims_and_creates_nothing(self, _):
+        helper = self.cluster.helper
+        for name, take_error, calls in (
+            ("no Lease", None, ["deletecollection"]),
+            # The Lease may still exist, so a failed take doesn't count as finding none.
+            ("the take fails", k8s_client.ApiException(status=503), []),
+        ):
+            with self.subTest(name):
+                helper.reset_mock()
+                self.cluster.calls.clear()
+                helper.read_batch_lease.return_value = None
+                helper.read_batch_lease.side_effect = take_error
+                handle = _make_handle(self.client)
+                if take_error is None:
+                    await handle.release()
+                else:
+                    with self.assertRaises(k8s_client.ApiException):
+                        await handle.release()
+                self.assertEqual(self.cluster.calls, calls)
+                helper.create_batch_lease.assert_not_awaited()
+                self.assertEqual(handle._released, take_error is None)
+
+    @patch("k8s_agent_sandbox.batch_utils.retry_delay", return_value=0)
+    async def test_release_takes_the_lease_before_each_round_and_deletes_it_at_the_version_written(self, _):
+        helper = self.cluster.helper
+        for name, holder, resource_version in (
+            ("held by this handle", "host_1234_abcd1234", "10"),
+            # This handle's own detach landed, so no handle holds the Lease and no other handle attached.
+            ("after this handle's own detach", None, "11"),
+        ):
+            with self.subTest(name):
+                self.cluster.calls.clear()
+                handle = _make_handle(self.client)
+                helper.read_batch_lease.side_effect = (
+                    lambda *a, **k: _lease(holder_identity=holder, resource_version=resource_version)
+                )
+                written = iter(
+                    [_lease(resource_version="11"), k8s_client.ApiException(status=503), _lease(resource_version="13")]
+                )
+
+                def replace(*args, **kwargs):
+                    self.cluster.calls.append("take")
+                    result = next(written)
+                    if isinstance(result, Exception):
+                        raise result
+                    return result
+
+                helper.replace_batch_lease.side_effect = replace
+                # The second round's take fails, so only the third round deletes the Lease.
+                helper.list_sandbox_claim_objects.side_effect = [([_claim("b1-0")], "9"), ([], "9"), ([], "9")]
+                await handle.release()
+                self.assertEqual(
+                    self.cluster.calls, ["take", "deletecollection", "take", "take", "deletecollection", "delete_lease"]
+                )
+                self.assertEqual(helper.delete_batch_lease.await_args.kwargs["resource_version"], "13")
+
+    async def test_the_first_lifecycle_call_wins(self):
+        helper = self.cluster.helper
+        released = ["write", "deletecollection", "delete_lease"]
+        for first, second, second_waits, calls_while_blocked, second_error, calls in (
+            ("release", "detach", False, ["write", "deletecollection"], BatchError, released),
+            ("detach", "release", True, ["write"], BatchError, ["write"]),
+            ("release", "release", True, ["write", "deletecollection"], None, released),
+        ):
+            with self.subTest(first=first, second=second):
+                self.cluster.calls.clear()
+                handle = _make_handle(self.client)
+                lock = handle._lifecycle_lock = _SignalingLock(handle._lifecycle_lock)
+                blocked, resume = asyncio.Event(), asyncio.Event()
+                outcomes = {}
+
+                async def record(call, block):
+                    self.cluster.calls.append(call)
+                    if block and not blocked.is_set():
+                        blocked.set()
+                        await resume.wait()
+                    return _lease(resource_version="11")
+
+                helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
+
+                async def write(*args, **kwargs):
+                    return await record("write", first == "detach")
+
+                async def deletecollection(*args, **kwargs):
+                    return await record("deletecollection", True)
+
+                helper.replace_batch_lease.side_effect = write
+                helper.delete_sandbox_claims_by_label.side_effect = deletecollection
+
+                async def run(key, method):
+                    try:
+                        await getattr(handle, method)()
+                        outcomes[key] = None
+                    except Exception as e:
+                        outcomes[key] = e
+
+                first_task = asyncio.create_task(run("first", first))
+                await asyncio.wait_for(blocked.wait(), 5)
+                await lock.start_racing(run, "second", second)
+                self.assertEqual("second" in outcomes, not second_waits)
+                self.assertEqual(self.cluster.calls, calls_while_blocked)
+
+                resume.set()
+                await asyncio.gather(first_task, *lock.tasks)
+                self.assertIsNone(outcomes["first"])
+                self.assertIs(type(outcomes["second"]), second_error or type(None))
+                self.assertEqual(self.cluster.calls, calls)
+
 
 class TestClientBatchCleanup(BaseClaimBatchTest):
 
@@ -1736,6 +1931,7 @@ class TestClientBatchCleanup(BaseClaimBatchTest):
                     await getattr(self.client, cleanup)()
                 self.assertEqual({c.args[0] for c in release.call_args_list}, {claimed, attached})
 
+                self.cluster.helper.read_batch_lease.return_value = _lease(holder_identity=claimed._holder_identity)
                 await claimed.release()
                 self.cluster.helper.read_batch_lease.return_value = _lease(holder_identity=attached._holder_identity)
                 await attached.detach()
@@ -1765,13 +1961,16 @@ class TestClientBatchCleanup(BaseClaimBatchTest):
         helper.replace_batch_lease.side_effect = RuntimeError("api down")
         with self.assertRaises(RuntimeError):
             await handle.detach(grace=42)
+        helper.replace_batch_lease.side_effect = None
         helper.delete_sandbox_claims_by_label.side_effect = [k8s_client.ApiException(status=403), None]
         with self.assertRaises(k8s_client.ApiException):
             await handle.release()
 
         await self.client.delete_all()
 
-        helper.replace_batch_lease.assert_awaited_once()
+        # After the failed detach write, every Lease write is a release taking the Lease, not a detach.
+        written = [c.args[2] for c in helper.replace_batch_lease.await_args_list[1:]]
+        self.assertEqual([lease.spec.holder_identity for lease in written], [handle._holder_identity] * 2)
         helper.delete_batch_lease.assert_awaited_once()
         self.assertEqual(self.client._active_batches, {})
 
@@ -1786,16 +1985,42 @@ class TestClientBatchCleanup(BaseClaimBatchTest):
         cached.close_connection.assert_awaited_once()
         self.assertEqual(self.client._closing_batches, set())
 
+    async def test_cleanup_unregisters_a_handle_whose_batch_another_handle_holds(self):
+        handle = _make_handle(self.client)
+        cached = MagicMock(close_connection=AsyncMock(side_effect=[RuntimeError("close failed"), None]))
+        handle._connected["b1-0"] = cached
+        self.client._active_batches[("default", "b1")] = handle
+        helper = self.client.k8s_helper
+        helper.read_batch_lease.return_value = _lease(holder_identity="other-handle")
+
+        with self.assertLogs(level="WARNING") as logs:
+            await self.client.delete_all()
+        self.assertEqual(len([r for r in logs.records if "Not releasing batch" in r.getMessage()]), 1)
+        self.assertEqual(self.client._active_batches, {})
+        self.assertEqual(self.client._closing_batches, {handle})
+
+        await self.client.delete_all()
+        # The next cleanup only closes the leftover connection and never retries the release.
+        helper.read_batch_lease.assert_awaited_once()
+        self.assertEqual(cached.close_connection.await_count, 2)
+        self.assertEqual(self.client._closing_batches, set())
+        helper.delete_sandbox_claims_by_label.assert_not_awaited()
+
     async def test_atexit_cleanup_uses_the_sync_helper_and_continues_past_errors(self):
         self.client._active_batches[("ns-a", "b1")] = _make_handle(self.client, batch_id="b1", namespace="ns-a")
         self.client._active_batches[("ns-b", "b2")] = _make_handle(self.client, batch_id="b2", namespace="ns-b")
+        lease_a, lease_b = (batch._lease for batch in self.client._active_batches.values())
         with patch("k8s_agent_sandbox.async_sandbox_client.K8sHelper") as sync_helper, \
              patch("k8s_agent_sandbox.async_sandbox_client._delete_batch_objects_sync") as delete:
             delete.side_effect = [RuntimeError("down"), None]
             self.client._atexit_cleanup()
+        holder, duration = "host_1234_abcd1234", BATCH_DEFAULT_LEASE_DURATION_SECONDS
         self.assertEqual(
             [c.args for c in delete.call_args_list],
-            [(sync_helper.return_value, "ns-a", "b1", "batch-b1"), (sync_helper.return_value, "ns-b", "b2", "batch-b2")],
+            [
+                (sync_helper.return_value, "ns-a", "b1", "batch-b1", holder, duration, lease_a),
+                (sync_helper.return_value, "ns-b", "b2", "batch-b2", holder, duration, lease_b),
+            ],
         )
 
     async def test_close_stops_creator_tasks(self):

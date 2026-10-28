@@ -39,7 +39,7 @@ from .claim_adoption import validate_claim_name, validate_claim_for_adoption
 from .async_k8s_helper import AsyncK8sHelper
 from .async_sandbox import AsyncSandbox
 from .async_sandbox_batch import AsyncSandboxBatch
-from .exceptions import SandboxNotFoundError
+from .exceptions import BatchInUseError, SandboxNotFoundError
 from .k8s_helper import K8sHelper
 from .pod_metadata import build_pod_metadata, validate_labels
 from .sandbox_batch import _delete_batch_objects as _delete_batch_objects_sync
@@ -549,8 +549,9 @@ class AsyncSandboxClient(Generic[T]):
         ``work_budget`` to the run's length.
 
         Of the errors below, only ``BatchExistsError`` is a ``BatchError``. The others mean a bad
-        argument, a missing pool or template, or an API error. Failures after this call returns,
-        such as a failed create, aren't raised here but show in ``members()`` and ``err()``.
+        argument, a missing pool or template, or an API error. Failures after this call returns
+        aren't raised here. A failed create shows in ``members()`` as a ``CreateFailed`` member, and
+        an error that stops the watch or Lease renewal shows in ``err()``.
 
         Args:
             groups: One ``BatchGroup`` per warm pool, each with ``size`` at least 1.
@@ -577,12 +578,14 @@ class AsyncSandboxClient(Generic[T]):
         Example::
 
             batch = await client.claim_batch([BatchGroup(warmpool="python-sandbox-pool", size=4)])
-            while not any(m.state is MemberState.READY for m in batch.members()):
-                await asyncio.sleep(1)
-            member = next(m for m in batch.members() if m.state is MemberState.READY)
-            sandbox = await batch.connect(member)
-            await sandbox.commands.run("echo hello")
-            await batch.release()
+            try:
+                while not any(m.state is MemberState.READY for m in batch.members()):
+                    await asyncio.sleep(1)
+                member = next(m for m in batch.members() if m.state is MemberState.READY)
+                sandbox = await batch.connect(member)
+                await sandbox.commands.run("echo hello")
+            finally:
+                await batch.release()
         """
         args = batch_utils.validate_claim_batch_args(
             groups, labels, batch_id, create_rps, max_in_flight, work_budget, quorum_timeout,
@@ -717,6 +720,9 @@ class AsyncSandboxClient(Generic[T]):
                 continue
             try:
                 await batch.release()
+            except BatchInUseError as e:
+                # release() has unregistered the handle, since the batch is no longer its to delete.
+                logger.warning(f"Not releasing batch '{batch_id}' in namespace {namespace}: {e}")
             except Exception as e:
                 logger.error(f"Failed to release batch '{batch_id}' in namespace {namespace}: {e}")
 
@@ -793,7 +799,15 @@ class AsyncSandboxClient(Generic[T]):
                     if batch._detach_unfinished():
                         continue
                     try:
-                        _delete_batch_objects_sync(helper, batch.namespace, batch.batch_id, batch._lease_name)
+                        _delete_batch_objects_sync(
+                            helper,
+                            batch.namespace,
+                            batch.batch_id,
+                            batch._lease_name,
+                            batch._holder_identity,
+                            batch._lease_duration,
+                            batch._lease,
+                        )
                     except Exception as e:
                         if sys.stderr is not None:
                             print(
