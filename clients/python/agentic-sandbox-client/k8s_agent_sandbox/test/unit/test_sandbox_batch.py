@@ -1640,6 +1640,63 @@ class TestClaimBatchCreation(BaseClaimBatchTest):
             (MemberState.FAILED, "CreateFailed", "sandboxclaims is forbidden"),
         )
 
+    def test_a_backoff_retry_leaves_the_next_pacing_slot_free_and_a_retry_after_takes_it(self):
+        throttled = k8s_client.ApiException(status=429)
+        throttled.headers = {"Retry-After": "7"}
+        for name, error, earliest, latest in (
+            # Another create takes the next slot while this one backs off.
+            ("a transport error", urllib3.exceptions.ProtocolError("boom"), 0, 0.2),
+            # The apiserver throttles every create, so the next slot comes after its Retry-After.
+            ("a Retry-After", throttled, 7, 7.4),
+        ):
+            with self.subTest(name):
+                handle = _make_handle(self.client)
+                handle._create_interval = 0.2
+                self.cluster.helper.create_sandbox_claim.reset_mock()
+                self.cluster.helper.create_sandbox_claim.side_effect = [error, None]
+                next_free_slot = []
+
+                def wait(timeout):
+                    # Another create reserves a slot during this create's first wait.
+                    if not next_free_slot:
+                        now = time.monotonic()
+                        with handle._lock:
+                            next_free_slot.append(handle._reserve_create_slot(now) - now)
+                    return False
+
+                handle._stop_creating.wait = wait
+                handle._create_one("b1-0", "pool-a", {}, {}, {})
+                self.assertEqual(self.cluster.helper.create_sandbox_claim.call_count, 2)
+                self.assertTrue(earliest <= next_free_slot[0] < latest, next_free_slot)
+
+    @patch("k8s_agent_sandbox.batch_utils.retry_delay", return_value=10)
+    def test_a_backoff_retry_is_not_paced_past_the_deadline(self, _):
+        for name, deadline_in, slots_taken_during_backoff, waits_before_raising in (
+            # The backoff alone ends past the deadline, so it isn't waited out.
+            ("a backoff past the deadline", 5, False, 0),
+            # The other creates take every slot before the deadline while this create backs off.
+            ("slots taken during the backoff", 20, True, 1),
+        ):
+            with self.subTest(name):
+                handle = _make_handle(self.client)
+                handle._create_interval = 0.2
+                self.cluster.helper.create_sandbox_claim.reset_mock()
+                self.cluster.helper.create_sandbox_claim.side_effect = [urllib3.exceptions.ProtocolError("boom"), None]
+                deadline = time.monotonic() + deadline_in
+                waits = []
+
+                def wait(timeout):
+                    waits.append(timeout)
+                    if slots_taken_during_backoff:
+                        handle._next_create_at = deadline
+                    return False
+
+                handle._stop_creating.wait = wait
+                with self.assertRaises(BatchTimeoutError):
+                    handle._create_one("b1-0", "pool-a", {}, {}, {}, deadline=deadline)
+                self.assertEqual(len(waits), waits_before_raising)
+                self.cluster.helper.create_sandbox_claim.assert_called_once()
+
     def test_failed_group_stops_creates_only_in_group_mode(self):
         for mode in ("group", "stream"):
             with self.subTest(mode):
@@ -2011,9 +2068,9 @@ class TestRelease(BaseClaimBatchTest):
                 helper.read_batch_lease.side_effect = (
                     lambda *a, **k: _lease(holder_identity=holder, resource_version=resource_version)
                 )
-                written = iter(
-                    [_lease(resource_version="11"), k8s_client.ApiException(status=503), _lease(resource_version="13")]
-                )
+                # A refused connect reaches release as is, since urllib3 doesn't retry Lease requests.
+                refused = urllib3.exceptions.NewConnectionError(None, "refused")
+                written = iter([_lease(resource_version="11"), refused, _lease(resource_version="13")])
 
                 def replace(*args, **kwargs):
                     self.cluster.calls.append("take")
@@ -2882,8 +2939,8 @@ class TestGetBatchQuorumTimeout(BaseBatchClientTest):
 class TestClientBatchCleanup(BaseClaimBatchTest):
 
     @patch.object(SandboxBatch, "_start", lambda self: None)
-    def test_cleanup_releases_every_tracked_batch(self):
-        for cleanup in ("delete_all", "_delete_automatic_sandboxes"):
+    def test_delete_all_releases_every_tracked_batch_and_exit_cleanup_detaches_attached_ones(self):
+        for cleanup, exiting in (("delete_all", False), ("_delete_automatic_sandboxes", True)):
             with self.subTest(cleanup):
                 self.client._active_batches.clear()
                 claimed = self.claim([BatchGroup(warmpool="pool-a", size=1)], batch_id="b1")
@@ -2893,9 +2950,13 @@ class TestClientBatchCleanup(BaseClaimBatchTest):
                 self.cluster.helper.list_sandbox_claim_objects.return_value = ([], "7")
                 self.assertEqual(set(self.client._active_batches.values()), {claimed, attached})
 
+                self.cluster.helper.read_batch_lease.return_value = _lease(holder_identity=attached._holder_identity)
                 with patch.object(SandboxBatch, "release", autospec=True) as release:
                     getattr(self.client, cleanup)()
-                self.assertEqual({c.args[0] for c in release.call_args_list}, {claimed, attached})
+                released = {claimed} if exiting else {claimed, attached}
+                self.assertEqual({c.args[0] for c in release.call_args_list}, released)
+                self.assertEqual(attached._lease_released, exiting)
+                self.assertEqual(attached in self.client._active_batches.values(), not exiting)
 
                 self.cluster.helper.read_batch_lease.return_value = _lease(holder_identity=claimed._holder_identity)
                 claimed.release()
@@ -2980,6 +3041,7 @@ class TestClientBatchCleanup(BaseClaimBatchTest):
 
     def test_cleanup_releases_a_handle_whose_release_failed_after_a_failed_detach(self):
         handle = _make_handle(self.client)
+        handle._attached = True
         self.client._active_batches[("default", "b1")] = handle
         helper = self.client.k8s_helper
         helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
@@ -2991,12 +3053,51 @@ class TestClientBatchCleanup(BaseClaimBatchTest):
         with self.assertRaises(k8s_client.ApiException):
             handle.release()
 
-        self.client.delete_all()
+        # Exit cleanup still retries a release that started on an attached handle.
+        self.client._delete_automatic_sandboxes()
 
         # After the failed detach write, every Lease write is a release taking the Lease, not a detach.
         written = [c.args[2] for c in helper.replace_batch_lease.call_args_list[1:]]
         self.assertEqual([lease.spec.holder_identity for lease in written], [handle._holder_identity] * 2)
         helper.delete_batch_lease.assert_called_once()
+        self.assertEqual(self.client._active_batches, {})
+
+    def test_a_failed_detach_in_exit_cleanup_is_logged_and_releases_nothing(self):
+        handle = _make_handle(self.client)
+        handle._attached = True
+        self.client._active_batches[("default", "b1")] = handle
+        helper = self.client.k8s_helper
+        helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
+        helper.replace_batch_lease.side_effect = RuntimeError("api down")
+
+        with self.assertLogs(level="ERROR"):
+            self.client._delete_automatic_sandboxes()
+
+        # The only Lease write is the detach, and the handle stays registered so the next cleanup finishes it.
+        self.assertEqual([c.args[2].spec.holder_identity for c in helper.replace_batch_lease.call_args_list], [None])
+        self.assertEqual(self.client._active_batches, {("default", "b1"): handle})
+        helper.delete_sandbox_claims_by_label.assert_not_called()
+
+    def test_exit_cleanup_during_detach_detaches_an_attached_handle(self):
+        handle = _make_handle(self.client)
+        handle._attached = True
+        self.client._active_batches[("default", "b1")] = handle
+        helper = self.client.k8s_helper
+        helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
+        lock = handle._lock = _SignalingLock(handle._lock)
+
+        class CleanupBetweenDetachWrites(SandboxBatch):
+            def __setattr__(self, name, value):
+                super().__setattr__(name, value)
+                # Another thread's exit cleanup runs once detach() has set _detached but not yet _detach_grace.
+                if name == "_detached" and value and not lock.threads:
+                    lock.start_racing(self._client._delete_automatic_sandboxes)
+
+        handle.__class__ = CleanupBetweenDetachWrites
+        handle.detach()
+        lock.threads.pop().join()
+
+        helper.delete_sandbox_claims_by_label.assert_not_called()
         self.assertEqual(self.client._active_batches, {})
 
     def test_a_failed_detach_retry_is_logged_and_keeps_the_handle_registered(self):
