@@ -540,17 +540,29 @@ def scale_for(args, custom, shape: Shape) -> None:
             constants.WARMPOOLS_PLURAL, p, {"spec": {"replicas": want}})
 
 
+def sandbox_count(custom, args) -> int:
+    """Sandboxes in the bench namespace, including orphans awaiting ownerRef GC."""
+    from agent_sandbox_rl import constants
+    return len(custom.list_namespaced_custom_object(
+        constants.SANDBOX_GROUP, constants.SANDBOX_VERSION, args.namespace,
+        constants.SANDBOXES_PLURAL).get("items", []))
+
+
 def wait_state(args, shape: Shape, timeout: float = 1800) -> dict:
     """Blocks until the shape's pools are at their replicas and Ready, every other
-    pool is empty, no claim of this run exists and no pod is terminating, then
-    settles. Cold shapes wait for an empty namespace."""
+    pool is empty, no claim of this run exists, orphan Sandboxes/Pods from prior
+    steps have drained, and no pod is terminating, then settles. Cold shapes wait
+    for an empty namespace."""
     core, custom, _ = k8s(args)
     names = pool_names(args)
+    want_pods = shape.tasks if shape.warm else 0
     t0 = time.monotonic()
     while True:
-        states = pool_states(custom, args)
-        claims = kb.run_claims(custom, args)
-        total, terminating = kb.pod_counts(core, args)
+        with COUNTER.driver():
+            states = pool_states(custom, args)
+            claims = kb.run_claims(custom, args)
+            total, terminating = kb.pod_counts(core, args)
+            sandboxes = sandbox_count(custom, args)
         ok = True
         for i, p in enumerate(names):
             want = shape.per_image if shape.warm and i < shape.images else 0
@@ -558,18 +570,18 @@ def wait_state(args, shape: Shape, timeout: float = 1800) -> dict:
             if spec != want or (want and ready < want):
                 ok = False
                 break
-        if not shape.warm and total:
-            ok = False
-        if ok and claims == 0 and terminating == 0:
+        if (ok and claims == 0 and terminating == 0
+                and total == want_pods and sandboxes == want_pods):
             break
         if time.monotonic() - t0 > timeout:
             short = {p: s for p, s in states.items() if s[1] < s[0]}
             raise RuntimeError(f"state {shape.name} not reached in {timeout}s: claims={claims} "
-                               f"terminating={terminating} pods={total} "
-                               f"pools_short={len(short)}")
+                               f"terminating={terminating} pods={total} sandboxes={sandboxes} "
+                               f"want={want_pods} pools_short={len(short)}")
         time.sleep(5)
     time.sleep(5)
-    return {"warm_wait_s": time.monotonic() - t0, "pods_in_namespace": total}
+    return {"warm_wait_s": time.monotonic() - t0, "pods_in_namespace": total,
+            "sandboxes_in_namespace": sandboxes}
 
 
 def arm_fleet(args, variant: Variant, shape: Shape):

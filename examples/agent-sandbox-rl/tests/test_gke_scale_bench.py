@@ -220,3 +220,33 @@ def test_run_step_counts_connection_pool_discards(monkeypatch):
         log.removeHandler(g.POOL_FULL)
     assert out["pool_full_discards"] == 4
     assert out["apiserver"] == {"valid": False, "reason": "scrape failed"}
+
+
+def test_wait_state_waits_for_orphan_sandboxes_and_pods_to_drain(monkeypatch):
+    shape = g.Shape(8)  # 2 pools x 4 per_image
+    monkeypatch.setattr(g, "k8s", lambda args: ("core", "custom", "api"))
+    monkeypatch.setattr(g, "pool_names", lambda args: ["p0", "p1", "p2"])
+    monkeypatch.setattr(g, "pool_states",
+                        lambda custom, args: {"p0": (4, 4), "p1": (4, 4), "p2": (0, 0)})
+    monkeypatch.setattr(g.kb, "run_claims", lambda custom, args: 0)
+    monkeypatch.setattr(g.time, "sleep", lambda s: None)
+
+    # Poll 1: orphan sandboxes and pods remain from previous step (terminating=0).
+    # Poll 2: pods drained to 8, 2 orphan sandboxes still pending ownerRef GC.
+    # Poll 3: both pods and sandboxes match want_pods=8.
+    pod_polls = iter([(16, 0), (8, 0), (8, 0)])
+    sbx_polls = iter([16, 10, 8])
+    polls = {"count": 0}
+
+    def pod_counts(core, args):
+        polls["count"] += 1
+        return next(pod_polls)
+
+    monkeypatch.setattr(g.kb, "pod_counts", pod_counts)
+    monkeypatch.setattr(g, "sandbox_count", lambda custom, args: next(sbx_polls))
+
+    out = g.wait_state(types.SimpleNamespace(namespace="rl-bench"), shape)
+    assert polls["count"] == 3
+    assert out["pods_in_namespace"] == 8
+    assert out["sandboxes_in_namespace"] == 8
+
