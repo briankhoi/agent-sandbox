@@ -4,8 +4,8 @@ Brief: `handoff/work/coordinator3_prompt.md`. Prompts in `handoff/work/prompts/`
 
 | Item | Prompt | Status | Last result | Open decisions |
 | :-- | :-- | :-- | :-- | :-- |
-| H1. Merge `upstream/main` into `upstream/feature/batch-claim` (`merge/main-into-batch-claim-2`) | `prompts/H1-merge-main.md` (drafted locally, holding for Brian's go-ahead) | Q1 settled (Option 1A approved 10-28); holding prompt review/push until Brian says go | n/a | None (Q1 Option 1A approved; waiting on Brian's go-ahead to finalize/push prompt) |
-| H2. Task 7: SDK `23/N` `pod_annotations` (`feat/batch-11-acquire-annotations`) + `review/c3/sdk-post-merge` + RL rebase/#2035 cleanup/batch annotations (`review/c3/feat/rl-batch-claim-mode`) | `prompts/H2-task7-acquire-annotations.md` (pending Q3) | Q2 settled (Option 2A `effective_claim_timeout()` approved 10-28); Q3 written up in `coordinator3_decision_is_alive.md` for external opinions | n/a | **Q3**: `record_pod_identity()` / `is_alive()` in batch mode (`coordinator3_decision_is_alive.md`) |
+| H1. Merge `upstream/main` into `upstream/feature/batch-claim` (`merge/main-into-batch-claim-2`) | `prompts/H1-merge-main.md` (reviewed by `inherit` subagent `d11cf5df`, fixes applied, ready 10-28) | Prompt `prompts/H1-merge-main.md` ready & pushed | n/a | None — ready for Brian to run |
+| H2. Task 7: SDK `23/N` `pod_annotations` (`feat/batch-11-acquire-annotations`) + `review/c3/sdk-post-merge` + RL rebase/#2035 cleanup/batch annotations (`review/c3/feat/rl-batch-claim-mode`) | `prompts/H2-task7-acquire-annotations.md` (reviewed by `inherit` subagent `d11cf5df`, fixes applied, ready 10-28) | Prompt `prompts/H2-task7-acquire-annotations.md` ready & pushed | n/a | None — ready for Brian to run (sequentially after H1 or in parallel) |
 
 ## Live heads at start (2026-10-28 03:57 UTC, verified)
 - `upstream/main`: `355803af` (includes `#2035` `7f40dc1a`, `#2041` `e1e73e24`, `#1791`, `#1960`, `#1966`, `#1967`)
@@ -30,3 +30,4 @@ Brief: `handoff/work/coordinator3_prompt.md`. Prompts in `handoff/work/prompts/`
 - 2026-10-28 04:44 (Q2): "1. approve option 2A" (pass `ready_timeout=self.config.effective_claim_timeout()` to `BatchClaims`).
 - 2026-10-28 04:45 (workflow): wait until decisions are finished before running prompt reviewers.
 - 2026-10-28 04:52 (Q3): "for decision 3 the is alive thing, can you put it in a remote md file and ill get some opinions on what to do" -> `handoff/work/coordinator3_decision_is_alive.md`.
+- 2026-10-28 05:15 (Q3 settled via `handoff/work/coordinator3_response_is_alive.md`): "Approve Option (a) (`if claim is None: handle.record_pod_identity()`), augmented with a 0-GET in-memory batch-watch check in `is_alive()` ... Do NOT use Option (b) or Option (d), and avoid adding a config knob (Option c)."
