@@ -82,3 +82,11 @@ In the cloud, audits and reviews of a thread's work went to a fresh thread that 
 - you write a prompt for another agent, or a design recommendation.
 Give the subagent only the question, the base and head, and the rules it must review against. Do not hand it your own findings. Compare its findings with yours, resolve differences by reading the code, and report both. Set the subagent's model explicitly: Sonnet for routine reviews, Opus only for design or non-trivial code review. Use one subagent per review, with a tight brief; skip this for mechanical work (a clean restack, a doc regen) where `git range-diff` showing an unchanged tree is the check.
 For a restack, prove it mechanical: `git range-diff <old-base>..<old-head> <new-base>..<new-head>` and `git diff <old-head> <new-head>` tree compare.
+
+## Faster review rounds (Brian, 2026-10-28: "let's make this next one faster please")
+After a fix round took about an hour (full checks re-run in every round, and the whole stack restacked before Brian saw the design), Brian approved these rules ("yes"):
+- Ask design-shape questions (for example "explicit flag or existing field?") before building.
+- In a review round, build only on the owning commit. Run only the changed tests with their mutation checks, and mypy at that commit.
+- Restack the upper branches only after Brian approves the diff. Run the full per-commit check (mypy on every commit, docs at every head, author check) once, right before syncing.
+- Keep a fresh verifier for behavior and lifecycle changes, scoped to the rule and the paths that touch it. It doesn't re-run the builder's mechanical checks except as spot checks.
+- Skip the verifier for comment-only changes and mechanical restacks.
