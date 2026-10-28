@@ -153,6 +153,8 @@ class AsyncSandboxBatch:
         # deletes, so whichever call starts first finishes before the other acts.
         self._lifecycle_lock = asyncio.Lock()
         self._connected: dict[str, "AsyncSandbox"] = {}
+        # Set by get_batch, so client exit cleanup detaches the handle rather than deleting a batch it may not own.
+        self._attached = False
         self._detached = False
         self._lease_released = False
         # The Lease duration detach() writes, the grace from the last detach() call that gave one or else
@@ -397,6 +399,7 @@ class AsyncSandboxBatch:
         handle._fill_deadline = time.monotonic() + settings.quorum_timeout
         handle._create_interval = 1 / settings.create_rps
         handle._labels = {**settings.labels, BATCH_ID_LABEL: batch_id}
+        handle._attached = True
         handle._start()
         return handle
 
@@ -1034,6 +1037,11 @@ class AsyncSandboxBatch:
         """Returns whether release() started on this handle, or its client was closed."""
         return self._detached and self._detach_grace is None
 
+    def _exit_detaches(self) -> bool:
+        """Returns whether client exit cleanup detaches this handle instead of releasing its batch."""
+        # A release() that started on an attached handle is still retried as a release.
+        return self._attached and not self._release_started()
+
     def _detach_done(self) -> bool:
         """Returns whether detach() already released the Lease, and raises ``BatchError`` once a
         release has started. Requires ``_lock``."""
@@ -1411,6 +1419,14 @@ class AsyncSandboxBatch:
         self._next_create_at = slot + self._create_interval
         return slot
 
+    def _check_retry_deadline(self, claim_name: str, deadline: float | None, earliest: float, error: Exception) -> None:
+        """Raises ``BatchTimeoutError`` if a retry's pacing slot at or after ``earliest`` would be at or
+        after ``deadline``. The caller holds ``self._lock``.
+        """
+        # A retry paced past the deadline would only make a claim to delete on timeout.
+        if deadline is not None and max(earliest, self._next_create_at) >= deadline:
+            raise BatchTimeoutError(f"no create retry slot for claim '{claim_name}' before the deadline") from error
+
     async def _create_one(
         self,
         claim_name: str,
@@ -1454,11 +1470,20 @@ class AsyncSandboxBatch:
                 if outcome == batch_utils.CreateOutcome.SUCCESS:
                     return True
                 if outcome == batch_utils.CreateOutcome.RETRY:
+                    # A backoff is this create's own, so it waits here and then takes a normal pacing slot, as
+                    # client-go waits before its rate limiter. A Retry-After from the apiserver applies to its whole
+                    # priority level, so it moves the shared slot and every create waits for it.
+                    retry_after = batch_utils.retry_after_seconds(e)
+                    if retry_after is None:
+                        backoff = batch_utils.retry_delay(attempt, None)
+                        async with self._lock:
+                            self._check_retry_deadline(claim_name, deadline, time.monotonic() + backoff, e)
+                        if await self._wait_for_stop(backoff):
+                            return False
                     async with self._lock:
-                        earliest = time.monotonic() + batch_utils.retry_delay(attempt, e)
-                        # A retry paced past the deadline would only make a claim to delete on timeout.
-                        if deadline is not None and max(earliest, self._next_create_at) >= deadline:
-                            raise BatchTimeoutError(f"no create retry slot for claim '{claim_name}' before the deadline") from e
+                        earliest = time.monotonic() + (retry_after or 0.0)
+                        # Other creates kept taking slots during any backoff, so this checks the deadline after it.
+                        self._check_retry_deadline(claim_name, deadline, earliest, e)
                         slot = self._reserve_create_slot(earliest)
                     if await self._wait_for_stop(slot - time.monotonic()):
                         return False

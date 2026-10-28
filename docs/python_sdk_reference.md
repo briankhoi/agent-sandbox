@@ -47,7 +47,8 @@ Initializes the SandboxClient.
 - `cleanup` - If True, registers an atexit hook to automatically delete
   tracked sandboxes when the program terminates, excluding claims
   explicitly named through create_sandbox(), and to release tracked
-  batches. Defaults to False.
+  batches this client claimed and detach the ones it attached to with
+  get_batch(). Defaults to False.
 - `api_client` - Optional pre-configured Kubernetes ``ApiClient`` forwarded
   to the underlying ``K8sHelper`` to target a specific cluster/context.
 
@@ -278,6 +279,10 @@ Resumes batch lease renewal and starts a label-scoped watch that keeps
 ``members()`` up to date. Only a batch released with ``detach()`` can be re-attached,
 within its grace window. A group whose claims are all gone is unknown to the new handle,
 so it isn't in ``groups`` and ``group_outcomes()`` doesn't yield it.
+
+The client's exit cleanup doesn't release a batch attached here, except to retry a
+``release()`` call that failed. It detaches it with ``detach()``'s default grace, so call
+``release()`` to delete the batch.
 
 The batch errors below are all ``BatchError``, so ``except BatchError`` handles a batch that
 can't be attached. ``ValueError`` means a bad batch id, ``ApiException`` an API error,
