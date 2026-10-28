@@ -135,17 +135,25 @@ SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
        2. `lease_parts` raises `BatchError` when `metadata` is `None` or `spec` is `None` (mutation-check both conditions).
 
 ### Steps (resumable)
-1. Setup (always pass `-C`, never `cd` into `/usr/local/google/home/brianknguyen/agent-sandbox`):
+1. Setup: fetch `origin` first and check whether `origin/feat/batch-8-list-memory` is still at the prompt's snapshot (`1b061c53`) or moved forward (always pass `-C`, never `cd` into `/usr/local/google/home/brianknguyen/agent-sandbox`):
    ```sh
    R=/usr/local/google/home/brianknguyen/agent-sandbox
    W=/usr/local/google/home/brianknguyen/agent-sandbox-par-types21
+   PROMPT_PIN=1b061c53b2a500d872b2c63f7aa9e1033d93013a
    G="git -c credential.helper= -c credential.helper=!gh\ auth\ git-credential"
    $G -C $R fetch https://github.com/briankhoi/agent-sandbox.git '+refs/heads/*:refs/remotes/origin/*'
    git -C /usr/local/google/home/brianknguyen/agent-sandbox-notes pull --rebase
    OLD_BASE=$(git -C $R rev-parse origin/feat/batch-8-list-memory)
-   echo "Base SHA: $OLD_BASE"
+   if [ "$OLD_BASE" = "$PROMPT_PIN" ]; then
+     echo "Confirmed: origin/feat/batch-8-list-memory is still at prompt snapshot $OLD_BASE"
+   else
+     echo "Head moved: $PROMPT_PIN -> $OLD_BASE; inspecting delta:"
+     git -C $R diff --stat $PROMPT_PIN $OLD_BASE
+     git -C $R diff $PROMPT_PIN $OLD_BASE -- clients/python/agentic-sandbox-client/k8s_agent_sandbox/
+   fi
+   git -C $R worktree add -B feat/batch-9-types $W $OLD_BASE
    ```
-   Create or reuse `$W` off `$OLD_BASE` (`git -C $R worktree add -B feat/batch-9-types $W $OLD_BASE`). If `$OLD_BASE` moved past `1b061c53` because another thread synced the stack, inspect `git -C $W diff 1b061c53..$OLD_BASE` first so you include any new methods on `$OLD_BASE` and never overwrite upstream changes.
+   Always branch off the live `$OLD_BASE` (never reset back to `$PROMPT_PIN`). Treat line numbers above as `1b061c53` snapshot references — match functions by symbol name in `$W`, and if the delta output shows any new `helper: Any` or `Lease` sites added in `$PROMPT_PIN..$OLD_BASE`, include them and preserve all upstream changes from `$OLD_BASE`.
 2. Implement the changes on `feat/batch-9-types` (1 commit or 2 clean commits: e.g. commit 1 typed `helper` parameters in `sandbox_batch.py` / `async_sandbox_batch.py`, commit 2 typed `V1Lease` methods and `lease_parts` with `TestLeaseParts` — or 1 combined commit; 2 commits is very clean to review):
    - Author `Brian Nguyen <brianknguyen@google.com>`, no trailers.
 3. **Multi-agent rebase & diff-of-diffs check before pushing (CRITICAL):**

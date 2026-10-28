@@ -97,10 +97,11 @@ SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
      3. Mutation-check: if `read=False` is removed (`urllib3.Retry(3)`) or if `delete_sandbox_claims_by_label` / `count_live_sandbox_claims` uses `self.custom_objects_api`, the test fails.
 
 ### Steps (resumable)
-1. Setup (always pass `-C`, never `cd` into `/usr/local/google/home/brianknguyen/agent-sandbox`):
+1. Setup: fetch `origin` first and check whether the base is still at the prompt's snapshot (`1b061c53`) or moved forward (always pass `-C`, never `cd` into `/usr/local/google/home/brianknguyen/agent-sandbox`):
    ```sh
    R=/usr/local/google/home/brianknguyen/agent-sandbox
    W=/usr/local/google/home/brianknguyen/agent-sandbox-par-retry22
+   PROMPT_PIN=1b061c53b2a500d872b2c63f7aa9e1033d93013a
    G="git -c credential.helper= -c credential.helper=!gh\ auth\ git-credential"
    $G -C $R fetch https://github.com/briankhoi/agent-sandbox.git '+refs/heads/*:refs/remotes/origin/*'
    git -C /usr/local/google/home/brianknguyen/agent-sandbox-notes pull --rebase
@@ -110,9 +111,16 @@ SDK paths under `clients/python/agentic-sandbox-client/k8s_agent_sandbox/`.
      BASE_REF=origin/feat/batch-8-list-memory
    fi
    OLD_BASE=$(git -C $R rev-parse $BASE_REF)
-   echo "Base: $BASE_REF ($OLD_BASE)"
+   if [ "$OLD_BASE" = "$PROMPT_PIN" ]; then
+     echo "Confirmed: $BASE_REF is still at prompt snapshot $OLD_BASE"
+   else
+     echo "Head moved: $PROMPT_PIN -> $OLD_BASE ($BASE_REF); inspecting delta:"
+     git -C $R diff --stat $PROMPT_PIN $OLD_BASE
+     git -C $R diff $PROMPT_PIN $OLD_BASE -- clients/python/agentic-sandbox-client/k8s_agent_sandbox/k8s_helper.py clients/python/agentic-sandbox-client/k8s_agent_sandbox/test/unit/test_k8s_helper.py
+   fi
+   git -C $R worktree add -B feat/batch-10-deletecollection-retry $W $OLD_BASE
    ```
-   Create or reuse `$W` (`git -C $R worktree add -B feat/batch-10-deletecollection-retry $W $OLD_BASE`).
+   Always branch off the live `$OLD_BASE` (never reset back to `$PROMPT_PIN`). Treat line numbers above as `1b061c53` snapshot references — match functions by symbol name in `$W` and preserve all upstream changes from `$OLD_BASE`.
 2. Implement the change in 1 commit (`fix(python-sdk): stop urllib3 from retrying timed-out claim deletecollection and count requests`), authored by `Brian Nguyen <brianknguyen@google.com>`, no trailers.
 3. **Multi-agent rebase & diff-of-diffs check before pushing (CRITICAL):**
    Other threads may push `origin/feat/batch-9-types` or restack `origin/feat/batch-8-list-memory` while you work. Right before final verification and push:

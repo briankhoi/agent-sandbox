@@ -32,6 +32,7 @@ Checklist: pushed SHAs/trees/authors/no trailers; working rules (Minimal fixes: 
 - 2026-10-28 01:18 (B4 & 21/N best practice): "btw make sure you are updating the shared PR board (you know what that is right?) what is best practice for both decisions also? you can use an auditor if you'd like. i think we will defer b4 for now and focus on this since upstream review will take time and we have limited time"
 - 2026-10-28 02:12 (21/N decisions): "approve both (i assume we would do 22 after 21 or can both be done in parallel?)" (approved plain `BatchError` in `lease_parts(lease)` and `spec.holder_identity = cast(Any, None)` in `async_sandbox_batch.py`).
 - 2026-10-28 03:45 (head check & multi-thread rebase safety): "can you check both prompts one more time, just ensure heads are accurate cause i have multiple threads working on the entire stack. also note that if they do change and they rebase, ensure we dont delete work of other threads/ensure it merges cleanly and does not accidentally erase others' work"
+- 2026-10-28 04:04 (dynamic head check in prompts): "i mean, the heads are boudn to be updated again. i feel like the prompts should just be modified to fetch the latest version upon starting/confirm what was given is indeed still the latest"
 
 ## B2 copies (10-26 23:01, verified)
 live -> copy: transport `64bc8872 -> 041c0b02`, reaper `f03fb3cb -> 64f38bf5` (B3 will replace), PR 7 `fa10f75b -> 819458d6` (B3 will replace). PR 6 `fde1f963`. Verifier recommends keeping all three B2 choices (BatchError raise, `dict[str, str]`, `_continue=` direct).
