@@ -549,6 +549,22 @@ class TestReattachedFill(unittest.TestCase):
         [result] = _drain_groups(state)
         self.assertIsInstance(result.error, QuorumUnreachableError)
 
+    def test_a_missing_claim_that_arrives_later_takes_back_its_missing_count(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=3, min_ready=2))
+        state.seed_from_claims([_ready("b1-0")])
+        state.count_missing_fill_as_unable()
+        state.upsert_claim(_ready("b1-1"))
+        state.set_mode(batch_state.ConsumerMode.GROUP)
+        [result] = _drain_groups(state)
+        self.assertEqual([m.claim_name for m in result.members], ["b1-0", "b1-1"])
+        # b1-2 still counts as missing, so the fill has settled. It reopens when b1-2 arrives too.
+        self.assertTrue(state.fill_settled())
+        state.upsert_claim(_pending("b1-2"))
+        self.assertFalse(state.fill_settled())
+        state.upsert_claim(_ready("b1-2"))
+        self.assertEqual(_drain_events(state), [(BatchEventType.MEMBER_READY, "b1-2")])
+        self.assertTrue(state.events_done())
+
     def test_a_group_with_no_claims_left_still_counts_the_other_groups_claims_as_fill(self):
         # Group pool-a had b1-0 and b1-1, both gone, so the new handle only knows pool-b's group.
         group_b = {BATCH_GROUP_SIZE_ANNOTATION: "2", BATCH_GROUP_MIN_READY_ANNOTATION: "2"}

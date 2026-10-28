@@ -197,6 +197,10 @@ class BatchState:
         # Fill claims that will never exist (e.g., creates skipped because their group failed, and
         # claims missing when a batch is re-attached). These have no name, so they are not added to _unable.
         self._never_created = 0
+        # Fill claims each group lacked when the batch was re-attached, also counted in _lost and
+        # _never_created. Those two also count real losses and skipped creates, so they can't tell how
+        # many counts a late claim may take back.
+        self._missing: dict[str, int] = dict.fromkeys(self._group_by_pool, 0)
         # Fill members whose outcome is decided. A member is added once it is unable, handed out, or
         # dropped while Ready because its group failed. It stays here if it later stops being Ready,
         # so a settled fill stays settled. A held member isn't added, since it may stop being Ready
@@ -220,6 +224,12 @@ class BatchState:
         if BATCH_GROUP_SIZE_ANNOTATION in annotations and BATCH_GROUP_MIN_READY_ANNOTATION in annotations:
             self._fill_claims.add(claim_name)
         member = derive_member(claim_obj)
+        if claim_name not in self._members and self._is_fill(claim_name, member) and self._missing[member.warmpool]:
+            # A create that timed out before the batch was re-attached landed later. Its claim takes back
+            # one missing count, so the slot counts once, by its real state.
+            self._missing[member.warmpool] -= 1
+            self._lost[member.warmpool] -= 1
+            self._never_created -= 1
         self._members[claim_name] = member
         self._on_fill_change(claim_name, member)
         return member
@@ -437,7 +447,8 @@ class BatchState:
 
     def count_missing_fill_as_unable(self) -> None:
         """For a re-attached batch, counts each group's fill claims that don't exist as unable.
-        The previous handle stopped creating before it detached, so these claims will never exist.
+        The previous handle stopped creating before it detached, so such a claim can still appear only
+        if a create that timed out landed anyway. ``upsert_claim`` then takes its count back.
         """
         seen: dict[str, int] = dict.fromkeys(self._group_by_pool, 0)
         for name, member in self._members.items():
@@ -445,6 +456,7 @@ class BatchState:
                 seen[member.warmpool] += 1
         for pool, group in self._group_by_pool.items():
             missing = max(0, group.size - seen[pool])
+            self._missing[pool] += missing
             self._lost[pool] += missing
             self._never_created += missing
 
