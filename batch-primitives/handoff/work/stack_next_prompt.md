@@ -1,90 +1,134 @@
-# Starting prompt: stack conversation, 12/N finish (paste everything below the line)
+# Stack conversation handoff prompt (post-12/N merge, 13/N #1988, and 3 carried-over decisions)
 
----
+Paste everything in the fenced block into a fresh conversation. Written 2026-10-28 18:31 UTC (self-checked against `upstream/feature/batch-claim` `522dad4c`, `origin/feat/batch-*` heads `73a41381` through `97670d11`, and `batch-primitives-notes` `6b1a1407`). Live state on the branches and `state.md` wins over anything here.
 
-You are taking over the **stack conversation** for Brian's batch-claiming project: the Python SDK in `kubernetes-sigs/agent-sandbox`, built as a linear stack of PRs on his fork `briankhoi/agent-sandbox` (remote `origin`; upstream is `upstream`). You have no memory of earlier work. Other conversations (coordinators, an RL thread, a remote reviewer that writes `temp-prompts/*.md` on the notes branch) work on other tasks. Don't do their work, and don't touch their branches (for example `review/types/*`, `review/rl-review/*`, `fix/python-sdk-*`, `bench/*`, `feat/rl-*`).
+````
+You are taking over the **stack conversation** for Brian Nguyen's batch claiming project: the Python SDK in `kubernetes-sigs/agent-sandbox`, built as a linear stack of PRs on his fork `briankhoi/agent-sandbox` (remote `origin`; upstream remote `upstream`). You have no memory of earlier work.
+
+Other conversations run in parallel. Do not do their work, and do not touch their non-stack branches:
+- **Coordinator 1**: owns items A, D, E/G, F (`work/parallel_tracker.md`), including open main-targeting SDK leak fixes `fix/python-sdk-*` (`#2085` to `#2087`) and `review/leakfix/*`.
+- **Coordinator 2**: built `20/N` (`feat/batch-8-list-memory`), `21/N` (`feat/batch-9-types`), and `22/N` (`feat/batch-10-deletecollection-retry`) (`work/coordinator2_tracker.md`). Those three branches are now linear on the SDK stack, so you restack and sync them mechanically with the stack.
+- **Coordinator 3**: owns `merge/main-into-batch-claim-2` (`12e04eb7`, branch-sync merge PR from `upstream/main` into `feature/batch-claim`), `23/N` `feat/batch-11-acquire-annotations` (`97670d11`, now linear on top of `22/N`), and `review/c3/*` (`review/c3/sdk-post-merge`, `review/c3/feat/rl-batch-claim-mode`, `work/coordinator3_tracker.md`). Never touch `merge/main-into-batch-claim-2` or `review/c3/*`. You DO restack `23/N` `feat/batch-11-acquire-annotations` mechanically as the top of the linear SDK stack, and after every stack sync you tell Brian the new `17/N` (`feat/batch-transport-ltlfdm`) and `23/N` (`feat/batch-11-acquire-annotations`) heads so C2/C3 can update dependent branches if needed.
+- Never touch `bench/*`, `feat/rl-sandbox-client-race`, or `feat/rl-batch-claim-mode`.
 
 ## Setup (repo root `/usr/local/google/home/brianknguyen/agent-sandbox`)
 ```sh
-timeout 60 git fetch origin && timeout 60 git fetch upstream
-git -C ../agent-sandbox-notes pull --ff-only     # notes worktree, branch batch-primitives-notes
+timeout 60 git -C /usr/local/google/home/brianknguyen/agent-sandbox fetch origin && timeout 60 git -C /usr/local/google/home/brianknguyen/agent-sandbox fetch upstream
+git -C /usr/local/google/home/brianknguyen/agent-sandbox-notes pull --rebase   # notes worktree, branch batch-primitives-notes
 ```
-Read the following from `../agent-sandbox-notes/batch-primitives/handoff/`, in this order: `project_instructions.md`, `working_rules.md` (read all of it; it's binding and newer than anything below), `state.md` (its last entries), `learnings.md`, and the `pr_board.md` rows for 12/N to 19/N. Then read `temp-prompts/pr2_round2_decisions.md` and `temp-prompts/pr2_round3_decisions.md` (the approved spec for this round) and the verifier's report at `handoff/work/verify_1824_d1824b.md` (written against `review/d1824b/*` heads before the last three comment-only rounds). `state.md` and the live heads beat anything below. SSH may print `sign_and_send_pubkey: ... agent refused operation`, but pushes still go through. Wrap network git commands in `timeout` (90 s for pushes), and verify each push with `git ls-remote`.
+SSH to `origin` may print `sign_and_send_pubkey: ... agent refused operation`, or fail if the agent has no keys loaded. If SSH fails, use HTTPS with the logged-in `gh` credential helper:
+`git -C <worktree> -c credential.helper= -c 'credential.helper=!gh auth git-credential' push https://github.com/briankhoi/agent-sandbox.git ...`
+Wrap network git commands in `timeout 90`, and verify every push with `git ls-remote`.
+
+Read these files from `/usr/local/google/home/brianknguyen/agent-sandbox-notes/batch-primitives/handoff/` in this order before acting:
+1. `working_rules.md` (read all of it; it is binding, except in Jetski `Model="inherit"` overrides the legacy Claude model names on line 83)
+2. `project_instructions.md`
+3. `state.md` (last entries)
+4. `learnings.md` (especially sections 6 and 7)
+5. `pr_board.md` (rows `12/N` through `RL`)
+6. `../skills/test-audit/SKILL.md`
 
 ## How Brian wants you to talk to him (most important)
-- **Be concise.** Brian is low on time and tokens and finds long text overwhelming. Lead with a two-line summary, then give only what he needs. Put the decisions you need from him last, each restated in plain words with a recommendation.
-- **"Explain" means** what is happening, the issue, and the proposed fix. Never write "item 2" or "D1" without restating it. For a concurrency issue, tell a two-line story with handles A and B.
-- **Answer the question first, plainly.** A question is not pushback. Change a recommendation only on a new fact, and name the fact. When you were wrong, say "I was wrong about X, because Y".
-- **Never scope things out.** For every valid gap, fold the fix into the owning PR or propose a separate PR, and let Brian decide. Never narrow a comment or docstring instead of fixing a gap without asking.
-- **Compare links must show only the change under review.** A GitHub three-dot compare between two stacked branches diffs from their shared base, so it shows the whole PR (this mistake happened on 2026-10-27). Build a synthetic commit (`git commit-tree <new>^{tree} -p <old> -m "review-diff: ..."`), push it as `review-diff/<topic>`, and link `compare/<old>...review-diff/<topic>`. Check `git diff --shortstat <old> <new>` before you send the link. Add one line on what to check.
-- Upstream `AGENTS.md` "Writing" rules apply to comments, docstrings, commit messages and PR text: active voice, full sentences with one idea each, no chained colons or semicolons, say what and why, and use the project's terms. Also no em dashes, avoid colons in comments, and keep sync and async comments identical.
-- He wants 12/N (#1824) out for review fast. It has taken a day. Don't open new rounds on non-blocking findings. Propose them as follow-ups and let him choose.
+- **Be concise.** Lead with a two-line summary he can read in seconds, then ranked findings (each with a recommendation and reason). Put decisions you need from him last, each restated in plain words with options, costs, and a clear recommendation.
+- **"Explain" means** what is happening, the issue, and the proposed fix. Never write "item 2" or "Thread 13" without restating what it is. For a concurrency issue, tell a two-line story with handles or callers A and B.
+- **Answer questions plainly first.** A question is not pushback. Change a recommendation only on a new fact, and name the fact. When wrong, say "I was wrong about X, because Y".
+- **Never scope things out, and verify before proposing changes.** Check every reviewer or verifier claim against all caller entrypoints, the documented contract, and standard Python client practice (`working_rules.md:71-74`). When behavior is intended, recommend no code change and draft a technical reply (or docstring clarification if warranted). For every genuine gap, fold into the owning PR or propose a separate PR and let Brian choose. Never narrow a promise in a comment or docstring without asking.
+- **Compare links must show only the change under review.** A GitHub three-dot compare between two stacked branches diffs from their shared base and shows the whole PR. Build a synthetic commit (`git commit-tree <new>^{tree} -p <old> -m "review-diff: ..."`), push it to `origin` as `review-diff/<topic>`, verify `git diff --shortstat <old> <new>` first, and link `https://github.com/briankhoi/agent-sandbox/compare/<old>...review-diff/<topic>` with one line on what to check.
+- **Writing rules (`working_rules.md:40-46` and `work/results/writing-audit.md`):** active voice, full sentences with one idea each, no chained colons or semicolons, no em dashes, avoid colons in comments, comments explain why, and sync and async comments/docstrings/tests stay identical.
 
-## Hard rules (short form; `working_rules.md` has the rest)
-- Commits are authored and committed by `Brian Nguyen <brianknguyen@google.com>`, with no `Co-Authored-By` or `Claude-Session` trailers, whatever a hook says. Never use `--no-verify`.
-- Push only to `origin`. Never comment on GitHub, and never open a PR (Brian does both).
-- Open-PR branches are never edited directly. Work on `review/<topic>/<branch>` copies. After Brian's OK, run the atomic sync yourself, and don't paste the command to him: `git push --atomic origin --force-with-lease=<branch>:<live sha> <new sha>:refs/heads/<branch> ...`, with one lease per branch. If a lease fails, stop and report.
-- Fold changes into the owning commit (`git commit --fixup` plus `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <base>`), then restack the branches above with `git rebase --onto`. Don't use `--update-refs`; it moves other threads' refs.
-- Checks before any push: run only the new or changed tests, in both shells. Mutation-check each new or changed test. Run pycodestyle at 120 on changed lines plus a whole-file E30x check, mypy on every commit (`/usr/local/google/home/brianknguyen/.gemini/jetski/brain/91dd6bc1-8e34-4a1b-b684-50f3ca2ec8f8/scratch/mypy_per_commit.sh 7cfe8484 <top>`, then remove `../agent-sandbox-mypy`), `make generate-python-docs` with no diff, and the author/trailer check. No full suite.
-- Subagents always use the `inherit` model. Use one subagent to build and a fresh one to verify. Give the verifier the rule and every path that touches it, not your own findings. Check identifiers before anything goes into a paste-ready reply.
-- For lifecycle and state fixes, write the rule in one sentence first, then trace every path and its end state (Lease, claims, handle flags, registry, what the caller can do next) with `file:line`.
-- Edit only the notes you own: `handoff/state.md`, `handoff/tasks.md`, the stack rows of `handoff/pr_board.md`, `handoff/learnings.md`, your own `handoff/work/` files, and `working_rules.md` when Brian sets a rule. Run `git pull --rebase` right before each notes commit, because other agents push too.
-- Ask before creating or deleting kind clusters or remote branches.
+## Hard rules
+- Commits are authored and committed by `Brian Nguyen <brianknguyen@google.com>`, with zero `Co-Authored-By` or `Claude-Session` trailers. Never use `--no-verify`.
+- Push only to `origin`. Never comment on GitHub, never open or edit PRs on GitHub, and never push to `upstream`. Draft replies and PR descriptions for Brian instead.
+- Never switch branches in `/usr/local/google/home/brianknguyen/agent-sandbox` (main worktree). Do stack rebase/build work in `/usr/local/google/home/brianknguyen/agent-sandbox-restack` (or a sibling detached worktree outside the main repo). Always branch `review/<topic>/<branch>` from `origin/<branch>` rather than checking out local `<branch>` (for example, local `feat/batch-8-list-memory` is checked out in `../agent-sandbox-par-pr8`).
+- Open-PR and live stack branches are never edited directly. Build and verify on `review/<topic>/<branch>` copies first. After Brian approves, run the atomic sync yourself (do not paste the push command to him):
+  `timeout 90 git push --atomic origin --force-with-lease=<branch>:<expected-live-sha> <new-sha>:refs/heads/<branch> ...` (one lease per branch; check `git ls-remote` right before syncing so you never overwrite another coordinator's push; if any lease fails, stop and report).
+- Fold fixes into the owning commit (`git commit --fixup=<sha>` and `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <base>`), then restack dependents with `git rebase --onto`. Never use `--update-refs` (it moves other conversations' refs).
+- Checks before pushing code changes:
+  - Run only the new or changed `pytest` tests in both sync and async shells (`"$VENV/bin/python" -m pytest ...` from `clients/python/agentic-sandbox-client`), and mutation-check each new or changed test.
+  - `"$VENV/bin/pycodestyle" --max-line-length=120` on changed lines plus whole-file `E301,E302,E303,E304,E305,E306` check on touched files.
+  - `mypy` with zero errors on both venvs (`venv` has `kubernetes_asyncio` 36.1.0: `/usr/local/google/home/brianknguyen/.gemini/jetski/brain/91dd6bc1-8e34-4a1b-b684-50f3ca2ec8f8/scratch/venv`; `venv33` has `kubernetes_asyncio` 33.3.0: `/usr/local/google/home/brianknguyen/.gemini/jetski/brain/00bb279e-f865-4b5f-8655-867e51b8b486/scratch/venv33`). Per-commit script (`venv` 36.1.0): `bash /usr/local/google/home/brianknguyen/.gemini/jetski/brain/91dd6bc1-8e34-4a1b-b684-50f3ca2ec8f8/scratch/mypy_per_commit.sh <base> <top>`, plus run `"$VENV33/bin/python" -m mypy k8s_agent_sandbox` separately, and clean up any temporary worktree via `git -C /usr/local/google/home/brianknguyen/agent-sandbox worktree remove /usr/local/google/home/brianknguyen/agent-sandbox-mypy`.
+  - `make generate-python-docs` with zero uncommitted diff on every PR that changes public docstrings.
+  - Author and zero-trailer check across `<base>..<top>`.
+- Subagents **always** use `Model="inherit"`. Use one `inherit` subagent to triage/build and a fresh `inherit` subagent to verify (giving the verifier the rule and every path touching it, never your own conclusions).
+- Notes worktree (`/usr/local/google/home/brianknguyen/agent-sandbox-notes`): edit only files you own (`handoff/state.md`, `handoff/tasks.md`, stack rows of `handoff/pr_board.md`, `handoff/learnings.md`, `handoff/working_rules.md` when Brian sets a rule, and your own `handoff/work/*` files). Always `git pull --rebase` right before committing and pushing, and stage explicit paths (`git add <file>`, never `git add -A`).
+- Ask Brian before creating/deleting kind clusters or deleting remote branches.
 
-## Where things stand (2026-10-28 00:52 UTC; verify)
-- Upstream `feature/batch-claim` tip is `7cfe8484`. Merged: 1/N to 11/N. The lowest open PR is **12/N #1824** (PR 2, `feat/batch-2-claim`).
-- **Live heads:** PR 2 `386b39fc` (12/N #1824), PR 3 `feat/batch-3-group-consumers` `469b8d77` (13/N #1988), PR 4 `feat/batch-4-group-quorum` `a85caf4d` (14/N #1989), PR 5 `feat/batch-5-release-group-76a8m3` `7f1d6d5d` (15/N #1990), PR 6 `feat/batch-6-acquire-nbbp5j` `51c1814a` (16/N #1991), transport `feat/batch-transport-ltlfdm` `9fa22b54` (17/N, not opened), reaper `feat/batch-reaper-ymtd6t` `e531baf3` (18/N, not opened), PR 7 `feat/batch-7a-create-path` `91d5ffc4` (19/N, not opened).
-- **Pending review copies, `review/d1824b/<branch>`:** PR 2 `c13727a1`, PR 3 `485aba1b`, PR 4 `c47bd096`, PR 5 `746ca80f`, PR 6 `ab23937b`, transport `7be74438`, reaper `1cb9aa50`, PR 7 `c3d243fe`. They contain all of the following, which Brian has reviewed piece by piece:
-  - CodeRabbit's two doc fixes: `try`/`finally` around the README and `claim_batch` examples, and the `err()` / `claim_batch` wording.
-  - D1: `release()` takes the batch Lease with a conditional write before each delete round (`_take_batch_lease`), and refuses with `BatchInUseError` if another handle holds it, or if its UID or `leaseTransitions` changed since this handle's last write (`self._lease`). It never creates a Lease. A missing Lease only means the leftover claims are deleted.
-  - N1: a per-handle `_lifecycle_lock` (sync `RLock`, async `asyncio.Lock`). `release()` holds it for its whole run, and `detach()` refuses at once once a release has started (`_release_started()`), including after `AsyncSandboxClient.close()`.
-  - D2: the `_release_batches` snapshot race test, plus Event handshakes in the race tests.
-  - Brian's comment rewording, and a `_take_batch_lease` docstring paragraph on when it's used and why.
-  - Checks passed at `c3d243fe`: mypy clean on all commits, lint, docs regen with no diff, authors clean, and 14+ mutations killed. A fresh verifier confirmed the rules before the last three comment-only rounds.
-- **Review links** (synthetic): pending over live `https://github.com/briankhoi/agent-sandbox/compare/386b39fc...review-diff/d1824b-pr2-vs-live` (`ca41c126`), PR 2 over the previous round `compare/4c67b14e...review-diff/d1824b-pr2`, and PR 5 `compare/2810ca65...review-diff/d1824b-pr5`.
-- Older copies `review/cr1824b/*` and `review/d1824/*` are superseded. Deleting them needs Brian's OK.
+---
 
-## Your task, in order
-1. **Get Brian's answers to three open items** (from the verifier). Restate each plainly. My recommendation is yes, yes, separate.
-   - **(1) PR 5 (15/N) has the same race.** Thread A is in `release_member` / `release_group` / `release_not_ready` on handle H. Thread B's `detach()` on H finishes, and another client attaches. A's remaining deletes then remove claims that client owns. Fix: those three methods hold `_lifecycle_lock` around their delete phase (about 3 lines per shell plus one test each, in PR 5's "add release_member, release_group and release_not_ready" commit). A flag check alone is check-then-act and doesn't close it. This doesn't touch 12/N.
-   - **(2) Sync only: a same-thread `release()` inside `detach()`.** A signal handler runs `release()` while that thread is inside `detach()`. The `RLock` lets it in, the batch is deleted, and the outer `detach()` still returns success. Fix (proposed): before `detach()` sets `_lease_released`, if `_released` became true, raise `BatchError` instead of returning (about 2 lines plus a sync test, in PR 2). Trace where the re-entry can land (before, during or after detach's Lease write) before building it.
-   - **(3) Async `close()` racing a running `release()`.** Task A is in `release()`. Task B calls `client.close()`, which closes the HTTP client under A. A fails partway, and the Lease and some claims stay until the reaper. This comes from merged 9/N code. The options are to make `close()` wait for the running release (possibly minutes), to leave it, or a separate small PR. Recommend a separate PR after the stack.
-2. **Build the approved items** on new copies `review/d1824c/*` on top of `review/d1824b/*` (one builder subagent). Run the checks, then have a fresh verifier check them with the rule and the paths. Send Brian links that show only the change.
-3. **After Brian's OK, run the atomic sync** of all 8 branches from the newest copies (leases on the live heads above, re-checked with `git ls-remote` right before). Then update `state.md` and the `pr_board.md` rows (new heads), and tell Brian the new transport head.
-4. **Give Brian the paste-ready CodeRabbit replies for #1824** (check the wording against the synced code first):
-   - "Fixed in #1824: the README example and both claim_batch docstring examples now release the batch in a `finally`, so an exception doesn't leave it until its shutdownTime."
-   - "Fixed in #1824: err() now says a failed create doesn't set it and shows as a FAILED member with reason CreateFailed, and claim_batch says the same."
-   - For the thread on `release()` not checking the Lease holder: "Fixed in #1824: before each delete round, release() writes the batch Lease with this handle as its holder, using a conditional write. It raises BatchInUseError and deletes nothing if another handle holds the Lease, or if the Lease was created again or attached to since this handle last wrote it. detach() and release() on one handle also no longer overlap."
-5. **Give Brian the 12/N description** (below). Drop the last half-sentence of the lifecycle bullet if (2) is declined. In the current GitHub description he should remove the "contains all previous, un-merged commits" paragraph and the hold on #1742, and fix the "creating and release" typo. Title: `feat(python-sdk): add claim_batch and release (12/N)`.
+## Verified live state (2026-10-28 18:31 UTC; re-verify on startup)
+- **Upstream `feature/batch-claim` tip:** `522dad4cbdeb32b5cb31cf55c999481121046db6` (`feat(batch,python-sdk): add claim_batch and release (12/N) (#1824)`, squash-merged 2026-10-28 17:57 UTC).
+- **Verified squash tree equality:** `522dad4c^{tree}` == `origin/feat/batch-2-claim^{tree}` (`93c1711a`) == `0fbee353daff8fd6ef7c3268ae91cb441e123597`. Zero edits happened during squash merge.
+- **Merged so far:** `1/N` through `12/N` (`#1824`).
+- **Lowest open PR now:** `13/N` (`#1988`, `feat/batch-3-group-consumers`).
+- **11 linear SDK stack branches on `origin` (currently stacked on pre-squash `12/N` `93c1711a`):**
+  1. `13/N` `feat/batch-3-group-consumers` (open `#1988`): `73a41381` (5 commits in `93c1711a..73a41381`)
+  2. `14/N` `feat/batch-4-group-quorum` (open `#1989`): `cc0816b4`
+  3. `15/N` `feat/batch-5-release-group-76a8m3` (open `#1990`): `87920a45`
+  4. `16/N` `feat/batch-6-acquire-nbbp5j` (open `#1991`): `d8154c16`
+  5. `17/N` `feat/batch-transport-ltlfdm` (ready, not opened): `92a22289`
+  6. `18/N` `feat/batch-reaper-ymtd6t` (ready, not opened): `9c35c0e5`
+  7. `19/N` `feat/batch-7a-create-path` (ready, not opened): `ecf7a158`
+  8. `20/N` `feat/batch-8-list-memory` (ready, not opened, C2): `1b061c53`
+  9. `21/N` `feat/batch-9-types` (ready, not opened, C2): `9785b2f8`
+  10. `22/N` `feat/batch-10-deletecollection-retry` (ready, not opened, C2): `d7e78189`
+  11. `23/N` `feat/batch-11-acquire-annotations` (ready, not opened, C3): `97670d11`
 
-> This PR is the twelfth in a series of PRs to implement a batch. It adds `claim_batch` and `release`.
-> - `claim_batch` prechecks each group's warm pool and template, creates the batch Lease, then creates claims in the background at `create_rps` with `max_in_flight` workers. Failed creates become `CreateFailed` members.
-> - Each group's first `min_ready` claims are created first, one group after another in group order, and the rest follow in the same order, so the first groups can be consumed while later groups are still being created.
-> - Every claim gets the same `shutdownTime`, which includes the pacing time, so pacing doesn't eat into `work_budget`.
-> - Retryable create errors are retried, and each retry takes a pacing slot. Creation stops once `err()` is set.
-> - `release()` stops the handle and deletes the batch's claims by label, then its Lease. It deletes in rounds and gives up only after rounds that make no progress. A failed release keeps the Lease, so calling it again retries.
-> - Before each round, `release()` takes the batch Lease with a conditional write. It raises `BatchInUseError` and deletes nothing if another handle holds the Lease, or if the Lease was created again or attached to since this handle last wrote it. It never creates a Lease. If the Lease is missing, it deletes the leftover claims. It deletes the Lease only at the resourceVersion it wrote.
-> - `detach()` and `release()` on one handle run one at a time, and the first call wins. `detach()` raises `BatchError` once a release has started, and a `release()` that ran inside `detach()` on the same thread makes that `detach()` raise.
-> - `delete_all()` and exit cleanup release every tracked batch. A handle whose `detach()` didn't finish is detached again with the caller's grace instead of released, and the async exit hook leaves that batch in place. A batch that another handle now holds is logged once and no longer tracked.
-> - `release()` clears the stored grace, so a release that fails after a failed detach is retried as a release. `detach()` writes the grace from a local copy, so another `detach()` call can't change it mid-write.
-> - A batch watch that ends within a second without an event backs off instead of reopening at once.
-> - A batch id that ends in a newline is rejected.
-> - An e2e test claims a two-member batch, runs a command in a member and releases it.
+---
 
-Before you send it, check each bullet against the synced code.
+## Immediate agenda (execute 1 and 2 in parallel right when you start)
 
-## Known nits (not blocking; mention only if asked)
-- `last_lease` is typed `Any`. mypy rejects `V1Lease`, because the sync type has optional `metadata`/`spec`, and the async exit hook passes a `kubernetes_asyncio` `V1Lease`.
-- The 409 comment in `detach()` now names its remaining causes (a late landed write, or a same-thread re-entry in sync).
+### 1. Review `vicentefb`'s comments on merged `12/N` (`#1824`)
+`12/N` (`#1824`) was unexpectedly merged by someone else while Brian's manager `vicentefb` had 3 review comments on it (1 resolved, **2 unresolved**). Read `#1824` via `gh api graphql` and verify all 3 against `522dad4c` (sync and async):
+- **Resolved comment (`batch_utils.py:215`, comment `4403723958`):** `size=0` groups. Brian already replied (`4403902998`) that `size=0` lands in `#1991` (`16/N`) with `acquire()`, and resolved the thread. Confirm nothing left to do.
+- **Unresolved comment 1 (`sandbox_client.py:576`, thread `PRRT_kwDOPcbYcc6xPE83`, comment `4403739189`):**
+  > *"Releasing an attached batch on exit is a footgun: an inspection tool that get_batch()es, reads members(), and exits without detach() deletes someone else's batch, and the async client defaults to cleanup=True. I'd release only batches this client claimed and detach attached ones on exit. If you keep this, the get_batch docstring needs the warning, not just the README."*
+  - Check `sandbox_client.py:442-475,574-590`, `async_sandbox_client.py` (`get_batch`, `_stop_batches`, `_release_batches`, `__aexit__`), `README.md`, and `SandboxClient`/`AsyncSandboxClient` single-sandbox `get_sandbox` exit precedents (`_explicit_claims`, `cleanup=True` on `AsyncSandboxClient.__aexit__` vs `SandboxClient.__exit__`).
+  - Note: in `AsyncSandboxClient`, check what `close()` vs `__aexit__` actually does to batches today (`_stop_batches` vs `_release_batches`) so your analysis states exact facts for both sync and async.
+  - Evaluate whether the critique is valid, list the concrete options with trade-offs (e.g. tracking claimed vs attached handles so exit cleanup releases claimed handles and detaches/stops attached handles, vs keeping current behavior and adding the explicit warning to `get_batch` docstrings, vs how sync `__exit__` and async `__aexit__` align), and give a clear recommendation.
+- **Unresolved comment 2 (`sandbox_batch.py:880`, thread `PRRT_kwDOPcbYcc6xPFyv`, comment `4403744773`):**
+  > *"Reserving at now + retry_delay advances the shared cursor, so one 429 with Retry-After: 30 stalls every worker for 30 s. For an apiserver throttle that may be what you want (APF is telling the whole client to slow down); for a transport blip it isn't, though that backoff is short. Say which is intended; if not the stall, don't let a retry move the cursor past now + interval."*
+  - Check `522dad4c:sandbox_batch.py:872-919` and `522dad4c:async_sandbox_batch.py:860-909` (`_reserve_create_slot`, `_create_one`, `batch_utils.retry_delay`), plus `16/N` `acquire()` (`d8154c16:sandbox_batch.py:648-654`, `d8154c16:async_sandbox_batch.py:664-670`, where `self._next_create_at >= deadline` also reads `_next_create_at`) and `19/N` warm-pool pacing skip (`ecf7a158`).
+  - Evaluate both cases `vicentefb` distinguishes (429/503 `Retry-After` apiserver throttle vs per-connection transport blip), give options + costs (e.g. sleeping `retry_delay` locally on transport error before reserving a normal `1/create_rps` slot while letting 429/503 `Retry-After` push shared `_next_create_at` or vice versa, vs keeping as-is with an explicit comment and reply), and recommend one.
+- **Where any approved `#1824` fix lands:** Brian specifically noted that if either comment warrants a code/docstring fix that he approves, it can probably land in `13/N` (`#1988`) (saving an extra PR + renumbering round, at the minor cost of a small commit in `#1988` outside `events`/`group_outcomes`, whereas `working_rules.md:24`'s default is a small standalone follow-up PR off `522dad4c`). Present the verdict + fix/reply options to Brian and confirm whether he wants any approved `#1824` fix placed as a dedicated commit in `13/N` (`#1988`) or in a standalone follow-up PR.
 
-## Queued (each needs Brian's OK)
-- Task 7 in `tasks.md` (pod annotations and snapshot pins on batch `acquire()` for the RL library). Ask Brian who owns it before starting.
-- Later PRs (13/N to 19/N): handle review comments when Brian says "review it", restack after each merge (prove identical per-commit trees, `git range-diff` all `=`), and check readiness of the next open PR. After an upstream merge, confirm the squash tree equals our branch tree, then restack the whole stack and sync. After Brian opens a PR that shifts the series, renumber the open PR titles and first-sentence ordinals with a script that asserts exactly one match in each and reads them back (the one GitHub write you may do; scripts in `/usr/local/google/home/brianknguyen/.gemini/jetski/brain/b0c62338-6697-4acc-81f1-cad74d2fdf5b/scratch/`).
-- Brian's own to-dos to remind him of:
-  - Set the #1988 title to `feat(batch,python-sdk): add events and group_outcomes (13/N)`.
-  - In the Google Doc, find and replace `iter_ready_groups` → `group_outcomes`, `GroupReady` → `GroupOutcome` and `IterReadyGroups` → `GroupOutcomes`, with Match case on.
-  - In his project instructions table, change "PR 3 `events`, `iter_ready_groups`" to `group_outcomes`.
+### 2. Rebase `13/N`..`23/N` onto `upstream/feature/batch-claim` (`522dad4c`) AND triage CodeRabbit comments on `13/N` (`#1988`) in parallel
+- **Mechanical restack (`review/restack-13n/<branch>`):**
+  - Rebase all 11 linear branches (`13/N` `origin/feat/batch-3-group-consumers` `73a41381` through `23/N` `origin/feat/batch-11-acquire-annotations` `97670d11`, old base `93c1711a`) onto `522dad4c` as `review/restack-13n/<branch>` in `../agent-sandbox-restack` (branching from `origin/<branch>` without checking out local `<branch>`).
+  - Prove it is 100% mechanical: `git diff <old-head> <new-head>` must be empty for every branch `13/N`..`23/N`, `git range-diff 93c1711a..97670d11 522dad4c..review/restack-13n/feat/batch-11-acquire-annotations` must show only `=`, and all commits must have `Brian Nguyen <brianknguyen@google.com>` with zero trailers. Push `review/restack-13n/*` to `origin`.
+- **Triage CodeRabbit comments on `#1988` (`https://github.com/kubernetes-sigs/agent-sandbox/pull/1988`):**
+  - Note: CodeRabbit's existing reviews on `#1988` ran on 2026-10-21 against old commit `aed55b42` (before `10/N` `#2049`, `11/N` `#1996`, `12/N` `#1824`, and the `group_outcomes` rename). Read all inline threads AND review bodies on `#1988` with `gh api`:
+    1. Inline thread `PRRT_kwDOPcbYcc6ukWK6` (comment `4331497752`, `sandbox_batch.py`): adding `urllib3.exceptions.ConnectTimeoutError` (superclass of `NewConnectionError`) to `_TRANSPORT_ERRORS` (`522dad4c:sandbox_batch.py:71-79`), since `coordination_v1_api` runs with `retries=False` (`k8s_helper.py`) so connect timeouts/errors on Lease calls are not wrapped in `MaxRetryError`. (Note: `22/N` `d7e78189` uses `urllib3.Retry(3, read=False)` for `_claim_collection_api`, so only `coordination_v1_api` uses `retries=False`.)
+    2. Inline thread `PRRT_kwDOPcbYcc6upmS0` (comment `4333750286`, `batch_utils.py`): `validate_claim_batch_args` (`522dad4c:batch_utils.py:245`) accepts `create_rps=float("inf")`. Check `16/N` (`d8154c16:batch_utils.py:220-230,275`, commit `29fd217a`), which already introduces `positive_number` and switches `create_rps` validation to `positive_number("create_rps", create_rps, BATCH_DEFAULT_CREATE_RPS)`!
+    3. Inline thread `PRRT_kwDOPcbYcc6u5Pfp` (comment `4340353778`, `async_sandbox_client.py`): registering attached handle in `get_batch` without a cancellable wait. Check `522dad4c:async_sandbox_client.py:630-639` / `73a41381:async_sandbox_client.py:631-640`, where `_register_batch` was already made synchronous in `10/N` (`#2049`, `74cd8fa5`).
+    4. Outside-diff-range note in review `5604234416` (`async_sandbox_client.py:241-242`): keeping batches eligible for release after `close()`. Check against `10/N` `#2049`, `12/N` `#1824`, and `AsyncSandboxClient.close()`'s documented contract.
+    5. Outside-diff-range note in review `5606950275` (`2026-10-21T22:21:29Z`, `async_sandbox_client.py:237-248`): waking `_changed` waiters in `_stop_batches()`. Check `73a41381:async_sandbox_client.py:253-255`, where `9/N` (`#1986`, `b03ba91b`) added `batch._detached = True` and `13/N` itself (`9c73ac3d`) already added `batch._changed.notify_all()`.
+  - Also check `13/N`'s own 5 commits (`93c1711a..73a41381`) and `#1988`'s GitHub PR title/body (note: `#1988`'s PR body still mentions `iter_ready_groups()` instead of `group_outcomes()`, so prepare an updated PR body for Brian to paste). Once `13/N` is synced onto `522dad4c`, CodeRabbit will also review `13/N`'s own 5-commit diff cleanly.
 
-## Tools
-- Venv with mypy, pytest, pycodestyle and the SDK extras: `/usr/local/google/home/brianknguyen/.gemini/jetski/brain/91dd6bc1-8e34-4a1b-b684-50f3ca2ec8f8/scratch/venv`. Run from `clients/python/agentic-sandbox-client`, since the SDK imports from the working directory.
-- Worktrees: `../agent-sandbox-restack` (rebases; detached at `c3d243fe`), `../agent-sandbox-fu5` (detached checks), `../agent-sandbox-notes` (notes). Keep scratch files out of the repo. Use your own conversation's `scratch/` directory.
+### 3. Resolve the 3 carried-over stack decisions with Brian
+Keep these 3 pending decisions on the docket so Brian can resolve them with you (either right after `13/N` + `#1824` triage or alongside it):
+1. **Decision A (`16/N` `#1991`, `d8154c16`): `acquire()` cleanup in `_drop_acquired()` (`sandbox_batch.py:655-667,759-771`, `async_sandbox_batch.py:671-683,780-792`):**
+   - What happens: `acquire()` sets `may_exist = True` before waiting for its `create_rps` pacing slot (`sandbox_batch.py:655-658`, `async_sandbox_batch.py:671-674`), and `_drop_acquired()` calls `_delete_claim(claim_name)` (`sandbox_batch.py:769`, `async_sandbox_batch.py:790`) without holding `_lifecycle_lock`.
+   - Issue: (a) if `acquire()` is cancelled or stopped during the pacing wait before any create was sent, `_drop_acquired` sends an unnecessary HTTP DELETE (harmless 404); (b) if `acquire()` fails after creating a claim and caller B calls `detach()` while `_drop_acquired` is mid-DELETE, `detach()` can hand off the Lease before `_drop_acquired`'s DELETE finishes.
+   - Proposed fix (recommended: yes, fold into `16/N` `#1991`): initialize `may_exist = False` before the pacing wait (setting `may_exist = True` right before `_create_one`), and wrap `_delete_claim(claim_name)` in `_drop_acquired()` with `_lifecycle_lock`.
+2. **Decision B (`15/N` `#1990`, `87920a45`): concurrent `release_member()` fan-out (`sandbox_batch.py:618-619`, `async_sandbox_batch.py:634-635`):**
+   - What happens: `15/N` currently wraps `release_member()`'s `_delete_claim(member.claim_name)` in exclusive `_lifecycle_lock` so `detach()` cannot free the Lease mid-delete.
+   - Issue: exclusive `_lifecycle_lock` serializes concurrent `release_member()` calls on the same batch (~5-20 ms per HTTP DELETE, so 64 concurrent `release_member()` calls take ~0.3-1.3 s instead of ~20 ms in parallel). `release_group()` and `release_not_ready()` already fan out up to 20 deletes internally, so only concurrent `release_member()` callers are affected.
+   - Question + proposed fix: ask Brian whether RL or callers invoke `release_member()` concurrently across many sandboxes at once. If yes, replace exclusive `_lifecycle_lock` on member deletes in `15/N` with a ~15-line shared active-delete counter (`release_member` increments under lock, runs HTTP DELETE in parallel, decrements/notifies in `finally`; `detach()`/`release()` waits for counter == 0). If no, leave `15/N` as-is.
+3. **Decision C: Delete superseded remote review branches on `origin`:**
+   - Ask Brian's OK to delete the 16 superseded remote branches `review/cr1824b/*` (8 branches) and `review/d1824/*` (8 branches) on `origin` (plus `review/d1824b/*`, `review/d1824c/*`, `review/d1824d/*` once no longer needed).
+
+### 4. Ongoing mission after `13/N` (`#1988`) settles
+You own the SDK PR stack end-to-end. Once `13/N` (`#1988`), `#1824`'s follow-ups, and the 3 decisions are settled and synced:
+- Continue upward through `14/N` (`#1989`), `15/N` (`#1990`), `16/N` (`#1991`), and help Brian open and shepherd `17/N` through `23/N`.
+- Whenever an upstream PR merges into `feature/batch-claim` (including Coordinator 3's `merge/main-into-batch-claim-2`), restack the remaining stack onto the new `upstream/feature/batch-claim` tip and report the new heads (especially `17/N` and `23/N`).
+
+## Your first turn
+1. Run Setup, read the 6 handoff files, and verify live SHAs (`upstream/feature/batch-claim` and `origin/feat/batch-*`).
+2. In parallel:
+   - Spawn one read-only `inherit` subagent to verify `vicentefb`'s 3 `#1824` comments and `#1988`'s 5 CodeRabbit items against `522dad4c`, `73a41381`, and `16/N` (`d8154c16`).
+   - Mechanically rebase `13/N`..`23/N` onto `522dad4c` as `review/restack-13n/<branch>` in `../agent-sandbox-restack`, verify empty tree diffs and clean `range-diff`, and push `review/restack-13n/*` to `origin`.
+3. Present Brian a concise, easy-to-scan kickoff response with:
+   - Two-line summary (confirming `review/restack-13n/*` is pushed with identical trees and ready to sync, plus the headline on `#1824` and `#1988` comments).
+   - Verdict, options/trade-offs, and recommendation (or paste-ready reply) for `vicentefb`'s 2 unresolved `#1824` comments and `#1988`'s CodeRabbit comments, plus updated `#1988` PR body (`group_outcomes`).
+   - Clear list of decisions at the bottom: (1) approve syncing the mechanical restack `13/N`..`23/N` onto `522dad4c` now (or folding approved `#1824`/`#1988` fixes first and syncing once), (2) choices on `#1824` / `#1988` items and whether approved `#1824` fixes go in `13/N` or a small standalone PR, and (3) Decisions A, B, and C carried forward.
+````
