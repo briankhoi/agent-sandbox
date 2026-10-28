@@ -1714,17 +1714,107 @@ class TestRelease(BaseClaimBatchTest):
         handle = _make_handle(self.client)
         helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
 
+        error: BaseException | None = None
+
         def write(*args, **kwargs):
-            # A signal handler that runs during this write calls detach() on the same thread.
+            # A signal handler that runs during this write calls detach() on the same thread, and
+            # the outer write then fails after the inner call already released the Lease.
             if helper.replace_batch_lease.call_count == 1:
                 handle.detach()
+                raise RuntimeError("connection reset")
+
+        def run():
+            nonlocal error
+            try:
+                handle.detach()
+            except BaseException as e:
+                error = e
 
         helper.replace_batch_lease.side_effect = write
-        thread = threading.Thread(target=handle.detach, daemon=True)
+        thread = threading.Thread(target=run, daemon=True)
         thread.start()
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
+        self.assertIsNone(error)
         self.assertTrue(handle._lease_released)
+
+    @patch.object(sandbox_batch, "time", SimpleNamespace(monotonic=time.monotonic, sleep=lambda s: None))
+    def test_a_release_during_detach_on_the_same_thread_makes_detach_raise(self):
+        helper = self.cluster.helper
+        self.addCleanup(self.client._active_batches.clear)
+
+        with self.subTest("during read_batch_lease with a failed release"):
+            helper.reset_mock()
+            handle = _make_handle(self.client)
+            self.client._active_batches = {("default", "b1"): handle}
+            helper.list_sandbox_claim_objects.return_value = ([_claim("b1-0")], "9")
+            helper.delete_sandbox_claims_by_label.side_effect = k8s_client.ApiException(status=503)
+            helper.replace_batch_lease.side_effect = (
+                lambda *a, **k: _lease(holder_identity=a[2].spec.holder_identity, resource_version="11")
+            )
+            release_writes = 0
+
+            def read_during_failed_release(*args, **kwargs):
+                nonlocal release_writes
+                if helper.read_batch_lease.call_count == 1:
+                    with contextlib.suppress(k8s_client.ApiException):
+                        handle.release()
+                    release_writes = helper.replace_batch_lease.call_count
+                return _lease(holder_identity=handle._holder_identity)
+
+            helper.read_batch_lease.side_effect = read_during_failed_release
+            with self.assertRaises(BatchError):
+                handle.detach()
+            self.assertGreater(release_writes, 0)
+            self.assertEqual(helper.replace_batch_lease.call_count, release_writes)
+            self.assertEqual(
+                [c.args[2].spec.holder_identity for c in helper.replace_batch_lease.call_args_list],
+                [handle._holder_identity] * release_writes,
+            )
+            self.assertFalse(handle._lease_released)
+            self.assertEqual(self.client._active_batches, {("default", "b1"): handle})
+
+        with self.subTest("during replace_batch_lease before the write lands"):
+            helper.reset_mock()
+            handle = _make_handle(self.client)
+            self.client._active_batches = {("default", "b1"): handle}
+            helper.list_sandbox_claim_objects.return_value = ([], "9")
+            helper.delete_sandbox_claims_by_label.side_effect = None
+            helper.read_batch_lease.side_effect = lambda *a, **k: _lease(holder_identity=handle._holder_identity)
+
+            def write_before_landing(*args, **kwargs):
+                if helper.replace_batch_lease.call_count == 1:
+                    handle.release()
+                    raise k8s_client.ApiException(status=404)
+                return _lease(holder_identity=args[2].spec.holder_identity, resource_version="11")
+
+            helper.replace_batch_lease.side_effect = write_before_landing
+            with self.assertRaises(BatchError):
+                handle.detach()
+            self.assertTrue(handle._released)
+
+        with self.subTest("during replace_batch_lease after the write lands"):
+            helper.reset_mock()
+            handle = _make_handle(self.client)
+            self.client._active_batches = {("default", "b1"): handle}
+            helper.list_sandbox_claim_objects.return_value = ([], "9")
+            helper.delete_sandbox_claims_by_label.side_effect = None
+            current_holder: str | None = handle._holder_identity
+            helper.read_batch_lease.side_effect = (
+                lambda *a, **k: _lease(holder_identity=current_holder, resource_version="11")
+            )
+
+            def write_after_landing(*args, **kwargs):
+                nonlocal current_holder
+                current_holder = args[2].spec.holder_identity
+                if helper.replace_batch_lease.call_count == 1:
+                    handle.release()
+                return _lease(holder_identity=args[2].spec.holder_identity, resource_version="12")
+
+            helper.replace_batch_lease.side_effect = write_after_landing
+            with self.assertRaises(BatchError):
+                handle.detach()
+            self.assertTrue(handle._released)
 
 
 class TestClientBatchCleanup(BaseClaimBatchTest):
