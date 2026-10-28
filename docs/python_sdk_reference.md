@@ -192,7 +192,7 @@ for the given namespace.
 
 <a id="k8s_agent_sandbox.sandbox_client.SandboxClient.get_batch"></a>
 
-##### get\_batch
+#### get\_batch
 
 ```python
 def get_batch(batch_id: str, namespace: str = "default") -> SandboxBatch
@@ -717,7 +717,7 @@ Represents one warmpool in a batch for multi-pool batch claiming.
 
 <a id="k8s_agent_sandbox.models.BatchGroup.min_ready"></a>
 
-##### min\_ready
+#### min\_ready
 
 Defaults to ``size``.
 
@@ -747,7 +747,7 @@ Represents the identity of a single claim in a batch.
 
 <a id="k8s_agent_sandbox.models.Member.warmpool"></a>
 
-##### warmpool
+#### warmpool
 
 The group this member belongs to.
 
@@ -773,7 +773,7 @@ thread, and exposes methods for connecting to ready sandboxes and detaching from
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.groups"></a>
 
-##### groups
+#### groups
 
 ```python
 @property
@@ -784,7 +784,7 @@ The batch's ``BatchGroup``\ s; one per warm pool.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.size"></a>
 
-##### size
+#### size
 
 ```python
 @property
@@ -795,7 +795,7 @@ The total number of claims across all groups.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.members"></a>
 
-##### members
+#### members
 
 ```python
 def members(warmpool: str | None = None) -> list[Member]
@@ -805,7 +805,7 @@ Returns a snapshot of the batch's members, optionally filtered to one warm pool.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.connect"></a>
 
-##### connect
+#### connect
 
 ```python
 def connect(member: Member) -> "Sandbox"
@@ -820,7 +820,7 @@ can no longer vouch for the member.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.err"></a>
 
-##### err
+#### err
 
 ```python
 def err() -> Exception | None
@@ -831,7 +831,7 @@ Lease renewal (e.g., ``BatchLeaseExpiredError``), or ``None`` while healthy.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.lease_degraded"></a>
 
-##### lease\_degraded
+#### lease\_degraded
 
 ```python
 def lease_degraded() -> bool
@@ -844,7 +844,7 @@ renewal stops on an error, such as the Lease expiring, so it can be polled at an
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.detach"></a>
 
-##### detach
+#### detach
 
 ```python
 def detach(grace: int | None = None) -> None
