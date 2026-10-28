@@ -9,9 +9,9 @@ Common environment for every run below:
 - No cluster: each script replaces only the Kubernetes helper calls its path makes with in-memory stubs. The user actions use public API only.
 
 Fix branches:
-- PR 1 `origin/fix/python-sdk-release-terminated-handles` at `0a54a028` (base `7f40dc1a`), fixes A. Installed version `1.0.9.dev38+g0a54a0288`.
-- PR 2 `origin/fix/python-sdk-free-closed-connectors` at `e62610f9` (base `c4ed9ba9`, current main), fixes B. Installed version `1.0.9.dev41+ge62610f95`.
-- PR 3 `origin/fix/python-sdk-release-client-exit-hook` at `afae285e` (on PR 1), fixes 4. Installed version `1.0.9.dev39+gafae285ed`.
+- PR 1 `origin/fix/python-sdk-release-terminated-handles` at `9feeb8a9` (prose-only amend of `0a54a028`, base `7f40dc1a`), fixes A. Measured at `0a54a028` (installed version `1.0.9.dev38+g0a54a0288`).
+- PR 2 `origin/fix/python-sdk-free-closed-connectors` at `fbbbb944` (prose-only amend of `e62610f9`, base `c4ed9ba9`, current main), fixes B. Measured at `e62610f9` (installed version `1.0.9.dev41+ge62610f95`).
+- PR 3 `origin/fix/python-sdk-release-client-exit-hook` at `368cedb6` (prose-only amend of `afae285e`, on PR 1 `9feeb8a9`), fixes 4. Measured at `afae285e` (installed version `1.0.9.dev39+gafae285ed`).
 
 ---
 
@@ -23,30 +23,30 @@ Python SDK: the client keeps every terminated sandbox handle for as long as it l
 
 **What happened?**
 
-I created and terminated sandboxes in a loop with one long-lived `AsyncSandboxClient` (`create_sandbox`, run a command, `sandbox.terminate()`). The process's memory grew with every cycle and never came back down.
+I created and terminated sandboxes in a loop with one long-lived `AsyncSandboxClient`, calling `create_sandbox`, running a command and calling `sandbox.terminate()`. The process's memory grew with every cycle and never came back down.
 
-`SandboxClient` and `AsyncSandboxClient` store every handle they create or attach in an internal registry (`_active_connection_sandboxes`). `Sandbox.terminate()` and `AsyncSandbox.terminate()` close the connection and delete the claim but leave the handle in that registry, so the client keeps one closed handle per sandbox it ever terminated, until the client itself is closed. Each async handle keeps its closed connector, and the closed `httpx.AsyncClient` inside it keeps its SSL context with the loaded CA bundle.
+`SandboxClient` and `AsyncSandboxClient` store every handle they create or attach in the internal `_active_connection_sandboxes` registry. `Sandbox.terminate()` and `AsyncSandbox.terminate()` close the connection and delete the claim, but they leave the handle in that registry. The client therefore keeps one closed handle per sandbox it ever terminated, until a caller closes the client itself. Each async handle keeps its closed connector, and the closed `httpx.AsyncClient` inside it keeps its SSL context with the loaded CA bundle.
 
-I expected a terminated handle to be released by the client, as `client.delete_sandbox()` already does.
+I expected the client to release a terminated handle, as `client.delete_sandbox()` already does.
 
-This causes **unbounded growth**: memory grows linearly with the number of sandboxes terminated over the client's lifetime.
+This causes **unbounded growth**. Memory grows linearly with the number of sandboxes terminated over the client's lifetime.
 
-- Measured (reproduction below, no cluster): 0.69 MiB of peak RSS per create/terminate cycle with the async client; after 200 cycles the client still holds 200 closed handles.
-- Measured on a kind cluster (Python 3.12.15, glibc 2.41, 40 workers doing create / one command / terminate; results on the `bench/async-mem-probe` branch, `test/benchmarks/batch-claim/results/memprobe/` and `results/g4/`):
-  - 2,400 cycles: RSS 93.8 → 1,752.4 MiB and still rising, 72.4 MiB per 100 cycles; glibc bytes in use 1,660 MiB at the end, about 0.68 MiB per cycle. Setting `MALLOC_ARENA_MAX=2` did not change the slope (94.5% of the default), so it is live memory, not fragmentation. memray attributes 84% of tracked memory to `ssl.create_default_context` under `AsyncSandboxConnector.__init__`.
-  - 600 cycles: RSS 156 → 525 MiB, 71.6 MiB per 100 cycles in the second half.
-  - Create 100, terminate all: 101 handles still tracked, 0.667 MiB retained per handle.
-- Measured, sync client: about 0.06 MiB per handle (no SSL context per handle).
-- Inferred from the code, not measured: the async client's exit cleanup sends one DELETE per tracked key, so every terminated handle still tracked costs one redundant DELETE (answered with 404 and treated as success) at exit.
+- I measured this with the reproduction below, without a cluster. The async client uses 0.69 MiB of peak RSS per create/terminate cycle, and after 200 cycles it still holds 200 closed handles.
+- I also measured this on a kind cluster with Python 3.12.15, glibc 2.41 and 40 workers, each doing create, one command and terminate. The results are in `test/benchmarks/batch-claim/results/memprobe/` and `results/g4/` on the `bench/async-mem-probe` branch.
+  - Over 2,400 cycles, RSS rose from 93.8 to 1,752.4 MiB and was still rising, at 72.4 MiB per 100 cycles. glibc reported 1,660 MiB in use at the end, about 0.68 MiB per cycle. Setting `MALLOC_ARENA_MAX=2` left the slope at 94.5% of the default, so the growth is live memory, not fragmentation. memray attributes 84% of tracked memory to `ssl.create_default_context` under `AsyncSandboxConnector.__init__`.
+  - Over 600 cycles, RSS rose from 156 to 525 MiB, at 71.6 MiB per 100 cycles in the second half.
+  - After creating 100 sandboxes and terminating all of them, the client still tracked 101 handles and kept 0.667 MiB per handle.
+- I measured the sync client locally without a cluster, using `test/benchmarks/batch-claim/results/leakfix/handle_retained.py` and `handle_retained.out` on the `bench/async-mem-probe` branch. With Python 3.13.15, a kept closed `Sandbox` handle holds 0.044 MiB, or 0.036 MiB in `tracemalloc`, because the sync connector builds no SSL context per handle.
+- I inferred one more cost from the code and did not measure it. The async client's exit cleanup sends one DELETE per tracked key, so every terminated handle still tracked costs one redundant DELETE at exit. The API server answers it with 404, which the client treats as success.
 
-Workarounds: call `client.delete_sandbox(claim_name, namespace)` instead of `sandbox.terminate()`, which removes the entry; or call `client.list_active_sandboxes()` periodically, which drops closed handles (but see #<issue 3>: it also drops closed handles whose sandbox still exists).
+There are two workarounds. Call `client.delete_sandbox(claim_name, namespace)` instead of `sandbox.terminate()`, which removes the entry. Or call `client.list_active_sandboxes()` periodically, which drops closed handles. That second workaround has its own problem, #<issue 3>, because it also drops closed handles whose sandbox still exists.
 
-Related: #<issue B> is a separate defect. Even once the client drops a handle, the handle is freed only by the cyclic garbage collector, which causes late freeing with high peaks. #<issue 4> covers clients themselves being retained.
+See also #<issue B> and #<issue 4>. #<issue B> is a separate defect where only the cyclic garbage collector frees a dropped handle, which causes late freeing with high peaks. #<issue 4> covers the exit hook keeping closed clients alive.
 
 **How can we reproduce it (as minimally and precisely as possible)?**
 
-1. `pip install "k8s-agent-sandbox[async]"` (or `pip install -e "clients/python/agentic-sandbox-client[async]"` from a checkout of main).
-2. Save the script below as `repro.py` and run `python repro.py`. No cluster is needed: the three Kubernetes calls on this path (create claim, wait for ready, delete claim) are stubbed. The script reads the private registry only to count what the client holds, and uses `ru_maxrss` (Linux, KiB) for memory.
+1. Run `pip install "k8s-agent-sandbox[async]"`, or install from a checkout of main with `pip install -e "clients/python/agentic-sandbox-client[async]"`.
+2. Save the script below as `repro.py` and run `python repro.py`. The script needs no cluster, because it stubs the three Kubernetes calls on this path, which create the claim, wait for it to be ready and delete it. The script reads the private registry only to count what the client holds, and uses Linux `ru_maxrss` in KiB for memory.
 
 ```python
 import asyncio, gc, resource
@@ -81,7 +81,7 @@ terminated 200 sandboxes; client still holds 200 handles, 200 of them closed (ex
 peak RSS grew 0.69 MiB per create/terminate cycle (Linux ru_maxrss)
 ```
 
-Optional, real cluster: the shape of the loop that produced the measured cluster numbers above. It needs a cluster with the extensions installed and a `SandboxWarmPool` (here `python-sandbox-pool`); it was not re-run for this report.
+The optional snippet below shows the shape of the real-cluster loop that produced the measured cluster numbers above. It needs a cluster with the extensions installed and a `SandboxWarmPool`, here `python-sandbox-pool`. I did not re-run it for this report.
 
 ```python
 import asyncio, resource
@@ -106,12 +106,12 @@ async def main(cycles=600, workers=40):
 asyncio.run(main())
 ```
 
-Measured with this shape (40 workers, warm pool of 120): RSS grew about 72 MiB per 100 cycles on main (156 → 525 MiB over 600 cycles; 93.8 → 1,752.4 MiB over 2,400 cycles).
+With this shape, 40 workers and a warm pool of 120, RSS grew about 72 MiB per 100 cycles on main. It went from 156 to 525 MiB over 600 cycles and from 93.8 to 1,752.4 MiB over 2,400 cycles.
 
 **Version**
 
 - upstream main `c4ed9ba962270bf2c34d868e8c92048e85038899`
-- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` (installed from that commit), Python 3.13.15, httpx 0.28.1, Linux. The cluster numbers were measured with Python 3.12.15: the 2,400-cycle runs on the SDK at `7fd162d9` (same code on this path as main `840fdfde`), the 600-cycle and create-100 runs on main `7f40dc1a`.
+- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` installed from that commit, Python 3.13.15, httpx 0.28.1, Linux. The cluster numbers come from Python 3.12.15. The 2,400-cycle runs used the SDK at `7fd162d9`, which has the same code on this path as main `840fdfde`. The 600-cycle and create-100 runs used main `7f40dc1a`.
 
 ### Verification (A)
 
@@ -120,12 +120,12 @@ $ venv-main/bin/python repro_a.py      # upstream main c4ed9ba9
 terminated 200 sandboxes; client still holds 200 handles, 200 of them closed (expected 0)
 peak RSS grew 0.69 MiB per create/terminate cycle (Linux ru_maxrss)
 
-$ venv-pr1/bin/python repro_a.py       # PR 1, 0a54a028
+$ venv-pr1/bin/python repro_a.py       # PR 1, 9feeb8a9 (prose-only amend of 0a54a028)
 terminated 200 sandboxes; client still holds 0 handles, 0 of them closed (expected 0)
 peak RSS grew 0.25 MiB per create/terminate cycle (Linux ru_maxrss)
 ```
 
-Reproduces on main; fixed on PR 1. The 0.25 MiB per cycle left on PR 1 is the peak while dropped handles wait for the cyclic GC, which is Issue B (PR 2). On the cluster, all three PRs together brought the 600-cycle slope from 71.6 to 0.85 MiB per 100 cycles (`results/g4/README.md`).
+Reproduces on main and is fixed on PR 1. About 0.25 MiB per cycle remains on PR 1 while dropped handles wait for the cyclic collector, which is Issue B in PR 2. On the cluster, all three PRs together brought the 600-cycle slope from 71.6 to 0.85 MiB per 100 cycles in `results/g4/README.md`.
 
 ---
 
@@ -133,32 +133,32 @@ Reproduces on main; fixed on PR 1. The 0.25 MiB per cycle left on PR 1 is the pe
 
 **Title**
 
-Python SDK: a closed sandbox handle is freed only by the cyclic garbage collector
+Python SDK: only the cyclic garbage collector frees a closed sandbox handle
 
 **What happened?**
 
-I closed sandbox handles (`terminate()`, `close_connection()`, or `client.delete_sandbox()`) and dropped every reference to them. They were not freed until Python's cyclic garbage collector ran.
+I closed sandbox handles with `terminate()`, `close_connection()`, or `client.delete_sandbox()` and dropped every reference to them. Python freed them only when its cyclic garbage collector ran.
 
-A sandbox handle passes its bound methods (`get_pod_ip`, `get_pod_name`, `get_service_fqdn`) to its connector, which passes them on to its connection strategy. Handle and connector therefore form a reference cycle, and reference counting cannot free a closed handle. Only the cyclic collector can. That collector triggers on object counts, not bytes, and does not see the roughly 0.7 MiB of OpenSSL state behind each closed async handle. Memory climbs to a GC-timed peak before it falls, and if the program stops allocating Python objects, it stays there.
+A sandbox handle passes its `get_pod_ip`, `get_pod_name` and `get_service_fqdn` bound methods to its connector, which passes them on to its connection strategy. Handle and connector therefore form a reference cycle, and reference counting cannot free a closed handle. Only the cyclic collector can. That collector triggers on object counts, not bytes, and does not see the roughly 0.7 MiB of OpenSSL state behind each closed async handle. Memory climbs to a peak set by when the collector runs before it falls. If the program stops allocating Python objects, memory stays at that peak.
 
-I expected a closed handle with no references to be freed immediately.
+I expected reference counting to free a closed handle as soon as nothing references it.
 
-This causes **late freeing with high peaks**, not unbounded growth: the memory is eventually returned, but only when a collection happens to run. It affects closed handles whether or not the client still tracks them.
+This causes **late freeing with high peaks**, not unbounded growth. Python returns the memory only when a collection happens to run. It affects closed handles whether or not the client still tracks them.
 
-- Measured (reproduction below, no cluster): with the GC disabled, a closed, unreferenced `AsyncSandbox` is still alive; `gc.collect()` frees it.
-- Measured on a kind cluster (Python 3.12.15, async client, with the fix for #<issue A> applied so the client no longer holds terminated handles; `bench/async-mem-probe` branch, `results/g3/`):
-  - 600 create / command / terminate cycles with 40 workers: RSS grew 29.3 MiB per 100 cycles in the second half and glibc bytes in use peaked at 309 MiB. With the cycle broken: 0.46 MiB per 100 cycles, ending below the start.
-  - Create 100, terminate all, create nothing more: 60 s later 0.66 MiB per handle was still allocated with the registry empty. With the cycle broken: 0.0001 MiB per handle.
-  - With the GC off, a closed, dropped `AsyncSandbox` holds 0.69 MiB; clearing the callbacks at close leaves 0.006 MiB.
+- I measured this with the reproduction below, without a cluster. With the cyclic collector disabled, a closed, unreferenced `AsyncSandbox` is still alive, and `gc.collect()` frees it.
+- I also measured this on a kind cluster with Python 3.12.15 and the async client, on top of the fix for #<issue A> so the client no longer holds terminated handles. The results are in `test/benchmarks/batch-claim/results/g3/` on the `bench/async-mem-probe` branch.
+  - Over 600 create, command and terminate cycles with 40 workers, RSS grew 29.3 MiB per 100 cycles in the second half, and glibc bytes in use peaked at 309 MiB. Breaking the cycle cut RSS growth to 0.46 MiB per 100 cycles. With the cycle broken, glibc bytes in use fell from 72 MiB at the start to 41 MiB at the end.
+  - After creating 100 sandboxes, terminating all of them and creating nothing more, 0.66 MiB per handle remained allocated 60 s later with an empty registry. Breaking the cycle left 0.0001 MiB per handle.
+- I measured the per-handle cycle locally without a cluster, using `test/benchmarks/batch-claim/results/leakfix/handle_cycle_edges.py` and `handle_cycle_edges.out` on the `bench/async-mem-probe` branch. With Python 3.13.15 and the cyclic collector disabled, a closed, dropped `AsyncSandbox` holds 0.694 MiB before `gc.collect()`. Clearing the callbacks at close leaves 0.006 MiB.
 
-Not covered by breaking the cycle at close: handles dropped without being closed keep their live connector until the cyclic GC runs. Close or terminate handles you are done with.
+Breaking the cycle at close does not cover handles that a caller drops without closing them. They keep their live connector until the cyclic collector runs. Close or terminate handles you are done with.
 
-Related: #<issue A> (the client keeps every terminated handle), which causes the unbounded growth; this issue makes the remaining memory return late.
+See also #<issue A>, where the client keeps every terminated handle and causes the unbounded growth. This issue makes the remaining memory return late.
 
 **How can we reproduce it (as minimally and precisely as possible)?**
 
-1. `pip install "k8s-agent-sandbox[async]"` (or install from a checkout of main).
-2. Save as `repro.py` and run `python repro.py`. No cluster is needed; the Kubernetes calls are stubbed. `client.delete_sandbox()` is used so the client's own registry does not hold the handle (see #<issue A>). A `weakref` with the GC disabled shows whether reference counting alone frees the handle.
+1. Run `pip install "k8s-agent-sandbox[async]"`, or install from a checkout of main with `pip install -e "clients/python/agentic-sandbox-client[async]"`.
+2. Save as `repro.py` and run `python repro.py`. The script needs no cluster, because it stubs the Kubernetes calls. The script calls `client.delete_sandbox()` so that the client's own registry does not hold the handle, which is #<issue A>. A `weakref` with the cyclic collector disabled shows whether reference counting alone frees the handle.
 
 ```python
 import asyncio, gc, weakref
@@ -194,7 +194,7 @@ after gc.collect(): alive=False
 **Version**
 
 - upstream main `c4ed9ba962270bf2c34d868e8c92048e85038899`
-- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` (installed from that commit), Python 3.13.15, httpx 0.28.1, Linux.
+- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` installed from that commit, Python 3.13.15, httpx 0.28.1, Linux.
 
 ### Verification (B)
 
@@ -203,12 +203,12 @@ $ venv-main/bin/python repro_b.py      # upstream main c4ed9ba9
 closed handle with no references, before gc.collect(): alive=True (expected False)
 after gc.collect(): alive=False
 
-$ venv-pr2/bin/python repro_b.py       # PR 2, e62610f9
+$ venv-pr2/bin/python repro_b.py       # PR 2, fbbbb944 (prose-only amend of e62610f9)
 closed handle with no references, before gc.collect(): alive=False (expected False)
 after gc.collect(): alive=False
 ```
 
-Reproduces on main; fixed on PR 2.
+Reproduces on main and is fixed on PR 2.
 
 ---
 
@@ -220,22 +220,22 @@ Python SDK: list_active_sandboxes() drops handles whose sandbox still exists, so
 
 **What happened?**
 
-I closed a handle's connection with `sandbox.close_connection()` (which leaves the sandbox running), called `client.list_active_sandboxes()`, and then `client.delete_all()`. The sandbox was not deleted.
+I closed a handle's connection with `sandbox.close_connection()`, which leaves the sandbox running. I then called `client.list_active_sandboxes()` and `client.delete_all()`. `client.delete_all()` did not delete the sandbox.
 
-`list_active_sandboxes()` removes every tracked handle that is not active (the loop that pops `not obj.is_active`, in both `sandbox_client.py` and `async_sandbox_client.py`). A handle becomes inactive when its connection is closed, which happens on `close_connection()`, on a failed `get_sandbox()` lookup (the client closes the handle locally and keeps tracking it so cleanup still reaches it). The claim behind such a handle still exists in the cluster. Once `list_active_sandboxes()` has dropped it, nothing deletes that claim: `delete_all()`, the context managers and the exit cleanup only walk the tracked handles.
+`list_active_sandboxes()` removes every tracked handle that is not active. The loop that pops `not obj.is_active` does this in both `sandbox_client.py` and `async_sandbox_client.py`. A handle becomes inactive when its connection closes. That happens on `close_connection()` or on a failed `get_sandbox()` lookup, where the client closes the handle locally and keeps tracking it so cleanup still reaches it. The claim behind such a handle still exists in the cluster. Once `list_active_sandboxes()` has dropped it, nothing deletes that claim, because `delete_all()`, the context managers and the exit cleanup only walk the tracked handles.
 
 I expected listing to be read-only, or at least to drop only handles whose claim is gone, so that `delete_all()` and exit cleanup still delete the sandbox.
 
-This causes **leaked cluster resources**: a program that closes a handle, lists, and exits leaves the SandboxClaim (and its sandbox pod) running. Measured with the stubbed reproduction below (the client never issues the DELETE); not run against a cluster.
+This causes **leaked cluster resources**. A program that closes a handle, lists, and exits leaves the SandboxClaim and its sandbox pod running. I measured this with the stubbed reproduction below, where the client never issues the DELETE. I did not run it against a cluster.
 
-Suggested direction: drop only handles whose claim was deleted (after a successful terminate) and keep reporting or tracking closed handles; or report only active handles without dropping the others.
+One direction is to drop only handles whose claim a successful terminate deleted, and keep reporting or tracking closed handles. Another is to report only active handles without dropping the others.
 
-Related: #<issue A> (the client keeps terminated handles; `list_active_sandboxes()` is one of its workarounds, which is how this path gets exercised).
+See also #<issue A>, where the client keeps terminated handles. Calling `list_active_sandboxes()` is one of its workarounds, which is how programs reach this path.
 
 **How can we reproduce it (as minimally and precisely as possible)?**
 
-1. `pip install k8s-agent-sandbox` (or install from a checkout of main).
-2. Save as `repro.py` and run `python repro.py`. No cluster is needed: the Kubernetes calls are stubbed, and the delete stub records which claims the client asks to delete. The first run is the control without `list_active_sandboxes()`.
+1. Run `pip install k8s-agent-sandbox`, or install from a checkout of main with `pip install -e clients/python/agentic-sandbox-client`.
+2. Save as `repro.py` and run `python repro.py`. The script needs no cluster, because it stubs the Kubernetes calls and its delete stub records which claims the client asks to delete. The first run is the control, without `list_active_sandboxes()`.
 
 ```python
 from kubernetes.client import ApiClient
@@ -251,7 +251,7 @@ def run(list_first):
     h.wait_for_claim_ready = lambda name, *a, **k: name
     h.delete_sandbox_claim = lambda name, *a, **k: deleted.append(name)
     sandbox = client.create_sandbox("pool")
-    sandbox.close_connection()  # local close; the claim still exists
+    sandbox.close_connection()  # Closes locally. The claim still exists.
     if list_first:
         print("list_active_sandboxes() ->", client.list_active_sandboxes())
     deleted.clear()
@@ -262,7 +262,7 @@ run(list_first=False)
 run(list_first=True)
 ```
 
-Output on main (claim names are random):
+Output on main, with a random claim name:
 
 ```
 list_active_sandboxes() called first=False: delete_all() deleted ['sandbox-claim-3b8c52f8']
@@ -273,7 +273,7 @@ list_active_sandboxes() called first=True: delete_all() deleted nothing
 **Version**
 
 - upstream main `c4ed9ba962270bf2c34d868e8c92048e85038899`
-- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` (installed from that commit), Python 3.13.15, Linux.
+- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` installed from that commit, Python 3.13.15, Linux.
 
 ### Verification (3)
 
@@ -296,25 +296,25 @@ Python SDK: the client's exit hook keeps every client alive until the program ex
 
 **What happened?**
 
-I created a client per task, closed it after use (`await client.close()` / leaving the `with` block), and dropped it. Every client stayed in memory until the process exited.
+I created a client per task, closed it after use with `await client.close()` or a `with` block, and dropped it. Every client stayed in memory until the process exited.
 
-`AsyncSandboxClient.__init__` calls `atexit.register(self._atexit_cleanup)` when `cleanup=True`, which is its default; `SandboxClient` calls `atexit.register(self._delete_automatic_sandboxes)` when `cleanup=True` (default `False` there). A bound method references its object, so the atexit registry holds each client for the life of the process, even after `close()`. Neither client ever unregisters.
+`AsyncSandboxClient.__init__` calls `atexit.register(self._atexit_cleanup)` when `cleanup=True`, which is its default. `SandboxClient` calls `atexit.register(self._delete_automatic_sandboxes)` when `cleanup=True`, which defaults to `False` there. A bound method references its object, so the atexit registry holds each client for the life of the process, even after `close()`. Neither client ever unregisters.
 
-I expected a closed, unreferenced client to be freed.
+I expected reference counting to free a closed client once nothing references it.
 
-This causes **per-client retention**: memory grows with the number of clients created, not with sandboxes. With `cleanup=False`, no client is retained.
+This causes **per-client retention**. Memory grows with the number of clients created, not with sandboxes. With `cleanup=False`, the atexit registry retains no client.
 
-- Measured (reproduction below): a closed `AsyncSandboxClient` with default arguments and a `SandboxClient(cleanup=True)` after its `with` block are both still alive after `gc.collect()`.
-- Measured (Python 3.12.15, 200 clients per case, tracemalloc after `gc.collect()`; `bench/async-mem-probe` branch, `results/g4/client_retained.py`): async never used 1,369 B per client; async used then closed 9,600 B per client; sync `cleanup=True` 11,407 B per client. All 200 stayed alive in each case.
+- I measured this with the reproduction below, without a cluster. A closed `AsyncSandboxClient` with default arguments and a `SandboxClient(cleanup=True)` after its `with` block are both still alive after `gc.collect()`.
+- I measured per-client memory with Python 3.12.15, 200 clients per case, and `tracemalloc` after `gc.collect()`, using `test/benchmarks/batch-claim/results/g4/client_retained.py` and `client_retained.out` on the `bench/async-mem-probe` branch. An unused async client keeps 1,369 B. A used and closed async client keeps 9,600 B. A sync `cleanup=True` client keeps 11,407 B. All 200 stayed alive in each case.
 
-Simply unregistering in `close()` is not enough: async `close()` keeps handles whose close failed so a later call can retry, a client can be used again after `close()`, and sync `__exit__` leaves the client usable. Exit cleanup has to keep covering those cases and clients dropped without `close()`. One way: register a function bound only to the data exit cleanup reads (the registry dict, the explicit-claims set and, for async, the injected `ApiClient`) instead of a bound method, as urllib3 does with `weakref.finalize(self, _close_pool_connections, pool)`.
+Simply unregistering in `close()` is not enough, for three reasons. Async `close()` keeps handles whose close failed so a later call can retry. A caller can use a client again after `close()`. Sync `__exit__` leaves the client usable. Exit cleanup has to keep covering those cases and clients that callers drop without `close()`. One way is to register a function bound only to the data exit cleanup reads, instead of a bound method. That data is the `_active_connection_sandboxes` registry dict, the `_explicit_claims` set and, for async, the injected `ApiClient`. urllib3 does the same with `weakref.finalize(self, _close_pool_connections, pool)`.
 
-Related: #<issue A>.
+See also #<issue A>.
 
 **How can we reproduce it (as minimally and precisely as possible)?**
 
-1. `pip install "k8s-agent-sandbox[async]"` (or install from a checkout of main).
-2. Save as `repro.py` and run `python repro.py`. No cluster and no Kubernetes calls are needed. A `weakref` shows whether each client was freed.
+1. Run `pip install "k8s-agent-sandbox[async]"`, or install from a checkout of main with `pip install -e "clients/python/agentic-sandbox-client[async]"`.
+2. Save as `repro.py` and run `python repro.py`. The script needs no cluster and makes no Kubernetes calls. A `weakref` shows whether Python freed each client.
 
 ```python
 import asyncio, gc, weakref
@@ -348,7 +348,7 @@ closed SandboxClient(cleanup=True) alive after gc.collect(): True (expected Fals
 **Version**
 
 - upstream main `c4ed9ba962270bf2c34d868e8c92048e85038899`
-- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` (installed from that commit), Python 3.13.15, Linux.
+- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` installed from that commit, Python 3.13.15, Linux.
 
 ### Verification (4)
 
@@ -357,12 +357,12 @@ $ venv-main/bin/python repro_4.py      # upstream main c4ed9ba9
 closed AsyncSandboxClient alive after gc.collect(): True (expected False)
 closed SandboxClient(cleanup=True) alive after gc.collect(): True (expected False)
 
-$ venv-pr3/bin/python repro_4.py       # PR 3, afae285e (on PR 1)
+$ venv-pr3/bin/python repro_4.py       # PR 3, 368cedb6 (prose-only amend of afae285e, on PR 1 9feeb8a9)
 closed AsyncSandboxClient alive after gc.collect(): False (expected False)
 closed SandboxClient(cleanup=True) alive after gc.collect(): False (expected False)
 ```
 
-Reproduces on main; fixed on PR 3.
+Reproduces on main and is fixed on PR 3.
 
 ---
 
@@ -374,26 +374,26 @@ Python SDK: the sync connector's close() is a reset, while the async connector's
 
 **What happened?**
 
-I closed a sandbox connection with `close_connection()` and then sent a request through the handle's connector, once with the sync client and once with the async client. The sync connector silently reconnected and the request succeeded; the async connector raised `RuntimeError: sandbox connector is closed`.
+I closed a sandbox connection with `close_connection()` and then sent a request through the handle's connector, once with the sync client and once with the async client. The sync connector silently reconnected and the request succeeded. The async connector raised `RuntimeError: sandbox connector is closed`.
 
-`SandboxConnector.close()` (sync) does two jobs under one name:
-- a reset that the next request recovers from: `send_request` calls it on port-forward and connection errors, strategies call their own `close()` before restarting a port-forward, and the GKE snapshot extension calls `connector.close()` on a live handle during suspend and resume;
-- the final close, from `Sandbox.close_connection()` and `terminate()`.
+In the sync client, `SandboxConnector.close()` does two jobs under one name.
+- First, it resets a live connection so the next request can recover. `send_request` calls it on port-forward and connection errors. Strategies call their own `close()` before restarting a port-forward. The GKE snapshot extension calls `connector.close()` on a live handle during suspend and resume.
+- Second, `Sandbox.close_connection()` and `terminate()` call it as the final close.
 
-`AsyncSandboxConnector.close()` is final: later use raises. The difference follows the HTTP libraries (`requests.Session` keeps working after `close()`, `httpx` clients refuse requests after `close()`), not a deliberate sync/async design choice.
+`AsyncSandboxConnector.close()` is final, and later use raises. The difference follows the HTTP libraries, not a deliberate sync/async design choice. `requests.Session` keeps working after `close()`, while `httpx` clients refuse requests after `close()`.
 
-I expected the same lifecycle on both: after the final close, using the connector raises a clear error.
+I expected the same lifecycle on both. After the final close, using the connector should raise a clear error.
 
-This is **inconsistent lifecycle semantics** between the sync and async SDKs. Code that keeps a sync connection after `close_connection()` or `terminate()` (through `sandbox.connector`, or a `commands`/`files` object obtained before the close) gets mode-dependent behavior instead of an error: depending on the connection mode it uses the pod IP, starts a new port-forward, or reconnects. Inferred from the code, not measured: on a handle the client has already closed and stopped tracking, such a reconnect reopens a port-forward or session that nothing closes again.
+This is **inconsistent lifecycle semantics** between the sync and async SDKs. Code that keeps a sync connection after `close_connection()` or `terminate()` gets mode-dependent behavior instead of an error. Such code holds `sandbox.connector`, or a `commands` or `files` object obtained before the close. Depending on the connection mode, it uses the pod IP, starts a new port-forward, or reconnects. I inferred one more consequence from the code and did not measure it. On a handle that the client has already closed and stopped tracking, such a reconnect reopens a port-forward or session that nothing closes again.
 
-Suggested direction: split a private reset from the final `close()` in the sync connector and its strategies, make the final close refuse later use as the async one does, and switch the internal callers (error recovery, snapshot suspend/resume) to the reset.
+One direction is to split a private reset from the final `close()` in the sync connector and its strategies, and make the final close refuse later use as the async one does. The internal callers for error recovery and snapshot suspend and resume would then switch to the reset.
 
-Related: #1785 (sync/async divergences in the Python SDK). #<issue B>: its fix drops a closed handle's callbacks, which changes what a reused sync connection does after close in some modes but does not make close final.
+See also #1785, which tracks sync and async divergences in the Python SDK. The fix for #<issue B> drops a closed handle's callbacks. That changes what a reused sync connection does after close in some modes, but it does not make close final.
 
 **How can we reproduce it (as minimally and precisely as possible)?**
 
-1. `pip install "k8s-agent-sandbox[async]"` (or install from a checkout of main).
-2. Save as `repro.py` and run `python repro.py`. No cluster is needed: a local HTTP server stands in for the sandbox router, and the Kubernetes calls are stubbed. `sandbox.connector.send_request()` is the call the `commands` and `files` objects make.
+1. Run `pip install "k8s-agent-sandbox[async]"`, or install from a checkout of main with `pip install -e "clients/python/agentic-sandbox-client[async]"`.
+2. Save as `repro.py` and run `python repro.py`. The script needs no cluster. A local HTTP server stands in for the sandbox router, and the script stubs the Kubernetes calls. `sandbox.connector.send_request()` is the call the `commands` and `files` objects make.
 
 ```python
 import asyncio, http.server, threading
@@ -452,7 +452,7 @@ async connector after close_connection(): RuntimeError sandbox connector is clos
 **Version**
 
 - upstream main `c4ed9ba962270bf2c34d868e8c92048e85038899`
-- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` (installed from that commit), Python 3.13.15, requests 2.34.2, httpx 0.28.1, Linux.
+- `k8s-agent-sandbox` `1.0.9.dev40+gc4ed9ba96` installed from that commit, Python 3.13.15, requests 2.34.2, httpx 0.28.1, Linux.
 
 ### Verification (5)
 
@@ -470,10 +470,10 @@ Reproduces on main. No fix branch exists.
 
 | issue | reproduces on main `c4ed9ba9` | fixed on branch |
 | --- | --- | --- |
-| A | yes: 200 of 200 terminated handles kept, 0.69 MiB peak RSS per cycle | yes, PR 1 `0a54a028`: 0 kept (0.25 MiB per cycle left until the GC runs, which is B) |
-| B | yes: closed, dropped handle alive until `gc.collect()` | yes, PR 2 `e62610f9`: freed without the GC |
+| A | yes: 200 of 200 terminated handles kept, 0.69 MiB peak RSS per cycle | yes, PR 1 `9feeb8a9` (prose-only amend of `0a54a028`): 0 kept (about 0.25 MiB per cycle left until the GC runs, which is B) |
+| B | yes: closed, dropped handle alive until `gc.collect()` | yes, PR 2 `fbbbb944` (prose-only amend of `e62610f9`): freed without the GC |
 | 3 | yes: `delete_all()` deletes nothing after `list_active_sandboxes()` | no fix branch |
-| 4 | yes: closed async client and sync `cleanup=True` client both alive | yes, PR 3 `afae285e`: both freed |
+| 4 | yes: closed async client and sync `cleanup=True` client both alive | yes, PR 3 `368cedb6` (prose-only amend of `afae285e`, on PR 1 `9feeb8a9`): both freed |
 | 5 | yes: sync returns 200 after close, async raises | no fix branch |
 
 Each script was run as `python repro_<x>.py` in its own venv with the SDK installed editable from a detached worktree of the named commit; stderr was captured with stdout and was empty in every run.
