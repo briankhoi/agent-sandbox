@@ -1,6 +1,6 @@
 # RL Sandbox Claim-Mode Benchmark — Meeting Cheatsheet (`per_claim` vs `batch`)
 
-> **Snapshot status:** Sync #1 (`w160`, `w640`, `w1280`, `c640`, and `loadtest.py` across **Stock Controller** and **Live `upstream/main` Tuned `Config H` Controller**). `w2560` (48-node run testing past the 1,000-socket client pool) + `Config H` wave `fill-unbounded` rows will be appended in Sync #2 tonight.
+> **Snapshot status:** Sync #1 (`w160`, `w640`, `w1280`, `c640`, and `loadtest.py` across **Default Controller Flags** and **Tuned Controller Flags (`docs/performance-tuning.md` `Config H`)** — **both running our exact same `bench/rl-gke` code & controller binary, pre-`#1791`**). For a simpler plain-English narrative, start with [`WALKTHROUGH.md`](WALKTHROUGH.md)! `w2560` (48-node run testing past the 1,000-socket client pool) + wave `fill-unbounded` rows will be appended in Sync #2 tonight.
 >
 > **Cluster:** GKE Standard `1.37.1-gke.1697000` (`us-central1-a`), 24 × `n2-standard-8` sandbox nodes (`gVisor` + Image Streaming, 128 max pods/node), 1 × `e2-standard-8` dedicated `controller-pool`, 1 × `n2-standard-8` dedicated `driver` node, **404 APF seats** (`workload-low` = 165 seats).
 
@@ -16,7 +16,7 @@
      - `per-claim` overflowed `agent_sandbox_rl`'s hardcoded **1,000-socket `urllib3` pool** (`cluster.py:35`, **`218` `pool_full_discards`**), burned **`105.66s` Python CPU** vs **`10.97s–12.53s`** (`8.4×–9.6×` less CPU), opened **`1,280` watches** vs **`1`**, and dropped 14 envs to HTTP 429s on run 1 before retry.
    - At **`w640`**: **`batch-default` wins `9.39s` vs `14.37s` (`1.53×` faster, `ratio = 0.653`, `"batch wins"`)**; `batch-unbounded` `10.34s` vs `14.37s` (`ratio = 0.720`).
 
-2. **Live `upstream/main` Tuned Controller (`docs/performance-tuning.md` `Config H`: `200` claim & sandbox workers, `2` warm-pool workers, `4` HTTP/2 connections, observability writes off):**
+2. **Tuned Controller Flags (`docs/performance-tuning.md` `Config H` flags on our same `bench/rl-gke` binary: `200` claim & sandbox workers, `2` warm-pool workers, `4` HTTP/2 connections, observability writes off):**
    - **Speed:** Raising controller concurrency rescued a *single* `per-claim` trainer at `1,280` from overflowing its 1,000-socket pool (`discards: 218 → 0`), bringing `w1280` `no_limit` to parity (`batch-unbounded` **`p50 = 8.47s`, `p99 = 19.16s`, `last = 20.14s`** vs `per-claim` **`p50 = 9.18s`, `p99 = 19.60s`, `last = 19.71s`**, `"inside noise"` — both bounded by ~20s GKE `workload-low` APF 429 retry tails).
    - **Out-of-the-box pacing win at `w640`:** **`batch-default` (`8.73s`, `0` HTTP 429s) crushed `per-claim` (`19.54s`, `50` HTTP 429s) by `2.24×` (`ratio = 0.447`, `"batch wins"`)**, because `max_in_flight=20` kept total cluster concurrency below GKE `workload-low`'s 165-seat ceiling (`0` APF 429 tail stalls!).
    - **Structural cost & multi-tenant headroom (even where 1-trainer speed ties):**
@@ -35,7 +35,7 @@
 
 ---
 
-## 2. Side-by-Side Results: Stock Controller vs. Live `upstream/main` Tuned (`Config H`)
+## 2. Side-by-Side Results: Default Controller Flags vs. Tuned Controller Flags (`Config H`)
 
 *(Steady state = Step 2 median across runs; ratios < 1.00 mean `batch` is faster.)*
 
