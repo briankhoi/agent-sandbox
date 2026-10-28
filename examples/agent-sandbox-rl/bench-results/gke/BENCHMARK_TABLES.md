@@ -8,7 +8,7 @@
 
 *Controller profile ([`docs/performance-tuning.md`](../../../../docs/performance-tuning.md#L508-L530) Sustained High-Throughput): `200` sandbox/claim workers, `2` warm-pool workers, `max-refill-rate=100`, `api-connections=4`, `separate-watch-connection=true`, `cache-label-selectors=true`, event/annotation suppression.*
 
-| Scale (`Pools × 4`) | Claim Mode | Failed Envs | TTFC (1st Ready) | Median (`p50`) | Tail (`p99`) | All Ready (`last`) *(run1–run2)* | Client API Calls / Env | Open Watches | Dropped Sockets | Cluster Claim API Reqs |
+| Scale (`Pools × 4`) | Claim Mode | Failed Envs | TTFC (1st Ready) | Median (`p50`) | Tail (`p99`) | All Ready (`last`) *(run1–run2)* | Client API Calls / Env | Watch Reqs *(1 stream on batch)* | Dropped Sockets | Cluster Claim API Reqs |
 |---|---|---:|---:|---:|---:|---|---:|---:|---:|---:|
 | **160** (`40 × 4`) | `per_claim` | `0` | `516 ms` | `1.37s` | `2.44s` | `2.48s` *(2.43–2.53s)* | `4.00` | `160` | `0` | `1,224` |
 | **160** (`40 × 4`) | **`batch` (default)** | **`0` ✅** | **`136 ms` (`3.8×` ⚡)** | **`1.18s` (`1.16×`)** | **`2.33s`** | **`2.34s` (`1.06×`)** *(2.32–2.37s)* | **`1.26` (`3.2×` ↓)** | **`1` (`160×` ↓)** | `0` | **`747` (`-39%` ↓)** |
@@ -30,7 +30,7 @@
 
 ## 2. Production-Tuned Controller — Workload Shape Comparison (`500 × 1` Eval & `16 × 64` High-Rollout)
 
-| Workload Shape (`Pools × Tasks/Pool`) | Claim Mode | Failed Envs | TTFC (1st Ready) | Median (`p50`) | Tail (`p99`) | Steady All Ready (`last`) | **Step 1 Cold Ready** | Client API Calls / Env | Open Watches | Dropped Sockets | Cluster Claim API Reqs |
+| Workload Shape (`Pools × Tasks/Pool`) | Claim Mode | Failed Envs | TTFC (1st Ready) | Median (`p50`) | Tail (`p99`) | Steady All Ready (`last`) | **Step 1 Cold Ready** | Client API Calls / Env | Watch Reqs *(1 stream on batch)* | Dropped Sockets | Cluster Claim API Reqs |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **SWE-bench Eval (`500 × 1 = 500`)** | `per_claim` | `0` | `738 ms` | `4.05s` | `6.93s` | `7.27s` | `33.51s` | `4.00` | `500` | `0` | `3,844` |
 | **SWE-bench Eval (`500 × 1 = 500`)** | **`batch` (default)** | **`0` ✅** | **`280 ms` (`2.6×` ⚡)** | **`3.71s` (`1.09×`)** | `7.46s` | `7.62s` | **`7.95s` (`4.2×` ⚡✅)** | **`2.01` (`2.0×` ↓)** | **`4` (`125×` ↓)** | `0` | **`2,294` (`-40%` ↓)** |
@@ -47,7 +47,7 @@
 
 *Controller profile: Stock release defaults (`100` sandbox workers, `50` claim workers, `1` warm-pool worker, `1` shared API connection).*
 
-| Scale (`Pools × 4`) | Claim Mode | Failed Envs | TTFC (1st Ready) | Median (`p50`) | Tail (`p99`) | All Ready (`last`) | Client API Calls / Env | Open Watches | Dropped Sockets | Cluster Claim API Reqs |
+| Scale (`Pools × 4`) | Claim Mode | Failed Envs | TTFC (1st Ready) | Median (`p50`) | Tail (`p99`) | All Ready (`last`) | Client API Calls / Env | Watch Reqs *(1 stream on batch)* | Dropped Sockets | Cluster Claim API Reqs |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **160 Warm** (`40 × 4`) | `per_claim` | `0` | `553 ms` | `1.28s` | `2.17s` | `2.36s` | `4.00` | `160` | `0` | `1,022` |
 | **160 Warm** (`40 × 4`) | **`batch` (default)** | **`0` ✅** | **`178 ms` (`3.1×` ⚡)** | **`1.12s` (`1.14×`)** | **`2.10s`** | **`2.12s` (`1.11×`)** | **`1.26` (`3.2×` ↓)** | **`1` (`160×` ↓)** | `0` | **`540` (`-47%` ↓)** |
