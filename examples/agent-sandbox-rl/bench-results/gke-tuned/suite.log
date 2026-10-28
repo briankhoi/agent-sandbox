@@ -22,3 +22,10 @@ bench-results/gke-tuned/summary.md
 === 2026-10-28T06:33:31Z STAGE1-CORE-DONE ===
 === 2026-10-28T06:33:31Z starting Stage 2 (6 fill-unbounded wave runs: w160, w640, w1280) ===
 06:33:32 w160-fill-unbounded-run1
+06:38:23 w160-fill-unbounded-run2
+06:39:24 w640-fill-unbounded-run1
+06:42:15 w640-fill-unbounded-run2
+06:47:35 w1280-fill-unbounded-run1
+06:53:34 w1280-fill-unbounded-run2
+bench-results/gke-tuned/summary.md
+=== 2026-10-28T07:01:08Z TUNED-SUITE-DONE ===

@@ -194,7 +194,7 @@ EOF
 
   resize-sandbox)
     NODES="${1:?Specify target node count (e.g. 24 or 48)}"
-    gcloud container node-pools resize sandbox --project="$PROJECT" --cluster="$CLUSTER" --zone="$ZONE" --num-nodes="$NODES" --quiet
+    gcloud container clusters resize "$CLUSTER" --project="$PROJECT" --node-pool=sandbox --zone="$ZONE" --num-nodes="$NODES" --quiet
     ;;
 
   teardown-cluster)

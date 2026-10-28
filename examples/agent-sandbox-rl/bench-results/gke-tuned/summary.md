@@ -19,6 +19,12 @@ Steady state is the median over steps 2 to 2 of each run, then the median over r
    "last_start_ratio": 0.9634003944038319,
    "step1_ratio": 1.061752065046668
   },
+  "wave_unbounded": {
+   "ratio": 1.2794075428982572,
+   "call": "batch loses",
+   "last_start_ratio": 1.2830844764043852,
+   "step1_ratio": 1.3199083530954858
+  },
   "requests_per_env": {
    "batch": 1.25625,
    "per_claim": 4.0
@@ -58,6 +64,13 @@ Steady state is the median over steps 2 to 2 of each run, then the median over r
    "last_start_ratio": 0.45441111784449534,
    "step1_ratio": 0.42679691573884904
   },
+  "wave_unbounded": {
+   "ratio": 0.937893244560412,
+   "call": "inside noise",
+   "last_start_ratio": 0.9469046419483452,
+   "step1_ratio": 0.9058734210131969,
+   "gain_over_20pct": false
+  },
   "requests_per_env": {
    "batch": 1.2515625,
    "per_claim": 4.0
@@ -96,6 +109,13 @@ Steady state is the median over steps 2 to 2 of each run, then the median over r
    "call": "inside noise",
    "last_start_ratio": 1.2516084647958086,
    "step1_ratio": 1.4267663695371888
+  },
+  "wave_unbounded": {
+   "ratio": 1.2533802821700537,
+   "call": "batch loses",
+   "last_start_ratio": 1.2513612762216009,
+   "step1_ratio": 0.8771380708421528,
+   "gain_over_20pct": false
   },
   "requests_per_env": {
    "batch": 1.25078125,
@@ -147,12 +167,15 @@ Steady state is the median over steps 2 to 2 of each run, then the median over r
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | w160/batch-default | 2 | 0 | 2.34 (2.32-2.37) | 1.18 | 2.33 | 2.52 | 2.54 | 1.26 | 1 | 0 | 1.17 | 45.41 | 4.54 | 747 | 1006 | 0 |
 | w160/batch-unbounded | 2 | 0 | 2.38 (2.37-2.40) | 1.15 | 2.24 | 2.48 | 2.28 | 1.26 | 1 | 0 | 1.06 | 58.09 | 10.67 | 742 | 981 | 0 |
+| w160/fill-unbounded | 2 | 0 | 3.05 (2.90-3.20) | 1.90 | 3.00 | 3.18 | 3.01 | 1.52 | 1 | 0 | 1.10 | 26.96 | 26.02 | 736 | 777 | 0 |
 | w160/per-claim | 2 | 0 | 2.48 (2.43-2.53) | 1.37 | 2.44 | 2.61 | 2.39 | 4.00 | 160 | 0 | 2.06 | 87.81 | 22.24 | 1224 | 1130 | 0 |
 | w640/batch-default | 2 | 0 | 8.73 (8.68-8.78) | 4.78 | 8.50 | 8.92 | 8.92 | 1.25 | 1 | 0 | 6.29 | 75.38 | 497.75 | 2840 | 967 | 0 |
 | w640/batch-unbounded | 2 | 0 | 18.95 (8.23-29.68) | 4.81 | 18.65 | 19.05 | 17.38 | 1.25 | 1 | 0 | 7.19 | 127.75 | 506.63 | 2806 | 674 | 10 |
+| w640/fill-unbounded | 2 | 0 | 17.78 (12.87-22.68) | 7.88 | 17.59 | 18.03 | 15.75 | 1.50 | 1 | 0 | 5.32 | 130.92 | 611.30 | 2807 | 685 | 13 |
 | w640/per-claim | 2 | 0 | 19.54 (9.71-29.37) | 5.36 | 19.30 | 19.64 | 20.90 | 4.00 | 640 | 0 | 15.84 | 132.97 | 698.95 | 4735 | 811 | 50 |
 | w1280/batch-default | 2 | 0 | 24.59 (18.57-30.61) | 10.20 | 24.04 | 24.85 | 33.75 | 1.25 | 2 | 0 | 17.69 | 84.90 | 847.88 | 5529 | 857 | 22 |
 | w1280/batch-unbounded | 2 | 0 | 20.14 (16.86-23.41) | 8.47 | 19.16 | 20.29 | 27.62 | 1.25 | 1 | 0 | 11.26 | 257.36 | 970.84 | 5502 | 928 | 50 |
+| w1280/fill-unbounded | 2 | 0 | 25.24 (23.71-26.77) | 15.16 | 24.87 | 25.39 | 24.23 | 1.50 | 1 | 0 | 11.05 | 242.66 | 1520.19 | 5375 | 735 | 32 |
 | w1280/per-claim | 2 | 0 | 19.71 (18.47-20.96) | 9.18 | 19.60 | 19.85 | 23.65 | 4.00 | 1280 | 0 | 24.64 | 156.16 | 949.01 | 9388 | 1090 | 98 |
 
 Requests and watches are the driver's own, from the step's start to its last exec, before release. API columns are the API server's counters over the same window, from steps whose claim creates matched the driver's. Claim-path requests are every sandboxclaims request and the sandboxes reads, from every client (the controller included), the arm's API cost; sandbox writes (warm-pool refills) and leases (node heartbeats) are left out. All API requests per second covers every client in the cluster (kubelets and refills too), so it leans against the slower arm: context only.
