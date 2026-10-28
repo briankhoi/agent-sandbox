@@ -200,3 +200,33 @@ Beyond the prompt's teardown:
 - Cloud NAT + Cloud Router, only if created.
 - The project is Brian's existing project and is left in place. Only what this run
   created inside it is deleted.
+
+## 6. Trim applied during Step 7 (2026-10-27T23:48Z)
+
+**Measured.** The first w160 runs take about 150 s each. Both arms reach their last
+Ready about 14-15 s into the step (kind: about 1.4 s), and the pools take about 30 s
+to refill between steps. The API server's priority-and-fairness (APF) queues are the
+visible limit. The controller's and the driver's service accounts both land in
+FlowSchema `service-accounts`, priority level `workload-low` (53 seats). That level
+has accumulated about 6,700 s of queue wait.
+
+**Projection.** Scaled linearly, w640 runs take about 9-10 min and w1280 runs about
+18 min. The full 87 runs would take about 10.5 h, and even Tier 4 would overrun the
+10 h cap once Step 8 (w1280) and the loadtest are counted.
+
+**Applied when the w160 block ends** (automated by `switch-to-trimmed.sh`):
+- w160 block: unchanged. All 7 variants x 3 runs, RL_BENCH_STEPS=3.
+- From w640 on: `RL_BENCH_STEPS=2` (step 1 + one steady step per run; 3 runs kept),
+  `RL_BENCH_ASYNC_SIZES=` (Tier 1) and `RL_BENCH_COLD_SIZES=640` (Tier 2), plus
+  `--only w640-per-claim-run w640-batch-unbounded w640-batch-default
+  w640-fill-unbounded w1280-per-claim-run w1280-batch-unbounded w1280-batch-default
+  w1280-fill-unbounded c640`.
+  This drops c50 and fill-default at 640 and 1280 (Tiers 3-4); the w160 block still
+  has them.
+- Kept runs: w160 21 + w640 12 + w1280 12 + c640 9 = **54**.
+- Step 8: w160 rows with RL_BENCH_STEPS=3 and w1280 rows with RL_BENCH_STEPS=2, so
+  each matches the main run's steps at that size.
+- Report: run with the same env (STEPS noted).
+
+**Estimate from 1.5 h:** w640 1.2 h, w1280 2.2 h, c640 1.05 h, Step 8 1.35 h,
+loadtest 0.75 h, report and teardown 0.4 h, for an end at about 8.5 h.
