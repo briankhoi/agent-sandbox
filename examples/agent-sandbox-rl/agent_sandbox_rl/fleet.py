@@ -38,9 +38,11 @@ from collections.abc import Mapping
 from typing import Optional
 from collections.abc import Callable
 
+from k8s_agent_sandbox.utils import select_pod_ip
 from kubernetes import client
 
 from . import constants, sizing
+from .batch_claims import BatchClaim, BatchClaims
 from .cluster import Cluster, ClusterRegistry
 from .config import ClusterConfig, FleetConfig, run_namespace
 from .exceptions import (
@@ -219,6 +221,11 @@ class SandboxFleet:
     self._guard_lock = threading.Lock()      # guards _guard_active
     self._obs = Observer(self.config.observability)
     self.report = None                       # set by run()/the Observer
+    self._batch_claims = (
+        BatchClaims(self.config.batch_claims,
+                    ready_timeout=self.config.effective_claim_timeout(),
+                    labels=self.config.labels)
+        if self.config.claim_mode == "batch" else None)
     if self.config.observability.enable_tracing:
       self._enable_sdk_tracing()
 
@@ -1410,6 +1417,8 @@ class SandboxFleet:
       self._install_teardown_hooks()          # (#4) clean up even on kill/crash
     self._torndown = False
     self._deleted_namespaces.clear()          # this cycle recreates what it needs
+    if self._batch_claims is not None:
+      self._batch_claims.reopen()
     with self._lock:
       # A fresh cycle starts with a clean slate; a slot leaked by a crashed
       # prior cycle must not pre-charge this one's max_live_sandboxes.
@@ -1434,6 +1443,11 @@ class SandboxFleet:
     The pin applies at pod creation — a cold start (empty pool) honors it; an
     adopted, already-running warm member does not until its next pod
     (suspend → resume).
+
+    With ``claim_mode="batch"`` the claim is a member of the fleet's SDK batch on
+    its cluster (see `BatchClaimConfig`), and a claim that fails or isn't Ready
+    within ``claim_timeout`` (or ``ready_timeout`` when unset) raises the SDK's
+    ``BatchError``.
 
     On any failure between claim creation and bookkeeping, the partially-created
     sandbox is terminated and the on-demand replica bump is rolled back, so a
@@ -1509,56 +1523,80 @@ class SandboxFleet:
         cluster.reserve_replicas(1)
 
     fam = repo_family(task)
+    batch_claims = self._batch_claims
     sandbox = None
-    # The claim is named here rather than by the SDK so the fail-fast watchdog
-    # can find its pod while the SDK's readiness wait is still blocking. The SDK
-    # does not roll back caller-named claims, so the except path deletes it.
-    claim_name = f"sandbox-claim-{uuid.uuid4().hex[:12]}"
+    claim: BatchClaim | None = None
+    claim_name = ""
     watchdog = None
-    if self.config.fail_fast.enabled:
-      watchdog = ClaimWatchdog(cluster, claim_name, self.config.fail_fast)
-      watchdog.start()
+    if batch_claims is None:
+      # The claim is named here rather than by the SDK so the fail-fast watchdog
+      # can find its pod while the SDK's readiness wait is still blocking. The SDK
+      # does not roll back caller-named claims, so the except path deletes it.
+      claim_name = f"sandbox-claim-{uuid.uuid4().hex[:12]}"
+      if self.config.fail_fast.enabled:
+        watchdog = ClaimWatchdog(cluster, claim_name, self.config.fail_fast)
+        watchdog.start()
     try:
       with self._obs.phase("claim", cluster=cluster.name, family=fam):
-        sandbox = cluster.sandbox_client.create_sandbox(
-            warmpool=pool, namespace=cluster.namespace,
-            sandbox_ready_timeout=self.config.effective_claim_timeout(),
-            labels=dict(self.config.labels), claim_name=claim_name, **extra)
-        if watchdog is not None and watchdog.stop() is not None:
-          # The watchdog committed a verdict (and deleted the claim) in the
-          # window where the SDK wait was already returning. The sandbox behind
-          # this handle is going away, so report the failed start instead.
-          v = watchdog.verdict
-          raise SandboxStartError(v.reason, v.message, claim_name=claim_name,
-                                  pod_name=v.pod_name, image=task.image)
-        pod = sandbox.get_pod_name()
-        try:
-          pod_ip = sandbox.get_pod_ip()
-        except Exception:  # noqa: BLE001
-          pod_ip = None
+        if batch_claims is not None:
+          claim = batch_claims.acquire(
+              cluster, pool, pod_annotations=annotations or None)
+          # The batch's watch already reported the member's Sandbox and pod IP,
+          # so no GETs here. The pod is named after its Sandbox, and connect()
+          # gives the snapshot operations their Sandbox without a request.
+          sandbox = claim.batch.connect(claim.member)
+          pod = sandbox.sandbox_id
+          pod_ip = select_pod_ip(claim.member.pod_ips)
+        else:
+          sandbox = cluster.sandbox_client.create_sandbox(
+              warmpool=pool, namespace=cluster.namespace,
+              sandbox_ready_timeout=self.config.effective_claim_timeout(),
+              labels=dict(self.config.labels), claim_name=claim_name, **extra)
+          if watchdog is not None and watchdog.stop() is not None:
+            # The watchdog committed a verdict (and deleted the claim) in the
+            # window where the SDK wait was already returning. The sandbox behind
+            # this handle is going away, so report the failed start instead.
+            v = watchdog.verdict
+            raise SandboxStartError(v.reason, v.message, claim_name=claim_name,
+                                    pod_name=v.pod_name, image=task.image)
+          pod = sandbox.get_pod_name()
+          try:
+            pod_ip = sandbox.get_pod_ip()
+          except Exception:  # noqa: BLE001
+            pod_ip = None
     except Exception as exc:  # noqa: BLE001 — roll back partial state, then re-raise
       verdict = watchdog.stop() if watchdog is not None else None
-      claim_gone = watchdog is not None and watchdog.deleted_claim
-      if sandbox is None and not claim_gone and not (
-          isinstance(exc, client.ApiException) and exc.status == 409):
-        # create_sandbox raised before returning a handle. The SDK leaves a
-        # caller-named claim in place, so delete it here unless the watchdog
-        # confirmed its own delete (a verdict alone is not confirmation). A 409
-        # means the name is someone else's claim: leave that one alone.
+      if claim is not None:
         try:
-          cluster.resources.delete_claim(claim_name)
+          claim.release()
         except Exception:  # noqa: BLE001
-          logger.warning("failed to delete claim %s after acquire error",
-                         claim_name, exc_info=True)
-      if sandbox is not None:
-        try:
-          sandbox.terminate()
-        except Exception:  # noqa: BLE001
-          logger.warning("failed to terminate sandbox after acquire error",
+          logger.warning("failed to release batch member after acquire error",
                          exc_info=True)
-      # However the claim went (deleted here, by the watchdog, or never
-      # created), the SDK client still tracks its name and object: prune them.
-      forget_claim_in_client(cluster, claim_name)
+      elif batch_claims is None:
+        claim_gone = watchdog is not None and watchdog.deleted_claim
+        if (
+            sandbox is None
+            and not claim_gone
+            and not (isinstance(exc, client.ApiException) and exc.status == 409)
+        ):
+          # create_sandbox raised before returning a handle. The SDK leaves a
+          # caller-named claim in place, so delete it here unless the watchdog
+          # confirmed its own delete (a verdict alone is not confirmation). A 409
+          # means the name is someone else's claim: leave that one alone.
+          try:
+            cluster.resources.delete_claim(claim_name)
+          except Exception:  # noqa: BLE001
+            logger.warning("failed to delete claim %s after acquire error",
+                           claim_name, exc_info=True)
+        if sandbox is not None:
+          try:
+            sandbox.terminate()
+          except Exception:  # noqa: BLE001
+            logger.warning("failed to terminate sandbox after acquire error",
+                           exc_info=True)
+        # However the claim went (deleted here, by the watchdog, or never
+        # created), the SDK client still tracks its name and object: prune them.
+        forget_claim_in_client(cluster, claim_name)
       # If this call created the on-demand pool, undo it fully (delete pool +
       # template, release the replica, forget it) so a failed acquire leaves no
       # trace. A reused pool is left for the next acquire.
@@ -1584,7 +1622,7 @@ class SandboxFleet:
         cluster.release_replicas(1)
         with self._lock:
           self._ondemand.discard(key)
-      if verdict is not None:
+      if batch_claims is None and verdict is not None:
         # The watchdog deleted the claim, which is what ended the SDK wait; the
         # error the caller needs is the pod's, not "claim was deleted".
         self._obs.claim(cluster.name, "start_failed")
@@ -1600,12 +1638,15 @@ class SandboxFleet:
         watchdog.stop()
 
     handle = SandboxHandle(
-        task=task, cluster_name=cluster.name, claim_name=sandbox.claim_name,
+        task=task, cluster_name=cluster.name,
+        claim_name=sandbox.claim_name or claim_name,
         sandbox_id=sandbox.sandbox_id, pod_name=pod, hostname=sandbox.sandbox_id,
         pod_ip=pod_ip, sandbox=sandbox, _cluster=cluster,
         runtime_container=((entry.runtime_container if entry is not None else None)
-                           or constants.RUNTIME_CONTAINER))
-    handle.record_pod_identity()
+                           or constants.RUNTIME_CONTAINER),
+        _batch_claim=claim)
+    if claim is None:
+      handle.record_pod_identity()
     # The remote create ran outside the lock, and the breaker thread can tear
     # the fleet down in that window. _teardown flips _torndown under this same
     # lock before it sweeps, so exactly one of two things is true here: the
@@ -1618,11 +1659,15 @@ class SandboxFleet:
         self._handles.append(handle)
     if torn:
       try:
-        sandbox.terminate()
+        if claim is not None:
+          claim.release()
+        else:
+          sandbox.terminate()
       except Exception:  # noqa: BLE001
         logger.warning("failed to terminate sandbox created during teardown",
                        exc_info=True)
-      forget_claim_in_client(cluster, claim_name)
+      if claim is None:
+        forget_claim_in_client(cluster, claim_name)
       self._obs.claim(cluster.name, "error")
       raise FleetError(
           "fleet was torn down while this claim was in flight; the claim has "
@@ -1945,7 +1990,14 @@ class SandboxFleet:
       with self._lock:
         self._torndown = True
     with self._sweep_lock:
-      self.release_all()
+      try:
+        self.release_all()
+      finally:
+        if self._batch_claims is not None:
+          # Deletes any member a handle didn't release, and each batch's Lease,
+          # even when a handle's release failed, since a live Lease keeps the
+          # batch reaper away.
+          self._batch_claims.release_all()
       if self._shared_run_id:
         # A sweep by a shared id would tear down the whole job; unwarm only what
         # this fleet warmed and leave the rest for the reaper.
