@@ -92,3 +92,11 @@ Rows marked "extra scope" are in the helpers or `models.py`. Rows marked "base" 
 - D3. Sync `api_pool_size` returns `0` as-is while async returns `None`. Make sync match (behavior change, separate fix), or leave it?
 - D4. Lease typing: a separate PR with a `None` policy (raise `BatchError` on a Lease without `spec`), or keep the Lease `Any` until later?
 - D5. Raise the unpinned `--force-reinstall kubernetes_asyncio` in `dev/tools/test-unit:360` as a separate issue? Draft text: "test-unit force-reinstalls an unpinned kubernetes_asyncio after installing `.[test]`, which pins `<34.0.0`, so mypy and the tests run against 36.x, which the extras exclude."
+
+## 5. Final Implementation Status (2026-10-28, Verified)
+
+- **17/N & 18/N folds (`B2`/`B3`, synced 2026-10-27):** `cast(client.ApiClient, self._api_client)` in `async_k8s_helper.py:149`; `lease_owner_reference(lease: "V1Lease | AsyncV1Lease") -> dict[str, str]` raising `BatchError` in `batch_utils.py:177-199`; `owner_references: list[dict[str, str]] | None = None` in `k8s_helper.py` and `async_k8s_helper.py`; `_continue=` passed directly in `batch_reaper.py`.
+- **21/N Types PR (`B5`, `origin/feat/batch-9-types` at `9785b2f8`, 2 commits on `origin/feat/batch-8-list-memory` `1b061c53`, verified ACCEPT 2026-10-28):**
+  - Commit 1 (`8af3741f`): 8 `helper: Any` parameters typed as `"K8sHelper"` / `"AsyncK8sHelper"` (`_precheck_pools`, `_take_batch_lease`, `_delete_batch_objects`, `_delete_claims_in_rounds`).
+  - Commit 2 (`9785b2f8`): 16 `V1Lease` annotations (`read_batch_lease`, `replace_batch_lease`, `create_batch_lease`, `_write_renewal`, and `last_lease` on `_take_batch_lease` and `_delete_batch_objects`, using `"V1Lease | AsyncV1Lease"` in `sandbox_batch.py` because `AsyncSandboxClient._atexit_cleanup` passes `AsyncV1Lease`), plus `batch_utils.lease_parts(lease)` raising `BatchError("batch Lease has no metadata or spec")` and `TestLeaseParts` in `test_batch_utils.py`.
+  - Report: `work/results/B5-types-pr.md`.
