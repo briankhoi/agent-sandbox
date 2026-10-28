@@ -38,6 +38,7 @@ from .sandbox_batch import SandboxBatch
 from .models import (
     AdditionalPodMetadata,
     SandboxConnectionConfig,
+    SandboxFileConfig,
     SandboxLocalTunnelConnectionConfig,
     SandboxTracerConfig,
 )
@@ -64,6 +65,8 @@ class SandboxClient(Generic[T]):
         tracer_config: SandboxTracerConfig | None = None,
         cleanup: bool = False,
         api_client: client.ApiClient | None = None,
+        *,
+        file_config: SandboxFileConfig | None = None,
     ) -> None:
         """
         Initializes the SandboxClient.
@@ -81,9 +84,12 @@ class SandboxClient(Generic[T]):
                 batches' Lease renewal. Defaults to False.
             api_client: Optional pre-configured Kubernetes ``ApiClient`` forwarded
                 to the underlying ``K8sHelper`` to target a specific cluster/context.
+            file_config: File download limits for created and attached sandboxes.
+                Defaults to unlimited downloads.
         """
         # Sandbox related configuration
         self.connection_config = connection_config or SandboxLocalTunnelConnectionConfig()
+        self.file_config = file_config
         
         # Tracer configuration
         self.tracer_config = tracer_config or SandboxTracerConfig()
@@ -248,6 +254,7 @@ class SandboxClient(Generic[T]):
                 connection_config=self.connection_config,
                 tracer_config=self.tracer_config,
                 k8s_helper=self.k8s_helper,
+                **({"file_config": self.file_config} if self.file_config is not None else {}),
             )
         except Exception:
             if cleanup_generated:
@@ -319,7 +326,8 @@ class SandboxClient(Generic[T]):
             namespace=namespace,
             connection_config=self.connection_config,
             tracer_config=self.tracer_config,
-            k8s_helper=self.k8s_helper
+            k8s_helper=self.k8s_helper,
+            **({"file_config": self.file_config} if self.file_config is not None else {}),
         )
 
         self._active_connection_sandboxes[key] = new_handle
