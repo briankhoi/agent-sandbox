@@ -52,26 +52,34 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
-def _api_client_without_retries(api_client: client.ApiClient | None) -> client.ApiClient:
-    """Returns an ``ApiClient`` like ``api_client`` (or the default one) whose requests urllib3 doesn't retry.
+# Keep connection retries while letting read errors surface to the release loop after one attempt.
+_CLAIM_COLLECTION_RETRIES = urllib3.Retry(3, read=False)
+
+
+def _api_client_with_retries(
+    api_client: client.ApiClient | None,
+    retries: urllib3.Retry | bool,
+) -> client.ApiClient:
+    """Returns an ``ApiClient`` like ``api_client`` (or the default one) with ``retries`` set on its copy.
 
     urllib3 retries a timed-out request with a fresh timeout, which would stretch a Lease renewal
-    past the Lease's expiry, and a retried Lease write that already landed comes back as a conflict.
-    The async helper needs no counterpart, since aiohttp doesn't retry requests.
+    past the Lease's expiry or repeat a timed-out claim collection call inside one release round,
+    and a retried Lease write that already landed comes back as a conflict. The async helper needs
+    no counterpart, since aiohttp doesn't retry requests.
     """
     if api_client is None:
         configuration = client.Configuration.get_default_copy()
     else:
         # A shallow copy shares the credential dicts, so a token the caller rotates in place on the
-        # injected configuration also reaches Lease requests, while retries is set on the copy only.
+        # injected configuration also reaches the copy's requests, while retries is set on the copy only.
         configuration = copy.copy(api_client.configuration)
-    configuration.retries = False
-    no_retries = client.ApiClient(configuration=configuration)
+    configuration.retries = retries
+    copied = client.ApiClient(configuration=configuration)
     if api_client is not None:
-        no_retries.cookie = api_client.cookie
+        copied.cookie = api_client.cookie
         for name, value in dict(api_client.default_headers).items():
-            no_retries.set_default_header(name, value)
-    return no_retries
+            copied.set_default_header(name, value)
+    return copied
 
 
 def _claim_list_pages(
@@ -146,8 +154,11 @@ class K8sHelper:
                 configuration.connection_pool_maxsize = pool_size
                 api_client = client.ApiClient(configuration=configuration)
         self.custom_objects_api = client.CustomObjectsApi(api_client)
+        self._claim_collection_api = client.CustomObjectsApi(
+            _api_client_with_retries(api_client, _CLAIM_COLLECTION_RETRIES)
+        )
         self.core_v1_api = client.CoreV1Api(api_client)
-        self.coordination_v1_api = client.CoordinationV1Api(_api_client_without_retries(api_client))
+        self.coordination_v1_api = client.CoordinationV1Api(_api_client_with_retries(api_client, retries=False))
 
     def api_pool_size(self) -> int | None:
         """Returns the size of the Kubernetes API connection pool that creates and the watch use."""
@@ -645,7 +656,7 @@ class K8sHelper:
         """
         live = 0
         for page, first in _claim_list_pages(
-            self.custom_objects_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
+            self._claim_collection_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
         ):
             if first:
                 live = 0
@@ -774,7 +785,7 @@ class K8sHelper:
         # decoded. The sync client raises ApiException for a non-2xx response before returning it, while
         # the async client returns an unread response without checking its status, so only the async
         # helper checks the status here.
-        response = cast(urllib3.HTTPResponse, self.custom_objects_api.delete_collection_namespaced_custom_object(
+        response = cast(urllib3.HTTPResponse, self._claim_collection_api.delete_collection_namespaced_custom_object(
             group=CLAIM_API_GROUP,
             version=CLAIM_API_VERSION,
             namespace=namespace,
