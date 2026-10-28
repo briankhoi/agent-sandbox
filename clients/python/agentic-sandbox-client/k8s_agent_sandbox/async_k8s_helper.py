@@ -31,7 +31,6 @@ from .constants import (
     TEMPLATE_PLURAL_NAME,
     WARMPOOL_PLURAL_NAME,
     CLIENT_REQUEST_TIME_ANNOTATION,
-    PARTIAL_OBJECT_METADATA_LIST_ACCEPT,
     GATEWAY_API_GROUP,
     GATEWAY_API_VERSION,
     GATEWAY_PLURAL,
@@ -91,6 +90,7 @@ async def _claim_list_pages(
         yield page, continue_token is None
         # A page may be empty while more follow, so only the continue token ends the list.
         continue_token = (page.get("metadata") or {}).get("continue") or None
+        del page
         if continue_token is None:
             return
 
@@ -641,6 +641,9 @@ class AsyncK8sHelper:
     ) -> tuple[list[dict[str, Any]], str]:
         """Lists full SandboxClaim objects matching a label selector. Also return the list's
         resourceVersion, so a subsequent watch does not miss any events.
+
+        Args:
+            _request_timeout: Optional total timeout in seconds for each page, forwarded to kubernetes_asyncio.
         """
         await self._ensure_initialized()
 
@@ -671,64 +674,14 @@ class AsyncK8sHelper:
         await self._ensure_initialized()
 
         live = 0
-        # Metadata is enough to tell whether a claim is being deleted, and a page of it is far smaller.
         async for page, first in _claim_list_pages(
-            self._list_claim_metadata_page, namespace, label_selector, _request_timeout
+            self.custom_objects_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
         ):
             if first:
                 live = 0
-            # A metadata-only list sends null items when nothing matches.
-            live += sum(1 for c in page.get("items") or [] if not (c.get("metadata") or {}).get("deletionTimestamp"))
+            live += sum(1 for c in page.get("items", []) if not (c.get("metadata") or {}).get("deletionTimestamp"))
+            del page
         return live
-
-    async def _list_claim_metadata_page(
-        self,
-        *,
-        group: str,
-        version: str,
-        namespace: str,
-        plural: str,
-        label_selector: str,
-        limit: int,
-        _continue: str | None,
-        _request_timeout: float | None,
-    ) -> Any:
-        """Lists one page of claims as metadata only, taking the arguments of
-        ``list_namespaced_custom_object``."""
-        query_params: list[tuple[str, Any]] = [("labelSelector", label_selector), ("limit", limit)]
-        if _continue is not None:
-            query_params.append(("continue", _continue))
-        return await self._claim_metadata_request(
-            "GET",
-            {"group": group, "version": version, "namespace": namespace, "plural": plural},
-            query_params,
-            _request_timeout=_request_timeout,
-        )
-
-    async def _claim_metadata_request(
-        self,
-        method: str,
-        path_params: dict[str, str],
-        query_params: list[tuple[str, Any]],
-        *,
-        _preload_content: bool = True,
-        _request_timeout: float | None,
-    ) -> Any:
-        """Sends a request on a namespace's claims that asks for metadata only."""
-        # The generated methods overwrite any Accept header they are given, so the request is sent
-        # through the shared client directly.
-        return await cast(client.ApiClient, self._api_client).call_api(
-            "/apis/{group}/{version}/namespaces/{namespace}/{plural}",
-            method,
-            path_params,
-            query_params,
-            {"Accept": PARTIAL_OBJECT_METADATA_LIST_ACCEPT},
-            response_types_map={200: "object"},
-            auth_settings=["BearerToken"],
-            _return_http_data_only=True,
-            _preload_content=_preload_content,
-            _request_timeout=_request_timeout,
-        )
 
     async def watch_sandbox_claims(
         self, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int,
@@ -840,12 +793,12 @@ class AsyncK8sHelper:
         # decoded. The sync client raises ApiException for a non-2xx response before returning it, while
         # the async client returns an unread response without checking its status, so only the async
         # helper checks the status here.
-        # Asking for metadata only also makes the drained body smaller.
-        response = await self._claim_metadata_request(
-            "DELETE",
-            {"group": CLAIM_API_GROUP, "version": CLAIM_API_VERSION, "namespace": namespace,
-             "plural": CLAIM_PLURAL_NAME},
-            [("labelSelector", label_selector)],
+        response = await self.custom_objects_api.delete_collection_namespaced_custom_object(
+            group=CLAIM_API_GROUP,
+            version=CLAIM_API_VERSION,
+            namespace=namespace,
+            plural=CLAIM_PLURAL_NAME,
+            label_selector=label_selector,
             _preload_content=False,
             _request_timeout=_request_timeout,
         )

@@ -23,11 +23,6 @@ CLAIM_PLURAL_NAME = "sandboxclaims"
 # Claims are listed in pages of this size, the page size client-go's pager uses, so no single
 # response carries a whole large batch.
 CLAIM_LIST_PAGE_SIZE = 500
-# Asks the apiserver for objects as metadata only, or for full objects if it can't send that, as
-# client-go's metadata client does.
-PARTIAL_OBJECT_METADATA_LIST_ACCEPT = (
-    "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1,application/json"
-)
 WARMPOOL_PLURAL_NAME = "sandboxwarmpools"
 TEMPLATE_PLURAL_NAME = "sandboxtemplates"
 

@@ -40,7 +40,6 @@ from .constants import (
     TERMINAL_CLAIM_READY_REASONS,
     WARMPOOL_PLURAL_NAME,
     CLIENT_REQUEST_TIME_ANNOTATION,
-    PARTIAL_OBJECT_METADATA_LIST_ACCEPT,
     GATEWAY_API_GROUP,
     GATEWAY_API_VERSION,
     GATEWAY_PLURAL,
@@ -53,25 +52,6 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
-def _copy_api_client(api_client: client.ApiClient | None, retries: bool = True) -> client.ApiClient:
-    """Returns an ``ApiClient`` with its own connection pool, configured like ``api_client`` (or the
-    default one), whose requests urllib3 doesn't retry when ``retries`` is False."""
-    if api_client is None:
-        configuration = client.Configuration.get_default_copy()
-    else:
-        # A shallow copy shares the credential dicts, so a token the caller rotates in place on the
-        # injected configuration also reaches the copy's requests, while retries is set on the copy only.
-        configuration = copy.copy(api_client.configuration)
-    if not retries:
-        configuration.retries = False
-    copied = client.ApiClient(configuration=configuration)
-    if api_client is not None:
-        copied.cookie = api_client.cookie
-        for name, value in dict(api_client.default_headers).items():
-            copied.set_default_header(name, value)
-    return copied
-
-
 def _api_client_without_retries(api_client: client.ApiClient | None) -> client.ApiClient:
     """Returns an ``ApiClient`` like ``api_client`` (or the default one) whose requests urllib3 doesn't retry.
 
@@ -79,7 +59,19 @@ def _api_client_without_retries(api_client: client.ApiClient | None) -> client.A
     past the Lease's expiry, and a retried Lease write that already landed comes back as a conflict.
     The async helper needs no counterpart, since aiohttp doesn't retry requests.
     """
-    return _copy_api_client(api_client, retries=False)
+    if api_client is None:
+        configuration = client.Configuration.get_default_copy()
+    else:
+        # A shallow copy shares the credential dicts, so a token the caller rotates in place on the
+        # injected configuration also reaches Lease requests, while retries is set on the copy only.
+        configuration = copy.copy(api_client.configuration)
+    configuration.retries = False
+    no_retries = client.ApiClient(configuration=configuration)
+    if api_client is not None:
+        no_retries.cookie = api_client.cookie
+        for name, value in dict(api_client.default_headers).items():
+            no_retries.set_default_header(name, value)
+    return no_retries
 
 
 def _claim_list_pages(
@@ -119,6 +111,7 @@ def _claim_list_pages(
         yield page, continue_token is None
         # A page may be empty while more follow, so only the continue token ends the list.
         continue_token = (page.get("metadata") or {}).get("continue") or None
+        del page
         if continue_token is None:
             return
 
@@ -155,11 +148,6 @@ class K8sHelper:
         self.custom_objects_api = client.CustomObjectsApi(api_client)
         self.core_v1_api = client.CoreV1Api(api_client)
         self.coordination_v1_api = client.CoordinationV1Api(_api_client_without_retries(api_client))
-        # kubernetes 35 rejects a per-request Accept header and 37 changed call_api, so the
-        # metadata-only claim requests go through a client whose default Accept header asks for it.
-        metadata_api_client = _copy_api_client(api_client)
-        metadata_api_client.set_default_header("Accept", PARTIAL_OBJECT_METADATA_LIST_ACCEPT)
-        self._claim_metadata_api = client.CustomObjectsApi(metadata_api_client)
 
     def api_pool_size(self) -> int | None:
         """Returns the size of the Kubernetes API connection pool that creates and the watch use."""
@@ -622,6 +610,10 @@ class K8sHelper:
     ) -> tuple[List[dict[str, Any]], str]:
         """Lists full SandboxClaim objects matching a label selector. Also return the list's
         resourceVersion, so a subsequent watch does not miss any events.
+
+        Args:
+            _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
+                pair) forwarded to the underlying urllib3 request of each page.
         """
         items: List[dict[str, Any]] = []
         resource_version = "0"
@@ -652,14 +644,13 @@ class K8sHelper:
                 pair) forwarded to the underlying urllib3 request of each page.
         """
         live = 0
-        # Metadata is enough to tell whether a claim is being deleted, and a page of it is far smaller.
         for page, first in _claim_list_pages(
-            self._claim_metadata_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
+            self.custom_objects_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
         ):
             if first:
                 live = 0
-            # A metadata-only list sends null items when nothing matches.
-            live += sum(1 for c in page.get("items") or [] if not (c.get("metadata") or {}).get("deletionTimestamp"))
+            live += sum(1 for c in page.get("items", []) if not (c.get("metadata") or {}).get("deletionTimestamp"))
+            del page
         return live
 
     def watch_sandbox_claims(
@@ -771,8 +762,7 @@ class K8sHelper:
         # decoded. The sync client raises ApiException for a non-2xx response before returning it, while
         # the async client returns an unread response without checking its status, so only the async
         # helper checks the status here.
-        # Asking for metadata only also makes the drained body smaller.
-        response = cast(urllib3.HTTPResponse, self._claim_metadata_api.delete_collection_namespaced_custom_object(
+        response = cast(urllib3.HTTPResponse, self.custom_objects_api.delete_collection_namespaced_custom_object(
             group=CLAIM_API_GROUP,
             version=CLAIM_API_VERSION,
             namespace=namespace,

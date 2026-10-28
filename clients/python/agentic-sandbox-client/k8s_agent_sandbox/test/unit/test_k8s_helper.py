@@ -16,6 +16,7 @@ import logging
 import os
 import tempfile
 import unittest
+import weakref
 from unittest.mock import MagicMock, patch
 
 from kubernetes import client
@@ -1009,7 +1010,7 @@ class TestK8sHelperWatchResourceVersion(unittest.TestCase):
         self.assertEqual(mock_watch.stream.call_count, 2)
 
 
-@patch("k8s_agent_sandbox.k8s_helper._copy_api_client")
+@patch("k8s_agent_sandbox.k8s_helper._api_client_without_retries")
 @patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api")
 @patch("k8s_agent_sandbox.k8s_helper.client.CustomObjectsApi")
 @patch("k8s_agent_sandbox.k8s_helper.config")
@@ -1020,7 +1021,7 @@ class TestK8sHelperApiClientInjection(unittest.TestCase):
     ):
         sentinel = MagicMock(name="ApiClient")
         K8sHelper(api_client=sentinel)
-        mock_custom_cls.assert_any_call(sentinel)
+        mock_custom_cls.assert_called_once_with(sentinel)
         mock_core_cls.assert_called_once_with(sentinel)
         mock_config.load_incluster_config.assert_not_called()
         mock_config.load_kube_config.assert_not_called()
@@ -1128,50 +1129,6 @@ class TestLeaseApiClient(unittest.TestCase):
 
 
 @patch("k8s_agent_sandbox.k8s_helper.config")
-class TestClaimMetadataApiClient(unittest.TestCase):
-
-    def test_live_claims_are_counted_from_metadata_through_a_copy_of_the_injected_client(self, _):
-        configuration = client.Configuration(host="https://cluster-b:6443")
-        injected = client.ApiClient(configuration=configuration, cookie="session=1")
-        injected.set_default_header("X-Test", "yes")
-        helper = K8sHelper(api_client=injected)
-        metadata_api = helper._claim_metadata_api
-        metadata_client = metadata_api.api_client
-        self.assertIsNot(metadata_client, injected)
-        self.assertEqual(
-            metadata_client.default_headers["Accept"],
-            "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1,application/json",
-        )
-        self.assertNotIn("Accept", injected.default_headers)
-        self.assertEqual(metadata_client.default_headers["X-Test"], "yes")
-        self.assertEqual(metadata_client.cookie, "session=1")
-        self.assertEqual(metadata_client.configuration.host, "https://cluster-b:6443")
-        # A re-list is a safe read, so it keeps the library's retries, unlike Lease requests.
-        self.assertIsNone(metadata_client.configuration.retries)
-
-        pages = [
-            {"items": [{"metadata": {"name": "b1-0"}}], "metadata": {"continue": "t1"}},
-            # A metadata-only list sends null items when nothing matches.
-            {"items": None, "metadata": {}},
-        ]
-        full_api = helper.custom_objects_api
-        with patch.object(metadata_api, "list_namespaced_custom_object", side_effect=pages) as list_metadata, \
-                patch.object(full_api, "list_namespaced_custom_object", return_value=pages[0]) as list_full:
-            self.assertEqual(helper.count_live_sandbox_claims("default", "agents.x-k8s.io/batch-id=b1"), 1)
-        self.assertEqual(list_metadata.call_count, 2)
-        list_full.assert_not_called()
-
-    def test_deletecollection_asks_for_metadata_only_through_the_metadata_client(self, _):
-        helper = K8sHelper(api_client=client.ApiClient(configuration=client.Configuration()))
-        metadata_api, full_api = helper._claim_metadata_api, helper.custom_objects_api
-        with patch.object(metadata_api, "delete_collection_namespaced_custom_object") as delete_metadata, \
-                patch.object(full_api, "delete_collection_namespaced_custom_object") as delete_full:
-            helper.delete_sandbox_claims_by_label("default", "agents.x-k8s.io/batch-id=b1")
-        self.assertIs(delete_metadata.call_args.kwargs["_preload_content"], False)
-        delete_full.assert_not_called()
-
-
-@patch("k8s_agent_sandbox.k8s_helper.config")
 class TestK8sHelperPoolSize(unittest.TestCase):
 
     def test_pool_size_sizes_the_loaded_clients_pool(self, _):
@@ -1269,17 +1226,33 @@ class TestK8sHelperBatchMethods(unittest.TestCase):
     def test_count_live_sandbox_claims_counts_claims_not_being_deleted_across_pages(
         self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
     ):
+        class _Page(dict):
+            pass
+
         mock_api = MagicMock()
         mock_api_cls.return_value = mock_api
         live = {"metadata": {"name": "live"}}
         deleting = {"metadata": {"name": "deleting", "deletionTimestamp": "2026-01-01T00:00:00Z"}}
-        mock_api.list_namespaced_custom_object.side_effect = [
+        pages = [
             # A restart after an expired continue token drops the earlier pages from the count.
-            {"items": [live, live], "metadata": {"continue": "t0"}},
+            _Page({"items": [live, live], "metadata": {"continue": "t0"}}),
             client.ApiException(status=410),
-            {"items": [live, deleting], "metadata": {"continue": "t1"}},
-            {"items": [deleting, live, live], "metadata": {}},
+            _Page({"items": [live, deleting], "metadata": {"continue": "t1"}}),
+            _Page({"items": [deleting, live, live], "metadata": {}}),
         ]
+        prev_page_ref = None
+
+        def next_page(**_):
+            nonlocal prev_page_ref
+            if prev_page_ref is not None:
+                self.assertIsNone(prev_page_ref())
+            item = pages.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            prev_page_ref = weakref.ref(item)
+            return item
+
+        mock_api.list_namespaced_custom_object.side_effect = next_page
 
         helper = K8sHelper()
 
