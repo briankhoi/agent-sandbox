@@ -83,7 +83,7 @@ where this file records a change Brian approved.
   - If kubectl starts failing auth, ask Brian to rerun
     `~/google-cloud-sdk/bin/gcloud auth application-default login`.
 - **Worktree:** `WT=/usr/local/google/home/brianknguyen/agent-sandbox/.claude/worktrees/rl-gke`,
-  branch bench/rl-gke, HEAD 151f04d7.
+  branch bench/rl-gke, HEAD fcc5921f (fcc5921f adds HANDOFF.md).
   - Commits after 2f27a948: 2c3c85c0 (plan.md), 7c6a1dad (loadtest `--claim-mode`,
     `--batch-claims`, `--in-cluster`, plus `bench-scripts/loadtest_arms.sh`),
     151f04d7 (control-plane-options.md, plan.md §6).
@@ -163,10 +163,15 @@ where this file records a change Brian approved.
   (pid 995670). Both exit on their own once STATE.md says `phase: torn-down`; or
   `kill` those pids.
 
-**GitHub:** branch `bench/rl-gke` on briankhoi/agent-sandbox (pushed through 151f04d7).
+**GitHub:** branch `bench/rl-gke` on briankhoi/agent-sandbox (pushed through fcc5921f).
 
 ## Next actions
-1. Get Brian's choice (A / C / D).
+**Brian chose option A (00:13Z)** with a bottleneck gate after the warm-up and a
+target finish of 11 pm-12 am PDT (06:00-07:00 UTC). Follow plan.md §7 (warm-up,
+gate, schedule, late-running drop order). If the previous agent already started
+the warm-up, check `bench-results/gke-warmup/` and `~/rl-gke-bench/STATE.md`
+before redoing anything.
+1. (Done: choice made.)
 2. If A:
    - `kubectl exec` mv the 8 `bench-results/gke/*.json` to `bench-results/gke/superseded/`,
      with WHY.md saying "ran on the pre-resize 122-seat control plane".

@@ -230,3 +230,63 @@ has accumulated about 6,700 s of queue wait.
 
 **Estimate from 1.5 h:** w640 1.2 h, w1280 2.2 h, c640 1.05 h, Step 8 1.35 h,
 loadtest 0.75 h, report and teardown 0.4 h, for an end at about 8.5 h.
+
+## 7. Option A: warm-up, bottleneck gate, schedule (Brian 2026-10-28T00:13Z)
+
+Brian chose to continue on GKE after warming the control plane. He asked that we
+**verify the warmed control plane is no longer the bottleneck** before measuring,
+and that the run finish around **11 pm-12 am PDT (06:00-07:00 UTC, 7-8 h of
+cluster time)**.
+
+1. **Supersede.** Move the 8 `bench-results/gke/*.json` to `superseded/`. WHY.md:
+   "ran on the pre-resize control plane (122 APF seats), before GKE grew it".
+2. **Warm-up** (results in `bench-results/gke-warmup/`, not part of the report):
+   `--only w1280-per-claim-run1 w1280-batch-unbounded-run1`, RL_BENCH_STEPS=2.
+   This drives our peak load so GKE grows the control plane now. If a
+   RESIZE_CLUSTER starts, wait until no cluster operation is RUNNING, then repeat
+   the warm-up pair once.
+3. **Bottleneck gate.** Measured on the last warm-up pair, after which no resize
+   may be running. Pass needs all of:
+   - **Server-side queueing is small.** On every steady step of both arms,
+     `apiserver_apf_wait_s / apiserver_requests_all` ≤ **10 ms** of average APF
+     queue wait per request (the 122-seat runs were ~110-130 ms; the 243-seat w160
+     diagnostic ~12-43 ms).
+   - **Nothing rejected.** `apiserver_apf_rejected` = 0 and
+     `apiserver_http_429_all` = 0.
+   - **The controller isn't queue-bound.** Its client-side mean write latency
+     (`rest_client_request_duration_seconds` PATCH+POST+PUT, delta over the gate
+     pair, scraped from the controller's :8080/metrics) ≤ **2x** the API server's
+     mean create latency (`apiserver_create_ms`).
+   - **The plane is stable.** The control-plane seat total is unchanged across the
+     pair (`controlplane.log`).
+
+   On a pass, start the suite. On a fail, warm once more (another w1280 pair). If
+   it still fails, start the suite anyway and label every result in the report as
+   "control-plane-bound (APF queueing)" with the measured numbers. Don't spend more
+   than ~45 min total on warm-up and gate.
+
+   During the suite, every step already records `apiserver_apf_wait_s`, rejections
+   and 429s. The report states the per-size average APF wait per request next to
+   each verdict, so any run where queueing returned is visible.
+4. **Suite.** The plan.md §6 row list and env (RL_BENCH_STEPS=2 from w640 on; the
+   w160 block keeps 3 steps and all 7 variants):
+   - w160: 21 runs, ~0.5 h (~1.5 min/run on the grown plane).
+   - w640: 12 runs, ~0.9 h.
+   - w1280: 12 runs, ~1.7 h.
+   - c640: 9 runs, ~0.75 h.
+5. **Then:** loadtest (15 runs, ~0.5 h); Step 8 (w160 with 3 steps + w1280 with 2
+   steps, ~1 h); Step 9 report, copy out, push, teardown (~0.4 h).
+
+**Schedule (UTC):**
+
+| step | UTC |
+|---|---|
+| warm-up + gate | 00:20-01:05 |
+| suite | 01:05-~05:00 |
+| loadtest | ~05:00-05:30 |
+| Step 8 | ~05:30-06:30 |
+| Step 9 report + teardown | ~06:30-07:00 = 11:30 pm PDT |
+
+If the suite is running past **05:00 UTC**, drop first the c640 batch-default rows,
+then fill-unbounded at 1280, then Step 8's w1280 rows (keep its w160 rows), so
+teardown starts by ~06:45 UTC.
