@@ -1,0 +1,7 @@
+# code SHA: c4ed9ba962270bf2c34d868e8c92048e85038899
+# tree: ffc0632c2585fc6bb4023690db6ce4b6c1f2b4f4
+# SDK version: k8s-agent-sandbox 1.0.9.dev40+gc4ed9ba96
+# Python version: 3.13.15
+3.13.15 /tmp/g6-wt-main/clients/python/agentic-sandbox-client/k8s_agent_sandbox/__init__.py
+sync Sandbox: kept closed handle 0.044 MiB (tracemalloc 0.036 MiB), after dropping 0.001 MiB per handle
+async AsyncSandbox: kept closed handle 0.730 MiB (tracemalloc 0.039 MiB), after dropping 0.024 MiB per handle

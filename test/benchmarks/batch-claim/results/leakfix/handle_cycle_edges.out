@@ -1,0 +1,7 @@
+# code SHA: c4ed9ba962270bf2c34d868e8c92048e85038899
+# tree: ffc0632c2585fc6bb4023690db6ce4b6c1f2b4f4
+# SDK version: k8s-agent-sandbox 1.0.9.dev40+gc4ed9ba96
+# Python version: 3.13.15
+as is: 0.694 MiB per dropped handle before gc.collect(), 213 unreachable objects per handle
+connector and strategy callbacks cleared: 0.006 MiB per dropped handle before gc.collect(), 177 unreachable objects per handle
+connector.client dropped: 0.006 MiB per dropped handle before gc.collect(), 188 unreachable objects per handle
