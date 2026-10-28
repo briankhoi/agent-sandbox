@@ -10,9 +10,9 @@ Python SDK: client retains every terminated sandbox handle, leaking memory over 
 
 **What happened?**
 
-`SandboxClient` and `AsyncSandboxClient` store every handle from `create_sandbox()` and `get_sandbox()` in `_active_connection_sandboxes`. Calling `sandbox.terminate()` closes the local connection and deletes the `SandboxClaim`, yet leaves the handle in `_active_connection_sandboxes`. A long-lived client therefore retains every handle terminated via `sandbox.terminate()` until the client itself closes.
+`SandboxClient` and `AsyncSandboxClient` store every handle from `create_sandbox()` and `get_sandbox()` in `_active_connection_sandboxes`. Calling `sandbox.terminate()` closes the local connection and deletes the `SandboxClaim`, yet leaves the handle in `_active_connection_sandboxes`. A long-lived client therefore retains every handle terminated via `sandbox.terminate()` until the client itself closes, and `AsyncSandboxClient` exit cleanup issues a redundant `DELETE` request for each already-terminated claim at interpreter exit.
 
-On `AsyncSandboxClient`, each retained handle holds its closed `AsyncSandboxConnector` and `httpx.AsyncClient`, including its `ssl.SSLContext` and loaded CA bundle, retaining about 0.7 MiB per terminated sandbox. Across 2,400 concurrent create, command, and `terminate()` cycles on a `kind` cluster, process RSS grew linearly from 93.8 MiB to 1,752.4 MiB.
+On `AsyncSandboxClient`, each retained handle holds its closed `AsyncSandboxConnector` and `httpx.AsyncClient`, including its `ssl.SSLContext` and loaded CA bundle. In a 40-worker `kind` benchmark running 2,400 create, command, and `terminate()` cycles, RSS grew linearly from 93.8 MiB to 1,752.4 MiB at 72.4 MiB per 100 cycles, with glibc reporting 1,660 MiB of allocated heap in use, or 0.68 MiB per cycle. Setting `MALLOC_ARENA_MAX=2` kept the growth slope at 94.5% of the default, ruling out glibc arena fragmentation and confirming live object retention, and `memray` attributed 84% of tracked bytes to `ssl.create_default_context` under `AsyncSandboxConnector.__init__`. Synchronous `Sandbox` handles retain a smaller 0.044 MiB each because `SandboxConnector` does not allocate a per-handle SSL context.
 
 `terminate()` should remove the handle from `_active_connection_sandboxes` once `SandboxClaim` deletion succeeds, matching `client.delete_sandbox()`.
 
@@ -69,7 +69,7 @@ Python SDK: handle-to-connector reference cycle delays reclamation and raises me
 
 `Sandbox` and `AsyncSandbox` pass their bound methods `get_pod_ip`, `get_pod_name`, and `get_service_fqdn` to their connector and connection strategy during initialization. Because the handle references its connector and the connector references bound methods of the handle, every handle forms a reference cycle that reference counting alone cannot collect after `close_connection()`, `terminate()`, or `client.delete_sandbox()`.
 
-Only Python's cyclic garbage collector can break the cycle, and its collection thresholds track container object counts rather than native memory such as the roughly 0.7 MiB of OpenSSL state behind each closed `AsyncSandbox`. Process memory therefore climbs between collections and stays elevated indefinitely if Python container allocations stop.
+Only Python's cyclic garbage collector can break the cycle, and CPython triggers cyclic collection on container object counts rather than native heap bytes, making it blind to the roughly 0.7 MiB of native OpenSSL state held behind each closed `AsyncSandbox`. Even when the client untracks terminated handles, a 40-worker `kind` run across 600 create, command, and `terminate()` cycles still grew RSS by 29.3 MiB per 100 cycles and peaked at 309 MiB of glibc allocated heap while closed handles waited on cyclic collection, compared to 0.46 MiB per 100 cycles once close breaks the cycle. After creating and terminating 100 sandboxes and stopping further Python allocations, 0.66 MiB per handle remained allocated 60 seconds later, dropping to 0.0001 MiB per handle when close clears the stored callbacks.
 
 Closing a handle should release the callbacks stored on its connector and strategy so reference counting reclaims the closed handle as soon as all external references drop.
 
@@ -120,7 +120,7 @@ Python SDK: atexit hook retains closed client instances, leaking memory until in
 
 Applications that instantiate a client per task or request retain every client instance for the lifetime of the process. Across 200 closed clients after `gc.collect()`, `tracemalloc` reports all 200 instances still live, retaining 1,369 B per unused `AsyncSandboxClient`, 9,600 B per used `AsyncSandboxClient`, and 11,407 B per `SandboxClient` with `cleanup=True`.
 
-Exit cleanup should bind only the state needed to clean up remaining sandboxes rather than `self`, so reference counting reclaims closed client instances before interpreter exit.
+Simply calling `atexit.unregister()` in `close()` or `__exit__` is insufficient because `AsyncSandboxClient.close()` retains handles whose close failed so exit cleanup can retry them, and callers can reuse a client instance after `close()` or a `with` block. Exit cleanup should instead bind only the underlying cleanup state rather than `self`, matching `urllib3`'s `weakref.finalize` pool-cleanup pattern so reference counting reclaims closed client instances immediately while preserving exit cleanup.
 
 **How can we reproduce it (as minimally and precisely as possible)?**
 
