@@ -22,7 +22,7 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 10/N | `feat/batch-1-fu7b-cleanup-retry` | fix(python-sdk): keep closing batch connections when cleanup fails (10/N) | merged #2049 (`74cd8fa5`, tree equals `078843dd`) | `078843dd` | local agent |
 | 11/N | `feat/batch-1-fu9-concurrent-detach` (contains fu8 `feat/batch-1-fu8-task-names`, `2b1d9268`) | fix(batch,python-sdk): concurrent detach() success, named batch tasks for debugging (11/N) | merged #1996 (`7cfe8484`, tree equals `3e977d6a`) | `3e977d6a` | local agent |
 | 12/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (12/N) | merged #1824 (`522dad4c`, tree equals `93c1711a`) | `93c1711a` | local agent |
-| 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(batch,python-sdk): add events and group_outcomes (13/N) | open upstream #1988 | `2d09db1e` | local agent |
+| 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(batch,python-sdk): add events and group_outcomes (13/N) | merged #1988 (`8ad5a407`, tree equals `2d09db1e`) | `2d09db1e` | local agent |
 | 14/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (14/N) | open upstream #1989 | `4b107753` | local agent |
 | 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (15/N) | open upstream #1990 | `0ef73f5c` | local agent |
 | 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (16/N) | open upstream #1991 | `e1eb32c3` | local agent |

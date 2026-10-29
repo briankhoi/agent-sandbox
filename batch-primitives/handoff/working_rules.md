@@ -99,3 +99,8 @@ Brian: "stop linking PRs to commit mesaages, it keeps showing this in the PR and
 
 ## Active voice everywhere (Brian, 2026-10-28)
 Brian: "always use active voice in response comments or in general." Use active voice in drafted GitHub replies, PR bodies, commit messages, code comments, docstrings, notes and messages to Brian. Say who does what.
+
+## Reporting heads and deleting review branches (Brian, 2026-10-29)
+- Brian: "you dont need to give me the heads in the future." Don't list branch heads in messages to Brian. Record them in `state.md` and the PR board instead, where C2 and C3 can read the 17/N and 23/N heads.
+- Decision C, Brian: "no, only at the end of the entire stack you can." Delete superseded remote `review/*` and `review-diff/*` branches only after the whole stack has merged, and ask once more then.
+- Decision A (16/N `acquire()` cleanup), Brian: "defer till 16/N work, not sure yet."
