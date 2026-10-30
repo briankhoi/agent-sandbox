@@ -8,6 +8,17 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 
 ---
 
+## 0. Four mental models behind the entries below
+
+Nearly every edge case on this board comes from one of four recurring design questions:
+
+1. **Two observers on one object (Watch vs RPC, Local vs Cluster).** Whenever both a background watch and an HTTP call observe the same resource, ask what happens when the watch sees the result before the HTTP response returns, and validate every failure precondition before mutating local state (3.6, 3.7, 3.8, 4.3).
+2. **Monotonic lifecycle and completion state.** Teardown and stream-completion predicates must move in one direction only. Refuse new work before draining active work, and never compute "is the stream done?" from a live gauge that can drop after an item was already handed out (1.7, 4.4).
+3. **Teardown matches how ownership entered scope.** Implicit cleanup undoes only what that scope took (release a claimed batch, detach an attached one; keep the live owner separate from leftover connections to close), while explicit destructive calls delete everything (1.2-1.6, 1.8, 3.3).
+4. **Match lock and backoff scope to the shared resource.** Hold a state lock across the whole check-and-mutate step (copying needed values into locals before releasing), restore state synchronously in `finally`, and scope retries or locks to the contended resource so single-item I/O does not stall unrelated workers (2.1, 2.2, 3.3b, 3.9, 4.1, 6.10).
+
+---
+
 ## 1. Resource cleanup and ownership
 
 ### 1.1 A failed stop skipped the close
@@ -50,6 +61,12 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 - **Issue:** a caller still holding the handle could call connect() afterwards and create a connection that no cleanup would ever close.
 - **Fix:** cleanup marks the handle detached first, so connect() raises. Where waiters sleep on a condition variable, also notify them, or they hang forever (PR 3).
 - **Takeaway:** shutting down means "refuse new work" first, then "finish old work". When you flip a state flag that waiters depend on, wake the waiters.
+
+### 1.8 Implicit exit cleanup must match how the handle entered scope
+- **What happened:** `get_batch` takes over the batch's Lease, and client exit cleanup called `release()` on every registered batch, including ones attached through `get_batch`.
+- **Issue:** an inspection or handoff caller that attached with `get_batch` deleted the batch's claims and Lease when its `with` block exited instead of handing the batch on.
+- **Fix:** `get_batch` sets `_attached = True`. Implicit exit cleanup detaches attached batches with `detach()`'s default grace and releases claimed ones, while explicit `delete_all()` releases all of them (13/N, `7fba1f53`). Sync exit cleanup also reads `_exit_detaches()` under `batch._lock` so it cannot race a concurrent `detach()` setting `_detach_grace`.
+- **Takeaway:** separate "created by me" from "attached by me". Implicit scope exit should undo only what that scope acquired, while explicit destructive methods act on everything.
 
 ---
 
@@ -110,6 +127,30 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 - **Also:** a TLS EOF (`ssl.SSLEOFError`) mid-stream is a dropped connection, not a certificate problem, so the watch retries it like a reset while other TLS failures stay fatal (8/N).
 - **Takeaway:** verify which exceptions actually escape a client library by reading its code and, if cheap, by measuring. A plausible docstring fix (`ApiException ... or a TLS failure`) was wrong and got reverted.
 
+### 3.6 Disabling urllib3 retries changes which connection exceptions surface
+- **What happened:** the sync Lease client sets `retries=False` so urllib3 does not stretch Lease timeouts, while `_TRANSPORT_ERRORS` originally assumed urllib3 wrapped connection failures into `MaxRetryError`.
+- **Issue:** with `retries=False` on urllib3 2.x, a refused or timed-out connect raises a raw `ConnectTimeoutError` or `NewConnectionError` instead of `MaxRetryError`, stopping `release()` on the first transient blip.
+- **Fix:** add `urllib3.exceptions.ConnectTimeoutError` (superclass of `NewConnectionError` and `NameResolutionError`) to sync `_TRANSPORT_ERRORS` (13/N, `3bb66de3`).
+- **Takeaway:** changing a transport client's retry config changes its exception surface. Re-audit the exception tuple whenever `retries` changes.
+
+### 3.7 The watch can outrun the create RPC response
+- **What happened:** a background worker creates a claim over HTTP while the watch observes the batch. When `release_not_ready()` stopped the fill, `_delete_released_create` deleted any claim whose create call returned afterwards.
+- **Issue:** when a create landed on the apiserver before `release_not_ready()` (slow HTTP response, or a client timeout followed by a `409 AlreadyExists` retry), the watch already marked the claim Ready, handed it out to the caller, and had `release_not_ready()` keep it. Then `_delete_released_create` deleted that live Ready sandbox.
+- **Fix:** check under `_lock` whether `_state` already tracks the claim in `_members`; if so, the watch saw it before the release call and that release call decided to keep it, so return without deleting (15/N).
+- **Takeaway:** when both an RPC response and a watch stream report the same object, the watch can see the object first. Reconcile late RPC completions against current state instead of assuming the RPC caller is first to observe the result.
+
+### 3.8 Reconciling pessimistic recovery counts when late work lands
+- **What happened:** at `get_batch` attach, ordinals below a pool's highest listed ordinal that are absent from the list count as lost (`_missing`) because their earlier create may have failed before a crash.
+- **Issue:** if an in-flight create from the previous holder landed right after the attach list, `upsert_claim` added the new member without taking back the missing count, counting one ordinal slot twice.
+- **Fix:** track `_missing` per pool separately from confirmed losses so a newly arriving fill claim in that pool takes back one missing count first (13/N, `8ad5a407`).
+- **Takeaway:** when recovery makes a pessimistic assumption for missing items, track assumed losses separately from confirmed ones so late arrivals reconcile the count instead of double-counting.
+
+### 3.9 Scope retry backoff to the contended resource
+- **What happened:** every create retry advanced the shared `_next_create_at` pacing cursor by its full exponential backoff.
+- **Issue:** one single-socket transport blip stalled all 20 creator workers, whereas APF `Retry-After` genuinely applies to the whole priority level.
+- **Fix:** split retries by cause (13/N, `0bf8e443`). A response with `Retry-After` moves the shared pacing cursor so all workers back off together; transport errors and 5xx/429 without `Retry-After` sleep locally on that worker and then reserve a normal pacing slot, matching `client-go`.
+- **Takeaway:** server-wide pushback (`Retry-After`) belongs on the shared rate limiter, while single-connection blips should sleep locally and then re-enter normal pacing.
+
 ---
 
 ## 4. Thread safety and registries
@@ -123,6 +164,18 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 ### 4.2 Deterministic race tests
 - **What we did:** a dict subclass whose `get` or `clear` starts the competing operation on another thread and joins with a short timeout. With the lock, the other thread blocks. Without it, it interleaves, and the test fails every time.
 - **Takeaway:** race tests can be deterministic if a test double triggers the interleaving at the exact point. Keep such doubles minimal, and adjust them only when the code under test legitimately changes (our double later had to race only on its first lookup).
+
+### 4.3 Check every failure precondition before mutating local state
+- **What happened:** `release_member`, `release_not_ready`, and `release_group` checked `_detached` under `_lock`, dropped members from `_state`, and only checked `_lease_released` and `err()` later inside `_delete_claim`.
+- **Issue:** when `err()` was set, the call dropped members from `members()`, deleted nothing on the cluster, and raised `BatchError`, leaving the in-memory view out of sync with the cluster.
+- **Fix:** check `_lease_released` and `_state.error()` under `_lock` before mutating `_state` (15/N).
+- **Takeaway:** validate every precondition that can reject an operation before mutating in-memory state, so a failed call leaves both local state and cluster state untouched.
+
+### 4.4 Completion predicates must be monotonic, never derived from a live gauge
+- **What happened:** `fill_settled()` checked `_ready_count + len(_unable) + _skipped_creates == _fill_total`, where `_ready_count` rose and fell with live Ready status.
+- **Issue:** after a Ready member was handed out (or dropped with a failed group) and later flipped NotReady on a watch event, `_ready_count` dropped and unsettled a finished `events()` stream. Conversely, marking a member settled on bare `Ready` before its group or quorum decided ended `events()` early if a held member flickered NotReady and later recovered.
+- **Fix:** replace `_ready_count` in settlement with a sticky `_resolved` set that adds a fill claim only once its consumer fate is final: handed out, dropped with a failed group or quorum, unable, or released (13/N, `8ad5a407`).
+- **Takeaway:** stream termination is a one-way latch. Track whether each item has reached a final consumer decision rather than summing mutable live health counters.
 
 ---
 
