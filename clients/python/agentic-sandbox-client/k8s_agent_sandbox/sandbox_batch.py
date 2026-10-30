@@ -425,15 +425,22 @@ class SandboxBatch:
         if self._detached:
             raise BatchError(f"batch '{self.batch_id}' has been detached or released")
 
-    def _check_lease_held(self) -> None:
+    def _check_healthy(self) -> None:
+        self._check_active()
+        self._check_lease_held_locked()
+
+    def _check_lease_held_locked(self) -> None:
         # Once detach() releases the Lease or err() is set, this handle may no longer hold the
         # batch's Lease, and a batch recreated under the same id reuses the claim names and labels,
         # so the handle deletes no more claims.
+        if self._lease_released:
+            raise BatchError(f"batch '{self.batch_id}' has been detached or released")
+        if (error := self._state.error()) is not None:
+            raise BatchError(f"batch '{self.batch_id}' has stopped") from error
+
+    def _check_lease_held(self) -> None:
         with self._lock:
-            if self._lease_released:
-                raise BatchError(f"batch '{self.batch_id}' has been detached or released")
-            if (error := self._state.error()) is not None:
-                raise BatchError(f"batch '{self.batch_id}' has stopped") from error
+            self._check_lease_held_locked()
 
     def members(self, warmpool: str | None = None) -> list[Member]:
         """Returns a snapshot of the batch's members, optionally filtered to one warm pool."""
@@ -449,9 +456,7 @@ class SandboxBatch:
         can no longer vouch for the member.
         """
         with self._lock:
-            self._check_active()
-            if (error := self._state.error()) is not None:
-                raise BatchError(f"batch '{self.batch_id}' has stopped") from error
+            self._check_healthy()
             # No name resolution or existence check as the batch's watch cache already knows the member's sandbox_name
             current = self._state.get_member(member.claim_name)
             if current is None or current.state is not MemberState.READY:
@@ -623,7 +628,7 @@ class SandboxBatch:
                 after ``BATCH_DELETE_ATTEMPTS`` attempts (an ``ApiException`` or a transport error).
         """
         with self._changed:
-            self._check_active()
+            self._check_healthy()
             needs_delete = self._state.release_member(member.claim_name)
             self._changed.notify_all()
         self._close_cached_connections("release_member", [member.claim_name])
@@ -653,7 +658,7 @@ class SandboxBatch:
                 (an ``ApiException`` or a transport error).
         """
         with self._changed:
-            self._check_active()
+            self._check_healthy()
             self._drop_planned_creates(None)
             names = self._state.release_not_ready()
             self._changed.notify_all()
@@ -690,7 +695,7 @@ class SandboxBatch:
                 or a transport error).
         """
         with self._changed:
-            self._check_active()
+            self._check_healthy()
             if all(group.warmpool != warmpool for group in self._state.groups):
                 raise ValueError(f"batch '{self.batch_id}' has no group for warm pool '{warmpool}'")
             self._drop_planned_creates(warmpool)
@@ -1215,6 +1220,10 @@ class SandboxBatch:
         """
         with self._lock:
             if not self._state.fill_creates_released(warmpool):
+                return
+            if self._state.get_member(claim_name) is not None:
+                # The watch saw the claim before release_not_ready() ended the fill, and
+                # release_not_ready() kept it.
                 return
             self._state.release_claim(claim_name, warmpool)
             self._changed.notify_all()

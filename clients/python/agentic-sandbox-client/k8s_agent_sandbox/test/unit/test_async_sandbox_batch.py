@@ -2216,6 +2216,35 @@ class TestReleaseMembers(BaseClaimBatchTest):
         self.assertEqual(self.cluster.names(), ["b1-0"])
         self.assertEqual([c.args[0] for c in self.cluster.helper.delete_sandbox_claim.call_args_list], ["b1-0"])
 
+    @patch("k8s_agent_sandbox.batch_utils.retry_delay", return_value=0)
+    async def test_release_not_ready_keeps_handed_out_member_when_create_retries_late(self, _):
+        self.cluster.ready_on_create = False
+        attempt_two, finish_retry = asyncio.Event(), asyncio.Event()
+        self.addCleanup(finish_retry.set)
+        attempts = 0
+
+        async def create_claim(name, warmpool, namespace, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                # The first create lands on the apiserver, then fails on the client so _create_one retries.
+                self.cluster.push(name, warmpool, ready=True, annotations=kwargs["annotations"])
+                raise k8s_client.ApiException(status=503)
+            attempt_two.set()
+            await asyncio.wait_for(finish_retry.wait(), 5)
+            raise k8s_client.ApiException(status=409)
+
+        self.cluster.helper.create_sandbox_claim.side_effect = create_claim
+        batch = await self.claim([BatchGroup(warmpool="pool-a", size=1)])
+        [kept] = await batch.wait_for_quorum()
+        await asyncio.wait_for(attempt_two.wait(), 5)
+
+        await batch.release_not_ready()
+        finish_retry.set()
+        await _wait_until(lambda: all(c.done() for c in batch._creators))
+        self.assertEqual(batch.members(), [kept])
+        self.cluster.helper.delete_sandbox_claim.assert_not_awaited()
+
     async def test_release_group_deletes_by_group_label_and_skips_only_its_creates(self):
         gate = asyncio.Event()
         self.addCleanup(gate.set)
@@ -2324,37 +2353,47 @@ class TestReleaseMembers(BaseClaimBatchTest):
     @patch("k8s_agent_sandbox.batch_utils.retry_delay", return_value=0)
     async def test_release_methods_delete_nothing_once_err_is_set(self, _):
         helper = self.cluster.helper
+        cause = RuntimeError("renewal stopped")
 
         def handle_with_a_pending_member():
             handle = _make_handle(self.client)
             handle._state.upsert_claim(_claim("b1-0", conditions=_NOT_READY, annotations=_FILL))
             return handle
 
-        for name, release in (
-            ("release_member", lambda h: h.release_member(h.members()[0])),
-            ("release_not_ready", lambda h: h.release_not_ready()),
-            ("release_group", lambda h: h.release_group("pool-a")),
+        for state_name, stop in (
+            ("err set", lambda h: h._state.note_error(cause)),
+            ("lease released", lambda h: setattr(h, "_lease_released", True)),
         ):
-            with self.subTest(name):
-                helper.reset_mock()
-                handle = handle_with_a_pending_member()
-                handle._state.note_error(RuntimeError("renewal stopped"))
-                with self.assertRaises(BatchError):
-                    await release(handle)
-                helper.delete_sandbox_claim.assert_not_awaited()
-                helper.delete_sandbox_claims_by_label.assert_not_awaited()
+            for name, release in (
+                ("release_member", lambda h: h.release_member(h.members()[0])),
+                ("release_not_ready", lambda h: h.release_not_ready()),
+                ("release_group", lambda h: h.release_group("pool-a")),
+            ):
+                with self.subTest(state=state_name, method=name):
+                    helper.reset_mock()
+                    handle = handle_with_a_pending_member()
+                    before = handle.members()
+                    stop(handle)
+                    with self.assertRaises(BatchError) as cm:
+                        await release(handle)
+                    if state_name == "err set":
+                        self.assertIs(cm.exception.__cause__, cause)
+                    self.assertEqual(handle.members(), before)
+                    helper.delete_sandbox_claim.assert_not_awaited()
+                    helper.delete_sandbox_claims_by_label.assert_not_awaited()
 
         with self.subTest("err set between delete attempts"):
             helper.reset_mock()
             handle = handle_with_a_pending_member()
 
             def fail_and_stop(*args, **kwargs):
-                handle._state.note_error(RuntimeError("renewal stopped"))
+                handle._state.note_error(cause)
                 raise k8s_client.ApiException(status=503)
 
             helper.delete_sandbox_claim.side_effect = fail_and_stop
-            with self.assertRaises(BatchError):
+            with self.assertRaises(BatchError) as cm:
                 await handle.release_member(handle.members()[0])
+            self.assertIs(cm.exception.__cause__, cause)
             helper.delete_sandbox_claim.assert_awaited_once()
 
 
