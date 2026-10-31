@@ -33,4 +33,4 @@ Combined reply for the review comment:
 
 ## CodeRabbit thread 6 (`4348297847`, `k8s_helper.py:71`, keep Lease credentials current after creation)
 
-> Outside this PR's delta (`_api_client_without_retries` landed in #1925, `31a47728`, and #1985, `d07e8941`, at `k8s_helper.py:53-72`). #1985 builds `no_retries` from `copy.copy(api_client.configuration)` (`k8s_helper.py:65`), so the Lease client shares `api_key`, `api_key_prefix`, and `refresh_api_key_hook` with the injected `Configuration`, which `kubernetes.client` reads on each request when preparing and refreshing bearer tokens.
+> Outside this PR's delta (`_api_client_without_retries` landed in #1925, `31a47728`, and #1985, `d07e8941`, at `k8s_helper.py:53-72`). #1985 shares `Configuration` (`api_key`, `api_key_prefix`, and `refresh_api_key_hook`) with the Lease client for standard Kubernetes token rotation, while copying `default_headers` and `cookie` once at construction. Since #1985 already merged into `feature/batch-claim`, keeping post-construction `default_headers` or `cookie` mutations synchronized belongs in a standalone follow-up PR if needed rather than #1990.
