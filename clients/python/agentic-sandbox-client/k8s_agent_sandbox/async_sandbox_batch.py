@@ -136,6 +136,7 @@ class AsyncSandboxBatch:
         lease: V1Lease,
         lease_renewed_at: float,
         quorum_timeout: int = batch_utils.BATCH_DEFAULT_QUORUM_TIMEOUT_SECONDS,
+        max_in_flight: int = batch_utils.BATCH_DEFAULT_MAX_IN_FLIGHT,
     ) -> None:
         self._client = client
         self.batch_id = batch_id
@@ -148,8 +149,8 @@ class AsyncSandboxBatch:
         self._list_resource_version = list_resource_version
 
         self._lock = asyncio.Lock()
-        # Held for all of release(), around detach()'s Lease writes, and around member and group claim
-        # deletes, so whichever call starts first finishes before the other acts.
+        # Serializes release()'s teardown and detach()'s Lease writes, so whichever enters first
+        # finishes before the other acts on the Lease.
         self._lifecycle_lock = asyncio.Lock()
         self._connected: dict[str, "AsyncSandbox"] = {}
         # get_batch sets this, so client exit cleanup detaches the handle instead of deleting a batch that
@@ -185,6 +186,13 @@ class AsyncSandboxBatch:
         self._create_plan: deque[tuple[str, BatchGroup]] = deque()
         self._next_create_at = 0.0
         self._create_interval = 0.0
+        # Bounds concurrent claim creates and member deletes to max_in_flight.
+        self._in_flight = asyncio.BoundedSemaphore(max_in_flight)
+        # Counts in-flight member and group deletes so detach(), release(), and client cleanup wait
+        # for them before stopping renewal, releasing the Lease, or closing the API session.
+        self._active_deletes = 0
+        self._no_active_deletes = asyncio.Event()
+        self._no_active_deletes.set()
         self._claim_labels: dict[str, dict[str, str]] = {}
         self._claim_annotations: dict[str, dict[str, str]] = {}
         self._claim_lifecycle: dict[str, str] = {}
@@ -297,6 +305,7 @@ class AsyncSandboxBatch:
             lease=created,
             lease_renewed_at=renewed_at,
             quorum_timeout=args.quorum_timeout,
+            max_in_flight=args.max_in_flight,
         )
         handle._create_plan = deque(batch_utils.fill_create_plan(args.batch_id, args.groups))
         handle._create_interval = 1 / args.create_rps
@@ -442,21 +451,33 @@ class AsyncSandboxBatch:
             raise BatchError(f"batch '{self.batch_id}' has been detached or released")
 
     def _check_healthy(self) -> None:
-        self._check_active()
-        self._check_lease_held_locked()
-
-    def _check_lease_held_locked(self) -> None:
-        # Once detach() releases the Lease or err() is set, this handle may no longer hold the
+        # Once detach() or release() starts or err() is set, this handle may no longer hold the
         # batch's Lease, and a batch recreated under the same id reuses the claim names and labels,
-        # so the handle deletes no more claims.
-        if self._lease_released:
-            raise BatchError(f"batch '{self.batch_id}' has been detached or released")
+        # so the handle connects to no more sandboxes and deletes no more claims.
+        self._check_active()
         if (error := self._state.error()) is not None:
             raise BatchError(f"batch '{self.batch_id}' has stopped") from error
 
     async def _check_lease_held(self) -> None:
         async with self._lock:
-            self._check_lease_held_locked()
+            self._check_healthy()
+
+    @contextlib.asynccontextmanager
+    async def _member_delete(self) -> AsyncIterator[None]:
+        async with self._lock:
+            self._check_healthy()
+            self._active_deletes += 1
+            self._no_active_deletes.clear()
+        try:
+            yield
+        finally:
+            # Runs without awaiting so cancelling the task cannot skip waking detach() or release().
+            self._active_deletes -= 1
+            if self._active_deletes == 0:
+                self._no_active_deletes.set()
+
+    async def _wait_active_deletes(self) -> None:
+        await self._no_active_deletes.wait()
 
     def members(self, warmpool: str | None = None) -> list[Member]:
         """Returns a snapshot of the batch's members, optionally filtered to one warm pool."""
@@ -646,8 +667,7 @@ class AsyncSandboxBatch:
             self._changed.notify_all()
         await self._close_cached_connections("release_member", [member.claim_name])
         if needs_delete:
-            async with self._lifecycle_lock:
-                await self._delete_claim(member.claim_name)
+            await self._delete_claim(member.claim_name)
 
     async def release_not_ready(self) -> None:
         """Ends the fill and deletes every initial claim that isn't Ready and was never handed out.
@@ -661,8 +681,9 @@ class AsyncSandboxBatch:
         consumer has decided can make a group or the quorum unreachable. Call it once you have
         what you need.
 
-        Each claim is deleted like ``release_member``, up to ``BATCH_DEFAULT_MAX_IN_FLIGHT`` at
-        once. If a delete fails, calling ``release_not_ready`` again retries it.
+        Deletes each claim like ``release_member``. Member deletes and claim creates share
+        ``max_in_flight``, which defaults to 20 on a handle from ``get_batch``. If a delete fails,
+        calling ``release_not_ready`` again retries it.
 
         Raises:
             BatchError: If this handle has been detached or released, or once ``err()`` is set,
@@ -678,14 +699,7 @@ class AsyncSandboxBatch:
         await self._close_cached_connections("release_not_ready", names)
         if not names:
             return
-        in_flight = asyncio.Semaphore(batch_utils.BATCH_DEFAULT_MAX_IN_FLIGHT)
-
-        async def delete(name: str) -> None:
-            async with in_flight:
-                await self._delete_claim(name)
-
-        async with self._lifecycle_lock:
-            results = await asyncio.gather(*(delete(name) for name in names), return_exceptions=True)
+        results = await asyncio.gather(*(self._delete_claim(name) for name in names), return_exceptions=True)
         errors = [r for r in results if isinstance(r, BaseException)]
         if errors:
             raise errors[0]
@@ -720,14 +734,13 @@ class AsyncSandboxBatch:
             names = self._state.release_group(warmpool)
             self._changed.notify_all()
         await self._close_cached_connections("release_group", names)
-        async with self._lifecycle_lock:
-            await _delete_claims_in_rounds(
-                self._client.k8s_helper,
-                self.namespace,
-                batch_utils.group_label_selector(self.batch_id, warmpool),
-                f"batch '{self.batch_id}' group '{warmpool}'",
-                hold=self._check_lease_held,
-            )
+        await _delete_claims_in_rounds(
+            self._client.k8s_helper,
+            self.namespace,
+            batch_utils.group_label_selector(self.batch_id, warmpool),
+            f"batch '{self.batch_id}' group '{warmpool}'",
+            guard=self._member_delete,
+        )
 
     def _drop_planned_creates(self, warmpool: str | None) -> None:
         """Releases the planned creates not yet sent, of one pool or of every pool, so they don't
@@ -752,20 +765,21 @@ class AsyncSandboxBatch:
         """Deletes one released claim, retrying transient errors. A claim already gone counts as deleted."""
         attempt = 1
         while True:
-            await self._check_lease_held()
             try:
-                await self._client.k8s_helper.delete_sandbox_claim(
-                    claim_name,
-                    self.namespace,
-                    _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
-                    log_level=logging.DEBUG,
-                )
+                async with self._in_flight, self._member_delete():
+                    await self._client.k8s_helper.delete_sandbox_claim(
+                        claim_name,
+                        self.namespace,
+                        _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+                        log_level=logging.DEBUG,
+                    )
                 break
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 if attempt >= batch_utils.BATCH_DELETE_ATTEMPTS or not _is_transient_error(e):
                     raise
+                await self._check_lease_held()
                 await asyncio.sleep(batch_utils.retry_delay(attempt, e))
                 attempt += 1
         async with self._lock:
@@ -801,10 +815,12 @@ class AsyncSandboxBatch:
                 if self._lease_released:
                     raise BatchError(f"batch '{self.batch_id}' has been detached or is held by another handle")
                 self._detached = True
-                self._changed.notify_all()
+                self._stop_creating.set()
                 # A failed release is retried by client cleanup as a release, not as an earlier detach.
                 self._detach_grace = None
+                self._changed.notify_all()
 
+            await self._wait_active_deletes()
             await self._stop_background_tasks()
             await self._close_cached_connections("release")
             async with self._lock:
@@ -904,6 +920,7 @@ class AsyncSandboxBatch:
             if self._detach_done():
                 return
             self._detached = True
+            self._stop_creating.set()
             self._changed.notify_all()
             if grace is not None:
                 self._detach_grace = grace
@@ -913,6 +930,10 @@ class AsyncSandboxBatch:
             # uses this copy.
             grace = self._detach_grace
 
+        await self._wait_active_deletes()
+        async with self._lock:
+            if self._detach_done():
+                return
         await self._stop_background_tasks()
         await self._close_cached_connections("detach")
 
@@ -1206,6 +1227,8 @@ class AsyncSandboxBatch:
             await self._delete_claim(claim_name)
         except asyncio.CancelledError:
             raise
+        except BatchError:
+            pass
         except Exception as e:
             logger.warning(f"Batch '{self.batch_id}' failed to delete released claim '{claim_name}': {e}")
 
@@ -1230,16 +1253,19 @@ class AsyncSandboxBatch:
         attempt = 1
         while True:
             try:
-                await self._client.k8s_helper.create_sandbox_claim(
-                    claim_name,
-                    group.warmpool,
-                    self.namespace,
-                    annotations=self._claim_annotations[group.warmpool],
-                    labels=self._claim_labels[group.warmpool],
-                    lifecycle=self._claim_lifecycle,
-                    log_level=logging.DEBUG,
-                    _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
-                )
+                async with self._in_flight:
+                    if self._stop_creating.is_set():
+                        return False
+                    await self._client.k8s_helper.create_sandbox_claim(
+                        claim_name,
+                        group.warmpool,
+                        self.namespace,
+                        annotations=self._claim_annotations[group.warmpool],
+                        labels=self._claim_labels[group.warmpool],
+                        lifecycle=self._claim_lifecycle,
+                        log_level=logging.DEBUG,
+                        _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+                    )
                 return True
             except asyncio.CancelledError:
                 raise
@@ -1389,10 +1415,12 @@ async def _delete_claims_in_rounds(
     description: str,
     hold: Callable[[], Awaitable[None]] | None = None,
     finish: Callable[[], Awaitable[None]] | None = None,
+    guard: Callable[[], contextlib.AbstractAsyncContextManager[None]] = contextlib.nullcontext,
 ) -> None:
     """Deletes the claims matching ``label_selector`` with deletecollection rounds, re-listing
     between rounds until no claim is left that isn't already being deleted, then calls ``finish``.
-    Each round first calls ``hold``, which raises if the claims may no longer be deleted.
+    Each round first calls ``hold``, and ``guard`` wraps each request and runs before retry sleep,
+    raising when the caller can no longer delete claims.
 
     A transient error, in ``hold`` and ``finish`` too, moves on to the next round, and it gives up
     after ``BATCH_RELEASE_MAX_IDLE_ROUNDS`` rounds in a row that delete nothing.
@@ -1414,9 +1442,10 @@ async def _delete_claims_in_rounds(
             held = True
             # deletecollection deletes one claim at a time on the apiserver, so for a large batch
             # it can time out while deletion continues. For this case, we track it with the list below.
-            await helper.delete_sandbox_claims_by_label(
-                namespace, label_selector, _request_timeout=collection_timeout
-            )
+            async with guard():
+                await helper.delete_sandbox_claims_by_label(
+                    namespace, label_selector, _request_timeout=collection_timeout
+                )
         except Exception as e:
             if not _is_transient_error(e):
                 raise
@@ -1426,9 +1455,10 @@ async def _delete_claims_in_rounds(
         try:
             # A consistent read (no resourceVersion), so a lagging watch cache can't report
             # that no claims are left too early.
-            items, _ = await helper.list_sandbox_claim_objects(
-                namespace, label_selector, _request_timeout=collection_timeout
-            )
+            async with guard():
+                items, _ = await helper.list_sandbox_claim_objects(
+                    namespace, label_selector, _request_timeout=collection_timeout
+                )
             live = [c for c in items if not (c.get("metadata") or {}).get("deletionTimestamp")]
         except Exception as e:
             if not _is_transient_error(e):
@@ -1459,4 +1489,6 @@ async def _delete_claims_in_rounds(
             )
         if live is not None:
             remaining_before = len(live)
+        async with guard():
+            pass
         await asyncio.sleep(batch_utils.retry_delay(max(idle_rounds, 1), last_error))
