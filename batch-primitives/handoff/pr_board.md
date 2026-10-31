@@ -24,7 +24,7 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 12/N | `feat/batch-2-claim` (PR 2) | feat(python-sdk): add claim_batch and release (12/N) | merged #1824 (`522dad4c`, tree equals `93c1711a`) | `93c1711a` | local agent |
 | 13/N | `feat/batch-3-group-consumers` (PR 3) | feat(batch,python-sdk): add events and group_outcomes (13/N) | merged #1988 (`8ad5a407`, tree equals `2d09db1e`) | `2d09db1e` | local agent |
 | 14/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (14/N) | merged #1989 (`3b57b191`, tree equals `823ae10e`) | `823ae10e` | local agent |
-| 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (15/N) | open upstream #1990 | `f79145ab` | local agent |
+| 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (15/N) | open upstream #1990 (review copy `review/r1990-full/feat/batch-5-release-group-76a8m3` `0feabd2e` awaiting Brian's OK) | `f79145ab` (review copy `0feabd2e`) | local agent |
 | 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (16/N) | open upstream #1991 | `1c3f2906` | local agent |
 | 17/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (17/N) | ready, not opened (mypy fix: one-line `cast` folded into the pool commit, Brian approved the copy 2026-10-27; restacked 2026-10-30 (live `8f85005f`); upstream stub fix drafted in `work/prompts/B4-asyncio-stub-fix.md`) | `8f85005f` | local agent (fix: coordinator 2) |
 | 18/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (18/N) | ready, not opened (reaper's own loose types folded: `lease_owner_reference` typed with a `BatchError` check, `owner_references` `list[dict[str, str]]`, `_continue=` passed directly; Brian tentatively approved 2026-10-27; restacked 2026-10-30 (live `7d6b93c2`)) | `7d6b93c2` | local agent (types: coordinator 2) |
@@ -159,8 +159,9 @@ This PR is the fourteenth in a series of PRs to implement a batch. It adds `wait
 ### 15/N PR 5 (open #1990)
 This PR is the fifteenth in a series of PRs to implement a batch. It lets a caller free part of a batch.
 - `release_member(member)` deletes one member's claim.
-- `release_group(warmpool)` deletes a group's claims with one label-scoped `deletecollection`, using a hashed group label.
+- `release_group(warmpool)` deletes a group's claims with label-scoped `deletecollection` rounds, using a hashed group label.
 - `release_not_ready()` ends the fill and deletes every fill member that isn't Ready and was never handed out.
+- Member deletes and claim creates share `max_in_flight`, releasing each slot before retry backoff, and `detach()`, `release()`, and async client cleanup wait for in-flight member and group deletes before stopping Lease renewal or releasing or deleting the Lease.
 
 ### 16/N PR 6 (open #1991)
 This PR is the sixteenth in a series of PRs to implement a batch. It adds `acquire()` so a caller can replace a released member.
