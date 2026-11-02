@@ -1108,6 +1108,15 @@ class TestLeaseApiClient(unittest.TestCase):
         configuration.api_key["authorization"] = "rotated"
         configuration.api_key_prefix["authorization"] = "Bearer"
         self.assertEqual(lease_api_client.configuration.get_api_key_with_prefix("authorization"), "Bearer rotated")
+        injected.set_default_header("X-Rotated", "token-2")
+        injected.cookie = "session=2"
+        self.assertEqual(lease_api_client.default_headers["X-Rotated"], "token-2")
+        self.assertEqual(lease_api_client.cookie, "session=2")
+        _, _, headers, _, _ = lease_api_client.param_serialize("GET", "/apis")
+        self.assertEqual(headers["X-Rotated"], "token-2")
+        self.assertEqual(headers["Cookie"], "session=2")
+        injected.default_headers = {"X-Replaced": "1"}
+        self.assertEqual(lease_api_client.default_headers, {"X-Replaced": "1"})
 
     def test_lease_requests_are_not_retried_with_the_default_client(self, _):
         lease_api_client = K8sHelper().coordination_v1_api.api_client
