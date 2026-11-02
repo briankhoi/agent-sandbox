@@ -233,7 +233,7 @@ an error that stops the watch or Lease renewal shows in ``err()``.
 - `batch_id` - Optional batch id; a DNS-1123 label starting with a letter, at most 52
   characters. Generated if omitted.
 - `create_rps` - Maximum claim creates started per second. Defaults to 50.
-- `max_in_flight` - Maximum claim creates in flight at once. Defaults to 20.
+- `max_in_flight` - Maximum claim creates and member deletes in flight at once. Defaults to 20.
 - `work_budget` - Seconds the caller expects to work with the batch after it is Ready;
   part of each claim's ``shutdownTime``. Defaults to 3600.
 - `quorum_timeout` - Seconds after the last claim create that a group may take to reach
@@ -1022,8 +1022,9 @@ lists as not Ready. Released members are dropped from ``members()``, emit no
 consumer has decided can make a group or the quorum unreachable. Call it once you have
 what you need.
 
-Each claim is deleted like ``release_member``, up to ``BATCH_DEFAULT_MAX_IN_FLIGHT`` at
-once. If a delete fails, calling ``release_not_ready`` again retries it.
+Deletes each claim like ``release_member``. Member deletes and claim creates share
+``max_in_flight``, which defaults to 20 on a handle from ``get_batch``. If a delete fails,
+calling ``release_not_ready`` again retries it.
 
 **Raises**:
 

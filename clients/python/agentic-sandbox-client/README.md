@@ -766,7 +766,8 @@ Three methods free sandboxes before `release()`. `release_member(member)` delete
 `release_group(warmpool)` deletes every claim of a group, pending ones included, for example a group that
 `group_outcomes()` yields with an error, whose claims are otherwise kept until `release()`.
 `release_not_ready()` stops creating claims and deletes every initial claim that isn't Ready and was never
-handed out, once you have what you need. Released members are never handed out, are dropped from `members()`, and
+handed out, once you have what you need. Member deletes and the initial claims share `max_in_flight`, which
+defaults to 20 on a handle from `get_batch()`. Released members are never handed out, are dropped from `members()`, and
 count as unable to become Ready, so releasing members before a group or the quorum has been decided can make
 it unreachable. Read a failed member's `reason` before releasing it. The three methods delete nothing once
 `err()` is set and raise `BatchError`, since the handle may no longer hold the batch's Lease.
