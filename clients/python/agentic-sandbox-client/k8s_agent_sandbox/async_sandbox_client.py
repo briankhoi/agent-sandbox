@@ -206,7 +206,7 @@ class AsyncSandboxClient(Generic[T]):
             # never keeps the client alive. A bound method of the client would keep it alive until exit.
             # Pass the api_client itself, not a copy, so exit cleanup reads its settings as they are at exit.
             atexit.register(functools.partial(
-                self._atexit_cleanup, self._active_connection_sandboxes, self._explicit_claims, api_client
+                AsyncSandboxClient._atexit_cleanup, self._active_connection_sandboxes, self._explicit_claims, api_client
             ))
 
     async def __aenter__(self) -> Self:

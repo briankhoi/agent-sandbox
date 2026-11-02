@@ -108,7 +108,7 @@ class SandboxClient(Generic[T]):
             # Register a static method bound to the cleanup data with functools.partial, so the hook
             # never keeps the client alive. A bound method of the client would keep it alive until exit.
             atexit.register(functools.partial(
-                self._delete_automatic_sandboxes, self._active_connection_sandboxes, self._explicit_claims
+                SandboxClient._delete_automatic_sandboxes, self._active_connection_sandboxes, self._explicit_claims
             ))
 
     def __enter__(self) -> Self:
@@ -121,7 +121,7 @@ class SandboxClient(Generic[T]):
         exc_tb: TracebackType | None,
     ) -> None:
         # Same cleanup as the atexit hook and AsyncSandboxClient.__aexit__.
-        self._delete_automatic_sandboxes(self._active_connection_sandboxes, self._explicit_claims)
+        SandboxClient._delete_automatic_sandboxes(self._active_connection_sandboxes, self._explicit_claims)
 
     def create_sandbox(
         self,
