@@ -252,7 +252,8 @@ class AsyncSandboxClient(Generic[T]):
             if await self._finish_detach(batch):
                 continue
             try:
-                # The handle stops renewing its Lease, so connect() must not hand out new connections.
+                # Stop new connects, creates, and deletes and drain in-flight deletes before
+                # cancelling Lease renewal or closing the caller's API session.
                 async with batch._lock:
                     batch._detached = True
                     batch._stop_creating.set()

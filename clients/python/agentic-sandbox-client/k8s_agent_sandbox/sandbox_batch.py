@@ -189,11 +189,13 @@ class SandboxBatch:
         self._create_plan: deque[tuple[str, BatchGroup]] = deque()
         self._next_create_at = 0.0
         self._create_interval = 0.0
-        # Bounds concurrent claim creates and member deletes to max_in_flight.
+        # Bounds concurrent claim creates and member deletes to max_in_flight, matching the HTTP
+        # connection pool budget so deletes neither overflow the pool nor serialize on a lock.
         self._in_flight = threading.BoundedSemaphore(max_in_flight)
         self._max_in_flight = max_in_flight
-        # Counts in-flight member and group deletes per thread so detach() and release() wait for
-        # other threads' deletes before releasing the Lease without hanging a same-thread signal handler.
+        # Counts in-flight member and group delete requests per thread so detach() and release()
+        # wait for other threads' deletes before giving up the Lease, without hanging a signal
+        # handler that calls release() or detach() on a deleting thread.
         self._active_deletes: Counter[int] = Counter()
         self._claim_labels: dict[str, dict[str, str]] = {}
         self._claim_annotations: dict[str, dict[str, str]] = {}
@@ -448,6 +450,14 @@ class SandboxBatch:
 
     @contextlib.contextmanager
     def _member_delete(self) -> Iterator[None]:
+        """Tracks one in-flight claim delete request without holding a lock across network I/O.
+
+        Holding ``_lock`` or ``_lifecycle_lock`` across the HTTP call would serialize concurrent
+        ``release_member``, ``release_not_ready``, and ``release_group`` deletes. Taking ``_lock``
+        only to check health and update ``_active_deletes`` lets HTTP deletes run in parallel while
+        still fencing against ``detach()`` and ``release()``, which set ``_detached`` under
+        ``_lock`` to reject new deletes and call ``_wait_active_deletes()`` to drain active ones.
+        """
         tid = threading.get_ident()
         with self._lock:
             self._check_healthy()
@@ -463,6 +473,14 @@ class SandboxBatch:
                     self._changed.notify_all()
 
     def _wait_active_deletes(self, for_detach: bool = False) -> None:
+        """Waits for other threads' in-flight claim deletes once the caller sets ``_detached``.
+
+        ``detach()`` and ``release()`` call this before stopping Lease renewal or writing the Lease,
+        so no lingering delete from this handle lands after another handle attaches or a recreated
+        batch reuses the same claim names. Subtracting the current thread's own count avoids a
+        deadlock when a signal handler calls ``release()`` or ``detach()`` on a thread mid-delete,
+        and ``for_detach`` exits early if ``release()`` takes over or the Lease is already released.
+        """
         tid = threading.get_ident()
         with self._changed:
             while self._active_deletes.total() > self._active_deletes[tid]:
@@ -761,6 +779,8 @@ class SandboxBatch:
         attempt = 1
         while True:
             try:
+                # Scope the pool slot and active-delete guard to each HTTP attempt so a sleeping
+                # retry neither holds a max_in_flight slot nor blocks detach() or release().
                 with self._in_flight, self._member_delete():
                     self._client.k8s_helper.delete_sandbox_claim(
                         claim_name,
@@ -816,10 +836,13 @@ class SandboxBatch:
                     return
                 self._detached = True
                 self._stop_creating.set()
-                # A failed release is retried by client cleanup as a release, not as an earlier detach.
+                # Clearing _detach_grace marks release as started so detach() rejects new calls and
+                # client cleanup retries a failed release as a release rather than a detach.
                 self._detach_grace = None
                 self._changed.notify_all()
 
+        # Wait outside _lifecycle_lock so a signal handler calling release() or detach() on a thread
+        # mid-delete does not block on _lifecycle_lock while this call waits for that delete.
         self._wait_active_deletes()
 
         with self._lifecycle_lock:
@@ -1279,6 +1302,7 @@ class SandboxBatch:
         try:
             self._delete_claim(claim_name)
         except BatchError:
+            # detach(), release(), or err() stopped this handle from deleting claims.
             pass
         except Exception as e:
             logger.warning(f"Batch '{self.batch_id}' failed to delete released claim '{claim_name}': {e}")
@@ -1288,6 +1312,8 @@ class SandboxBatch:
         attempt = 1
         while True:
             try:
+                # Release the max_in_flight slot before any retry backoff sleep so waiting retries
+                # do not occupy connections other creates or deletes can use.
                 with self._in_flight:
                     if self._stop_creating.is_set():
                         return False
@@ -1523,6 +1549,8 @@ def _delete_claims_in_rounds(
             )
         if live is not None:
             remaining_before = len(live)
+        # Fail fast if the handle detached or stopped instead of sleeping through retry backoff,
+        # without counting the sleep itself as an active delete.
         with guard():
             pass
         time.sleep(batch_utils.retry_delay(max(idle_rounds, 1), last_error))

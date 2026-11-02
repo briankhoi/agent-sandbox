@@ -51,15 +51,24 @@ logger = logging.getLogger(__name__)
 
 
 class _UnretriedApiClient(client.ApiClient):
-    """An ``ApiClient`` that disables urllib3's built-in retries so batch Lease callers can run
-    their own deadline- and conflict-aware retry logic, while reading headers and cookies from ``source``."""
+    """Wraps ``source`` with its own ``rest_client`` where ``configuration.retries`` is ``False``,
+    so batch Lease callers run their own deadline- and conflict-aware retry logic without disabling
+    retries on ``source``.
+
+    ``ApiClient.__init__`` builds ``rest_client`` from ``configuration.retries`` at construction
+    time, so Lease requests need a separate ``ApiClient`` rather than mutating ``source``. Copying
+    ``default_headers`` and ``cookie`` once at construction would miss later ``set_default_header``
+    calls or ``cookie`` updates on ``source``, so properties read them from ``source`` on each
+    request.
+    """
 
     def __init__(self, source: client.ApiClient) -> None:
+        # ApiClient.__init__ assigns default_headers and cookie before __init__ sets _source.
         self._source: client.ApiClient | None = None
         self._default_headers: dict[Any, Any] = {}
         self._cookie: Any = None
         # A shallow copy shares the credential dicts, so a token the caller rotates in place on the
-        # injected configuration also reaches Lease requests, while retries is set on the copy only.
+        # injected configuration also reaches Lease requests, while only the copy disables retries.
         configuration = copy.copy(source.configuration)
         configuration.retries = False
         super().__init__(configuration=configuration)
