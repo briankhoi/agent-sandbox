@@ -27,14 +27,14 @@ Distilled from the cloud project's memory. Brian is token-limited, so be economi
 - Mechanical restack after an upstream merge: rebase each branch in order onto the new base (`git rebase --onto <newbase> <old-parent-head> <branch>`), also restack pending review copies and side branches. Only a conflicting restack needs thought; report it.
 - Deleting remote branches: ask Brian first.
 
-## Checks per commit (before any push)
+## Checks at HEAD (before any push)
 - Lint: `pycodestyle` (or `ruff check --select E,W,F`) on the lines you changed only; do not reformat existing code. Module loggers only. There is no enforced Python formatter upstream, so match the file's style. Reviewers flag PEP8 nits (for example E301). Go changes would also need `make lint-go`; the Python stack has none. Upstream CI has no Python linter (presubmits: lint-go, lint-api, lint-olm). If `presubmit-agent-sandbox-lint-olm` is red with golangci-lint "typecheck" errors in `olm/hack/sync-k8s-manifests/main.go`, that is the base's tooling (fixed on upstream main by #1912), not our diff: report it, do not fix it in a Python PR.
-- `mypy` with the repo's `pyproject.toml` config on every commit. The cloud container lacked mypy and showed four environment-only errors at upstream `4bb0db30` (reported by the restack thread, 2026-10-21 18:53); compare against the base before blaming your change.
+- `mypy` with the repo's `pyproject.toml` config at `HEAD` only (Brian, 2026-11-02: "you do not need to run cehcks on every commit just the head"). The cloud container lacked mypy and showed four environment-only errors at upstream `4bb0db30` (reported by the restack thread, 2026-10-21 18:53); compare against the base before blaming your change.
 - Author check: every commit is `Brian Nguyen <brianknguyen@google.com>`, no trailers (`git log --format='%an <%ae>%n%B' base..HEAD`).
-- Tests: no full suite. Run only the new or changed tests (`pytest` on the specific tests, both shells), on the commit that changed source. Mutation-check each new or changed test: break the code it protects and see it fail for the intended reason.
+- Tests: no full suite. Run only the new or changed tests (`pytest` on the specific tests, both shells) at `HEAD`. Mutation-check each new or changed test: break the code it protects and see it fail for the intended reason.
 - Test audit: at the end of an implementation, apply `batch-primitives/skills/test-audit/SKILL.md` (one owning test per contract at the strongest boundary, no near-duplicates, no tests that only check a mock). It is read-only; report and wait.
-- Docs: after changing public docstrings, `make generate-python-docs` (or the Makefile target that regenerates `docs/python_sdk_reference.md`) must leave no diff at each PR.
-- Full per-commit check only when Brian says the work is done: pytest and mypy per commit in detached worktrees, regenerated docs with no diff, the author/trailer check, and `git merge-tree --write-tree upstream/<base> HEAD` against current upstream (fetch first). The base for the batch stack is upstream `feature/batch-claim`; for standalone fixes it can be upstream `main`.
+- Docs: after changing public docstrings, `make generate-python-docs` (or the Makefile target that regenerates `docs/python_sdk_reference.md`) must leave no diff at each PR whose docstrings changed (and at `HEAD`).
+- Pre-sync check right before syncing: run changed/affected `pytest` and `mypy` at `HEAD` only (not per intermediate commit), verify regenerated docs have no diff at affected PR heads / `HEAD`, run the author/trailer check, and run `git merge-tree --write-tree upstream/<base> HEAD` against current upstream (fetch first). The base for the batch stack is upstream `feature/batch-claim`; for standalone fixes it can be upstream `main`.
 - Restore `package-lock.json` if `make test-unit` changed it. Do not commit `.venv/`, binaries, `VERSION`, or kubeconfigs.
 
 ## Style
@@ -86,8 +86,8 @@ For a restack, prove it mechanical: `git range-diff <old-base>..<old-head> <new-
 ## Faster review rounds (Brian, 2026-10-28: "let's make this next one faster please")
 After a fix round took about an hour (full checks re-run in every round, and the whole stack restacked before Brian saw the design), Brian approved these rules ("yes"):
 - Ask design-shape questions (for example "explicit flag or existing field?") before building.
-- In a review round, build only on the owning commit. Run only the changed tests with their mutation checks, and mypy at that commit.
-- Restack the upper branches only after Brian approves the diff. Run the full per-commit check (mypy on every commit, docs at every head, author check) once, right before syncing.
+- In a review round, fold fixes into their owning commits and run only the changed tests with their mutation checks and `mypy` at the PR's `HEAD`.
+- Restack the upper branches only after Brian approves the diff. Run the pre-sync check (`mypy` and affected tests at `HEAD` only, regenerated docs check, author/trailer check, `merge-tree`) once, right before syncing.
 - Keep a fresh verifier for behavior and lifecycle changes, scoped to the rule and the paths that touch it. It doesn't re-run the builder's mechanical checks except as spot checks.
 - Skip the verifier for comment-only changes and mechanical restacks.
 
