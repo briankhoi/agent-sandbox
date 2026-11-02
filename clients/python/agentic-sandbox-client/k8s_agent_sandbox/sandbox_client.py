@@ -438,6 +438,8 @@ class SandboxClient(Generic[T]):
                 if key in explicit_claims:
                     sandbox.close_connection()
                 else:
+                    # This static hook has no client to dispatch through, so it calls _delete_tracked_sandbox
+                    # directly. A subclass override of delete_sandbox does not run during exit cleanup or __exit__.
                     SandboxClient._delete_tracked_sandbox(registry, key, sandbox)
             except Exception as e:
                 logger.error(f"Cleanup failed for {claim_name} in namespace {namespace}: {e}")
