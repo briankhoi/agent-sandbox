@@ -12,7 +12,7 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 
 Nearly every edge case on this board comes from one of four recurring design questions:
 
-1. **Two observers on one object (Watch vs RPC, Local vs Cluster).** Whenever both a background watch and an HTTP call observe the same resource, ask what happens when the watch sees the result before the HTTP response returns, and validate every failure precondition before mutating local state (3.6, 3.7, 3.8, 4.3).
+1. **Two observers on one object (Watch vs RPC, Local vs Cluster).** Whenever both a background watch and an HTTP call observe the same resource, ask what happens when the watch sees the result before the HTTP response returns, and validate every failure precondition before mutating local state (3.6, 3.7, 3.8, 3.10, 4.3).
 2. **Monotonic lifecycle and completion state.** Teardown and stream-completion predicates must move in one direction only. Refuse new work before draining active work, and never compute "is the stream done?" from a live gauge that can drop after an item was already handed out (1.7, 4.4).
 3. **Teardown matches how ownership entered scope.** Implicit cleanup undoes only what that scope took (release a claimed batch, detach an attached one; keep the live owner separate from leftover connections to close), while explicit destructive calls delete everything (1.2-1.6, 1.8, 3.3).
 4. **Match lock and backoff scope to the shared resource.** Hold a state lock across the whole check-and-mutate step (copying needed values into locals before releasing), restore state synchronously in `finally`, and scope retries or locks to the contended resource so single-item I/O does not stall unrelated workers (2.1, 2.2, 3.3b, 3.9, 4.1, 6.10).
@@ -150,6 +150,12 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **Issue:** one single-socket transport blip stalled all 20 creator workers, whereas APF `Retry-After` genuinely applies to the whole priority level.
 - **Fix:** split retries by cause (13/N, `0bf8e443`). A response with `Retry-After` moves the shared pacing cursor so all workers back off together; transport errors and 5xx/429 without `Retry-After` sleep locally on that worker and then reserve a normal pacing slot, matching `client-go`.
 - **Takeaway:** server-wide pushback (`Retry-After`) belongs on the shared rate limiter, while single-connection blips should sleep locally and then re-enter normal pacing.
+
+### 3.10 A mid-retry delete turns a `409 AlreadyExists` retry into a resurrecting `201 Created`
+- **What happened:** claim creation retries transient transport timeouts and treats `409 AlreadyExists` on attempt 2+ as confirmation that attempt 1 stored the claim (`create_error_outcome`). Meanwhile, the watch independently observes the cluster.
+- **Issue:** when attempt 1 stores the claim on the apiserver but its HTTP response times out on the client, the watch can surface that claim to the caller while `_create_one` is still in retry backoff or sending attempt 2. If the caller then deletes that single claim with `release_member()`, attempt 2 arrives after the delete, gets `201 Created` instead of `409`, and recreates a claim the caller already released.
+- **Fix:** reuse the existing release checks (`fill_creates_released` for fill claims and `_acquiring` / `_pending_deletes` for `acquire()`) so retries skip sending once the watch saw attempt 1 or the caller released the claim, and post-create cleanup deletes any retry that was already on the wire when `release_member()` ran.
+- **Takeaway:** idempotency by `409 AlreadyExists` holds only while nothing deletes the resource between retry attempts. When a watch can expose attempt 1's resource to a caller before the create retry loop finishes, check both whether the watch already observed attempt 1 and whether the caller already deleted it before and after each retry.
 
 ---
 
