@@ -14,8 +14,8 @@ Nearly every edge case on this board comes from one of four recurring design que
 
 1. **Two observers on one object (Watch vs RPC, Local vs Cluster).** Whenever both a background watch and an HTTP call observe the same resource, ask what happens when the watch sees the result before the HTTP response returns, and validate every failure precondition before mutating local state (3.6, 3.7, 3.8, 3.10, 4.3).
 2. **Monotonic lifecycle and completion state.** Teardown and stream-completion predicates must move in one direction only. Refuse new work before draining active work, and never compute "is the stream done?" from a live gauge that can drop after an item was already handed out (1.7, 4.4).
-3. **Teardown matches how ownership entered scope.** Implicit cleanup undoes only what that scope took (release a claimed batch, detach an attached one; keep the live owner separate from leftover connections to close), while explicit destructive calls delete everything (1.2-1.6, 1.8, 3.3).
-4. **Match lock and backoff scope to the shared resource.** Hold a state lock across the whole check-and-mutate step (copying needed values into locals before releasing), restore state synchronously in `finally`, and scope retries or locks to the contended resource so single-item I/O does not stall unrelated workers (2.1, 2.2, 3.3b, 3.9, 4.1, 6.10).
+3. **Teardown matches how ownership entered scope.** Implicit cleanup undoes only what that scope took (release a claimed batch, detach an attached one; keep the live owner separate from leftover connections to close), while explicit destructive calls delete everything (1.2-1.6, 1.8, 1.9, 3.3).
+4. **Match lock and backoff scope to the shared resource.** Hold a state lock across the whole check-and-mutate step (copying needed values into locals before releasing), restore state synchronously in `finally`, and scope retries or locks to the contended resource so single-item I/O does not stall unrelated workers (2.1, 2.2, 3.3b, 3.9, 3.11, 4.1, 4.5, 4.6, 4.7, 6.10).
 
 ---
 
@@ -67,6 +67,12 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **Issue:** an inspection or handoff caller that attached with `get_batch` deleted the batch's claims and Lease when its `with` block exited instead of handing the batch on.
 - **Fix:** `get_batch` sets `_attached = True`. Implicit exit cleanup detaches attached batches with `detach()`'s default grace and releases claimed ones, while explicit `delete_all()` releases all of them (13/N, `7fba1f53`). Sync exit cleanup also reads `_exit_detaches()` under `batch._lock` so it cannot race a concurrent `detach()` setting `_detach_grace`.
 - **Takeaway:** separate "created by me" from "attached by me". Implicit scope exit should undo only what that scope acquired, while explicit destructive methods act on everything.
+
+### 1.9 Name-based rollback deletes must track whether an ambiguous write hit the wire
+- **What happened:** when `acquire()` fails, times out, or hits an interrupt before its claim becomes Ready, `_drop_acquired` rolls back by deleting `claim_name` by name.
+- **Issue:** setting `may_exist = True` up front makes a timeout during pacing or `max_in_flight` send an unnecessary `DELETE` (which also contends for `max_in_flight`), and when attempt 1 fails with a clean `409 AlreadyExists` or `403`, deleting by name can destroy a foreign claim this batch never created. Setting `may_exist = True` only after `_create_one` returns leaks claims when attempt 1 hits the wire and then cancels mid-flight, times out before a retry, or fails non-transiently on attempt 2 after attempt 1's response dropped.
+- **Fix:** start `may_exist = False`, flip it in an `on_send` callback right before each socket write inside the `max_in_flight` guard, and on a caught `Exception` recompute `may_exist = sent > 1 or _is_transient_error(e)` while keeping `may_exist` across `BatchTimeoutError` and `BaseException` interrupts (16/N, `810d3773`).
+- **Takeaway:** name-based rollback must track whether an ambiguous write actually left the client. Never delete before acquiring the send slot or after a clean first-attempt rejection, and always delete after any transmitted attempt whose server outcome remains uncertain.
 
 ---
 
@@ -157,6 +163,12 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **Fix:** reuse the existing release checks (`fill_creates_released` for fill claims and `_acquiring` / `_pending_deletes` for `acquire()`) so retries skip sending once the watch saw attempt 1 or the caller released the claim, and post-create cleanup deletes any retry that was already on the wire when `release_member()` ran.
 - **Takeaway:** idempotency by `409 AlreadyExists` holds only while nothing deletes the resource between retry attempts. When a watch can expose attempt 1's resource to a caller before the create retry loop finishes, check both whether the watch already observed attempt 1 and whether the caller already deleted it before and after each retry.
 
+### 3.11 Check rate-limit slots against the caller's deadline before reserving capacity
+- **What happened:** `acquire(warmpool, timeout)` and its create retries reserve slots from the batch's shared `create_rps` cursor (`_next_create_at`).
+- **Issue:** under heavy load `_next_create_at` can already sit past the caller's `deadline`. Reserving a slot anyway burns a monotonic ordinal, pushes `_next_create_at` further out for callers behind it, sleeps past the timeout, creates a doomed claim on the apiserver, and immediately sends a `DELETE` to tear it down.
+- **Fix:** raise `BatchTimeoutError` under `_lock` whenever `max(now, _next_create_at) >= deadline` before allocating an ordinal or reserving a slot, and repeat the check in `_check_retry_deadline` before retry backoffs and retry slots (16/N, `810d3773`).
+- **Takeaway:** when callers carry deadlines in front of a shared rate limiter, verify that the earliest available slot precedes the deadline before mutating state or reserving capacity, so doomed requests shed load instead of amplifying queue delay and server churn.
+
 ---
 
 ## 4. Thread safety and registries
@@ -182,6 +194,24 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **Issue:** after a Ready member was handed out (or dropped with a failed group) and later flipped NotReady on a watch event, `_ready_count` dropped and unsettled a finished `events()` stream. Conversely, marking a member settled on bare `Ready` before its group or quorum decided ended `events()` early if a held member flickered NotReady and later recovered.
 - **Fix:** replace `_ready_count` in settlement with a sticky `_resolved` set that adds a fill claim only once its consumer fate is final: handed out, dropped with a failed group or quorum, unable, or released (13/N, `8ad5a407`).
 - **Takeaway:** stream termination is a one-way latch. Track whether each item has reached a final consumer decision rather than summing mutable live health counters.
+
+### 4.5 Singleflight futures must isolate waiter timeouts from the shared work
+- **What happened:** the first `acquire()` on an unseen warm pool runs `_check_pool`, and concurrent `acquire()` calls on that pool wait on one shared `Future` in `_prechecks[warmpool]`.
+- **Issue:** in `asyncio`, passing the shared `Future` directly to `asyncio.wait_for` cancels the shared check when one short-timeout waiter expires, aborting the precheck for callers with longer deadlines. Conversely, when an interrupt cancels the task or thread running the check, waiters receive `CancelledError` even though nobody cancelled them, and when the check itself raises `TimeoutError` it looks like the waiter's own deadline unless disambiguated.
+- **Fix:** async waiters wrap the future in `asyncio.shield`, both shells check `check.done()` on `TimeoutError` so a check-level timeout surfaces its real error, an uncancelled waiter whose leader hit an interrupt loops and runs the check itself, and failed checks clear `_prechecks[warmpool]` without caching (16/N, `810d3773`).
+- **Takeaway:** when coalescing callers with independent deadlines onto one in-flight `Future`, shield the shared future from individual waiter timeouts, let a surviving waiter take over when the leader aborts, and cache only successes.
+
+### 4.6 Match wakeup granularity and semaphore hold time to the waiter's scope
+- **What happened:** batch fill consumers share one `Condition` (`_changed.notify_all()`), while `acquire()` waits for one claim to leave `PENDING`, and create and delete loops bound HTTP concurrency with `BoundedSemaphore(max_in_flight)`.
+- **Issue:** putting `N` concurrent `acquire()` calls on `_changed` wakes all `N` waiters on every watch event for unrelated claims and on intermediate `PENDING` updates. Holding `max_in_flight` across retry backoff sleeps lets sleeping retries starve active creates and cleanup deletes of HTTP pool slots.
+- **Fix:** give each `acquire()` a per-claim `Event` in `_acquire_waiters[claim_name]` installed under `_lock` before sending the create, cleared under `_lock` before reading state, and woken only on non-`PENDING` updates, `DELETED`, release, or batch stop (16/N, `810d3773`), and acquire `_in_flight` inside each individual HTTP attempt so retries release their slot before sleeping (15/N, `113fae28`).
+- **Takeaway:** broadcast conditions fit aggregate stream consumers, while single-key callers need per-key events to avoid quadratic wakeups, and concurrency semaphores should wrap only live I/O attempts rather than backoff sleeps.
+
+### 4.7 Keep state transitions in a Sans-I/O core shared by sync and async shells
+- **What happened:** the Python SDK ships parallel sync (`SandboxBatch`) and async (`AsyncSandboxBatch`) handles with identical consumer, release, ordinal, and `acquire()` semantics.
+- **Issue:** duplicating state-machine transitions across `threading` and `asyncio` modules invites subtle parity bugs whenever a review round refines settlement, missing-claim recovery, or release tombstones.
+- **Fix:** isolate all state transitions in `BatchState` (`batch_state.py`) with zero I/O, timers, or locks, so both shells hold their own lock, call the same `BatchState` methods, and run only transport, sleeping, and waiter notifications themselves (16/N, `9ba5a6c6`).
+- **Takeaway:** when maintaining sync and async surfaces in lockstep, put every state transition and invariant in a pure Sans-I/O state core so concurrency shells own only scheduling, locking, and network calls.
 
 ---
 
