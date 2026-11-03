@@ -26,9 +26,9 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 14/N | `feat/batch-4-group-quorum` (PR 4) | feat(python-sdk): add wait_for_quorum (14/N) | merged #1989 (`3b57b191`, tree equals `823ae10e`) | `823ae10e` | local agent |
 | 15/N | `feat/batch-5-release-group-76a8m3` (PR 5) | feat(python-sdk): add release_member, release_group and release_not_ready (15/N) | merged #1990 (`113fae28`, tree equals `9370f0b6`) | `9370f0b6` | local agent |
 | 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (16/N) | open upstream #1991 (rebased on `113fae28` with review fixes synced 2026-11-03; ready for re-review) | `692d7229` | local agent |
-| 17/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (17/N) | ready, not opened (mypy fix: one-line `cast` folded into the pool commit, Brian approved the copy 2026-10-27; restacked 2026-11-03 (live `a38169c0`); upstream stub fix drafted in `work/prompts/B4-asyncio-stub-fix.md`) | `a38169c0` | local agent (fix: coordinator 2) |
-| 18/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (18/N) | ready, not opened (reaper's own loose types folded: `lease_owner_reference` typed with a `BatchError` check, `owner_references` `list[dict[str, str]]`, `_continue=` passed directly; Brian tentatively approved 2026-10-27; restacked 2026-11-03 (live `14370fb0`)) | `14370fb0` | local agent (types: coordinator 2) |
-| 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (19/N) | ready, not opened (restacked 2026-11-03, live `797834ea`) | `797834ea` | local agent |
+| 17/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (17/N) | open upstream #2153 (mypy fix: one-line `cast` folded into the pool commit, Brian approved the copy 2026-10-27; restacked and reopened 2026-11-03 (live `a38169c0`); upstream stub fix drafted in `work/prompts/B4-asyncio-stub-fix.md`) | `a38169c0` | local agent (fix: coordinator 2) |
+| 18/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (18/N) | open upstream #2154 (reaper's own loose types folded: `lease_owner_reference` typed with a `BatchError` check, `owner_references` `list[dict[str, str]]`, `_continue=` passed directly; restacked and opened 2026-11-03 (live `14370fb0`); CodeRabbit thread `4450322585` triaged as intended, reply in `work/replies_2154.md`) | `14370fb0` | local agent (types: coordinator 2) |
+| 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (19/N) | ready, not opened (live `797834ea`; verified 7a fixes on `review/r7a/feat/batch-7a-create-path` `c4ff8fbd`, awaiting Brian's approval to sync 19/N..23/N) | `797834ea` (review copy `c4ff8fbd`) | local agent |
 | 20/N | `feat/batch-8-list-memory` (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (20/N) | ready, not opened (verified 2026-10-28 `work/results/C2-pr8-fixes.md`; restacked 2026-11-03, live `80ea02e4`) | `80ea02e4` | local agent (coordinator 2) |
 | 21/N | `feat/batch-9-types` (types PR) | refactor(python-sdk): replace Any with exact helper and Lease types in batch modules (21/N) | ready, not opened (verified 2026-10-28 `work/results/B5-types-pr.md`; restacked 2026-11-03, live `18df53c5`) | `18df53c5` | local agent (coordinator 2) |
 | 22/N | `feat/batch-10-deletecollection-retry` (retry PR) | fix(python-sdk): stop urllib3 from retrying timed-out claim deletecollection and count requests (22/N) | ready, not opened (verified 2026-10-28 `work/results/C3-deletecollection-retry.md`; restacked 2026-11-03, live `172c6d78`) | `172c6d78` | local agent (coordinator 2) |
@@ -169,13 +169,13 @@ This PR is the sixteenth in a series of PRs to implement a batch. It adds `acqui
 - `size=0` groups are allowed for pools filled only through `acquire()`.
 - The Lease records labels, `create_rps` and the next ordinal, so a re-attached handle behaves like the original.
 
-### 17/N Transport (ready, not opened)
+### 17/N Transport (open #2153)
 This PR is the seventeenth in a series of PRs to implement a batch. It makes fan-out cheaper and safer.
 - `connect()` uses the pod IP the watch already knows, so it skips one Sandbox GET per member.
 - A cached connection closes when its member is lost, failed, moves to another IP or is bound to another sandbox.
 - `claim_batch` fails early when the client's connection pool is smaller than `max_in_flight + 2`. `SandboxClient` and `AsyncSandboxClient` take `pool_size`.
 
-### 18/N Reaper (ready, not opened)
+### 18/N Reaper (open #2154)
 This PR is the eighteenth in a series of PRs to implement a batch. It cleans up batches whose driver died.
 - Batch claims carry an ownerReference to their Lease, so the garbage collector deletes them once the Lease is gone.
 - `python -m k8s_agent_sandbox.batch_reaper` runs once and finds Leases past their duration plus a skew margin. It deletes only those Leases, each with a resourceVersion precondition, and never touches claims, so its RBAC is `list`, `get` and `delete` on Leases. `--dry-run` only logs.
