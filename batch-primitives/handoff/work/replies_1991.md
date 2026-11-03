@@ -1,6 +1,6 @@
 # Paste-ready replies for 16/N (#1991) (drafts, not posted)
 
-> Note: Commit hashes below match `review/r1991/feat/batch-6-acquire-nbbp5j` on `113fae28` (`9ba5a6c6` and `810d3773`). Once synced without edits, those exact hashes become the live `16/N` commits.
+> Note: Commit hashes below (`9ba5a6c6` and `810d3773`) match the synced live `16/N` branch (`feat/batch-6-acquire-nbbp5j` `692d7229` on `113fae28`).
 
 ## `tomergee` review (`5689392219`, items 1 to 7)
 
