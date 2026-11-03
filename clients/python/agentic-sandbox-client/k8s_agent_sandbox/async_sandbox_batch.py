@@ -94,6 +94,9 @@ _TRANSPORT_ERRORS = (
 
 
 def _is_transport_error(error: BaseException) -> bool:
+    # BatchTimeoutError subclasses TimeoutError, so exclude SDK errors before checking TimeoutError.
+    if isinstance(error, BatchError):
+        return False
     # A TLS failure is judged by the ssl error it wraps. aiohttp.ClientSSLError is itself a
     # ClientConnectionError, so it must be unwrapped before the tuple check.
     if isinstance(error, aiohttp.ClientSSLError):
@@ -752,6 +755,7 @@ class AsyncSandboxBatch:
             slot = now if covered else self._reserve_create_slot(now)
         # Whether a claim of the batch may exist under the name, so a failure deletes it.
         may_exist = False
+        sent = 0
         try:
             # Once creating stops, the handle is detached or released, so _wait_acquired raises.
             if not await self._wait_for_stop(slot - time.monotonic()):
@@ -762,20 +766,15 @@ class AsyncSandboxBatch:
                     # Raises if release_group() released the claim while it waited for its slot.
                     self._state.acquired_member(claim_name)
 
-                sent = 0
+                def can_send() -> bool:
+                    # Checks again after waiting for a max_in_flight slot or before retrying, in case
+                    # release_group() or release_member() freed the claim or an earlier attempt finished.
+                    return self._state.acquired_member(claim_name) is None
 
-                def before_send() -> bool:
+                def on_send() -> None:
                     nonlocal may_exist, sent
-                    # Checks again after waiting for a max_in_flight slot or retry backoff, in case
-                    # release_group() freed the pool or an earlier attempt landed in the meantime.
-                    if (
-                        self._state.acquired_member(claim_name) is not None
-                        or self._state.get_member(claim_name) is not None
-                    ):
-                        return False
                     sent += 1
                     may_exist = True
-                    return True
 
                 lifecycle = construct_sandbox_claim_lifecycle_spec(
                     self._quorum_timeout + self._work_budget + batch_utils.BATCH_SHUTDOWN_MARGIN_SECONDS
@@ -789,7 +788,8 @@ class AsyncSandboxBatch:
                         {**self._labels, BATCH_GROUP_LABEL: batch_utils.group_label_value(warmpool)},
                         lifecycle,
                         deadline,
-                        before_send=before_send,
+                        can_send=can_send,
+                        on_send=on_send,
                     )
                 except BatchError:
                     raise
@@ -806,7 +806,7 @@ class AsyncSandboxBatch:
                     )) from e
             return await self._wait_acquired(claim_name, waiter, deadline, wait)
         except BaseException:
-            await self._drop_acquired(claim_name, may_exist)
+            await self._drop_acquired(claim_name, may_exist, retried=sent > 1)
             raise
 
     async def _wait_acquired(
@@ -909,10 +909,7 @@ class AsyncSandboxBatch:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                if time.monotonic() >= deadline or (
-                    request_timeout < batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
-                    and isinstance(e, TimeoutError)
-                ):
+                if time.monotonic() >= deadline:
                     # This acquire's deadline cut the read short, so another acquire with more time
                     # left can still refresh the pool instead of waiting out the refresh interval.
                     return
@@ -924,13 +921,13 @@ class AsyncSandboxBatch:
         finally:
             refresh_lock.release()
 
-    async def _drop_acquired(self, claim_name: str, may_exist: bool) -> None:
+    async def _drop_acquired(self, claim_name: str, may_exist: bool, *, retried: bool = False) -> None:
         """Drops a claim ``acquire()`` didn't get Ready and deletes it. A failed delete is logged,
         since the error ``acquire()`` raises matters more, and left for a later release call.
         """
         async with self._changed:
             self._acquire_waiters.pop(claim_name, None)
-            needs_delete = self._state.drop_acquired(claim_name, may_exist)
+            needs_delete = self._state.drop_acquired(claim_name, may_exist, retried=retried)
             self._changed.notify_all()
         if needs_delete:
             try:
@@ -1070,6 +1067,8 @@ class AsyncSandboxBatch:
                 # Scope the pool slot and active-delete guard to each HTTP attempt so a sleeping
                 # retry neither holds a max_in_flight slot nor blocks detach() or release().
                 async with self._in_flight, self._member_delete():
+                    async with self._lock:
+                        seq = self._state.delete_seq(claim_name)
                     await self._client.k8s_helper.delete_sandbox_claim(
                         claim_name,
                         self.namespace,
@@ -1086,7 +1085,7 @@ class AsyncSandboxBatch:
                 await asyncio.sleep(batch_utils.retry_delay(attempt, e))
                 attempt += 1
         async with self._lock:
-            self._state.note_deleted(claim_name)
+            self._state.note_deleted(claim_name, seq)
 
     async def release(self) -> None:
         """Stops creating claims, stops the background watch and Lease renewal, closes cached
@@ -1550,73 +1549,76 @@ class AsyncSandboxBatch:
                     self._changed.notify_all()
             if await self._wait_for_stop(slot - time.monotonic()):
                 return
-            async with self._lock:
-                if not self._can_send_fill_create(claim_name, group.warmpool):
-                    continue
-            sent = False
+            sent = 0
 
-            def before_send() -> bool:
+            def can_send() -> bool:
+                return self._can_send_fill_create(claim_name, group.warmpool, retried=sent > 0)
+
+            def on_send() -> None:
                 nonlocal sent
-                if not self._can_send_fill_create(claim_name, group.warmpool, sent=sent):
-                    return False
-                sent = True
-                return True
+                sent += 1
 
             try:
-                created = await self._create_one(
+                await self._create_one(
                     claim_name,
                     group.warmpool,
                     self._claim_annotations[group.warmpool],
                     self._claim_labels[group.warmpool],
                     self._claim_lifecycle,
-                    before_send=before_send,
+                    can_send=can_send,
+                    on_send=on_send,
                 )
+                may_exist = sent > 0
             except Exception as e:
+                may_exist = sent > 1 or _is_transient_error(e)
                 async with self._lock:
                     self._state.record_create_failure(
                         claim_name, group.warmpool, _create_failure_message(e)
                     )
                     self._changed.notify_all()
-                continue
-            if created:
-                await self._delete_released_create(claim_name, group.warmpool)
+            if may_exist:
+                await self._delete_released_create(claim_name, group.warmpool, retried=sent > 1)
 
-    def _can_send_fill_create(self, claim_name: str, warmpool: str, *, sent: bool = False) -> bool:
-        """Whether a fill create may still send a request. The caller holds ``self._lock``."""
+    def _can_still_send(self, can_send: Callable[[], bool] | None) -> bool:
+        """Whether a create or its retry may still send a request. The caller holds ``self._lock``."""
         # Once err() is set the handle can no longer watch or hold the batch, so further
         # claims would be ones nobody can observe or keep alive.
-        if self._state.error() is not None:
-            return False
+        return (
+            not self._stop_creating.is_set()
+            and self._state.error() is None
+            and (can_send is None or can_send())
+        )
+
+    def _can_send_fill_create(self, claim_name: str, warmpool: str, *, retried: bool = False) -> bool:
+        """Whether a fill create may still send a request. The caller holds ``self._lock``."""
         self._expire_fill_if_due()
-        if self._state.fill_creates_released(warmpool):
-            if not sent:
+        if self._state.fill_creates_released(warmpool, claim_name):
+            if self._state.get_member(claim_name) is None:
                 self._state.release_claim(claim_name, warmpool)
                 self._changed.notify_all()
             return False
-        if sent:
-            return self._state.get_member(claim_name) is None
-        if self._state.group_failed(warmpool):
+        if not retried and self._state.group_failed(warmpool):
             self._state.record_skipped_create()
             self._changed.notify_all()
             return False
         return True
 
-    async def _delete_released_create(self, claim_name: str, warmpool: str) -> None:
-        """Deletes a fill claim whose create may have landed after the caller released its group or
-        ended the fill. A failed delete leaves the claim for ``release()``.
+    async def _delete_released_create(self, claim_name: str, warmpool: str, *, retried: bool = False) -> None:
+        """Deletes a fill claim whose create may have landed after the caller released it, its
+        group, or ended the fill. A later release call retries a failed delete.
         """
         async with self._lock:
             if (
                 self._stop_creating.is_set()
                 or self._state.error() is not None
-                or not self._state.fill_creates_released(warmpool)
+                or not self._state.fill_creates_released(warmpool, claim_name if retried else "")
             ):
                 return
             if self._state.get_member(claim_name) is not None:
                 # The watch saw the claim before release_not_ready() ended the fill, and
                 # release_not_ready() kept it.
                 return
-            self._state.release_claim(claim_name, warmpool)
+            self._state.release_claim(claim_name, warmpool, needs_delete=True)
             self._changed.notify_all()
         try:
             await self._delete_claim(claim_name)
@@ -1660,27 +1662,37 @@ class AsyncSandboxBatch:
         labels: dict[str, str],
         lifecycle: dict[str, str],
         deadline: float | None,
-        before_send: Callable[[], bool] | None = None,
-    ) -> bool:
+        can_send: Callable[[], bool] | None = None,
+        on_send: Callable[[], None] | None = None,
+    ) -> None:
         """Sends one claim create while holding one of the ``max_in_flight`` slots, releasing the
-        slot before any retry backoff sleep. Returns ``False`` if creation stopped or
-        ``before_send`` skipped the request while waiting.
+        slot before any retry backoff sleep, unless creation stopped or ``can_send`` skipped the
+        request while waiting.
 
         Raises:
             BatchTimeoutError: If no slot frees up before ``deadline``.
         """
-        wait = None if deadline is None else max(0.0, deadline - time.monotonic())
-        try:
-            async with asyncio.timeout(wait):
-                await self._in_flight.acquire()
-        except TimeoutError as e:
-            raise BatchTimeoutError(f"no create in flight slot for claim '{claim_name}' before the deadline") from e
+        async with self._lock:
+            if not self._can_still_send(can_send):
+                return
+        acquired = False
+        wait = None if deadline is None else deadline - time.monotonic()
+        if wait is None or wait > 0:
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(wait):
+                    await self._in_flight.acquire()
+                    acquired = True
+        if not acquired:
+            async with self._lock:
+                if not self._can_still_send(can_send):
+                    return
+            raise BatchTimeoutError(f"no create in flight slot for claim '{claim_name}' before the deadline")
         try:
             async with self._lock:
-                if self._stop_creating.is_set() or self._state.error() is not None:
-                    return False
-                if before_send is not None and not before_send():
-                    return False
+                if not self._can_still_send(can_send):
+                    return
+                if on_send is not None:
+                    on_send()
             await self._client.k8s_helper.create_sandbox_claim(
                 claim_name,
                 warmpool,
@@ -1692,7 +1704,6 @@ class AsyncSandboxBatch:
                 log_level=logging.DEBUG,
                 _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
             )
-            return True
         finally:
             self._in_flight.release()
 
@@ -1704,13 +1715,14 @@ class AsyncSandboxBatch:
         labels: dict[str, str],
         lifecycle: dict[str, str],
         deadline: float | None = None,
-        before_send: Callable[[], bool] | None = None,
-    ) -> bool:
+        can_send: Callable[[], bool] | None = None,
+        on_send: Callable[[], None] | None = None,
+    ) -> None:
         """Creates one claim, retrying transient errors, with each retry taking a pacing slot.
 
-        Calls ``before_send`` under the batch lock right before each attempt sends
-        ``create_sandbox_claim``, and skips sending when it returns ``False``. Returns whether any
-        attempt sent ``create_sandbox_claim``.
+        Checks ``can_send`` under the batch lock before each attempt and retry wait, skipping the
+        create when it returns ``False``, and calls ``on_send`` right before each attempt sends
+        ``create_sandbox_claim``.
 
         Raises:
             BatchTimeoutError: If a retry's pacing slot is at or after ``deadline``, or no
@@ -1720,11 +1732,10 @@ class AsyncSandboxBatch:
         attempt = 1
         while True:
             try:
-                if not await self._send_create(
-                    claim_name, warmpool, annotations, labels, lifecycle, deadline, before_send
-                ):
-                    return attempt > 1
-                return True
+                await self._send_create(
+                    claim_name, warmpool, annotations, labels, lifecycle, deadline, can_send, on_send
+                )
+                return
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1742,7 +1753,7 @@ class AsyncSandboxBatch:
                             f"Batch '{self.batch_id}' was throttled, so every later create is paced at create_rps"
                         )
                 if outcome == batch_utils.CreateOutcome.SUCCESS:
-                    return True
+                    return
                 if outcome == batch_utils.CreateOutcome.RETRY:
                     # A backoff belongs to this create alone, so the create waits it out here and then takes a
                     # normal pacing slot. client-go retries the same way. The apiserver computes a Retry-After for a
@@ -1751,16 +1762,20 @@ class AsyncSandboxBatch:
                     if retry_after is None:
                         backoff = batch_utils.retry_delay(attempt, None)
                         async with self._lock:
+                            if not self._can_still_send(can_send):
+                                return
                             self._check_retry_deadline(claim_name, deadline, time.monotonic() + backoff, e)
                         if await self._wait_for_stop(backoff):
-                            return True
+                            return
                     async with self._lock:
+                        if not self._can_still_send(can_send):
+                            return
                         earliest = time.monotonic() + (retry_after or 0.0)
                         # Other creates keep taking slots during a backoff, so the create checks the deadline again.
                         self._check_retry_deadline(claim_name, deadline, earliest, e)
                         slot = self._reserve_create_slot(earliest)
                     if await self._wait_for_stop(slot - time.monotonic()):
-                        return True
+                        return
                     attempt += 1
                     continue
                 logger.debug(f"Batch '{self.batch_id}' failed to create claim '{claim_name}': {e}")
