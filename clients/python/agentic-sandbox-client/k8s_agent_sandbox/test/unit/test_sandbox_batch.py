@@ -2392,6 +2392,120 @@ class TestReleaseMembers(BaseClaimBatchTest):
         self.assertEqual(batch.members(), [kept])
         self.cluster.helper.delete_sandbox_claim.assert_not_called()
 
+    def test_release_member_stops_create_retries_and_deletes_an_in_flight_retry(self):
+        cases = (
+            ("fill", "before_backoff"),
+            ("fill", "during_backoff"),
+            ("fill", "in_flight"),
+            ("fill", "retry_then_fail"),
+            ("acquire", "before_backoff"),
+            ("acquire", "during_backoff"),
+            ("acquire", "in_flight"),
+        )
+        for origin, timing in cases:
+            with self.subTest(origin=origin, timing=timing):
+                self.cluster = _Cluster()
+                self.client.k8s_helper = helper = self.cluster.helper
+                self.cluster.ready_on_create = False
+                fail_first, in_backoff = threading.Event(), threading.Event()
+                attempt_two, finish_retry = threading.Event(), threading.Event()
+                in_first_delete, finish_first_delete = threading.Event(), threading.Event()
+                second_delete_failed = threading.Event()
+                for event in (fail_first, finish_retry, finish_first_delete):
+                    self.addCleanup(event.set)
+                attempts = 0
+                deletes = 0
+                delete_lock = threading.Lock()
+
+                def create_claim(name, warmpool, namespace, **kwargs):
+                    nonlocal attempts
+                    attempts += 1
+                    if attempts == 1:
+                        self.cluster.push(name, warmpool, ready=(origin == "fill"), annotations=kwargs["annotations"])
+                        if timing == "before_backoff":
+                            fail_first.wait(5)
+                        raise k8s_client.ApiException(status=503)
+                    attempt_two.set()
+                    finish_retry.wait(5)
+                    # Simulates a retry landing after release_member deleted the first claim.
+                    self.cluster.push(name, warmpool, ready=True, annotations=kwargs["annotations"])
+                    if timing == "retry_then_fail":
+                        raise k8s_client.ApiException(status=403)
+
+                def delete_claim(name, namespace, **kwargs):
+                    nonlocal deletes
+                    with delete_lock:
+                        deletes += 1
+                        call_num = deletes
+                    if call_num == 1:
+                        in_first_delete.set()
+                        finish_first_delete.wait(5)
+                        return
+                    if call_num == 2 and timing in ("in_flight", "retry_then_fail"):
+                        second_delete_failed.set()
+                        raise k8s_client.ApiException(status=403)
+
+                def delay(_attempt, _err=None):
+                    in_backoff.set()
+                    return 0.05 if timing == "during_backoff" else (10.0 if timing == "before_backoff" else 0.0)
+
+                helper.create_sandbox_claim = create_claim
+                helper.delete_sandbox_claim = delete_claim
+                with patch("k8s_agent_sandbox.batch_utils.retry_delay", new=delay):
+                    batch = self.claim([BatchGroup(warmpool="pool-a", size=1 if origin == "fill" else 0)])
+                    with ThreadPoolExecutor(2) as pool:
+                        if origin == "fill":
+                            [member] = batch.wait_for_quorum()
+                            acquire_fut = None
+                        else:
+                            acquire_timeout = 0.5 if timing in ("before_backoff", "during_backoff") else 5
+                            acquire_fut = pool.submit(batch.acquire, "pool-a", timeout=acquire_timeout)
+                            _wait_until(lambda: len(batch.members()) == 1)
+                            [member] = batch.members()
+
+                        if timing == "before_backoff":
+                            release_fut = pool.submit(batch.release_member, member)
+                            self.assertTrue(in_first_delete.wait(5))
+                            fail_first.set()
+                        elif timing == "during_backoff":
+                            self.assertTrue(in_backoff.wait(5))
+                            with batch._lock:
+                                batch._next_create_at = time.monotonic() + 10
+                            release_fut = pool.submit(batch.release_member, member)
+                            self.assertTrue(in_first_delete.wait(5))
+                        else:
+                            self.assertTrue(attempt_two.wait(5))
+                            release_fut = pool.submit(batch.release_member, member)
+                            self.assertTrue(in_first_delete.wait(5))
+                            finish_retry.set()
+                            self.assertTrue(second_delete_failed.wait(5))
+
+                        if acquire_fut is not None:
+                            with self.assertRaises(BatchError) as ctx:
+                                acquire_fut.result(timeout=5)
+                            self.assertNotIsInstance(ctx.exception, BatchTimeoutError)
+                            self.assertRegex(str(ctx.exception), "released before it was Ready")
+                        else:
+                            _wait_until(lambda: not any(c.is_alive() for c in batch._creators))
+
+                        finish_first_delete.set()
+                        release_fut.result(timeout=5)
+
+                    self.assertEqual(batch.members(), [])
+                    if timing in ("before_backoff", "during_backoff"):
+                        self.assertEqual((attempts, deletes), (1, 1))
+                        batch.release_member(member)
+                        self.assertEqual(deletes, 1)
+                    else:
+                        self.assertEqual((attempts, deletes), (2, 2))
+                        # Even though the first delete finished after the retry's delete failed,
+                        # the retry's delete stays pending and a later release_member retries it.
+                        batch.release_member(member)
+                        self.assertEqual(deletes, 3)
+                        batch.release_member(member)
+                        self.assertEqual(deletes, 3)
+                    batch._stop_background_threads()
+
     def test_release_group_deletes_by_group_label_and_skips_only_its_creates(self):
         gate = threading.Event()
         self.addCleanup(gate.set)
@@ -3089,6 +3203,10 @@ class TestAcquire(BaseClaimBatchTest):
         groups = [BatchGroup(warmpool="pool-a", size=2), BatchGroup(warmpool="pool-b", size=0)]
         batch = self.claim(groups, labels={"team": "rl"}, quorum_timeout=90, work_budget=120)
         _wait_until(lambda: len(batch.members()) == 2)
+        # So a pool's Ready count isn't read again, which would add GETs to the checks counted below.
+        refresh = patch.object(batch_utils, "BATCH_WARM_CREDIT_REFRESH_SECONDS", 3600)
+        refresh.start()
+        self.addCleanup(refresh.stop)
         _SteppingDatetime.calls = 0
         with patch("k8s_agent_sandbox.utils.datetime", _SteppingDatetime):
             member = batch.acquire("pool-c")
@@ -3298,6 +3416,133 @@ class TestAcquire(BaseClaimBatchTest):
         self.assertEqual(helper.create_sandbox_claim.call_count, 3)
         self.assertEqual([c.args[0] for c in helper.delete_sandbox_claim.call_args_list], ["b1-2"])
 
+    def test_acquires_the_warm_pool_covers_skip_pacing_and_reread_its_count_once_a_second(self):
+        helper = self.cluster.helper
+        ready = {"pool-a": 2}
+        short_read_started = threading.Event()
+        short_timeouts: list[float] = []
+
+        def get_warmpool(name, *args, **kwargs):
+            timeout = kwargs.get("_request_timeout")
+            if timeout is not None and timeout < 1:
+                short_timeouts.append(timeout)
+                short_read_started.set()
+                time.sleep(timeout)
+                raise urllib3.exceptions.ReadTimeoutError(None, None, "timed out")
+            # Slow enough that concurrent acquires would overlap their reads.
+            time.sleep(0.05)
+            return {"spec": {"sandboxTemplateRef": {"name": "tmpl"}}, "status": {"readyReplicas": ready[name]}}
+
+        helper.get_sandbox_warmpool.side_effect = get_warmpool
+        offset = [0.0]
+        fake_time = SimpleNamespace(monotonic=lambda: time.monotonic() + offset[0])
+        with patch.object(batch_utils, "time", fake_time):
+            batch = self.claim([BatchGroup(warmpool="pool-a", size=0)], max_in_flight=4, create_rps=2)
+            start = time.monotonic()
+            with ThreadPoolExecutor(4) as pool:
+                list(pool.map(lambda _: batch.acquire("pool-a"), range(4)))
+            started = sorted(t - start for _, t in self.cluster.created)
+            # Two are covered and the first paced one takes its slot at once. The count was just
+            # read, so it isn't read again.
+            self.assertLess(started[2], 0.15)
+            self.assertGreaterEqual(started[3], 0.499)
+            self.assertEqual(helper.get_sandbox_warmpool.call_count, 1)
+
+            ready["pool-a"] = 3
+            offset[0] += 1.0
+            self.cluster.created.clear()
+            start = time.monotonic()
+            with ThreadPoolExecutor(3) as pool:
+                list(pool.map(lambda _: batch.acquire("pool-a"), range(3)))
+            # One read covers all three, which would otherwise wait for pacing slots.
+            self.assertLess(max(t - start for _, t in self.cluster.created), 0.2)
+            self.assertEqual(helper.get_sandbox_warmpool.call_count, 2)
+
+            # A short-deadline acquire caps its pool read to its deadline and doesn't suppress
+            # concurrent refreshes when its own deadline cuts the read short.
+            ready["pool-a"] = 2
+            offset[0] += 1.0
+            self.cluster.created.clear()
+            start = time.monotonic()
+            with ThreadPoolExecutor(3) as pool:
+                short = pool.submit(batch.acquire, "pool-a", timeout=0.04)
+                self.assertTrue(short_read_started.wait(5))
+                longer = [pool.submit(batch.acquire, "pool-a", timeout=5) for _ in range(2)]
+                with self.assertRaises(BatchTimeoutError):
+                    short.result(timeout=5)
+                for fut in longer:
+                    fut.result(timeout=5)
+            self.assertEqual(len(short_timeouts), 1)
+            self.assertLessEqual(short_timeouts[0], 0.04)
+            self.assertLess(max(t - start for _, t in self.cluster.created), 0.25)
+            self.assertEqual(helper.get_sandbox_warmpool.call_count, 4)
+
+            # A pool that isn't one of the batch's groups gets its credit from its check.
+            ready["pool-c"] = 1
+            self.cluster.created.clear()
+            start = time.monotonic()
+            batch.acquire("pool-c")
+            self.assertLess(self.cluster.created[0][1] - start, 0.2)
+
+    def test_fill_and_acquire_creates_share_max_in_flight(self):
+        for outcome in ("timeout", "release_group", "err"):
+            with self.subTest(outcome):
+                self.cluster = _Cluster()
+                self.client.k8s_helper = helper = self.cluster.helper
+                helper.get_sandbox_warmpool.return_value = {
+                    "spec": {"sandboxTemplateRef": {"name": "tmpl"}},
+                    "status": {"readyReplicas": 4},
+                }
+                gate = threading.Event()
+                self.addCleanup(gate.set)
+                self.cluster.create_hook = lambda name, g=gate: name == "b1-0" and g.wait(5)
+                groups = (
+                    [BatchGroup(warmpool="pool-a", size=1), BatchGroup(warmpool="pool-b", size=0)]
+                    if outcome == "release_group"
+                    else [BatchGroup(warmpool="pool-a", size=2 if outcome == "err" else 1)]
+                )
+                batch = self.claim(groups, max_in_flight=1)
+                self.addCleanup(batch._stop_background_threads)
+                _wait_until(lambda: helper.create_sandbox_claim.call_count == 1)
+                if outcome == "timeout":
+                    with self.assertRaisesRegex(BatchTimeoutError, "no create in flight slot"):
+                        batch.acquire("pool-a", timeout=0.2)
+                    self.assertEqual(helper.create_sandbox_claim.call_count, 1)
+                    helper.delete_sandbox_claim.assert_not_called()
+                    gate.set()
+                    _wait_until(lambda: not any(c.is_alive() for c in batch._creators))
+                    self.assertEqual(batch.acquire("pool-a").claim_name, "b1-2")
+                    with patch.object(batch._stop_creating, "wait", lambda _t: time.sleep(0.03) or False):
+                        with self.assertRaisesRegex(BatchTimeoutError, "no create in flight slot"):
+                            batch.acquire("pool-a", timeout=0.01)
+                    self.assertEqual(helper.create_sandbox_claim.call_count, 2)
+                    helper.delete_sandbox_claim.assert_not_called()
+                    batch._stop_background_threads()
+                    continue
+                target_pool = "pool-b" if outcome == "release_group" else "pool-a"
+                with ThreadPoolExecutor(1) as pool:
+                    future = pool.submit(batch.acquire, target_pool, timeout=0.25)
+                    _wait_until(lambda: len(batch._acquire_waiters) == 1)
+                    time.sleep(0.02)
+                    if outcome == "release_group":
+                        batch.release_group("pool-b")
+                    else:
+                        watch_err = k8s_client.ApiException(status=403)
+                        helper.watch_sandbox_claims.side_effect = watch_err
+                        _wait_until(lambda: batch.err() is watch_err)
+                    raised = future.exception(timeout=5)
+                gate.set()
+                _wait_until(lambda: not any(c.is_alive() for c in batch._creators))
+                self.assertIsInstance(raised, BatchError)
+                self.assertNotIsInstance(raised, BatchTimeoutError)
+                if outcome == "release_group":
+                    self.assertRegex(str(raised), "released before it was Ready")
+                else:
+                    self.assertIs(raised.__cause__, batch.err())
+                self.assertEqual(helper.create_sandbox_claim.call_count, 1)
+                helper.delete_sandbox_claim.assert_not_called()
+                batch._stop_background_threads()
+
     def test_failures_drop_the_member_and_delete_a_claim_that_may_exist(self):
         terminal = [{"type": "Ready", "status": "False", "reason": "InvalidConfiguration"}]
         failure = RuntimeError("watch failed")
@@ -3421,7 +3666,7 @@ class TestAcquire(BaseClaimBatchTest):
         self.assertEqual([m.claim_name for m in batch.members()], ["b1-0"])
         self.assertEqual(helper.create_sandbox_claim.call_count, 1)
         helper.delete_sandbox_claim.assert_not_called()
-        self.assertEqual(batch._state._pending_deletes, set())
+        self.assertEqual(batch._state._pending_deletes, {})
         helper.get_sandbox_warmpool.reset_mock()
         with self.assertRaises(BatchError):
             batch.acquire("pool-unseen")

@@ -757,7 +757,7 @@ class TestRelease(unittest.TestCase):
         state.record_create_failure("b1-2", "pool-a", "conflict")
         self.assertTrue(state.release_member("b1-0"))
         self.assertTrue(state.release_member("b1-0"))  # Its delete hasn't succeeded yet.
-        state.note_deleted("b1-0")
+        state.note_deleted("b1-0", state.delete_seq("b1-0"))
         self.assertFalse(state.release_member("b1-0"))
         # A lost member's claim is gone, and a failed create's name may be another client's claim.
         self.assertFalse(state.release_member("b1-1"))
@@ -827,6 +827,7 @@ class TestRelease(unittest.TestCase):
         state.upsert_claim(_ready("b1-9", fill=False))
         in_flight = state.start_acquire("pool-a")
         self.assertEqual(state.release_group("pool-a"), ["b1-0", "b1-9"])
+        self.assertEqual(state.delete_seq(in_flight), 0)
         with self.assertRaisesRegex(BatchError, "released before it was Ready"):
             state.acquired_member(in_flight)
         # Its create may land after the label delete, so acquire() deletes it by name.
@@ -840,6 +841,7 @@ class TestRelease(unittest.TestCase):
         self.assertEqual(outcomes["pool-a"].error.released, 1)  # Decided at the first release.
         self.assertEqual([m.claim_name for m in outcomes["pool-b"].members], ["b1-3"])
         self.assertTrue(state.fill_settled())
+        self.assertEqual(state.release_not_ready(), [in_flight])
 
 
 class TestSizeZeroGroups(unittest.TestCase):
@@ -956,13 +958,21 @@ class TestAcquired(unittest.TestCase):
 
     def test_releasing_a_pending_acquired_member_ends_its_wait(self):
         state = _state(BatchGroup(warmpool="pool-a", size=1))
-        state.upsert_claim(_claim("b1-1", conditions=_NOT_READY))
-        self.assertTrue(state.release_member("b1-1"))
+        claim = state.start_acquire("pool-b")
+        state.upsert_claim(_claim(claim, "pool-b", conditions=_NOT_READY))
+        self.assertTrue(state.release_member(claim))
+        self.assertFalse(state.has_pool("pool-b"))
+        first_seq = state.delete_seq(claim)
         with self.assertRaisesRegex(BatchError, "released before it was Ready"):
-            state.acquired_member("b1-1")
-        # release_member owns the delete, so acquire's cleanup doesn't add another.
-        state.note_deleted("b1-1")
-        self.assertFalse(state.drop_acquired("b1-1", created=True))
+            state.acquired_member(claim)
+        # release_member owns the delete even while it is still in flight, so acquire's cleanup
+        # doesn't start a second delete unless a create retry may have recreated the claim.
+        self.assertFalse(state.drop_acquired(claim, created=True))
+        self.assertTrue(state.drop_acquired(claim, created=True, retried=True))
+        # The first delete finishing late does not clear the pending delete queued for the retry.
+        state.note_deleted(claim, first_seq)
+        self.assertEqual(state.release_not_ready(), [claim])
+        state.note_deleted(claim, state.delete_seq(claim))
         self.assertEqual(state.release_not_ready(), [])
 
 
