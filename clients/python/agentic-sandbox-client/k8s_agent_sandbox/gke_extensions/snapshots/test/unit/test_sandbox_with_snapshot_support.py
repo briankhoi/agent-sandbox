@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import logging
 import unittest
+import weakref
 import prometheus_client
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, call, patch
 
+import pytest
 from kubernetes.client import ApiException
 
 from k8s_agent_sandbox.constants import (
@@ -32,7 +35,7 @@ from k8s_agent_sandbox.constants import (
     SANDBOX_NAME_HASH_LABEL,
     SANDBOX_PLURAL_NAME,
 )
-from k8s_agent_sandbox.exceptions import SnapshotNotFoundError
+from k8s_agent_sandbox.exceptions import SandboxError, SnapshotNotFoundError
 from k8s_agent_sandbox.gke_extensions.snapshots.sandbox_with_snapshot_support import (
     ERROR_CODE,
     INTERNAL_ERROR_CODE,
@@ -40,6 +43,7 @@ from k8s_agent_sandbox.gke_extensions.snapshots.sandbox_with_snapshot_support im
     RestorationResponse,
     SandboxWithSnapshotSupport,
 )
+from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
 from k8s_agent_sandbox.gke_extensions.snapshots.snapshot_engine import (
     DeleteSnapshotResult,
     ListSnapshotResult,
@@ -1744,6 +1748,43 @@ class TestSandboxWithSnapshotSupport(unittest.TestCase):
             "Snapshot 'non-existent-snap' does not exist for this sandbox.",
             str(context.exception),
         )
+
+
+def _snapshot_sandbox():
+    return SandboxWithSnapshotSupport(
+        "claim", "sandbox-id", "ns", connection_config=SandboxInClusterConnectionConfig(), k8s_helper=MagicMock()
+    )
+
+
+def test_closed_handle_is_freed_without_the_cycle_collector():
+    # With the collector off, only reference counting can free the handle.
+    gc.disable()
+    try:
+        sandbox = _snapshot_sandbox()
+        handle, connector = weakref.ref(sandbox), weakref.ref(sandbox.connector)
+        sandbox.close_connection()
+        del sandbox
+        assert handle() is None
+        assert connector() is None
+    finally:
+        gc.enable()
+
+
+def test_closed_handle_refuses_snapshots_but_terminate_deletes_its_triggers():
+    sandbox = _snapshot_sandbox()
+    engine = sandbox.snapshots
+    engine.created_manual_triggers = ["trigger-1"]
+    sandbox.close_connection()
+    with pytest.raises(SandboxError):
+        engine.create("after-close")
+    sandbox.terminate()
+    sandbox.k8s_helper.custom_objects_api.delete_namespaced_custom_object.assert_called_once_with(
+        group=PODSNAPSHOT_API_GROUP,
+        version=PODSNAPSHOT_API_VERSION,
+        namespace="ns",
+        plural=PODSNAPSHOTMANUALTRIGGER_PLURAL,
+        name="trigger-1",
+    )
 
 
 if __name__ == "__main__":

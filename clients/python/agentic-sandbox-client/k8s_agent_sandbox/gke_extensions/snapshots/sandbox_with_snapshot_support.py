@@ -566,6 +566,13 @@ class SandboxWithSnapshotSupport(Sandbox):
                 error_code=ERROR_CODE,
             )
 
+    def close_connection(self) -> None:
+        super().close_connection()
+        # Suspend and resume reset only the connector, so they keep the engine's callbacks.
+        # close_connection() drops them here once this handle closes for good.
+        if self._snapshots is not None:
+            self._snapshots._release_sandbox_callbacks()
+
     def terminate(self) -> None:
         """
         Cleans up the manually generated trigger resources and terminates the Sandbox.

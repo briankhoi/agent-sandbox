@@ -15,7 +15,7 @@
 import logging
 import uuid
 import time
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 from collections.abc import Callable
 from datetime import datetime, timezone
 from kubernetes.client import ApiException
@@ -30,6 +30,7 @@ from k8s_agent_sandbox.constants import (
     PODSNAPSHOTMANUALTRIGGER_API_KIND,
     PODSNAPSHOTMANUALTRIGGER_PLURAL,
 )
+from k8s_agent_sandbox.exceptions import SandboxError
 from .utils import (
     wait_for_snapshot_to_be_completed,
     wait_for_snapshot_deletion,
@@ -95,6 +96,10 @@ class SnapshotFilter(BaseModel):
         return normalize_datetime(v)
 
 
+def _sandbox_closed() -> NoReturn:
+    raise SandboxError("The sandbox connection is closed, so its snapshots are unavailable.")
+
+
 class SnapshotEngine:
     """Engine for managing Sandbox snapshots."""
 
@@ -110,6 +115,14 @@ class SnapshotEngine:
         self.get_pod_name_func = get_pod_name_func
         self.get_sandbox_name_hash_func = get_sandbox_name_hash_func
         self.created_manual_triggers: list[str] = []
+
+    def _release_sandbox_callbacks(self) -> None:
+        # The callbacks are bound methods of the sandbox handle. Keeping them once the handle
+        # is closed for good makes the handle and this engine a reference cycle, which holds
+        # the handle and its connector until the cyclic garbage collector happens to run.
+        # delete_manual_triggers() needs neither callback, so terminate() still cleans up.
+        self.get_pod_name_func = _sandbox_closed
+        self.get_sandbox_name_hash_func = _sandbox_closed
 
     def create(
         self, trigger_name: str, podsnapshot_timeout: int = 180
