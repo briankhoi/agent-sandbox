@@ -780,8 +780,9 @@ claims, so `events()`, the quorum consumers and `release_not_ready()` leave it a
 its pool releases it, and its `shutdownTime` counts from its own create. It raises `TerminalMemberError` if the create fails or the
 member fails or is deleted before it is Ready, and `BatchTimeoutError` if it isn't Ready within `timeout`,
 which defaults to `quorum_timeout`. Both are `BatchError`, so `except BatchError` catches every runtime
-failure. If it raises, including on a cancellation, the member is dropped from `members()` and its claim is
-deleted, and calling it again tries a new claim.
+failure. If it raises, including on a cancellation, `acquire()` drops the member from `members()` and deletes
+its claim unless the claim is already gone, its create was rejected, or `err()` is set. `release_not_ready()`
+and `release()` retry a failed delete, and calling `acquire()` again tries a new claim.
 
 The `claim_batch()` defaults are `create_rps=50`, `max_in_flight=20`, `quorum_timeout=600` seconds,
 `work_budget=3600` seconds, and `lease_duration=60` seconds. Every initial claim gets the same `shutdownTime`, the

@@ -319,8 +319,13 @@ class BatchState:
             return
         self._released.add(claim_name)
         member = self._members.pop(claim_name, None)
-        # Apart from acquire() claims, only fill creates are released before the watch has seen their claim.
-        fill = claim_name not in self._acquiring and (member is None or self._is_fill(claim_name, member))
+        # Apart from acquire() claims, only a group's fill creates release a claim before the
+        # watch sees it.
+        fill = (
+            claim_name not in self._acquiring
+            and warmpool in self._group_by_pool
+            and (member is None or self._is_fill(claim_name, member))
+        )
         self._fill_claims.discard(claim_name)
         # Only fill members are counted per group, and a failed or lost one was counted already.
         if not fill or claim_name in self._unable:
@@ -379,9 +384,11 @@ class BatchState:
         return names
 
     def has_pool(self, warmpool: str) -> bool:
-        """Whether the batch has a group, a member, or an ``acquire()`` in flight for ``warmpool``."""
+        """Whether the batch has a group, a member, an ``acquire()`` in flight, or an earlier
+        ``release_group()`` for ``warmpool``."""
         return (
             any(g.warmpool == warmpool for g in self.groups)
+            or warmpool in self._fill_stopped_pools
             or any(m.warmpool == warmpool for m in self._members.values())
             or warmpool in self._acquiring.values()
         )

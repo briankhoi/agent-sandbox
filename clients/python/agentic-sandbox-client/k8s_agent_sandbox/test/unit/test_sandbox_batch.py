@@ -2979,6 +2979,14 @@ class TestAcquire(BaseClaimBatchTest):
         self.assertEqual([(type(e), str(e)) for e in errors], [(TimeoutError, "request timed out")] * 3)
 
         self.assertEqual(checked, ["pool-a", "pool-b", "pool-c", "pool-c", "pool-d"])
+        # Retrying a failed release_group() still accepts an undeclared pool after the first call
+        # dropped its members.
+        denied = k8s_client.ApiException(status=403)
+        helper.delete_sandbox_claims_by_label.side_effect = [denied, None]
+        with self.assertRaises(k8s_client.ApiException):
+            batch.release_group("pool-b")
+        batch.release_group("pool-b")
+        self.assertEqual(helper.delete_sandbox_claims_by_label.call_count, 2)
 
     def test_an_interrupted_pool_check_is_run_again_by_a_waiting_acquire(self):
         checked: list[str] = []
@@ -3014,23 +3022,62 @@ class TestAcquire(BaseClaimBatchTest):
         self.assertEqual(checked, ["pool-a", "pool-b", "pool-b"])
 
     def test_an_acquire_waiting_on_another_acquires_pool_check_stops_at_its_timeout(self):
+        helper = self.cluster.helper
+        checked: list[str] = []
         release_check = threading.Event()
+        interrupt = False
+        race_error: type[BaseException] | None = None
+
+        class _Interrupt(BaseException):
+            pass
+
+        class _RaceFuture(Future):
+            def result(self, timeout=None):
+                if timeout is not None and race_error is not None:
+                    time.sleep(timeout + 0.02)
+                    release_check.set()
+                    _wait_until(self.cancelled)
+                    raise race_error
+                return super().result(timeout)
 
         def get_warmpool(name, *args, **kwargs):
-            if name == "pool-b":
+            checked.append(name)
+            if name == "pool-d":
+                time.sleep(0.08)
+            elif name != "pool-a":
                 release_check.wait(timeout=2)
+                if interrupt:
+                    raise _Interrupt()
             return {"spec": {"sandboxTemplateRef": {"name": "tmpl"}}}
 
-        self.cluster.helper.get_sandbox_warmpool.side_effect = get_warmpool
+        helper.get_sandbox_warmpool.side_effect = get_warmpool
         batch = self.claim()
         _wait_until(lambda: len(batch.members()) == 2)
-        with ThreadPoolExecutor(max_workers=1) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor, patch.object(sandbox_batch, "Future", _RaceFuture):
             first = executor.submit(batch.acquire, "pool-b")
             _wait_until(lambda: "pool-b" in batch._prechecks)
-            with self.assertRaisesRegex(BatchTimeoutError, "wasn't checked within 0.1s"):
-                batch.acquire("pool-b", timeout=0.1)
+            with self.assertRaisesRegex(BatchTimeoutError, "wasn't checked within 0.05s"):
+                batch.acquire("pool-b", timeout=0.05)
             release_check.set()
             self.assertEqual(first.result(timeout=2).claim_name, "b1-2")
+
+            # A check cancelled as or after a waiter's timeout expires neither leaks CancelledError
+            # nor starts a second check past the deadline.
+            interrupt = True
+            for pool_name, race_error in (("pool-c", TimeoutError), ("pool-e", sandbox_batch.CancelledError)):
+                release_check.clear()
+                first = executor.submit(batch.acquire, pool_name)
+                _wait_until(lambda: pool_name in batch._prechecks)
+                with self.assertRaisesRegex(BatchTimeoutError, "wasn't checked within 0.02s"):
+                    batch.acquire(pool_name, timeout=0.02)
+                self.assertIsInstance(first.exception(timeout=2), _Interrupt)
+                self.assertEqual(checked.count(pool_name), 1)
+
+        # A check that finishes past the deadline creates no claim and takes no ordinal.
+        with self.assertRaisesRegex(BatchTimeoutError, "no create slot for warm pool 'pool-d' within 0.05s"):
+            batch.acquire("pool-d", timeout=0.05)
+        self.assertEqual(helper.create_sandbox_claim.call_count, 3)
+        self.assertEqual(batch._state.next_ordinal, 3)
 
     def test_release_group_frees_the_acquired_members_of_a_size_zero_group(self):
         helper = self.cluster.helper
@@ -3095,6 +3142,13 @@ class TestAcquire(BaseClaimBatchTest):
         always_unavailable.headers = {"Retry-After": "0"}
         cases = {
             "create fails": (k8s_client.ApiException(status=403), wait, TerminalMemberError, MemberState.FAILED, False),
+            "rejected after retry": (
+                [always_unavailable, k8s_client.ApiException(status=403)],
+                wait,
+                TerminalMemberError,
+                MemberState.FAILED,
+                True,
+            ),
             "last attempt unavailable": (always_unavailable, wait, TerminalMemberError, MemberState.FAILED, True),
             "retry slot past the timeout": (unavailable, wait, BatchTimeoutError, None, True),
             "terminal": (None, push_terminal, TerminalMemberError, MemberState.FAILED, True),
@@ -3127,7 +3181,7 @@ class TestAcquire(BaseClaimBatchTest):
                         wait_for_event = waiter.wait
                         waiter.wait = lambda timeout=None: waits.append(timeout) or wait_for_event(timeout)
                     if create_error is not None and claim_name == "b1-1":
-                        raise create_error
+                        raise create_error.pop(0) if isinstance(create_error, list) else create_error
 
                 self.cluster.create_hook = hook
                 with ThreadPoolExecutor(1) as pool:
@@ -3142,9 +3196,15 @@ class TestAcquire(BaseClaimBatchTest):
                 if create_error is not None and state is not None:
                     self.assertEqual(raised.member.reason, "CreateFailed")
                 if name == "err set":
-                    # err() keeps the original error.
+                    # err() keeps the original error, and a later acquire fails before checking a
+                    # new pool.
                     self.assertIs(batch.err(), failure)
                     self.assertIs(raised.__cause__, failure)
+                    helper.get_sandbox_warmpool.reset_mock()
+                    with self.assertRaises(BatchError) as later:
+                        batch.acquire("pool-unseen")
+                    self.assertIs(later.exception.__cause__, failure)
+                    helper.get_sandbox_warmpool.assert_not_called()
                 if name == "released while pending":
                     # It fails at once rather than waiting out its timeout.
                     self.assertNotIsInstance(raised, BatchTimeoutError)
@@ -3153,6 +3213,31 @@ class TestAcquire(BaseClaimBatchTest):
                     [c.args[0] for c in helper.delete_sandbox_claim.call_args_list], ["b1-1"] if deleted else []
                 )
                 batch._stop_background_threads()
+
+        # Stopping or interrupting an acquire during pacing sends neither create nor delete.
+        self.cluster = _Cluster()
+        self.client.k8s_helper = helper = self.cluster.helper
+        batch = self.claim([BatchGroup(warmpool="pool-a", size=1)])
+        self.addCleanup(batch._stop_background_threads)
+        _wait_until(lambda: len(batch.members()) == 1)
+        batch._next_create_at = time.monotonic() + 10
+        with patch.object(batch._stop_creating, "wait", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                batch.acquire("pool-a", timeout=20)
+        batch._next_create_at = time.monotonic() + 10
+        with ThreadPoolExecutor(1) as pool:
+            future = pool.submit(batch.acquire, "pool-a", timeout=20)
+            _wait_until(lambda: batch._state.next_ordinal == 3)
+            batch.detach()
+            self.assertIsInstance(future.exception(timeout=2), BatchError)
+        self.assertEqual([m.claim_name for m in batch.members()], ["b1-0"])
+        self.assertEqual(helper.create_sandbox_claim.call_count, 1)
+        helper.delete_sandbox_claim.assert_not_called()
+        self.assertEqual(batch._state._pending_deletes, set())
+        helper.get_sandbox_warmpool.reset_mock()
+        with self.assertRaises(BatchError):
+            batch.acquire("pool-unseen")
+        helper.get_sandbox_warmpool.assert_not_called()
 
     def test_reattached_handle_reads_back_ordinals_labels_and_settings(self):
         helper = self.cluster.helper

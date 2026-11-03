@@ -152,7 +152,8 @@ class TerminalMemberError(BatchError):
     """
 
     def __init__(self, member: "Member") -> None:
-        detail = f" ({member.reason}: {member.message})" if member.reason else ""
+        parts = ": ".join(p for p in (member.reason, member.message) if p)
+        detail = f" ({parts})" if parts else ""
         super().__init__(
             f"acquired member '{member.claim_name}' of pool '{member.warmpool}' is "
             f"{member.state.value} and won't become Ready{detail}"

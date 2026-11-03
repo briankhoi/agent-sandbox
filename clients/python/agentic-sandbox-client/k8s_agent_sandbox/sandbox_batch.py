@@ -706,31 +706,31 @@ class SandboxBatch:
         deadline = time.monotonic() + wait
         self._check_pool(warmpool, deadline, wait)
         with self._lock:
-            self._check_active()
-            if (error := self._state.error()) is not None:
-                raise BatchError(f"batch '{self.batch_id}' has stopped") from error
+            self._check_healthy()
+            now = time.monotonic()
             # A create paced past the deadline would only make a claim to delete on timeout.
-            if self._next_create_at >= deadline:
+            if max(now, self._next_create_at) >= deadline:
                 raise BatchTimeoutError(f"no create slot for warm pool '{warmpool}' within {wait:g}s")
             claim_name = self._state.start_acquire(warmpool)
             waiter = self._acquire_waiters[claim_name] = threading.Event()
-            slot = self._reserve_create_slot(time.monotonic())
+            slot = self._reserve_create_slot(now)
         # Whether a claim of the batch may exist under the name, so a failure deletes it.
-        may_exist = True
+        may_exist = False
         try:
             # Once creating stops, the handle is detached or released, so _wait_acquired raises.
             if not self._stop_creating.wait(max(0.0, slot - time.monotonic())):
-                may_exist = False
                 with self._lock:
                     # Like the fill, no create starts once err() is set, since nobody could keep the
                     # claim alive.
-                    if (error := self._state.error()) is not None:
-                        raise BatchError(f"batch '{self.batch_id}' has stopped") from error
+                    self._check_healthy()
                     # Raises if release_group() released the claim while it waited for its slot.
                     self._state.acquired_member(claim_name)
 
+                sent = 0
+
                 def mark_sent() -> None:
-                    nonlocal may_exist
+                    nonlocal may_exist, sent
+                    sent += 1
                     may_exist = True
 
                 lifecycle = construct_sandbox_claim_lifecycle_spec(
@@ -750,9 +750,9 @@ class SandboxBatch:
                 except BatchTimeoutError:
                     raise
                 except Exception as e:
-                    # A create that ended in a transient error, such as a timeout or a 5xx, may have
-                    # been stored anyway, so its claim is still deleted.
-                    may_exist = _is_transient_error(e)
+                    # A create that ended in a transient error, or failed after retrying one, may
+                    # have stored a claim on an attempt whose response never arrived.
+                    may_exist = sent > 1 or _is_transient_error(e)
                     raise TerminalMemberError(Member(
                         claim_name=claim_name,
                         warmpool=warmpool,
@@ -793,8 +793,11 @@ class SandboxBatch:
         """
         while True:
             with self._lock:
+                self._check_healthy()
                 if warmpool in self._checked_pools:
                     return
+                if time.monotonic() >= deadline:
+                    raise BatchTimeoutError(f"warm pool '{warmpool}' wasn't checked within {wait:g}s")
                 check = self._prechecks.get(warmpool)
                 if check is None:
                     check = self._prechecks[warmpool] = Future()
@@ -802,7 +805,7 @@ class SandboxBatch:
             try:
                 check.result(timeout=max(0.0, deadline - time.monotonic()))
             except TimeoutError:
-                if not check.done():
+                if not check.done() or check.cancelled():
                     raise BatchTimeoutError(f"warm pool '{warmpool}' wasn't checked within {wait:g}s") from None
                 # The check itself timed out, so this acquire raises the check's error.
                 check.result()

@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from k8s_agent_sandbox import batch_state
 from k8s_agent_sandbox.exceptions import BatchError, BatchTimeoutError, QuorumUnreachableError, TerminalMemberError
-from k8s_agent_sandbox.models import BatchEventType, BatchGroup, MemberState
+from k8s_agent_sandbox.models import BatchEventType, BatchGroup, Member, MemberState
 from k8s_agent_sandbox.constants import (
     BATCH_GROUP_MIN_READY_ANNOTATION,
     BATCH_GROUP_SIZE_ANNOTATION,
@@ -900,6 +900,8 @@ class TestAcquired(unittest.TestCase):
                     with self.assertRaises(TerminalMemberError) as raised:
                         state.acquired_member("b1-1")
                     self.assertEqual(raised.exception.member.state, outcome)
+                    suffix = " (InvalidConfiguration)" if outcome is MemberState.FAILED else ""
+                    self.assertTrue(str(raised.exception).endswith(f"won't become Ready{suffix}"))
                 elif outcome == "ready":
                     self.assertEqual(state.acquired_member("b1-1").state, MemberState.READY)
                 else:
@@ -918,11 +920,39 @@ class TestAcquired(unittest.TestCase):
         state.upsert_claim(_ready("b1-1", fill=False))
         self.assertEqual(state.members(), [])
 
+        for reason, message, detail in (
+            ("ClaimExpired", "ttl elapsed", " (ClaimExpired: ttl elapsed)"),
+            ("ClaimExpired", "", " (ClaimExpired)"),
+            (None, "bad spec", " (bad spec)"),
+            (None, None, ""),
+        ):
+            failed = Member(
+                claim_name="b1-1",
+                warmpool="pool-a",
+                state=MemberState.FAILED,
+                reason=reason,
+                message=message,
+            )
+            self.assertEqual(
+                str(TerminalMemberError(failed)),
+                f"acquired member 'b1-1' of pool 'pool-a' is failed and won't become Ready{detail}",
+            )
+
     def test_has_pool_covers_groups_members_and_acquires_in_flight(self):
         state = _state(BatchGroup(warmpool="pool-a", size=1))
         state.upsert_claim(_ready("b1-5", "pool-b", fill=False))
         state.start_acquire("pool-c")
-        self.assertEqual([state.has_pool(p) for p in ("pool-a", "pool-b", "pool-c", "pool-d")], [True, True, True, False])
+        self.assertEqual(
+            [state.has_pool(p) for p in ("pool-a", "pool-b", "pool-c", "pool-d")],
+            [True, True, True, False],
+        )
+        state.release_group("pool-b")
+        self.assertTrue(state.has_pool("pool-b"))
+        # Stopping an undeclared pool still ignores late fill claims or create failures without
+        # counting them against a group.
+        self.assertIsNone(state.upsert_claim(_ready("b1-6", "pool-b")))
+        state.record_create_failure("b1-7", "pool-b", "forbidden")
+        self.assertEqual([m.claim_name for m in state.members()], [])
 
     def test_releasing_a_pending_acquired_member_ends_its_wait(self):
         state = _state(BatchGroup(warmpool="pool-a", size=1))
