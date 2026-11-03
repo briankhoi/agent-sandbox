@@ -3035,6 +3035,10 @@ class TestAcquire(BaseClaimBatchTest):
         groups = [BatchGroup(warmpool="pool-a", size=2), BatchGroup(warmpool="pool-b", size=0)]
         batch = await self.claim(groups, labels={"team": "rl"}, quorum_timeout=90, work_budget=120)
         await _wait_until(lambda: len(batch.members()) == 2)
+        # So a pool's Ready count isn't read again, which would add GETs to the checks counted below.
+        refresh = patch.object(batch_utils, "BATCH_WARM_CREDIT_REFRESH_SECONDS", 3600)
+        refresh.start()
+        self.addCleanup(refresh.stop)
         _SteppingDatetime.calls = 0
         with patch("k8s_agent_sandbox.utils.datetime", _SteppingDatetime):
             member = await batch.acquire("pool-c")
@@ -3228,6 +3232,125 @@ class TestAcquire(BaseClaimBatchTest):
         await batch.release_not_ready()
         self.assertEqual(helper.create_sandbox_claim.await_count, 3)
         self.assertEqual([c.args[0] for c in helper.delete_sandbox_claim.call_args_list], ["b1-2"])
+
+    async def test_acquires_the_warm_pool_covers_skip_pacing_and_reread_its_count_once_a_second(self):
+        helper = self.cluster.helper
+        ready = {"pool-a": 2}
+        short_read_started = asyncio.Event()
+        short_timeouts: list[float] = []
+
+        async def get_warmpool(name, *args, **kwargs):
+            timeout = kwargs.get("_request_timeout")
+            if timeout is not None and timeout < 1:
+                short_timeouts.append(timeout)
+                short_read_started.set()
+                await asyncio.sleep(5)
+            # Slow enough that concurrent acquires would overlap their reads.
+            await asyncio.sleep(0.05)
+            return {"spec": {"sandboxTemplateRef": {"name": "tmpl"}}, "status": {"readyReplicas": ready[name]}}
+
+        helper.get_sandbox_warmpool.side_effect = get_warmpool
+        offset = [0.0]
+        fake_time = SimpleNamespace(monotonic=lambda: time.monotonic() + offset[0])
+        with patch.object(batch_utils, "time", fake_time):
+            batch = await self.claim([BatchGroup(warmpool="pool-a", size=0)], max_in_flight=4, create_rps=2)
+            start = time.monotonic()
+            await asyncio.gather(*(batch.acquire("pool-a") for _ in range(4)))
+            started = sorted(t - start for _, t in self.cluster.created)
+            # Two are covered and the first paced one takes its slot at once. The count was just
+            # read, so it isn't read again.
+            self.assertLess(started[2], 0.15)
+            self.assertGreaterEqual(started[3], 0.499)
+            self.assertEqual(helper.get_sandbox_warmpool.call_count, 1)
+
+            ready["pool-a"] = 3
+            offset[0] += 1.0
+            self.cluster.created.clear()
+            start = time.monotonic()
+            await asyncio.gather(*(batch.acquire("pool-a") for _ in range(3)))
+            # One read covers all three, which would otherwise wait for pacing slots.
+            self.assertLess(max(t - start for _, t in self.cluster.created), 0.2)
+            self.assertEqual(helper.get_sandbox_warmpool.call_count, 2)
+
+            # A short-deadline acquire caps its pool read to its deadline and doesn't suppress
+            # concurrent refreshes when its own deadline cuts the read short.
+            ready["pool-a"] = 2
+            offset[0] += 1.0
+            self.cluster.created.clear()
+            start = time.monotonic()
+            short = asyncio.create_task(batch.acquire("pool-a", timeout=0.04))
+            await asyncio.wait_for(short_read_started.wait(), 5)
+            longer = [asyncio.create_task(batch.acquire("pool-a", timeout=5)) for _ in range(2)]
+            with self.assertRaises(BatchTimeoutError):
+                await asyncio.wait_for(short, 5)
+            await asyncio.wait_for(asyncio.gather(*longer), 5)
+            self.assertEqual(len(short_timeouts), 1)
+            self.assertLessEqual(short_timeouts[0], 0.04)
+            self.assertLess(max(t - start for _, t in self.cluster.created), 0.25)
+            self.assertEqual(helper.get_sandbox_warmpool.call_count, 4)
+
+            # A pool that isn't one of the batch's groups gets its credit from its check.
+            ready["pool-c"] = 1
+            self.cluster.created.clear()
+            start = time.monotonic()
+            await batch.acquire("pool-c")
+            self.assertLess(self.cluster.created[0][1] - start, 0.2)
+
+    async def test_fill_and_acquire_creates_share_max_in_flight(self):
+        for outcome in ("timeout", "release_group", "err"):
+            with self.subTest(outcome):
+                self.cluster = _Cluster()
+                self.client.k8s_helper = helper = self.cluster.helper
+                helper.get_sandbox_warmpool.return_value = {
+                    "spec": {"sandboxTemplateRef": {"name": "tmpl"}},
+                    "status": {"readyReplicas": 4},
+                }
+                gate = asyncio.Event()
+                self.addCleanup(gate.set)
+
+                async def hook(name, g=gate):
+                    if name == "b1-0":
+                        await g.wait()
+
+                self.cluster.create_hook = hook
+                groups = (
+                    [BatchGroup(warmpool="pool-a", size=1), BatchGroup(warmpool="pool-b", size=0)]
+                    if outcome == "release_group"
+                    else [BatchGroup(warmpool="pool-a", size=2 if outcome == "err" else 1)]
+                )
+                batch = await self.claim(groups, max_in_flight=1)
+                await _wait_until(lambda: helper.create_sandbox_claim.call_count == 1)
+                if outcome == "timeout":
+                    with self.assertRaises(BatchTimeoutError):
+                        await batch.acquire("pool-a", timeout=0.2)
+                    self.assertEqual(helper.create_sandbox_claim.call_count, 1)
+                    helper.delete_sandbox_claim.assert_not_called()
+                    gate.set()
+                    self.assertEqual((await batch.acquire("pool-a")).claim_name, "b1-2")
+                    await batch._stop_background_tasks()
+                    continue
+                target_pool = "pool-b" if outcome == "release_group" else "pool-a"
+                task = asyncio.create_task(batch.acquire(target_pool, timeout=5))
+                await _wait_until(lambda: len(batch._acquire_waiters) == 1)
+                await asyncio.sleep(0.02)
+                if outcome == "release_group":
+                    await batch.release_group("pool-b")
+                else:
+                    watch_err = k8s_client.ApiException(status=403)
+                    helper.watch_sandbox_claims.side_effect = watch_err
+                    await _wait_until(lambda: batch.err() is watch_err)
+                gate.set()
+                with self.assertRaises(BatchError) as ctx:
+                    await asyncio.wait_for(task, 5)
+                self.assertNotIsInstance(ctx.exception, BatchTimeoutError)
+                if outcome == "release_group":
+                    self.assertRegex(str(ctx.exception), "released before it was Ready")
+                else:
+                    self.assertIs(ctx.exception.__cause__, batch.err())
+                await asyncio.sleep(0.05)
+                self.assertEqual(helper.create_sandbox_claim.call_count, 1)
+                helper.delete_sandbox_claim.assert_not_called()
+                await batch._stop_background_tasks()
 
     async def test_failures_drop_the_member_and_delete_a_claim_that_may_exist(self):
         terminal = [{"type": "Ready", "status": "False", "reason": "InvalidConfiguration"}]

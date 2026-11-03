@@ -414,10 +414,10 @@ class SandboxClient(Generic[T]):
                 pool's Ready sandboxes cover, counted when the pool is checked, aren't paced, so
                 only ``max_in_flight`` bounds them. Once the apiserver answers a create with 429,
                 every later create is paced.
-            max_in_flight: Maximum claim creates and member deletes in flight at once. Defaults to
-                20. The client's Kubernetes API connection pool must hold at least
-                ``max_in_flight + 2``, since the batch's watch and its Lease renewal each need a
-                connection too.
+            max_in_flight: Maximum claim creates and member deletes in flight at once, counting the
+                creates of ``acquire()`` on the returned handle. Defaults to 20. The client's
+                Kubernetes API connection pool must hold at least ``max_in_flight + 2``, since the
+                batch's watch and its Lease renewal each need a connection too.
             work_budget: Seconds the caller expects to work with the batch after it is Ready;
                 part of each claim's ``shutdownTime``. Defaults to 3600.
             quorum_timeout: Seconds after the last claim create that a group may take to reach
