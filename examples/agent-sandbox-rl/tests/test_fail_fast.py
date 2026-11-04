@@ -316,12 +316,13 @@ def test_release_and_a_failed_acquire_prune_the_clients_claim_tracking(make_clus
 def test_record_pod_identity_clears_a_stale_identity_when_the_read_fails():
   cluster = MagicMock()
   cluster.namespace = "ns"
-  cluster.exec_core_api.return_value.read_namespaced_pod_status.side_effect = RuntimeError("timeout")
+  cluster.core_api.read_namespaced_pod_status.side_effect = RuntimeError("timeout")
   h = SandboxHandle(task=Task(id="t", image="i"), cluster_name="c", claim_name="cl",
                     sandbox_id="sb", pod_name="p", hostname="sb", _cluster=cluster)
   h.pod_uid, h.runtime_restarts = "old-uid", 2
   h.record_pod_identity()                                # a resume re-baselines here
   assert h.pod_uid is None and h.runtime_restarts is None   # unknown, not the old pod's
+  cluster.exec_core_api.assert_not_called()
 
 
 def test_acquire_deletes_named_claim_when_create_fails_without_verdict(make_cluster, recording_watchdog):
@@ -351,7 +352,9 @@ def test_acquire_leaves_foreign_claim_alone_on_409(make_cluster):
 def _handle(core=None):
   cluster = MagicMock()
   cluster.namespace = "ns"
-  cluster.exec_core_api.return_value = core if core is not None else MagicMock()
+  api = core if core is not None else MagicMock()
+  cluster.core_api = api
+  cluster.exec_core_api.return_value = api
   return SandboxHandle(task=Task(id="t", image="i"), cluster_name="c", claim_name="cl",
                        sandbox_id="s", pod_name="p", hostname="s", _cluster=cluster)
 
@@ -857,6 +860,8 @@ def test_record_pod_identity_at_acquire_and_best_effort():
   h = _handle(core)
   h.record_pod_identity()
   assert (h.pod_uid, h.runtime_restarts) == ("u-7", 2)
+  assert h.is_alive() is True
+  h._cluster.exec_core_api.assert_not_called()
   core.read_namespaced_pod_status.side_effect = client.ApiException(status=500)
   h2 = _handle(core)
   h2.record_pod_identity()                       # never raises

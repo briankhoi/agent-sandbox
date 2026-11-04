@@ -102,7 +102,6 @@ class FakeBatch:
 def _batch_cluster(make_cluster, name="solo"):
   c = make_cluster(name)
   c.batches = []
-  c.exec_core_api = lambda: c.core_api
 
   def claim_batch(groups, **kwargs):
     b = FakeBatch(name, len(c.batches))
