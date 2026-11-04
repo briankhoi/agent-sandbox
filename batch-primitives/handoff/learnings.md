@@ -271,6 +271,10 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **What happened:** adding `_lifecycle_lock` to 12/N (`detach()` and `release()`) surfaced follow-on findings in 15/N (`release_*`) and 16/N (`acquire()`) one round at a time. A verifier finding that `detach()` stops `_renew_loop` while waiting behind a slow delete was also proposed as a fix before checking that `get_batch` rejects an expired Lease and the reaper margin (`leaseDurationSeconds + 60s >= 120s`) exceeds the 90s max delete retry time. And putting an exclusive `_lifecycle_lock` around `release_member` serializes concurrent single-member HTTP deletes.
 - **Takeaway:** when introducing a new teardown lock at the base of a stack, audit every delete and teardown site across all PRs in one pass, check real timeout and TTL bounds before flagging a race as reachable, and check whether an exclusive lock serializes concurrent single-item I/O.
 
+### 6.11 SDK defaults must compose, and validator guards only cover paths that call them
+- **What happened:** when triaging CodeRabbit on 18/N, we defended `check_pool_size` raising `ValueError` on `<= 4`-core hosts (`cpu_count() * 5 <= 20 < 20 + 2`) as intended fail-fast behavior, and dismissed `or None` on sync `api_pool_size()` because `validate_pool_size` rejects `pool_size <= 0`. Upstream review on 17/N caught both: zero-arg `SandboxClient().claim_batch(...)` and `BatchClaimer` failed out of the box on 2- and 4-core machines, and `validate_pool_size` never inspects an injected `ApiClient` whose `configuration.connection_pool_maxsize = 0` (`LifoQueue(maxsize=0)` in `urllib3` is unbounded).
+- **Takeaway:** two defaults from the same SDK must compose without raising; adapt (and log) when the caller omits a concurrency knob, and fail fast only when an explicit caller value contradicts the client's capacity. Before claiming an upstream validator makes a branch unreachable, check every constructor path (including dependency-injected objects that bypass that validator).
+
 ---
 
 ## 7. Stacked PRs and git
