@@ -372,7 +372,7 @@ class SandboxHandle:
     # after a resume or restore a stale UID would read the new pod as lost.
     self.pod_uid, self.runtime_restarts = None, None
     try:
-      pod = self._cluster.exec_core_api().read_namespaced_pod_status(
+      pod = self._cluster.core_api.read_namespaced_pod_status(
           self.pod_name, self._cluster.namespace, _request_timeout=(3, 10))
       self.pod_uid, self.runtime_restarts = _pod_identity(pod)
     except Exception:  # noqa: BLE001 — liveness then falls back to presence checks
@@ -408,7 +408,7 @@ class SandboxHandle:
     try:
       # Bounded (connect, read): this runs on an error path and must not turn a
       # stalled API server into a hang; on timeout the original error stands.
-      pod = self._cluster.exec_core_api().read_namespaced_pod_status(
+      pod = self._cluster.core_api.read_namespaced_pod_status(
           self.pod_name, self._cluster.namespace, _request_timeout=(3, 10))
     except client.ApiException as e:
       if e.status == 404:
