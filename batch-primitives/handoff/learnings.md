@@ -13,11 +13,12 @@ You don't need to read it front to back. Use it like a textbook with an index.
 | See the handful of ideas behind almost every edge case | [Mental models](#sec-models) |
 | Borrow elegant code structures | [Patterns and code structure](learnings/patterns.md) |
 | Know which industry practice a choice follows, and why it scales | [Best practices](learnings/best-practices.md) |
+| See the performance wins side by side, with measured results | [Optimization showcase](learnings/optimizations.md) |
 | Look up a specific race, edge case, or optimization | [Field guide](#sec-field-guide) |
 | Improve how you test concurrent code | [Testing techniques](learnings/testing.md) |
 | Avoid our process and git mistakes | [Process, git, and working with agents](learnings/process.md) |
 
-**Entry shape.** Field-guide entries have a stable id (`LEASE-4`, `RACE-3`, ...), a title, and a bold **Takeaway** you can read on its own. Click "The full story" to expand the situation, what goes wrong, what we do, and an example. Pattern cards are `PAT-n`, best practices are `BP-n`.
+**Entry shape.** Field-guide entries have a stable id (`LEASE-4`, `RACE-3`, ...), a title, and a bold **Takeaway** you can read on its own. Click "The full story" to expand the situation, what goes wrong, what we do, and an example. Pattern cards are `PAT-n`, best practices are `BP-n`, optimizations are `OPT-n`.
 
 **Adding an entry.** Pick the section whose big idea fits, take the next free id, use the same shape, cite the PR and the code (`file.py: Symbol`), and write in active voice. Base every claim on code or a measurement. If an old entry number (like "learnings 3.1") appears in older notes, the [old-to-new table](#appendix-a) maps it.
 
@@ -126,6 +127,11 @@ See [WATCH-3](learnings/field-guide/watch.md#watch-3), [COUNT-1](learnings/field
 `KeyboardInterrupt` and `asyncio.CancelledError` skip `except Exception`. A signal handler can re-enter your teardown on the same thread. Design every restore-on-failure step and every barrier for that.
 See the [CANCEL](learnings/field-guide/cancel.md) section.
 
+### 8. Ask what each limit protects
+
+Every rate limit, cap, or copy exists to protect one resource. Work that doesn't touch that resource may skip the limit, as long as a guard keeps the shortcut honest when conditions change. `create_rps` protects nodes from a burst of pod starts, so a claim a warm pool covers (which starts no pod) skips it, and a 429 puts it back in line.
+See the [Optimization showcase](learnings/optimizations.md), [RETRY-15](learnings/field-guide/retry.md#retry-15), [RETRY-16](learnings/field-guide/retry.md#retry-16).
+
 ---
 
 <a id="sec-field-guide"></a>
@@ -156,6 +162,7 @@ This is the deep part. Each section is its own page and groups entries around on
 | [Kubernetes primer: the concepts this feature taught us](learnings/kubernetes-primer.md) | The Kubernetes concepts behind the feature, each with how we use it, a gotcha, and a snippet to try. |
 | [Patterns and code structure worth stealing](learnings/patterns.md) | Elegant code structures (`PAT-`) with small snippets and when to reach for them. |
 | [Best practices we followed, and where they come from](learnings/best-practices.md) | Industry practices (`BP-`) we followed, why they scale, and their sources. |
+| [Optimization showcase: how batch claim got fast and lean](learnings/optimizations.md) | The performance wins (`OPT-`) side by side: what each limit protects, why a shortcut may skip it, the guard that keeps it correct, and the measured result. |
 | [Testing techniques for concurrent and distributed code](learnings/testing.md) | Techniques (`TEST-`) for making concurrent and distributed code testable. |
 | [Process, git, and working with agents](learnings/process.md) | Review, git, and subagent lessons (`PROC-`, `GIT-`, `AGENT-`). |
 
