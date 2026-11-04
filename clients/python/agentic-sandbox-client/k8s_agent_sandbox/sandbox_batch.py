@@ -201,8 +201,8 @@ class SandboxBatch:
         self._next_create_at = 0.0
         self._create_interval = 0.0
         self._warm_credit = batch_utils.WarmCredit()
-        # Bounds concurrent claim creates (both fill and acquire()) and member deletes to
-        # max_in_flight, matching the HTTP connection pool budget that claim_batch checks.
+        # Bounds concurrent claim creates (fill and acquire()), acquire() pool reads, and member
+        # deletes to max_in_flight, matching the HTTP connection pool budget that claim_batch checks.
         self._in_flight = threading.BoundedSemaphore(max_in_flight)
         self._max_in_flight = max_in_flight
         # Counts in-flight member and group delete requests per thread so detach() and release()
@@ -696,8 +696,9 @@ class SandboxBatch:
         time of its create plus ``quorum_timeout`` plus ``work_budget`` plus 600 seconds, and its
         create follows the initial claims' retries and pacing. Like theirs, a create that the
         pool's Ready sandboxes cover skips ``create_rps`` pacing. Once callers spend the Ready
-        count from the pool's check, ``acquire()`` reads the pool again at most once a second per
-        pool. Fill creates, ``acquire()`` creates, and member deletes share ``max_in_flight``,
+        count from the pool's check and ``create_rps`` pacing would delay the next create,
+        ``acquire()`` reads the pool again at most once a second per pool. Fill creates,
+        ``acquire()`` creates and pool reads, and member deletes share ``max_in_flight``,
         which defaults to 20 on a handle from ``get_batch``.
 
         If it raises, including on a cancellation, the member is dropped from ``members()`` and its
@@ -733,18 +734,33 @@ class SandboxBatch:
         wait = batch_utils.positive_number("timeout", timeout, self._quorum_timeout)
         deadline = time.monotonic() + wait
         self._check_pool(warmpool, deadline, wait)
-        # Reads nothing right after the pool's check, since that check just read the count.
-        self._refresh_warm_credit(warmpool, deadline)
-        with self._lock:
-            self._check_healthy()
-            now = time.monotonic()
-            covered = now < deadline and self._warm_credit.take(warmpool)
-            # A create paced past the deadline would only make a claim to delete on timeout.
-            if not covered and max(now, self._next_create_at) >= deadline:
-                raise BatchTimeoutError(f"no create slot for warm pool '{warmpool}' within {wait:g}s")
-            claim_name = self._state.start_acquire(warmpool)
-            waiter = self._acquire_waiters[claim_name] = threading.Event()
-            slot = now if covered else self._reserve_create_slot(now)
+        refreshed = False
+        while True:
+            with self._lock:
+                self._check_healthy()
+                now = time.monotonic()
+                covered = now < deadline and self._warm_credit.take(warmpool)
+                need_refresh = (
+                    not covered
+                    and not refreshed
+                    and now < deadline
+                    and self._next_create_at > now
+                    and self._warm_credit.refresh_due(warmpool)
+                )
+                if not need_refresh:
+                    # A create paced past the deadline would only make a claim to delete on timeout.
+                    if not covered and max(now, self._next_create_at) >= deadline:
+                        raise BatchTimeoutError(f"no create slot for warm pool '{warmpool}' within {wait:g}s")
+                    if not covered:
+                        self._warm_credit.spend(warmpool)
+                    claim_name = self._state.start_acquire(warmpool)
+                    waiter = self._acquire_waiters[claim_name] = threading.Event()
+                    slot = now if covered else self._reserve_create_slot(now)
+                    break
+            # Refresh only when create_rps pacing would delay this create, since a free pacing slot
+            # already starts at once without an extra pool GET.
+            self._refresh_warm_credit(warmpool, deadline)
+            refreshed = True
         # Whether a claim of the batch may exist under the name, so a failure deletes it.
         may_exist = False
         sent = 0
@@ -822,7 +838,8 @@ class SandboxBatch:
         again.
 
         Raises:
-            BatchTimeoutError: If another acquire's check of the pool doesn't finish by ``deadline``.
+            BatchTimeoutError: If another acquire's check of the pool doesn't finish by ``deadline``,
+                or no ``max_in_flight`` slot frees up before it.
         """
         while True:
             with self._lock:
@@ -846,16 +863,29 @@ class SandboxBatch:
                 # The acquire that ran the check was interrupted, so this one checks the pool itself.
                 continue
             return
+        acquired = False
         try:
-            ready = _precheck_pools(self._client.k8s_helper, [warmpool], self.namespace)
-            with self._lock:
-                self._warm_credit.record(warmpool, ready[warmpool])
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                acquired = self._in_flight.acquire(timeout=remaining)
+            try:
+                with self._lock:
+                    self._check_healthy()
+                if not acquired:
+                    raise BatchTimeoutError(f"warm pool '{warmpool}' wasn't checked within {wait:g}s")
+                ready = _precheck_pools(self._client.k8s_helper, [warmpool], self.namespace)
+                with self._lock:
+                    self._warm_credit.record(warmpool, ready[warmpool])
+            finally:
+                if acquired:
+                    self._in_flight.release()
         except BaseException as e:
             with self._lock:
                 del self._prechecks[warmpool]
-            if isinstance(e, Exception):
+            if acquired and isinstance(e, Exception):
                 check.set_exception(e)
             else:
+                # Let a waiting acquire with a later deadline take over checking the pool.
                 check.cancel()
             raise
         with self._lock:
@@ -865,38 +895,49 @@ class SandboxBatch:
 
     def _refresh_warm_credit(self, warmpool: str, deadline: float) -> None:
         """Re-reads the pool's Ready count once callers spend its credit, at most once every
-        ``BATCH_WARM_CREDIT_REFRESH_SECONDS``, so a burst of acquires on a warm pool skips pacing.
+        ``BATCH_WARM_CREDIT_REFRESH_SECONDS``, while holding one of the ``max_in_flight`` slots, so
+        a burst of acquires on a warm pool skips pacing without exceeding the connection budget.
         """
-        with self._lock:
+        def remaining_if_due() -> float:
             self._check_healthy()
-            if time.monotonic() >= deadline or not self._warm_credit.refresh_due(warmpool):
+            remaining = deadline - time.monotonic()
+            return remaining if remaining > 0 and self._warm_credit.refresh_due(warmpool) else 0.0
+
+        with self._lock:
+            if (remaining := remaining_if_due()) <= 0:
                 return
             refresh_lock = self._credit_refresh_locks.setdefault(warmpool, threading.Lock())
-        if not refresh_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        if not refresh_lock.acquire(timeout=remaining):
             # Fall back to normal pacing, which checks whether a paced slot fits the deadline.
             return
         try:
             with self._lock:
-                self._check_healthy()
-                remaining = deadline - time.monotonic()
-                if remaining <= 0 or not self._warm_credit.refresh_due(warmpool):
-                    return
-            request_timeout = min(float(batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS), remaining)
+                remaining = remaining_if_due()
+            if remaining <= 0 or not self._in_flight.acquire(timeout=remaining):
+                return
             try:
-                obj = self._client.k8s_helper.get_sandbox_warmpool(
-                    warmpool, self.namespace, _request_timeout=request_timeout
-                )
-                ready = 0 if obj is None else batch_utils.warmpool_ready_replicas(obj)
-            except Exception as e:
-                if time.monotonic() >= deadline:
-                    # This acquire's deadline cut the read short, so another acquire with more time
-                    # left can still refresh the pool instead of waiting out the refresh interval.
+                with self._lock:
+                    remaining = remaining_if_due()
+                if remaining <= 0:
                     return
-                # Fall back to normal pacing so the claim create surfaces any real pool failure.
-                logger.debug(f"Batch '{self.batch_id}' failed to read warm pool '{warmpool}': {e}")
-                ready = 0
-            with self._lock:
-                self._warm_credit.record(warmpool, ready)
+                request_timeout = min(float(batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS), remaining)
+                try:
+                    obj = self._client.k8s_helper.get_sandbox_warmpool(
+                        warmpool, self.namespace, _request_timeout=request_timeout
+                    )
+                    ready = 0 if obj is None else batch_utils.warmpool_ready_replicas(obj)
+                except Exception as e:
+                    if time.monotonic() >= deadline:
+                        # This acquire's deadline cut the read short, so another acquire with more time
+                        # left can still refresh the pool instead of waiting out the refresh interval.
+                        return
+                    # Fall back to normal pacing so the claim create surfaces any real pool failure.
+                    logger.debug(f"Batch '{self.batch_id}' failed to read warm pool '{warmpool}': {e}")
+                    ready = 0
+                with self._lock:
+                    self._warm_credit.record(warmpool, ready)
+            finally:
+                self._in_flight.release()
         finally:
             refresh_lock.release()
 
@@ -1572,6 +1613,7 @@ class SandboxBatch:
                 if self._warm_credit.take(group.warmpool):
                     slot = time.monotonic()
                 else:
+                    self._warm_credit.spend(group.warmpool)
                     slot = self._reserve_create_slot(time.monotonic())
                 # This worker took the last planned create, so the fill deadline is known now
                 if not self._create_plan:
@@ -1763,12 +1805,13 @@ class SandboxBatch:
                     outcome = batch_utils.create_error_outcome(None, attempt)
                 else:
                     outcome = batch_utils.CreateOutcome.FAIL
+                retry_after = batch_utils.retry_after_seconds(e)
                 if isinstance(e, ApiException) and e.status == 429:
                     with self._lock:
-                        first_throttle = self._warm_credit.throttle()
+                        first_throttle = self._warm_credit.throttle(retry_after)
                     if first_throttle:
                         logger.info(
-                            f"Apiserver throttled batch '{self.batch_id}', pacing later creates at create_rps"
+                            f"Apiserver throttled batch '{self.batch_id}', temporarily pacing creates at create_rps"
                         )
                 if outcome == batch_utils.CreateOutcome.SUCCESS:
                     return
@@ -1776,7 +1819,6 @@ class SandboxBatch:
                     # A backoff belongs to this create alone, so the create waits it out here and then takes a
                     # normal pacing slot. client-go retries the same way. The apiserver computes a Retry-After for a
                     # whole priority level, so a Retry-After moves the shared slot and every create waits for it.
-                    retry_after = batch_utils.retry_after_seconds(e)
                     if retry_after is None:
                         backoff = batch_utils.retry_delay(attempt, None)
                         with self._lock:

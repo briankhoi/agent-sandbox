@@ -684,8 +684,8 @@ and `wait_for_quorum()` and `group_outcomes()` skip it. The claims are named `<b
 sum of the group sizes. They carry the `agents.x-k8s.io/batch-id` label and the `agents.x-k8s.io/batch-group`
 label, whose value is a hash of the warm pool's name, and are created in the background, paced at `create_rps` creates per second with at most `max_in_flight` in flight.
 Claims that a pool's Ready sandboxes cover, counted when `claim_batch()` checks the pool, skip `create_rps` pacing because they start
-no pod, so only `max_in_flight` bounds them. Once the apiserver answers a create with 429, the batch paces every later
-create. The batch
+no pod, so only `max_in_flight` bounds them. When the apiserver answers a create with 429, the batch pauses warm-pool
+credit for `Retry-After` (at least 5 seconds) and paces creates at `create_rps` until the cooldown ends. The batch
 also has a `coordination.k8s.io/v1` Lease named `batch-<batch-id>`, which the handle renews while it is
 alive. Every claim has an `ownerReference` to that Lease, so the Kubernetes garbage collector deletes the
 claims once the Lease is gone. Deleting the Lease by hand (`kubectl delete lease batch-<batch-id>`) therefore
@@ -785,7 +785,8 @@ ordinal, so ordinals are never reused, even across `detach()` and `get_batch()`.
 claims, so `events()`, the quorum consumers and `release_not_ready()` leave it alone, but `release_group()` on
 its pool releases it, and its `shutdownTime` counts from its own create. Its create follows the initial
 claims' pacing, except that a create the pool's Ready sandboxes cover skips `create_rps` pacing. Once callers spend the
-count from the pool's check, `acquire()` reads the pool again at most once a second per pool. Its create also shares `max_in_flight` with
+count from the pool's check and `create_rps` pacing would delay the next create, `acquire()` reads the pool again at most
+once a second per pool. Its create and pool reads also share `max_in_flight` with
 the initial claims and member deletes. `acquire()` raises `TerminalMemberError` if the create fails or the
 member fails or is deleted before it is Ready, and `BatchTimeoutError` if it isn't Ready within `timeout`,
 which defaults to `quorum_timeout`. Both are `BatchError`, so `except BatchError` catches every runtime
