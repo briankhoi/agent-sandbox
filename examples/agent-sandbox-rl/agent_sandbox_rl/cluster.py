@@ -62,8 +62,10 @@ class Cluster:
     self.custom_api = client.CustomObjectsApi(self.api_client)
     self.core_api = client.CoreV1Api(self.api_client)
     self.apps_api = client.AppsV1Api(self.api_client)
+    self.coordination_api = client.CoordinationV1Api(self.api_client)
     self.resources = Resources(
-        self.custom_api, self.core_api, self.namespace, labels=labels)
+        self.custom_api, self.core_api, self.namespace, labels=labels,
+        coordination_api=self.coordination_api)
     self._k8s_helper = None
     self._sandbox_client = None
     # Concurrent first acquires would otherwise each build a SandboxClient,
