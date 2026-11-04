@@ -1,277 +1,299 @@
-# `agent-sandbox-rl` Batch Integration: Rebase & Optimization Specification
+# Workstream B: `agent-sandbox-rl` Batch Claim Mode (`25/N`) Follow-up Optimizations & Hardening
 
-This document is the complete, self-contained specification for **Workstream B**: rebasing `examples/agent-sandbox-rl/` onto `upstream/main` and implementing all remaining correctness, fail-fast, cleanup, and high-concurrency optimizations for `FleetConfig(claim_mode="batch")`.
-
-Every requirement below is anchored by **module path, class/method symbol, exact SDK contract, and behavioral invariant** (never brittle line numbers) so an implementing agent can execute it cleanly in an isolated worktree without modifying files outside `examples/agent-sandbox-rl/`.
-
----
-
-## 1. Scope & Workspace Isolation Rules
-
-1. **Strict directory boundary:** Only modify files under `examples/agent-sandbox-rl/`. **Do NOT modify `clients/python/agentic-sandbox-client/`** (another agent owns the Python SDK `15/N` branch stack in parallel).
-2. **Isolated git worktree & branch:**
-   - Do **not** work inside `/usr/local/google/home/brianknguyen/agent-sandbox/.claude/worktrees/rl-gke` or any existing SDK review worktree (`agent-sandbox-r1989`, `agent-sandbox-restack`, etc.).
-   - Create a fresh git worktree and branch (for example `feat/rl-batch-improvements`) starting from `bench/rl-gke` and rebase/merge `upstream/main` (`6342c063` or newer) into `examples/agent-sandbox-rl/`.
-3. **OSS hygiene:** Keep Apache-2.0 headers on any new `.py` files, Python `>= 3.11` compatibility, 2-space indentation matching `examples/agent-sandbox-rl/agent_sandbox_rl/`, bounded-cardinality Prometheus labels, and zero internal URLs or project IDs.
+> **Base branch:** `origin/feat/rl-batch-claim-mode` (`3a25143c`, stacked linearly on `24/N` `origin/merge/main-into-batch-claim-2` `b4cf6575` = `1/N..23/N` + `upstream/main` `bcf5d4a0`)
+> **Target directory:** `examples/agent-sandbox-rl/` (do **not** modify `clients/python/` in this workstream unless explicitly requested)
 
 ---
 
-## 2. Exact Baseline & SDK Contracts
+## Part 1: Ready-to-Paste Agent Prompt for Workstream B
 
-### 2.1 `upstream/main` Commits Merged Since `bench/rl-gke` Branched
+Copy everything inside the fenced block below into a new agent conversation:
 
-Rebasing `bench/rl-gke` onto `upstream/main` (`6342c063`) brings in 8 feature/fix PRs under `examples/agent-sandbox-rl/`:
+````markdown
+You are implementing **Workstream B**: hardening, parity, and scale optimizations for `FleetConfig(claim_mode="batch")` in `examples/agent-sandbox-rl/`, stacked directly on `25/N` (`origin/feat/rl-batch-claim-mode`).
 
-| PR / Commit | Summary & Key Symbols Introduced |
-|---|---|
-| `#1791` (`c70b415b`) | Fail-fast `ClaimWatchdog` + `classify_pod` + `StartVerdict` (`failfast.py`), `FailFastPolicy` + `FleetConfig.effective_claim_timeout()` (`config.py`), `SandboxStartError` + `SandboxLostError` (`exceptions.py`), `SandboxHandle.record_pod_identity()` + `is_alive()` + `_raise_if_lost()` (`handles.py`), `forget_claim_in_client()` (`handles.py`), and `find_orphan_runs()` + `reap_orphans()` (`reaper.py`). |
-| `#1961` (`10c3f700`) | Hardened pod defaults, resource limits, task-image sidecars, extra template spec (`config.py`, `constants.py`, `resources.py`). |
-| `#1960` (`f5de668a`) | Multi-container exec: `SandboxHandle.runtime_container`, `target_container`, `exec(..., *, container=None)`, `open_session(..., *, container=None)`. |
-| `#1962` (`8c999a5b`) | OpenHands agent-server preset (`adapters/openhands.py`). |
-| `#1963` (`92f4584e`) | `LookaheadWarmer` (`lookahead.py`), `SandboxFleet.add_tasks()`, `SandboxFleet.wait_pools_ready()`. |
-| `#1964` (`f41cf22f`) | Dataset rows & image manifests as task sources (`sources.py`, `load_tasks(..., image_field=..., id_field=...)`). |
-| `#1965` (`99100ae7`) | Batched self-cleaning `prepull` with optional page-cache drop (`prepull.py`). |
-| `#1966` (`dd38b094`) | `SandboxFleet.teardown(delete_namespace=False, *, verify=False)`, `SandboxFleet.verify_teardown()`, `self._sweep_lock`, `self._deleted_namespaces`. |
-| `#1967` (`841cefbb`) | In-memory test doubles `FakeFleet`, `FakeHandle`, `FakeSandboxGone` (`testing.py` + strict signature parity assertions in `tests/test_testing_fake_fleet.py`). |
-| `#2035` (`7f40dc1a`) | `Cluster._sandbox_client_lock` / `_k8s_helper_lock` (`cluster.py`, `snapshots.py` — already mirrored in `bench/rl-gke`; resolve cleanly in favor of keeping `Cluster.batch_sandbox_client()` alongside `#2035`). |
+### 1. Authoritative Spec & Context
+Read `examples/agent-sandbox-rl/docs/batch_rl_integration_improvements.md` (available on `origin/bench/rl-gke`) in full before writing any code. It contains:
+- Exact line-level analysis of `25/N` (`origin/feat/rl-batch-claim-mode`, commit `3a25143c`) and how it interacts with the finalized `15/N`–`23/N` Python SDK batch stack (`clients/python/agentic-sandbox-client/k8s_agent_sandbox/`).
+- What `25/N` **already solved** during its `24/N` rebase (which you MUST NOT duplicate or regress).
+- The **8 prioritized engineering items (`P0-1` through `P2-8`)** you own, including exact file/line targets, invariants, edge cases, and required unit tests.
 
-### 2.2 Exact Python SDK (`k8s_agent_sandbox`) Batch Surface
-
-Do **not** assume `start_acquire` or `wait_acquired` are public methods on `SandboxBatch` — in `k8s_agent_sandbox/sandbox_batch.py`, `_state.start_acquire` and `_wait_acquired` are private. Rely **only** on these public SDK APIs and types:
-
-- `SandboxClient.claim_batch(groups, *, namespace=..., labels=..., create_rps=..., max_in_flight=..., work_budget=..., quorum_timeout=..., lease_duration=...) -> SandboxBatch`
-- `SandboxBatch.acquire(warmpool: str, timeout: float | None = None, *, pod_annotations: dict[str, str] | None = None) -> Member`
-  - **Nuance (`15/N` `feat/batch-11-acquire-annotations`):** On the `15/N` tip, `SandboxBatch.acquire()` accepts keyword-only `pod_annotations: dict[str, str] | None = None`. On the slightly earlier SDK commit currently in `bench/rl-gke`, `acquire(warmpool, timeout=None)` did not yet have `pod_annotations`. Detect support dynamically via `inspect.signature(batch.acquire).parameters` (see **P1-7** below) so `agent_sandbox_rl` works seamlessly with both!
-  - Each acquired claim's `spec.lifecycle.shutdownTime` is always `create_time + self._quorum_timeout + self._work_budget + BATCH_SHUTDOWN_MARGIN_SECONDS` (note: it uses the batch's `quorum_timeout`, **not** the per-call `acquire(..., timeout=...)` argument!).
-- `SandboxBatch.members(warmpool: str | None = None) -> list[Member]`
-  - Thread-safe, zero-RPC in-memory snapshot from the batch's shared watch. Includes `MemberState.PENDING` claims currently waiting inside `acquire()`, with `member.claim_name` (`<batch_id>-<ordinal>`) immediately present and `member.sandbox_name` populated as soon as the controller binds a `Sandbox` to the `SandboxClaim`.
-- `SandboxBatch.connect(member: Member) -> Sandbox`
-  - Zero-`GET` construction seeded with `select_pod_ip(member.pod_ips)`.
-- `SandboxBatch.release_member(member: Member) -> None`
-  - Deletes a single member's `SandboxClaim` (parallelized up to `max_in_flight` in `15/N`). Raises `BatchError` if detached/released or if `batch.err()` is set.
-- `SandboxBatch.release() -> None`
-  - Idempotent. Stops creates/watch/Lease-renewal, closes cached connections, deletes **all** batch `SandboxClaim`s via label-scoped `DELETECOLLECTION` rounds (`agents.x-k8s.io/batch-id=<batch_id>`), and deletes the batch `Lease`.
-- `SandboxBatch.err() -> Exception | None`
-- Exceptions in `k8s_agent_sandbox.exceptions`:
-  - `BatchError` (base class)
-  - `BatchTimeoutError(BatchError, TimeoutError)` (already a `TimeoutError` subclass)
-  - `TerminalMemberError(BatchError)` — raised by `acquire()` when a member fails terminally (`MemberState.FAILED`, e.g. `CreateFailed`) or its claim is deleted externally before Ready (`MemberState.LOST`); exposes **`exc.member: Member`** (`exc.member.claim_name`, `exc.member.warmpool`, `exc.member.state`, `exc.member.reason`, `exc.member.message`).
-
----
-
-## 3. Core Invariants to Preserve ("Do Not Break")
-
-1. **Zero-`GET` steady-state `acquire()` in `claim_mode="batch"`:** `SandboxFleet._acquire_reserved()` builds `SandboxHandle` from `claim.batch.connect(claim.member)` and `select_pod_ip(claim.member.pod_ips)` with **zero** `GET Sandbox` or `GET Pod` calls on the `acquire()` critical path.
-2. **Lazy size-0 batch opening & automatic error rotation:** `BatchClaims._batch_for()` opens `[BatchGroup(warmpool=pool, size=0)]` lazily on the first acquire per cluster (avoiding `2 × P` upfront sequential `GET`s across all planned pools), and if `batch.err() is not None`, opens a fresh `SandboxBatch` for subsequent acquires while keeping the stopped batch in `_opened` so `teardown()` still calls `batch.release()` on it.
-3. **Proactive `shutdownTime` rotation under `recycle=True`:** `recycle._claim_expiring()` rotates batch-backed handles before `handle.claim_expires_at` so the controller never deletes a recycled sandbox mid-task.
-4. **Teardown race safety:** Flipping `SandboxFleet._torndown` and `BatchClaims._closed` under locks guarantees an `acquire()` racing `teardown()` never leaks an untracked claim or an open renewing `Lease`.
-
----
-
-## 4. Detailed Implementation Items (`P0` – `P2`)
-
-### P0 — Rebasing, Zero-`GET` Preservation, Fail-Fast & Reaper Parity
-
-#### P0-1. Preserve 0-`GET` `acquire()` with `#1791` `record_pod_identity()` and wire `#1960` `runtime_container`
-
-- **Target symbols:**
-  - `agent_sandbox_rl/fleet.py`: `SandboxFleet._acquire_reserved()`
-  - `agent_sandbox_rl/handles.py`: `SandboxHandle`, `SandboxHandle.record_pod_identity()`, `SandboxHandle.is_alive()`, `SandboxHandle.exec()`, `SandboxHandle.open_session()`, `SandboxHandle.refresh()`
-- **Nuance & problem:**
-  1. In `#1791`, `_acquire_reserved()` unconditionally calls `handle.record_pod_identity()` right after creating the sandbox. `record_pod_identity()` performs a synchronous `GET /api/v1/namespaces/{ns}/pods/{pod}/status`. Calling that eagerly on `claim_mode="batch"` adds **`N` unthrottled per-pod `GET`s** right back onto every `acquire()` burst (destroying the 0-`GET` batch fast path, even for HTTP/Router workloads that never call `kubectl exec`).
-  2. In `#1791`, both `record_pod_identity()` and `is_alive()` call `self._cluster.exec_core_api().read_namespaced_pod_status(...)`. `exec_core_api()` builds a **separate `kubernetes.client.ApiClient` + `urllib3` pool per thread** because `kubernetes.stream()` websocket upgrades mutate `ApiClient`. Standard REST `GET`s on `self._cluster.core_api` are completely thread-safe and share the cluster's main connection pool — calling `exec_core_api()` for REST `GET`s needlessly allocates hundreds of extra connection pools and TLS handshakes.
-  3. `#1960` added `runtime_container` to `SandboxHandle(...)` in `_acquire_reserved()`. Batch-acquired handles need the exact same `runtime_container` wiring.
-- **Design:**
-  1. Pass `runtime_container=((entry.runtime_container if entry is not None else None) or constants.RUNTIME_CONTAINER)` when constructing `SandboxHandle` for both `batch` and `per_claim` paths.
-  2. Switch `record_pod_identity()` and `is_alive()` to use `self._cluster.core_api.read_namespaced_pod_status(...)` instead of `exec_core_api()`.
-  3. Add `_identity_recorded: bool = field(default=False, repr=False)` on `SandboxHandle`:
-     - In `claim_mode="per_claim"`, `_acquire_reserved()` may continue calling `handle.record_pod_identity()` eagerly (preserving every existing `#1791` unit test in `tests/test_fail_fast.py` untouched!).
-     - In `claim_mode="batch"`, **skip** calling `handle.record_pod_identity()` inside `_acquire_reserved()` (keeping batch `acquire()` strictly 0-`GET`!). Instead, in `SandboxHandle.exec()` and `SandboxHandle.open_session()`, if `not self._identity_recorded and self._cluster is not None`, call `self.record_pod_identity()` **before** opening the exec stream / running the command.
-     - Set `self._identity_recorded = True` inside `record_pod_identity()` (even if the best-effort `GET` fails, so every `exec()` on an unreachable/mocked pod doesn't retry it repeatedly), and reset `self._identity_recorded = False` (or call `self.record_pod_identity()`) inside `SandboxHandle.refresh()` after a snapshot `resume()` / `restore()` swaps pods.
-- **Required tests:**
-  - In `tests/test_batch_claims.py`: assert `fleet.acquire(task)` in `claim_mode="batch"` makes **zero** calls to `core_api.read_namespaced_pod_status` and `exec_core_api`, and sets `handle.runtime_container` properly (including adopted-pool custom `runtime_container`).
-  - Assert that the first `handle.exec(...)` / `handle.open_session()` on a batch handle lazily records `pod_uid` and `runtime_restarts` via `cluster.core_api`, so a subsequent pod replacement or container restart causes `is_alive()` to return `False` and a failed `exec()` to raise `SandboxLostError`.
-
----
-
-#### P0-2. Per-batch `BatchWatchdog` for `#1791` fail-fast parity (`ClaimWatchdog` + `effective_claim_timeout()`)
-
-- **Target symbols:**
-  - `agent_sandbox_rl/failfast.py`: reuse `classify_pod()`, `StartVerdict`, `_REQUEST_TIMEOUT`, and add `BatchWatchdog` (or place in `batch_claims.py`)
-  - `agent_sandbox_rl/batch_claims.py`: `BatchClaims`
-  - `agent_sandbox_rl/fleet.py`: `SandboxFleet.__init__()`, `SandboxFleet._acquire_reserved()`
-- **Nuance & problem:**
-  1. `FleetConfig.effective_claim_timeout()` returns `fail_fast.claim_timeout` (`180s` default) when `fail_fast.enabled` is true, else `ready_timeout` (`900s`).
-     - **Critical `shutdownTime` nuance:** In `claim_batch(..., quorum_timeout=...)`, the SDK bakes `quorum_timeout` into every acquired claim's `spec.lifecycle.shutdownTime = create_time + quorum_timeout + work_budget + 600s`. Meanwhile, `batch.acquire(pool, timeout=acquire_timeout)` controls how long the caller waits for Ready. Therefore, keep `quorum_timeout=config.ready_timeout` on `claim_batch(...)` and compute `BatchClaim.expires_at = started + quorum_timeout + work_budget + BATCH_SHUTDOWN_MARGIN_SECONDS` using `quorum_timeout`, while passing `timeout=config.effective_claim_timeout()` to `batch.acquire(...)`!
-  2. When a cold-start pod sits in `ImagePullBackOff`, `ErrImageNeverPull`, `InvalidImageName`, `CreateContainerConfigError`, `OOMKilled`, or `Unschedulable`, `per_claim` mode uses `ClaimWatchdog` to inspect the pod and delete the `SandboxClaim`, converting the error into `SandboxStartError(reason, message, claim_name=..., pod_name=..., image=...)` and recording `self._obs.claim(cluster.name, "start_failed")`.
-  3. Because `SandboxBatch.acquire()` generates `<batch_id>-<ordinal>` internally, spawning 1,000 per-claim threads doesn't know `claim_name` upfront — **and we can do much better** using `batch.members()` + `TerminalMemberError.member.claim_name`!
-- **Design (`BatchWatchdog` — 1 daemon thread per open `SandboxBatch` when `fail_fast.enabled`):**
-  1. When `fail_fast.enabled` is true (and `hasattr(batch, "members")`), associate one `BatchWatchdog(cluster, batch, fail_fast)` daemon thread with each opened `SandboxBatch` (started lazily on first acquire or when the batch is opened; stopped in `BatchClaims.release_all()` and when `_batch_for()` replaces a stopped batch).
-  2. Every `policy.poll_s`, `BatchWatchdog` reads `batch.members()` (zero-RPC in-memory snapshot):
-     - Track `pending_since[m.claim_name]` for members in `MemberState.PENDING` (prune entries no longer in `PENDING` so state stays `O(in_flight)`).
-     - Skip any `PENDING` member where `now - pending_since[m.claim_name] < policy.initial_delay_s` — **warm-pool adoptions become Ready in milliseconds and never pass `initial_delay_s`, so steady-state warm runs do 0 pod `GET`s!**
-     - For any `PENDING` member past `initial_delay_s`, resolve its pod name: if `m.sandbox_name` is already populated on the `Member`, resolve via `Sandbox` annotation / `m.sandbox_name` (falling back to `_resolve_pod_name(cluster, m.claim_name)` if `m.sandbox_name` is empty), read `core_api.read_namespaced_pod_status(pod_name, ...)`, and run `classify_pod(pod, now=now, first_seen=..., last_seen=..., policy=policy)` per claim.
-     - When `classify_pod` returns a `StartVerdict`: under `_decide_lock` (if not stopped), store `self._verdicts[m.claim_name] = verdict` and call `cluster.resources.delete_claim(m.claim_name, request_timeout=_REQUEST_TIMEOUT)`.
-  3. Deleting the claim causes the batch's shared watch to mark the member `LOST`, waking `batch.acquire()` with `TerminalMemberError` (`exc.member.claim_name == m.claim_name`)!
-  4. In `BatchClaims.acquire()` / `SandboxFleet._acquire_reserved()`:
-     - If `batch.acquire()` raises `BatchError` (specifically `TerminalMemberError`, or any `BatchError` if a test double raises it) and `watchdog.pop_verdict(claim_name)` has a `StartVerdict` for `exc.member.claim_name`, record `self._obs.claim(cluster.name, "start_failed")` and raise `SandboxStartError(verdict.reason, verdict.message, claim_name=claim_name, pod_name=verdict.pod_name, image=task.image) from exc`.
-     - Also check `watchdog.pop_verdict(member.claim_name)` right after `batch.acquire()` returns Ready (handling the tiny race where Ready arrived just as the watchdog deleted the claim, identical to `per_claim`!).
-- **Required tests:**
-  - Unit tests verifying:
-    1. Warm batch acquires returning before `initial_delay_s` issue **zero** pod/sandbox `GET`s from `BatchWatchdog`.
-    2. A cold `PENDING` batch member stuck in `ImagePullBackOff` / `InvalidImageName` / `Unschedulable` is deleted by `BatchWatchdog`, surfaces `SandboxStartError` with `claim_name`, `pod_name`, and `image`, and records `claim(..., "start_failed")`.
-    3. `BatchClaim.expires_at` uses `ready_timeout` (`quorum_timeout`), while `batch.acquire(..., timeout=...)` receives `effective_claim_timeout()`.
-
----
-
-#### P0-3. Sweep and verify batch `Lease`s in `reaper.py` (`#1791`) and `verify_teardown()` (`#1966`)
-
-- **Target symbols:**
-  - `agent_sandbox_rl/resources.py` & `agent_sandbox_rl/cluster.py`: label-scoped `Lease` list/delete helpers via `client.CoordinationV1Api(cluster.api_client)`
-  - `agent_sandbox_rl/reaper.py`: `_reap_with_cluster()`, `find_orphan_runs()`, `reap_orphans()`
-  - `agent_sandbox_rl/fleet.py`: `SandboxFleet.verify_teardown()`
-- **Nuance & problem:**
-  - `BatchClaims._batch_for()` passes `labels=dict(self._labels)` (`agent-sandbox-rl/run-id=<run_id>`, `app.kubernetes.io/managed-by=agent-sandbox-rl`) to `claim_batch()`, which stamps those exact labels onto both every `SandboxClaim` and its owning `coordination.k8s.io/v1` `Lease` (`batch-<id>`).
-  - Today, `reaper.py` sweeps `SandboxClaim`s, `SandboxWarmPool`s, `Sandbox`es, `SandboxTemplate`s, and `Pod`s, but **not** `Lease`s. If a driver crashes on a cluster not running the standalone `batch_reaper` cron, expired `Lease` CRs accumulate in etcd, and `teardown(verify=True)` (`#1966`) does not verify `Lease` cleanup.
-- **Design:**
-  1. Add `list_leases(label_selector: str)` and `delete_lease(name: str)` / `delete_leases(label_selector: str)` helpers on `Resources` (lazily constructing `client.CoordinationV1Api(self.core.api_client)` or injecting `coordination_api` on `Resources` so existing `Resources(custom_api, core_api, ns)` callers keep working without breaking signatures!).
-     - **Safety guard:** Never call `delete_leases` with an empty `label_selector` (refuse `ValueError` if `not label_selector`) so system leases (like controller leader-election leases in the same namespace) can never be touched even accidentally.
-  2. In `reaper._reap_with_cluster()`: list & delete matching `Lease`s (right alongside `SandboxClaim`s — deleting the `Lease` also triggers K8s `ownerReferences` GC on its batch claims) and include `"leases": int` in the returned counts dict.
-  3. Include labeled `Lease`s in `find_orphan_runs()` run discovery (so a crashed run with only its `Lease` left is still discovered and reaped after `min_age_s`) and in `SandboxFleet.verify_teardown()`'s counts and `"remaining"` settle check.
-- **Required tests:**
-  - Extend `tests/test_teardown_verify.py` and `tests/test_batch_claims.py` / `tests/test_fail_fast.py` to verify `reap(run_id=...)`, `find_orphan_runs()`, and `teardown(verify=True)` count, delete, and verify batch `Lease`s.
-
----
-
-### P1 — High-Impact Throughput, Teardown, Pod-Annotation & Pool-Sizing Optimizations
-
-#### P1-4. Eliminate redundant `O(N)` per-handle `DELETE` storm in `SandboxFleet._teardown()`
-
-- **Target symbols:**
-  - `agent_sandbox_rl/fleet.py`: `SandboxFleet._teardown()`
-- **Nuance & problem:**
-  - Currently `_teardown()` runs `self.release_all()` before `self._batch_claims.release_all()`.
-  - When `N` batch-backed handles (`h._batch_claim is not None`) are still held at `teardown()`, `self.release_all()` fires **`N` individual `DELETE /sandboxclaims/<name>` RPCs** (`batch.release_member()`) right before `_batch_claims.release_all()` calls `batch.release()`, which **already deletes every claim of the batch in 1 label-scoped `DELETECOLLECTION` call** + deletes the `Lease`!
-  - Furthermore, if a batch stopped (`batch.err() is not None`, e.g. `BatchLeaseExpiredError`), `batch.release_member()` in `15/N` raises `BatchError("batch ... has stopped")` — causing `self.release_all()` inside `_teardown()` to raise `BatchError` and abort the rest of `_teardown()` (skipping pool/template/namespace sweep!)! Look at `sandbox_batch.py`'s `release_member` docstring on `15/N`:
-    > `Raises: BatchError: If this handle has been detached or released, or once err() is set, since the handle may no longer hold the batch's Lease.`
-    Skipping `release_member()` on `_teardown()` fixes **both** the `O(N)` `DELETE` storm **and** the stopped-batch `teardown()` crash!
-- **Design:**
-  - Inside `_teardown()` (under `_sweep_lock` from `#1966`):
-    1. Detach all tracked handles from `self._handles` under `self._lock`.
-    2. For **batch-backed handles (`h._batch_claim is not None`)**: close any persistent exec websocket (`h.close_session()`) and decrement local counters (`c.release_claim()` and `self._claims_reserved` if `not h._slot_released`), **without** calling `h._batch_claim.release()`. `_batch_claims.release_all()` in `finally:` will delete all batch claims via `DELETECOLLECTION` and delete every `Lease`.
-    3. For **non-batch handles (`h._batch_claim is None`)**: release them concurrently (via the same bounded `ThreadPoolExecutor` helper as `release_all()`, logging any per-handle termination error during teardown rather than aborting pool/template cleanup, or keeping `_batch_claims.release_all()` in `finally:`).
-- **Required tests:**
-  - Update `tests/test_batch_claims.py`:
-    1. `teardown()` with open batch handles closes sessions, resets `active_claims` and `_claims_reserved` to `0`, calls `batch.release()` on every opened batch, and calls `batch.release_member()` **0 times**.
-    2. `teardown()` when a batch has `batch.err() != None` (stopped batch) completes cleanly without raising `BatchError` and still sweeps pools/templates!
-    3. `teardown()` with a `per_claim` handle whose `terminate()` raises still executes `_batch_claims.release_all()` via `finally:`.
-
----
-
-#### P1-5. Parallelize `SandboxFleet.release_all()` and `SandboxFleet.acquire_batch()`
-
-- **Target symbols:**
-  - `agent_sandbox_rl/fleet.py`: `SandboxFleet.release_all()`, `SandboxFleet.acquire_batch()`
-- **Problem:**
-  - `release_all()` (`for h in list(self._handles): self.release(h)`) and `acquire_batch(tasks)` (`[self.acquire(t) for t in tasks]`) are single-threaded sequential loops. Even with `15/N`'s parallel `release_member()`, synchronous RL step loops calling `fleet.acquire_batch(tasks)` and `fleet.release_all()` only achieve concurrency = `1`.
-- **Design:**
-  1. **`release_all()`:** Snapshot `handles = list(self._handles)`. If `len(handles) <= 1`, release inline. Otherwise, fan `self.release(h)` out across `ThreadPoolExecutor(max_workers=min(len(handles), max(1, self.config.max_concurrent)))`. Wait for **all** futures to complete before re-raising the first exception (if any), so one failing handle never leaves the other `N - 1` handles unreleased.
-  2. **`acquire_batch(tasks)`:** If `len(tasks) <= 1`, return `[self.acquire(t) for t in tasks]`. Otherwise, fan `self.acquire(t)` out across `ThreadPoolExecutor(max_workers=min(len(tasks), max(1, self.config.max_concurrent)))`, returning handles in the **exact input `tasks` order**. If any task raises, release all handles that *did* succeed in that `acquire_batch()` call (in parallel, best-effort logging cleanup errors) before re-raising the first exception so callers never leak unreachable handles.
-- **Required tests:**
-  - Unit tests verifying concurrency (`>1` overlapping calls when `max_concurrent > 1`), input-order preservation in `acquire_batch()`, partial-failure rollback on `acquire_batch()`, and full-sweep + error propagation on `release_all()`.
-
----
-
-#### P1-6. Auto-size `Cluster` `connection_pool_maxsize` above `max_in_flight + 2` and lock `_leases_injected`
-
-- **Target symbols:**
-  - `agent_sandbox_rl/cluster.py`: `build_api_client()`, `Cluster.__init__()`, `Cluster.batch_sandbox_client()`, `ClusterRegistry.from_configs()`
-  - `agent_sandbox_rl/fleet.py`: `SandboxFleet._default_registry()`
-- **Problem:**
-  1. `build_api_client()` hardcodes `pool_maxsize=1000`, while `claim_batch()` validates `check_pool_size(pool_maxsize, max_in_flight)` (`pool_maxsize >= max_in_flight + 2`). Setting `BatchClaimConfig(max_in_flight=1000)` crashes on first acquire with `ValueError` (`1000 < 1002`), and `FleetConfig(max_concurrent=1500)` overflows the `1000`-connection pool.
-  2. `Cluster.batch_sandbox_client()` checks/sets `self._leases_injected` without an internal lock.
-- **Design:**
-  1. Compute `pool_maxsize = max(1000, config.max_concurrent + 32, (config.batch_claims.max_in_flight or 0) + 16)` in `SandboxFleet._default_registry(config)` and thread optional `pool_maxsize: int = 1000` through `ClusterRegistry.from_configs` → `Cluster` → `build_api_client`.
-  2. In `Cluster.batch_sandbox_client()`, resolve `helper = self.k8s_helper` first, then guard `if not self._leases_injected:` with a dedicated lock (or `self._k8s_helper_lock` *after* `self.k8s_helper` has returned, avoiding non-reentrant lock deadlock).
-- **Required tests:**
-  - Assert `SandboxFleet(FleetConfig(claim_mode="batch", batch_claims=BatchClaimConfig(max_in_flight=1000)))` configures cluster `api_client.configuration.connection_pool_maxsize >= 1002`.
-  - Thread-safety test calling `cluster.batch_sandbox_client()` concurrently from 16 threads and asserting `CoordinationV1Api` is constructed and injected once.
-
----
-
-#### P1-7. Use native `SandboxBatch.acquire(..., pod_annotations=...)` when supported by the installed SDK
-
-- **Target symbols:**
-  - `agent_sandbox_rl/batch_claims.py`: `BatchClaims.supports_pod_annotations(cluster)` / `BatchClaims.acquire(..., pod_annotations=None)`
-  - `agent_sandbox_rl/fleet.py`: `SandboxFleet._acquire_reserved()`
-- **Nuance & opportunity:**
-  - When `bench/rl-gke` was originally written, `SandboxBatch.acquire()` did not accept `pod_annotations`, so `fleet.py` fell back to `per_claim` whenever `snapshot_uid` or `pod_annotations` was passed.
-  - On the `15/N` branch (`feat/batch-11-acquire-annotations`), `SandboxBatch.acquire(warmpool, timeout=None, *, pod_annotations=None)` **natively supports `pod_annotations`**!
-- **Design:**
-  - Check whether `batch.acquire` accepts `pod_annotations` via `inspect.signature(batch.acquire).parameters` (safe for both real `SandboxBatch` and test mocks/fakes!).
-  - When `"pod_annotations"` is accepted by `batch.acquire`, pass `pod_annotations=annotations` directly through `BatchClaims.acquire(...)` so snapshot-pinned and pod-annotated acquires stay on the fast `batch` path (sharing the single watch and batch `Lease`)!
-  - Keep the existing `per_claim` fallback (and one-time info log) **only** when the installed `SandboxBatch.acquire` signature does not accept `pod_annotations`.
-- **Required tests:**
-  - Test both paths in `tests/test_batch_claims.py`:
-    1. When `FakeBatch.acquire` accepts `pod_annotations=None` (matching `15/N` `SandboxBatch.acquire`), `fleet.acquire(t, snapshot_uid="snap-1", pod_annotations={"a": "b"})` uses `batch.acquire(..., pod_annotations=...)` and **never** calls `create_sandbox()`.
-    2. When a legacy batch object's `acquire(self, warmpool, timeout=None)` lacks `pod_annotations`, `fleet.acquire(t, pod_annotations={"a": "b"})` cleanly falls back to `create_sandbox()`.
-
----
-
-### P2 — Async Executor Ceiling, Long-Episode `work_budget` Diagnostics & `FakeFleet` Parity
-
-#### P2-8. Prevent `AsyncSandboxFleet._thread_pool()` from self-throttling at `max_concurrent >= 1000`
-
-- **Target symbols:**
-  - `agent_sandbox_rl/async_fleet.py`: `AsyncSandboxFleet._thread_pool()`
-- **Problem:**
-  - `_thread_pool()` computes `workers = min(1024, max(64, mc + 2 * win + 16))`. Because `AsyncSandboxFleet.acquire()` delegates to blocking `SandboxFleet.acquire()` on this pool, at `max_concurrent = 1000` (plus background `pipelined` warm/unwarm calls) `1024` threads can saturate, and at `max_concurrent = 1500+`, hundreds of `acquire()` calls queue in Python before ever reaching the batch.
-- **Design:**
-  - Ensure `workers` is never clamped below `mc + 64` (up to a safe ceiling like `4096`):
-    `workers = min(4096, max(mc + 64, min(1024, max(64, mc + 2 * win + 16))))`.
-  - Also mirror any new `SandboxFleet` parameters added on `upstream/main` (e.g., `teardown(..., *, verify=False)`, `verify_teardown()`, `add_tasks()`, `wait_pools_ready()`) if not already present after rebase.
-- **Required tests:**
-  - Assert in `tests/test_async_fleet.py` that `AsyncSandboxFleet(FleetConfig(max_concurrent=1200))._thread_pool()._max_workers >= 1264` while `max_concurrent=100` stays compact (`<= 1024`).
-
----
-
-#### P2-9. Actionable `SandboxLostError` diagnostics and docs when `BatchClaimConfig.work_budget` expires
-
-- **Target symbols:**
-  - `agent_sandbox_rl/handles.py`: `SandboxHandle._raise_if_lost()`
-  - `agent_sandbox_rl/exceptions.py`: `SandboxLostError`
-  - `agent_sandbox_rl/config.py` & `agent_sandbox_rl/fleet.py`: docstrings on `FleetConfig.claim_mode`, `BatchClaimConfig.work_budget`, and `SandboxFleet.suspend()`
-- **Problem:**
-  - `per_claim` claims have no `shutdownTime`, whereas `batch` claims always carry `shutdownTime` (`work_budget=3600`s default + `quorum_timeout` + `600s` margin). `recycle=True` rotates handles proactively via `_claim_expiring()`, **but** a non-recycled multi-hour trajectory or a sandbox parked via `fleet.suspend()` across several hours will hit `shutdownTime` and be deleted by the controller, surfacing as a generic pod-gone error.
-- **Design:**
-  1. In `SandboxHandle._raise_if_lost(cause)`, when `not alive` and `self.claim_expires_at is not None and time.monotonic() >= self.claim_expires_at`, include an explicit hint in the `SandboxLostError` message stating that the batch claim reached its `BatchClaimConfig.work_budget` `shutdownTime` and suggesting increasing `BatchClaimConfig(work_budget=...)` (or enabling `recycle=True`).
-  2. Document `work_budget` lifetime behavior concisely on `FleetConfig.claim_mode`, `BatchClaimConfig.work_budget`, and `SandboxFleet.suspend()`.
-- **Required tests:**
-  - Unit test verifying that an expired batch handle (`claim_expires_at <= time.monotonic()`) whose pod 404s on `exec()` raises `SandboxLostError` mentioning `work_budget`.
-
----
-
-#### P2-10. `FakeFleet` / `FakeHandle` (`#1967`) parity with `claim_mode="batch"`
-
-- **Target symbols:**
-  - `agent_sandbox_rl/testing.py`: `FakeFleet`, `FakeHandle`
-  - `examples/agent-sandbox-rl/tests/test_testing_fake_fleet.py`
-- **Problem:**
-  - `tests/test_testing_fake_fleet.py` enforces strict method/signature/property parity between `FakeFleet` / `FakeHandle` and `SandboxFleet` / `SandboxHandle`. And frameworks testing `recycle` or expiry logic against `FakeFleet(FleetConfig(claim_mode="batch"))` expect `handle.claim_expires_at` to be populated just like a real batch handle.
-- **Design:**
-  1. Ensure `FakeHandle` supports `claim_expires_at` (`property` or attribute matching `SandboxHandle`) — returning `None` in `claim_mode="per_claim"` and `time.monotonic() + config.ready_timeout + config.batch_claims.work_budget + BATCH_SHUTDOWN_MARGIN_SECONDS` in `claim_mode="batch"`.
-  2. Keep all signature parity assertions in `tests/test_testing_fake_fleet.py` green.
-- **Required tests:**
-  - Test in `tests/test_testing_fake_fleet.py` verifying `FakeFleet(FleetConfig(claim_mode="batch"))` populates `claim_expires_at` while default `per_claim` returns `None`.
-
----
-
-## 5. Verification & Deliverable Checklist
-
-1. Run the full `agent-sandbox-rl` test suite:
+### 2. Workspace & Branch Setup
+1. Create an isolated git worktree/branch directly off `origin/feat/rl-batch-claim-mode` (do **not** touch any existing worktrees or uncommitted work):
    ```bash
-   pytest examples/agent-sandbox-rl/tests
+   git fetch origin upstream
+   git worktree add ../agent-sandbox-rl-ws-b -b feat/rl-batch-hardening origin/feat/rl-batch-claim-mode
    ```
-   All existing tests (including `#1791` `test_fail_fast.py`, `#1963` `test_lookahead.py`, `#1966` `test_teardown_verify.py`, `#1967` `test_testing_fake_fleet.py`, and `test_batch_claims.py`) plus all new tests for **P0-1 through P2-10** must pass with zero regressions.
-2. Verify `git diff --name-only upstream/main` (or against your branch base) touches **only** files inside `examples/agent-sandbox-rl/`.
-3. Push the completed branch to `origin` (`https://github.com/briankhoi/agent-sandbox.git`) and report the branch name + commit SHA so the benchmark runner can merge it alongside `15/N`.
+2. Verify baseline tests pass in an isolated venv with the local Python SDK (`clients/python/agentic-sandbox-client`) installed editable (`pip install -e clients/python/agentic-sandbox-client[async,test] -e examples/agent-sandbox-rl[dev]`):
+   ```bash
+   pytest examples/agent-sandbox-rl/tests -q
+   ```
+
+### 3. Strict Non-Regression Rules (Read Carefully!)
+`25/N` (`origin/feat/rl-batch-claim-mode`) **already** includes:
+- Full `upstream/main` merge (`#1791`, `#1960` `runtime_container`, `#1961`–`#1967`, `#2035` `Cluster._sandbox_client_lock` / `_k8s_helper_lock`, `#2085`–`#2087`, `#2132`).
+- Zero-`GET` batch `acquire()` (`handles.py`: `record_pod_identity()` skipped when `claim_mode="batch"`, `h.pod_uid is None` until `record_pod_identity()` is explicitly called, `BatchClaim.still_reaches()` in `is_alive()`, `rebaselined = True` in `refresh()`).
+- Direct `pod_annotations` forwarding to `SandboxBatch.acquire(..., pod_annotations=...)` (`23/N`).
+- Direct `cluster.sandbox_client.claim_batch(...)` using `K8sHelper(api_client=self.api_client)` (which already configures `coordination_v1_api` with `retries=False` and `_claim_collection_api` with `read=False`).
+- Intentional `quorum_timeout=self.config.effective_claim_timeout()` wiring tested by `test_claim_timeout_overrides_ready_timeout_for_batch_claims` (`tests/test_batch_claims.py:161-170`).
+
+Do **not** undo or alter any of those contracts, and do **not** modify files outside `examples/agent-sandbox-rl/`.
+
+### 4. Deliverables (Implement in Commit Order)
+Implement all 8 items from Part 3 of `examples/agent-sandbox-rl/docs/batch_rl_integration_improvements.md` in clean, well-tested commits:
+1. **`P0-1`:** Fix stopped/released `SandboxBatch` `BatchError` crash on `BatchClaim.release()` and make `FakeBatch.release_member` faithful to `15/N`'s `SandboxBatch._check_healthy()`.
+2. **`P0-2`:** Switch REST `read_namespaced_pod_status` in `handles.py` (`record_pod_identity()` and `is_alive()`) from `exec_core_api()` to shared `cluster.core_api` (keeping `exec_core_api()` strictly for `stream()` websocket exec/sessions).
+3. **`P0-3`:** Add per-batch `BatchWatchdog` (`fail_fast` parity for `claim_mode="batch"` cold starts, `0` `GET`s before `initial_delay_s`).
+4. **`P0-4`:** Sweep and verify batch `coordination.k8s.io/v1` `Lease` objects in `reaper.py` and `SandboxFleet.verify_teardown()` (with non-empty `label_selector` guard).
+5. **`P1-5`:** Parallelize `SandboxFleet.release_all()` and `SandboxFleet.acquire_batch()` over bounded `ThreadPoolExecutor`s (preserving input order and partial-failure rollback).
+6. **`P1-6`:** Auto-size `Cluster` `connection_pool_maxsize` so `17/N`'s `check_pool_size` never raises `ValueError` at high `max_in_flight` / `max_concurrent`, and skip redundant `_ensure_pool` K8s RPCs when `(cluster.name, task.image)` is already in `self._ondemand`.
+7. **`P2-7`:** Raise `AsyncSandboxFleet._thread_pool()` ceiling (`min(4096, max(mc + 64, ...))`) so `max_concurrent >= 1000` never self-throttles in Python's executor queue.
+8. **`P2-8`:** Surface an actionable `work_budget` message on `SandboxLostError` when `claim_expires_at` has elapsed, and add `claim_expires_at` parity to `FakeFleet` / `FakeHandle` in `testing.py`.
+
+Run the full `pytest examples/agent-sandbox-rl/tests` suite after each commit and ensure 100% pass rate with zero regressions. Follow repository style (`2`-space indentation in `agent-sandbox-rl`, Apache-2.0 headers on any new files, no internal URLs or project IDs).
+````
+
+---
+
+## Part 2: Alignment Summary — What Changed in `15/N`–`25/N` & Why It Matters
+
+### 2.1 SDK Batch Stack State (`15/N`–`23/N`)
+| PR | Branch / Status | Key Mechanics Relevant to `agent-sandbox-rl` |
+| --- | --- | --- |
+| **`15/N`** (`#1990`) | Merged (`113fae28`) | `SandboxBatch.acquire()` + `release_member()`. **Crucial invariant:** `release_member()` calls `self._check_healthy()`, which raises `BatchError` if `self._released` is `True` **or** `self._error is not None` (e.g. `BatchLeaseExpiredError` or fatal watch stop). |
+| **`16/N`** (`#1991`) | Merged (`dc9ea439`) | `BatchGroup(size=0)` opens watch + Lease renewal immediately with zero pre-created claims (`BatchClaims._batch_for` uses `[BatchGroup(warmpool=pool, size=0)]`). |
+| **`17/N`** (`#2153`) | Merged (`6feedc5c`) | `check_pool_size(pool_size, max_in_flight)`: raises `ValueError` if `urllib3` `connection_pool_maxsize` (when explicitly set) `< max_in_flight + 2`. |
+| **`18/N`** (`#2154`) | Merged (`a97eeae7`) | `Member.pod_ips` populated from shared `SandboxClaim` watch (`Status.PodIPs`); `batch.connect(member)` seeds `Sandbox._pod_ip` and `_sandbox_id` with **0 `GET`s**; `still_reaches()` checks watched `READY` + `sandbox_name` + `pod_ip`. |
+| **`19/N`** (`#2166`) | Open (`0081826e`) | Create-path pacing (`WarmCredit` + `_reserve_create_slot`), deadline-bounded `_send_create(timeout=_create_call_timeout(deadline))`, `_is_transport_error` excludes `BatchError`, and sequence-numbered `_pending_deletes` prevents late-delete races against create retries. |
+| **`20/N`–`23/N`** | Stacked (`b7a59f29..d314209e`) | Paginated relist + stripped `managedFields` (`20/N`), `V1Lease` typing (`21/N`), `_claim_collection_api` with `read=False` (`22/N`), and `acquire(..., pod_annotations=...)` (`23/N`). |
+| **`24/N`–`25/N`** | Stacked (`b4cf6575..3a25143c`) | Merges `upstream/main` (`bcf5d4a0`) into the stack (`24/N`) and layers `FleetConfig(claim_mode="batch")` cleanly on top (`25/N`, `origin/feat/rl-batch-claim-mode`). |
+
+### 2.2 Already Completed in `25/N` (`3a25143c`) — Do NOT Redo
+1. **Upstream `main` reconciliation:** `runtime_container`, `Cluster._sandbox_client_lock` / `_k8s_helper_lock`, `Testing` (`FakeFleet`/`FakeHandle`), `verify_teardown()`, and `reaper.py` orphan protection are already merged and wired.
+2. **Zero-`GET` hot path on `acquire()` + watched `is_alive()`:**
+   - `fleet.py:1648-1649` only calls `handle.record_pod_identity()` when `claim is None` (`claim_mode="per_claim"`).
+   - `handles.py:399-404` short-circuits `is_alive()` via `self._batch_claim.still_reaches()` with `0` `GET`s when `self.pod_uid is None`, falling through to `read_namespaced_pod_status` if healthy or if `batch.err() is not None` or `rebaselined` is `True`.
+   - `tests/test_batch_claims.py:337-392` (`test_batch_acquire_skips_pod_get_and_is_alive_checks_the_batch_watch`) explicitly locks down `h.pod_uid is None` on acquire and the exact `read_pod.call_count` sequence (`0 -> 1 -> 1 -> 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7`). **Preserve this exact contract.**
+3. **Native `pod_annotations` (`23/N`):** `batch_claims.py:165-166` passes `pod_annotations=pod_annotations` directly to `batch.acquire(...)`.
+
+---
+
+## Part 3: Detailed Specification of Workstream B Items (`P0-1` – `P2-8`)
+
+### `P0-1`: Fix Stopped / Released `SandboxBatch` Crash in `BatchClaim.release()` & Fix `FakeBatch.release_member`
+
+#### Problem Caught Between `15/N` and `25/N`
+In `15/N` (`clients/python/agentic-sandbox-client/k8s_agent_sandbox/sandbox_batch.py`), `SandboxBatch.release_member(member)` starts with `self._check_healthy()`, which **always raises `BatchError`** once:
+- `self._error is not None` (e.g. `BatchLeaseExpiredError` after temporary API partition or Lease loss), **or**
+- `self._released` is `True` (after `batch.release()` ran during `teardown()`).
+
+In `25/N`, `FakeBatch.release_member` (`tests/test_batch_claims.py:83-86`) omitted `_check_healthy()`, masking three real bugs against `SandboxBatch`:
+1. **Mid-run release of a handle from a replaced batch (`test_stopped_batch_is_replaced_and_old_members_still_release`, line 286):** `c.batches[0].error = BatchError("lease lost")` -> `f.release(old)` calls `BatchClaim.release()` -> `batch.release_member(member)` **raises `BatchError`** -> `SandboxFleet.release()` (`fleet.py:1737-1744`) puts `old` back into `self._handles`, never decrements `c.active_claims` or `self._claims_reserved`, and crashes the caller!
+2. **Teardown after batch replacement (`test_teardown_releases_every_batch`, line 202):** `f.teardown()` calls `self.release_all()` -> `f.release(old)` -> **raises `BatchError` out of `_teardown()`**, aborting the entire pool/template/claim sweep after `finally:`!
+3. **In-flight acquire finishing during teardown (`test_claim_landing_after_teardown_is_released_through_the_batch`, line 251):** `f.teardown()` runs `batch.release()` (`DELETECOLLECTION` + `self._released = True`) while `batch.acquire()` is in flight; when `torn` is detected (`fleet.py:1660-1668`), `claim.release()` calls `batch.release_member(member)` -> raises `BatchError("... has been released")`, **leaving the late-created `SandboxClaim` (created after `DELETECOLLECTION` ran!) leaked on the cluster**!
+
+#### Required Fix
+1. **`agent_sandbox_rl/batch_claims.py`:**
+   - Add `cluster: "Cluster" = field(repr=False)` (or optional with default `None` for standalone unit tests) to `BatchClaim`, passed by `BatchClaims.acquire(cluster, pool, ...)`.
+   - Update `BatchClaim.release()` (`batch_claims.py:77-79`):
+     ```python
+     def release(self) -> None:
+       try:
+         self.batch.release_member(self.member)
+       except BatchError:
+         # On a healthy batch, release_member() records the deletion first so the
+         # live watch does not treat it as MemberState.LOST. Once the batch is
+         # stopped (batch.err() is not None) or already released by teardown, its
+         # watch is dead and release_member() raises BatchError — delete the claim
+         # directly (404-safe) so neither a replaced batch's old handles nor an
+         # acquire landing after DELETECOLLECTION leaks a live pod or crashes release.
+         if self.cluster is not None:
+           self.cluster.resources.delete_claim(self.member.claim_name)
+         else:
+           raise
+     ```
+     *(Import `BatchError` from `k8s_agent_sandbox` at top of `batch_claims.py`.)*
+     Note that non-`BatchError` exceptions (e.g. `RuntimeError("forbidden")` or `ApiException(403)`) still propagate, preserving `test_teardown_releases_batches_when_a_handle_release_fails` (`tests/test_batch_claims.py:215-225`)!
+2. **`tests/test_batch_claims.py`:**
+   - Make `FakeBatch.release_member` match `15/N` `SandboxBatch._check_healthy()`:
+     ```python
+     def release_member(self, member):
+       if self.released:
+         raise BatchError(f"batch {self.batch_id} has been released")
+       if self.error is not None:
+         raise self.error
+       with self._lock:
+         self._members.pop(member.claim_name, None)
+       self.released_members.append(member.claim_name)
+     ```
+   - Update `test_claim_landing_after_teardown_is_released_through_the_batch` (line 267) and `test_stopped_batch_is_replaced_and_old_members_still_release` (line 296) to assert `c.resources.delete_claim` deleted the claim directly (with `not old.sandbox.terminate.called`, `c.active_claims` decremented, and `f.teardown()` succeeding cleanly).
+
+---
+
+### `P0-2`: Use Shared `cluster.core_api` Instead of `exec_core_api()` for REST `read_namespaced_pod_status`
+
+#### Problem
+In `agent_sandbox_rl/handles.py`:
+- Line `372` (`record_pod_identity()`) and line `408` (`is_alive()`) call `self._cluster.exec_core_api().read_namespaced_pod_status(...)`.
+- `Cluster.exec_core_api()` (`cluster.py:84-98`) builds a **brand-new `client.ApiClient` + `urllib3.PoolManager` per OS thread** solely because `kubernetes.stream.stream()` mutates `ApiClient` during WebSocket upgrades (`connect_get_namespaced_pod_exec`).
+- Plain REST `GET /status` (`read_namespaced_pod_status`) is 100% thread-safe on `self._cluster.core_api`. Using `exec_core_api()` on REST calls creates hundreds of extra `urllib3` connection pools across worker/executor threads (and in `per_claim` mode runs on every `acquire()`).
+
+#### Required Fix
+1. In `agent_sandbox_rl/handles.py` lines `372` and `408`, replace `self._cluster.exec_core_api().read_namespaced_pod_status(...)` with `self._cluster.core_api.read_namespaced_pod_status(...)`.
+2. Keep `self._cluster.exec_core_api()` in `handles.py:351` (`exec_in_pod`) and `handles.py:446` (`SandboxSession`) — those use `stream()`.
+3. Update the two unit-test mocks in `tests/test_fail_fast.py` (`line 319` and `line 354`: set `cluster.core_api = ...` alongside or instead of `cluster.exec_core_api.return_value`) so all `test_fail_fast.py` and `test_batch_claims.py` tests pass with the exact same `read_pod.call_count` assertions.
+
+---
+
+### `P0-3`: Per-Batch `BatchWatchdog` (`fail_fast` Parity for `claim_mode="batch"`)
+
+#### Problem
+In `fleet.py:1531-1538`, `ClaimWatchdog` only runs when `batch_claims is None` (`claim_mode="per_claim"`):
+- Why `ClaimWatchdog` couldn't be used per-acquire in `claim_mode="batch"`: `SandboxBatch.acquire()` generates `<batch_id>-<seq>` internally, and spawning 1,000 per-claim polling threads would recreate the exact `N`-GET storm `claim_mode="batch"` eliminates!
+- Consequence today: when `claim_mode="batch"` hits a cold start with a broken image or startup crash (`ImagePullBackOff`, `ErrImagePull`, `InvalidImageName`, `CrashLoopBackOff`, `CreateContainerConfigError`), `batch.acquire()` hangs for the entire `effective_claim_timeout()` (`120s`–`600s`) instead of failing fast in ~`10s` with `SandboxStartError` (`reason`, `message`, `pod_name`, `image`) and `obs.claim(cluster, "start_failed")`!
+
+#### Required Design (Zero Overhead on Warm Adoptions!)
+Add a lightweight **per-batch `BatchWatchdog`** (1 daemon thread per opened `SandboxBatch` when `fail_fast.enabled` is `True`):
+1. **Zero K8s `GET`s on warm adoptions:**
+   - Track `first_seen_at: dict[str, float]` for non-`READY` members returned by `batch.members()` (pure in-memory read of `SandboxBatch`'s watch table — `0` HTTP calls!).
+   - Prune any `claim_name` from `first_seen_at` as soon as it reaches `MemberState.READY` or disappears from `batch.members()`.
+   - Warm-pool adoptions become `READY` in `<1s`, **long before** `fail_fast.initial_delay_s` (`10.0s` default) — so healthy warm runs perform **zero** `CoreV1Api` `GET`s!
+2. **Cold-start inspection after `initial_delay_s`:**
+   - Every `fail_fast.poll_interval_s` (`5.0s` default), for members still in `MemberState.PENDING` whose `now - first_seen_at[claim_name] >= fail_fast.initial_delay_s`:
+     - Resolve `pod_name`: use `member.sandbox_name` if populated on `Member`, else fall back to reading the `SandboxClaim` (`status.sandbox.Name`) via `failfast.py` helpers (same logic `ClaimWatchdog` uses, via shared `cluster.core_api` / `cluster.custom_api` with bounded `_request_timeout`).
+     - Run `failfast.classify_pod(pod, ...)` (`failfast.py`).
+     - When `classify_pod` returns a terminal `PodVerdict`:
+       1. Record `verdicts[claim_name] = verdict` under lock **before** releasing the member.
+       2. Call `batch.release_member(member)` (falling back to `cluster.resources.delete_claim(claim_name)` if `BatchError` is raised because the batch stopped). In `15/N` (`batch_state.py:461-462`), `release_member` marks `claim_name` in `self._released`, signals the per-claim `waiter` event immediately in memory (no watch round-trip needed!), wakes `batch.acquire()` with `BatchError(f"acquired member '{claim_name}' was released before it was Ready")`, and deletes the claim under `batch._in_flight` without a duplicate delete in `_drop_acquired`!
+3. **Translating into `SandboxStartError` in `fleet.py`:**
+   - In `fleet.py:_acquire_reserved`: when `batch_claims.acquire(...)` raises `BatchError` (either `BatchError("acquired member '<claim_name>' was released before it was Ready")` or `TerminalMemberError` with `exc.member.claim_name`), extract `claim_name` and check `batch_claims.pop_verdict(cluster.name, claim_name)`!
+   - If a `PodVerdict` is present:
+     - Record `self._obs.claim(cluster.name, "start_failed")` (instead of `"error"`).
+     - Raise `SandboxStartError(verdict.reason, verdict.message, claim_name=claim_name, pod_name=verdict.pod_name, image=task.image) from exc`!
+4. **Lifecycle:** Stop the watchdog thread cleanly whenever a batch is replaced (`_batch_for` sees `batch.err() is not None`) or released (`BatchClaims.release_all()`).
+5. **Unit tests (`tests/test_batch_claims.py`):**
+   - Test that warm acquires (`READY` before `initial_delay_s`) trigger `0` pod `GET`s even with `fail_fast.enabled=True`.
+   - Test that a stuck `CREATING` member with `ImagePullBackOff` pod status wakes `fleet.acquire()` with `SandboxStartError(reason="ImagePullBackOff", ...)` and increments `start_failed` in `RunReport`.
+   - Preserve `test_claim_timeout_overrides_ready_timeout_for_batch_claims` (`tests/test_batch_claims.py:161-170`).
+
+---
+
+### `P0-4`: Sweep & Verify Batch `Lease`s in `reaper.py` and `SandboxFleet.verify_teardown()`
+
+#### Problem
+Every `SandboxBatch` creates a `coordination.k8s.io/v1` `Lease` carrying `self.config.labels` (including `agent-sandbox-rl/managed-by=agent-sandbox-rl` and `agent-sandbox-rl/run-id=<run_id>`) plus `agent-sandbox.sigs.k8s.io/batch-id=<batch_id>`. Every batch `SandboxClaim` has a `metadata.ownerReferences` entry pointing to that `Lease`.
+Currently:
+- `Resources` (`agent_sandbox_rl/resources.py`) has no `list_leases` / `delete_lease` helpers (`CoordinationV1Api`).
+- `reaper.py` (`reap()` / `reap_orphans()`) sweeps claims, warmpools, templates, sandboxes, pods, and prepull daemonsets — **not** batch `Lease`s. Orphaned Leases linger until `batch_reaper` runs (if deployed), and deleting the `Lease` lets Kubernetes GC clean up owned claims automatically.
+- `SandboxFleet.verify_teardown()` checks claims, pools, templates, sandboxes, and pods — **not** batch `Lease`s, so a leaked Lease (and still-running renewal thread!) passes `verify_teardown()` silently.
+
+#### Required Fix
+1. **`Cluster` (`cluster.py`) & `Resources` (`resources.py`):**
+   - Add lazy or eager `coordination_api = client.CoordinationV1Api(self.api_client)` on `Cluster` and pass it (optional, defaulting to `None` so existing `Resources(custom_api, core_api, ns)` call sites and unit-test fixtures don't break!) into `Resources`.
+   - Add `list_leases(label_selector: str)` and `delete_lease(name: str)` to `Resources`:
+     - **Safety guard:** refuse empty `label_selector` (`if not label_selector: raise ValueError(...)`) AND add `--` / selector guard `agents.x-k8s.io/batch-id` or the caller's `RUN_ID_LABEL` / `MANAGED_BY_LABEL` selector so `kube-node-lease` or controller leader-election Leases (like `agent-sandbox-controller-leader`) can **never** be matched! Even better: only return Leases that **also** carry the `agent-sandbox.sigs.k8s.io/batch-id` label (`BATCH_ID_LABEL` from `k8s_agent_sandbox.batch_utils`), so non-batch Leases in the namespace are structurally untouchable!
+     - `delete_lease` ignores `404`, matching `delete_claim`.
+2. **`reaper.py`:**
+   - In `_reap_with_cluster`, list and delete matching batch Leases (only for runs NOT protected by `protect_claims_of`!) and include `"leases": deleted_count` in the returned `counts` dict (or `0` when none). Check existing `tests/test_reaper.py` assertions on `counts` keys first so existing reaper tests don't break if they assert exact dict equality! *(Important: inspect `tests/test_reaper.py` before deciding whether `"leases"` is always present or only when `coordination_api` is wired / non-zero — keep 100% backward compatibility with `tests/test_reaper.py`!)*
+3. **`SandboxFleet.verify_teardown()` (`fleet.py`):**
+   - Include leaked run-scoped batch Leases in `verify_teardown()`'s check so a leaked Lease fails verification cleanly.
+4. **Unit tests:** Add unit tests covering Lease reaping (including verifying leader-election Leases without `batch-id` are never touched) and `verify_teardown()` Lease detection.
+
+---
+
+### `P1-5`: Parallelize `SandboxFleet.release_all()` and `SandboxFleet.acquire_batch()`
+
+#### Problem
+1. **`SandboxFleet.release_all()` (`fleet.py:1975-1982`):** Loops **serially** (`for h in list(self._handles): self.release(h)`). At `N = 1,000` handles with ~`50–75ms` `DELETE` RTT, serial `release_all()` takes **50–75 seconds** even though `SandboxBatch.release_member` (`_in_flight` semaphore) and Kubernetes API handle concurrent deletes cleanly.
+2. **`SandboxFleet.acquire_batch(tasks)` (`fleet.py:1696-1697`):** Runs `[self.acquire(t) for t in tasks]` **serially** (`return [self.acquire(t) for t in tasks]`)! While `AsyncSandboxFleet.acquire_batch` uses `asyncio.gather`, synchronous callers of `SandboxFleet.acquire_batch(tasks)` (such as step-synchronous RL loops) pay `N × RTT` sequentially instead of driving concurrent `batch.acquire()` calls!
+
+#### Required Fix
+1. **`SandboxFleet.release_all()`:**
+   - Snapshot `handles = list(self._handles)` (for `len <= 1`, keep direct single-thread path so trivial unit tests have zero thread overhead).
+   - For `len(handles) > 1`, fan `self.release` out over `ThreadPoolExecutor(max_workers=min(len(handles), max(1, self.config.max_concurrent)))`.
+   - **Error semantics:** Wait for **all** submitted `self.release(h)` futures to complete before re-raising the first exception (if any), rather than aborting after the first failure as the serial loop did — that way 1 failed handle release still releases the other `N - 1` handles AND `test_teardown_releases_batches_when_a_handle_release_fails` (`tests/test_batch_claims.py:215-225`) still raises `RuntimeError` and still executes `finally: self._batch_claims.release_all()`!
+2. **`SandboxFleet.acquire_batch(tasks)`:**
+   - For `len(tasks) == 0`, return `[]`; for `len(tasks) == 1`, return `[self.acquire(tasks[0])]`.
+   - For `len(tasks) > 1`, dispatch `self.acquire(t)` across `ThreadPoolExecutor(max_workers=min(len(tasks), max(1, self.config.max_concurrent)))`, **preserving the exact input `tasks` order** in the returned `list[SandboxHandle]`.
+   - **Partial-failure rollback:** If one or more `acquire(t)` calls raise, cancel any not-yet-started futures, wait for in-flight futures to finish, **release every handle that succeeded in this `acquire_batch` call** (best-effort, logging warnings on release failure) so a failed `acquire_batch` leaks zero sandboxes/slots, and re-raise the first acquire exception! *(Check `AsyncSandboxFleet.acquire_batch` in `async_fleet.py` as well — verify whether it should share the same clean partial-failure rollback or if any existing test tests partial `acquire_batch` failure.)*
+3. **Unit tests:** Add tests verifying:
+   - `acquire_batch` runs concurrently (wall time `< 2×` single-acquire sleep for 8 tasks), preserves task order, and rolls back already-acquired handles when task `k` fails.
+   - `release_all` runs concurrently, attempts all handles even if one raises, and re-raises the error after draining.
+
+---
+
+### `P1-6`: Auto-Size `Cluster` `connection_pool_maxsize` & Skip Redundant On-Demand `_ensure_pool` RPCs
+
+#### Problem A: `17/N` `check_pool_size` + High-Concurrency `urllib3` Pool Sizing
+- In `cluster.py`, `Cluster` constructs `api_client` with a hardcoded or default `connection_pool_maxsize` (check `_build_api_client` in `cluster.py` — currently `1000` or config-driven).
+- In `17/N` (`k8s_agent_sandbox/batch_utils.py:check_pool_size`), `claim_batch` checks `if pool_size < max_in_flight + 2: raise ValueError(...)`! If a user configures `BatchClaimConfig(max_in_flight=1000)` (or `FleetConfig(max_concurrent=2000)`), `claim_batch` raises `ValueError` immediately because `1000 < 1002`!
+
+#### Problem B: Redundant K8s RPCs on Dynamic On-Demand Pool Hits (`fleet.py:1501-1511`)
+Look at `fleet.py:1501-1511` in `_acquire_reserved`:
+```python
+if on_demand:
+  cluster = self.placement.select(task.image, self.registry)
+  pool = self._ensure_pool(cluster, task.image, 1)
+  key = (cluster.name, task.image)
+  with self._lock:
+    created_pool = key not in self._ondemand
+    if created_pool:
+      self._ondemand.add(key)
+```
+Every single dynamic `acquire()` for an image **already** in `self._ondemand` still calls `self._ensure_pool(cluster, task.image, 1)` (`GET`/`CREATE` Template + `GET`/`CREATE` WarmPool = **2 extra K8s API calls on every acquire** in Tunix / unplanned dynamic streaming mode)!
+
+#### Required Fix
+1. **`connection_pool_maxsize` (`cluster.py` / `fleet.py`):**
+   - Ensure `Cluster`'s `api_client.configuration.connection_pool_maxsize` (and `rest_client.pool_manager` if already initialized, or pass desired pool size when `SandboxFleet` wires clusters / builds `ClusterRegistry`) is at least `max(1000, max_concurrent + 32, (batch_claims.max_in_flight or 20) + 16)`.
+   - Note: `urllib3.PoolManager(maxsize=N)` reads `configuration.connection_pool_maxsize` **at `ApiClient.__init__` time**! So in `Cluster` (and/or `SandboxFleet.__init__` when `registry` is already constructed), if `api_client.configuration.connection_pool_maxsize < needed`, either set it before `ApiClient` creation (default path when `SandboxFleet` builds `ClusterRegistry` from `config.clusters`) AND if an existing `Cluster` was passed with a smaller `connection_pool_maxsize`, update `configuration.connection_pool_maxsize = needed` (which satisfies `17/N`'s `check_pool_size`, since `read_api_client_pool_size` reads `api_client.configuration.connection_pool_maxsize`!) and rebuild/resize `rest_client.pool_manager` if safe.
+2. **On-demand fast path (`fleet.py:1501-1524`):**
+   - Check `key = (cluster.name, task.image)` against `self._ondemand` **before** calling `self._ensure_pool(cluster, task.image, 1)` (using a per-`(cluster.name, task.image)` lock so concurrent first acquires for the same unplanned image wait for `_ensure_pool` to finish rather than racing ahead of pool creation, while subsequent acquires skip `_ensure_pool` in `O(1)` memory (`pool = self.config.pool_name(task.image)`) with **0** K8s RPCs!).
+   - Keep rollback (`self._ondemand.discard(key)`) on failure when `created_pool` is `True`.
+3. **Unit tests:**
+   - Test `BatchClaimConfig(max_in_flight=1200)` passes `17/N`'s `check_pool_size` without `ValueError`.
+   - Test 10 dynamic `acquire()` calls for the same unplanned image call `_ensure_pool` **once** (not 10 times), including under concurrent threads.
+
+---
+
+### `P2-7`: Raise `AsyncSandboxFleet._thread_pool()` Ceiling for `1k–2k` Scale
+
+#### Problem
+In `agent_sandbox_rl/async_fleet.py:73`:
+```python
+workers = min(1024, max(64, mc + 2 * win + 16))
+```
+At `max_concurrent=1000` (or `2000` in our 2k burst / pipelined SWE-bench runs), `pipelined` overlaps `max_concurrent` active episodes + `window_size` prefetch + `window_size` unwarm, hitting the `1024` thread cap and queueing `acquire` / `exec` / `release` calls inside Python before they ever reach `SandboxBatch`!
+
+#### Required Fix
+1. Raise the cap in `async_fleet.py:73` to `min(4096, max(64, mc + 2 * win + 16))` (ensuring `workers >= min(4096, mc + 64)`).
+2. Add a unit test verifying `AsyncSandboxFleet(FleetConfig(max_concurrent=1500))._thread_pool()._max_workers > 1500`.
+
+---
+
+### `P2-8`: Actionable `work_budget` Hint on `SandboxLostError` + `FakeFleet` `claim_expires_at` Parity
+
+#### Problem
+1. **`SandboxLostError` diagnostics (`handles.py` / `exceptions.py`):**
+   - In `claim_mode="batch"`, every claim gets a controller-enforced `spec.lifecycle.shutdownTime` (`work_budget`, default `7200s`). If a rollout runs past `handle.claim_expires_at`, the controller deletes the claim and pod, and `handle.exec()` raises `SandboxLostError(pod_name, claim_name, cause)` with a generic `"pod died or was evicted"` message — giving the user zero indication that `batch_claims.work_budget` expired!
+2. **`FakeFleet` / `FakeHandle` parity (`testing.py`):**
+   - On a real `SandboxFleet(FleetConfig(claim_mode="batch"))`, `h.claim_expires_at` is a `float` (`started + effective_claim_timeout() + batch_claims.work_budget + BATCH_SHUTDOWN_MARGIN_SECONDS`), and `None` when `claim_mode="per_claim"` (`tests/test_batch_claims.py:324, 400`).
+   - On `FakeFleet(FleetConfig(claim_mode="batch"))`, `h._batch_claim` is `None`, so `h.claim_expires_at` silently returns `None` — breaking RL loops that schedule episode cutoffs or checkpointing before `h.claim_expires_at` when tested against `FakeFleet`!
+
+#### Required Fix
+1. **`handles.py` / `exceptions.py`:**
+   - In `SandboxHandle._raise_if_lost` (`handles.py:417-431`), check `exp = self.claim_expires_at`: when `exp is not None and time.monotonic() >= exp`, pass `expired=True` (or an explicit hint string) to `SandboxLostError` so `str(err)` clearly states that the batch claim reached its `shutdownTime` (`FleetConfig.batch_claims.work_budget`)! Keep `SandboxLostError(pod_name, claim_name, cause)` positional signature backward-compatible (`expired: bool = False` keyword-only).
+2. **`testing.py` (`FakeFleet` / `FakeHandle`):**
+   - Allow `FakeHandle` to expose `claim_expires_at` matching `SandboxFleet`: `None` when `claim_mode == "per_claim"`, and `time.monotonic() + config.effective_claim_timeout() + config.batch_claims.work_budget + 60` when `claim_mode == "batch"` (without importing `kubernetes` if `testing.py` avoids heavy imports — note line 41 docstring: *"Importing this module pulls nothing beyond the package itself"*, so use constant `60` or `constants` rather than importing `k8s_agent_sandbox` at module top level in `testing.py`!).
+3. **Unit tests:**
+   - Test `SandboxLostError` message mentions `work_budget` / `shutdownTime` when `claim_expires_at <= time.monotonic()`, and does **not** mention it when `claim_expires_at > time.monotonic()` or `None`.
+   - Test `FakeFleet(FleetConfig(claim_mode="batch")).acquire(t).claim_expires_at is not None` and `FakeFleet(FleetConfig(claim_mode="per_claim")).acquire(t).claim_expires_at is None`, while keeping `testing.py`'s import-isolation test passing!
+
+---
+
+## Part 4: Verification Checklist Before Reporting Done
+
+- [ ] `pytest examples/agent-sandbox-rl/tests` passes 100% (all existing tests + new unit tests for `P0-1` through `P2-8`).
+- [ ] `git diff origin/feat/rl-batch-claim-mode --stat` touches **only** files under `examples/agent-sandbox-rl/`.
+- [ ] `test_batch_acquire_skips_pod_get_and_is_alive_checks_the_batch_watch` still asserts `read_pod.call_count == 0 and h.pod_uid is None` on batch `acquire()`.
+- [ ] `testing.py` still imports nothing outside `agent_sandbox_rl` and stdlib (`test_testing.py` import check passes).
+- [ ] Zero internal URLs, internal cloud project names, or non-OSS references anywhere in code, comments, or commit messages.
