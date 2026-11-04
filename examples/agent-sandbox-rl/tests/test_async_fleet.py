@@ -249,3 +249,25 @@ async def test_async_teardown_verify_reaches_the_sync_fleet(make_cluster, monkey
   assert await f.teardown() is None
   assert await f.teardown(verify=True) == {"solo": {"claims": 0}}
   assert await f.verify_teardown() == {"solo": {"claims": 0}}
+
+
+async def test_async_acquire_batch_rolls_back_on_partial_failure(make_cluster):
+  from agent_sandbox_rl import ClusterRegistry
+  c = make_cluster("solo")
+  f = _fleet(ClusterRegistry([c]), max_concurrent=4)
+  tasks = f.load_tasks(["img-0", "img-1", "img-2", "img-3"])
+  await f.plan()
+  bad_pool = f.plan_.for_image("img-2").pool
+  orig = c.sandbox_client.create_sandbox.side_effect
+
+  def fail_on_two(**kw):
+    if kw.get("warmpool") == bad_pool:
+      raise RuntimeError("async boom")
+    return orig(**kw)
+
+  c.sandbox_client.create_sandbox.side_effect = fail_on_two
+  with pytest.raises(RuntimeError, match="async boom"):
+    await f.acquire_batch(tasks)
+  assert f.handles() == []
+  assert c.active_claims == 0 and f._fleet._claims_reserved == 0
+  f.close()

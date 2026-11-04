@@ -182,14 +182,37 @@ class AsyncSandboxFleet:
                                  pod_annotations=pod_annotations)
 
   async def acquire_batch(self, tasks: list[Task]) -> list[SandboxHandle]:
-    return list(await asyncio.gather(*(self.acquire(t) for t in tasks)))
+    task_list = list(tasks)
+    if not task_list:
+      return []
+    outcomes = await asyncio.gather(
+        *(self.acquire(t) for t in task_list), return_exceptions=True)
+    first_err = next((o for o in outcomes if isinstance(o, BaseException)), None)
+    if first_err is not None:
+      acquired = [o for o in outcomes if isinstance(o, SandboxHandle)]
+      if acquired:
+        rb = await asyncio.gather(
+            *(self.release(h) for h in acquired), return_exceptions=True)
+        for h, res in zip(acquired, rb):
+          if isinstance(res, BaseException):
+            logger.warning("acquire_batch: failed to roll back handle %s: %s",
+                           h.claim_name, res)
+      raise first_err
+    return [o for o in outcomes if isinstance(o, SandboxHandle)]
 
   async def release(self, handle: SandboxHandle, *, delete_snapshots: bool = False):
     return await self._to_thread(self._fleet.release, handle,
                                  delete_snapshots=delete_snapshots)
 
   async def release_all(self):
-    await asyncio.gather(*(self.release(h) for h in self.handles()))
+    handles = self.handles()
+    if not handles:
+      return
+    outcomes = await asyncio.gather(
+        *(self.release(h) for h in handles), return_exceptions=True)
+    first_err = next((o for o in outcomes if isinstance(o, BaseException)), None)
+    if first_err is not None:
+      raise first_err
 
   # --- GKE Pod Snapshots (blocking SDK calls, run on the pool) ------------- #
   # The handle's snapshot methods block (the SDK extension is synchronous); use
