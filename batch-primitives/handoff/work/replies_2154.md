@@ -15,3 +15,7 @@
 ## `vicentefb` issue comment (`6619500469`, `SIGSTOP` e2e case next to `SIGKILL`)
 
 > Rebased onto `6feedc5c` and added `test_reaper_leaves_a_paused_drivers_batch_within_lease_duration` next to the `SIGKILL` test in `test/e2e/clients/python/test_batch_e2e.py` (`73a16a7a`): it pauses the driver with `SIGSTOP` past one renew interval (`11s` < `lease_duration=30s`), runs `batch_reaper.reap` and checks nothing is reaped, resumes with `SIGCONT`, waits for the next Lease renewal, and checks `batch.err() is None`.
+
+## CodeRabbit thread 3 (`batch_utils.py:192-197`, Pydantic model for `lease_owner_reference`)
+
+> Declining this suggestion. Neither `batch_utils.lease_owner_reference()` nor `K8sHelper.create_sandbox_claim()` / `AsyncK8sHelper.create_sandbox_claim()` is a caller-facing SDK input surface (callers never supply `ownerReferences` on `create_sandbox()`, `claim_batch()`, or `acquire()`). `lease_owner_reference()` is the sole producer, already validates `metadata.name` and `metadata.uid` once per batch handle (`BatchError`), and passes the static wire dict straight into `CustomObjectsApi` alongside `lifecycle` and `volume_claim_templates` without re-validating and re-serializing a Pydantic model on every claim in a batch create burst.
