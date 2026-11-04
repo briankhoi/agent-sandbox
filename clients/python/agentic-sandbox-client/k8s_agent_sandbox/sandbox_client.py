@@ -412,9 +412,9 @@ class SandboxClient(Generic[T]):
                 characters. Generated if omitted.
             create_rps: Maximum claim creates started per second. Defaults to 50.
             max_in_flight: Maximum claim creates and member deletes in flight at once. Defaults to
-                20. The client's Kubernetes API connection pool must hold at least
-                ``max_in_flight + 2``, since the batch's watch and its Lease renewal each need a
-                connection too.
+                20, clamped to ``pool_size - 2`` when the client's Kubernetes API connection pool
+                is smaller. The pool must hold at least ``max_in_flight + 2``, since the batch's
+                watch and its Lease renewal each need a connection too.
             work_budget: Seconds the caller expects to work with the batch after it is Ready;
                 part of each claim's ``shutdownTime``. Defaults to 3600.
             quorum_timeout: Seconds after the last claim create that a group may take to reach
@@ -424,8 +424,8 @@ class SandboxClient(Generic[T]):
             lease_duration: Seconds the batch Lease stays valid without renewal. Defaults to 60.
 
         Raises:
-            ValueError: If an argument is invalid, or the client's connection pool is smaller than
-                ``max_in_flight + 2``.
+            ValueError: If an argument is invalid, an explicit ``max_in_flight`` exceeds
+                ``pool_size - 2``, or the client's connection pool holds fewer than 3 connections.
             SandboxWarmPoolNotFoundError: If a group's warm pool doesn't exist.
             SandboxTemplateNotFoundError: If a warm pool's template doesn't exist, or it names none.
             BatchExistsError: If a Lease or claims with this batch id already exist.
@@ -447,7 +447,13 @@ class SandboxClient(Generic[T]):
             groups, labels, batch_id, create_rps, max_in_flight, work_budget, quorum_timeout,
             lease_duration,
         )
-        batch_utils.check_pool_size(self.k8s_helper.api_pool_size(), args.max_in_flight)
+        args = args._replace(
+            max_in_flight=batch_utils.check_pool_size(
+                self.k8s_helper.api_pool_size(),
+                args.max_in_flight,
+                explicit=max_in_flight is not None,
+            )
+        )
         batch = SandboxBatch._claim(self, args, namespace, self._trace_context_annotations())
         self._register_batch(batch)
         return batch

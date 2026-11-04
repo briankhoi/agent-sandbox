@@ -141,8 +141,13 @@ class K8sHelper:
         self.coordination_v1_api = client.CoordinationV1Api(_api_client_without_retries(api_client))
 
     def api_pool_size(self) -> int | None:
-        """Returns the size of the Kubernetes API connection pool that creates and the watch use."""
-        return cast("int | None", self.custom_objects_api.api_client.configuration.connection_pool_maxsize)
+        """Returns the size of the Kubernetes API connection pool that creates and the watch use, or
+        ``None`` if it is unbounded."""
+        # urllib3 backs its pool with LifoQueue(maxsize), which treats 0 as no limit.
+        maxsize = cast(
+            "int | None", self.custom_objects_api.api_client.configuration.connection_pool_maxsize
+        )
+        return maxsize or None
 
     def create_sandbox_claim(
         self,

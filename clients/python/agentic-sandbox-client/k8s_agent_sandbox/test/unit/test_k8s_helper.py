@@ -1133,6 +1133,12 @@ class TestK8sHelperPoolSize(unittest.TestCase):
         self.assertEqual(helper.api_pool_size(), 7)
         self.assertIsNone(helper.injected_api_client)
 
+    def test_a_zero_limit_reads_as_unbounded(self, _):
+        configuration = client.Configuration()
+        configuration.connection_pool_maxsize = 0
+        with client.ApiClient(configuration=configuration) as injected:
+            self.assertIsNone(K8sHelper(api_client=injected).api_pool_size())
+
     def test_rejects_an_invalid_pool_size(self, _):
         cases = {
             "zero": (0, None),

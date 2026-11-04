@@ -16,6 +16,7 @@
 
 import hashlib
 import json
+import logging
 import math
 import os
 import random
@@ -43,6 +44,8 @@ from .constants import (
 from .exceptions import BatchError
 from .models import BatchGroup
 from .pod_metadata import validate_labels
+
+logger = logging.getLogger(__name__)
 
 CLOCK_SKEW_MARGIN = 5
 BATCH_DEFAULT_LEASE_DURATION_SECONDS = 60
@@ -238,21 +241,40 @@ def positive_number(name: str, value: object, default: float) -> float:
     return float(value)
 
 
-def check_pool_size(pool_size: int | None, max_in_flight: int) -> None:
+def check_pool_size(pool_size: int | None, max_in_flight: int, *, explicit: bool) -> int:
     """Checks that the Kubernetes API connection pool fits ``max_in_flight`` creates and
-    ``BATCH_POOL_HEADROOM`` more. ``None`` means the pool is unbounded.
+    ``BATCH_POOL_HEADROOM`` more, clamping a default ``max_in_flight`` down when at least one
+    create slot remains. ``None`` means the pool is unbounded.
 
     Raises:
-        ValueError: If the pool is too small.
+        ValueError: If an explicit ``max_in_flight`` doesn't fit, or the pool holds no create
+            slots.
     """
+    if pool_size is None:
+        return max_in_flight
+    available = pool_size - BATCH_POOL_HEADROOM
+    if max_in_flight <= available:
+        return max_in_flight
+    if not explicit:
+        if available >= 1:
+            logger.info(
+                "Clamping default max_in_flight from %d to %d to fit Kubernetes API connection "
+                "pool size %d (pass pool_size=%d or more for the full default)",
+                max_in_flight,
+                available,
+                pool_size,
+                max_in_flight + BATCH_POOL_HEADROOM,
+            )
+            return available
+        max_in_flight = 1
     needed = max_in_flight + BATCH_POOL_HEADROOM
-    if pool_size is not None and pool_size < needed:
-        raise ValueError(
-            f"max_in_flight={max_in_flight} needs a Kubernetes API connection pool of at least "
-            f"{needed}, but the client's pool holds {pool_size}. Lower max_in_flight, or construct "
-            f"the client with pool_size={needed} or more (for an injected api_client, set "
-            f"connection_pool_maxsize on its configuration)"
-        )
+    remedy = "Lower max_in_flight, or construct" if max_in_flight > 1 else "Construct"
+    raise ValueError(
+        f"max_in_flight={max_in_flight} needs a Kubernetes API connection pool of at least "
+        f"{needed}, but the client's pool holds {pool_size}. {remedy} "
+        f"the client with pool_size={needed} or more (for an injected api_client, set "
+        f"connection_pool_maxsize on its configuration)"
+    )
 
 
 def validate_claim_batch_args(
