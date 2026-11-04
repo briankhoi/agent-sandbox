@@ -1,0 +1,19 @@
+  1 Initial: expAt=(h1 :> 0 @@ h2 :> 0); nextUid=1; rskew=2; alive=(h1 :> TRUE @@ h2 :> TRUE); reaperKilledConnected=FALSE; now=0; nextRenew=(h1 :> 0 @@ h2 :> 0); reaperKilled=FALSE; pc=(h1 :> "idle" @@ h2 :> "idle"); ; rpc="idle"; retried=(h1 :> FALSE @@ h2 :> FALSE); net={}; claims={}; lease=[ exists |-> FALSE, uid |-> 0, rv |-> 0, holder |-> none, renew |-> 0, dur |-> 0, trans |-> 0 ]; myUid=(h1 :> 0 @@ h2 :> 0); rAt=0; took=(h1 :> 0 @@ h2 :> 0); rInt=0; flaky=(h1 :> FALSE @@ h2 :> FALSE); myTrans=(h1 :> 0 @@ h2 :> 0); badRelease=FALSE; wKind=(h1 :> "none" @@ h2 :> "none"); myRv=(h1 :> 0 @@ h2 :> 0); err=(h1 :> FALSE @@ h2 :> FALSE); rounds=(h1 :> 0 @@ h2 :> 0); rRv=0; 
+  2 Tick: now=1
+  3 Claim: expAt=(h1 :> 7 @@ h2 :> 0); nextUid=2; nextRenew=(h1 :> 3 @@ h2 :> 0); pc=(h1 :> "hold" @@ h2 :> "idle"); claims={1}; lease=[ exists |-> TRUE, uid |-> 1, rv |-> 1, holder |-> h1, renew |-> 1, dur |-> 6, trans |-> 0 ]; myUid=(h1 :> 1 @@ h2 :> 0); myRv=(h1 :> 1 @@ h2 :> 0)
+  4 StartRelease: pc=(h1 :> "rel_take" @@ h2 :> "idle")
+  5 Tick: now=2
+  6 Tick: now=3
+  7 Tick: now=4
+  8 Tick: now=5
+  9 Tick: now=6
+ 10 Tick: now=7
+ 11 Tick: now=8
+ 12 ReapList: rpc="waiting"; rAt=8; rInt=2; rRv=1
+ 13 Tick: now=9
+ 14 Tick: now=10
+ 15 ReapDelete: rpc="idle"; lease=[ exists |-> FALSE, uid |-> 0, rv |-> 0, holder |-> none, renew |-> 0, dur |-> 0, trans |-> 0 ]
+ 16 Next: claims={}
+ 17 TakeRead: pc=(h1 :> "rel_dcoll" @@ h2 :> "idle"); net={ [ holder |-> none, renew |-> 0, dur |-> 0, trans |-> 0, from |-> h1, sent |-> 10, kind |-> "dcoll", prec |-> 0, landBy |-> 11 ] }; wKind=(h1 :> "dcoll" @@ h2 :> "none"); 
+ 18 Claim: expAt=(h1 :> 7 @@ h2 :> 16); nextUid=3; nextRenew=(h1 :> 3 @@ h2 :> 12); pc=(h1 :> "rel_dcoll" @@ h2 :> "hold"); claims={2}; lease=[ exists |-> TRUE, uid |-> 2, rv |-> 2, holder |-> h2, renew |-> 10, dur |-> 6, trans |-> 0 ]; myUid=(h1 :> 1 @@ h2 :> 2); myRv=(h1 :> 1 @@ h2 :> 2)
+ 19 Next: ; net={}; claims={}; badRelease=TRUE; 

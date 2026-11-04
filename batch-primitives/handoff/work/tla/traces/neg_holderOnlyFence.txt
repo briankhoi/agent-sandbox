@@ -1,0 +1,17 @@
+  1 Initial: expAt=(h1 :> 0 @@ h2 :> 0); nextUid=1; rskew=2; alive=(h1 :> TRUE @@ h2 :> TRUE); reaperKilledConnected=FALSE; now=0; nextRenew=(h1 :> 0 @@ h2 :> 0); reaperKilled=FALSE; pc=(h1 :> "idle" @@ h2 :> "idle"); ; rpc="idle"; retried=(h1 :> FALSE @@ h2 :> FALSE); net={}; claims={}; lease=[ exists |-> FALSE, uid |-> 0, rv |-> 0, holder |-> none, renew |-> 0, dur |-> 0, trans |-> 0 ]; myUid=(h1 :> 0 @@ h2 :> 0); rAt=0; took=(h1 :> 0 @@ h2 :> 0); rInt=0; flaky=(h1 :> FALSE @@ h2 :> FALSE); myTrans=(h1 :> 0 @@ h2 :> 0); badRelease=FALSE; wKind=(h1 :> "none" @@ h2 :> "none"); myRv=(h1 :> 0 @@ h2 :> 0); err=(h1 :> FALSE @@ h2 :> FALSE); rounds=(h1 :> 0 @@ h2 :> 0); rRv=0; 
+  2 Tick: now=1
+  3 GoFlaky: flaky=(h1 :> TRUE @@ h2 :> FALSE)
+  4 Claim: expAt=(h1 :> 7 @@ h2 :> 0); nextUid=2; nextRenew=(h1 :> 3 @@ h2 :> 0); pc=(h1 :> "hold" @@ h2 :> "idle"); claims={1}; lease=[ exists |-> TRUE, uid |-> 1, rv |-> 1, holder |-> h1, renew |-> 1, dur |-> 6, trans |-> 0 ]; myUid=(h1 :> 1 @@ h2 :> 0); myRv=(h1 :> 1 @@ h2 :> 0)
+  5 Detach: pc=(h1 :> "detaching" @@ h2 :> "idle"); net={ [ holder |-> none, renew |-> 1, dur |-> 6, trans |-> 0, from |-> h1, sent |-> 1, kind |-> "detach", prec |-> 1, landBy |-> 2 ] }; wKind=(h1 :> "detach" @@ h2 :> "none"); 
+  6 GiveUp: pc=(h1 :> "detfail" @@ h2 :> "idle"); wKind=(h1 :> "none" @@ h2 :> "none")
+  7 StartRelease: pc=(h1 :> "rel_take" @@ h2 :> "idle")
+  8 Next: net={}; lease=[ exists |-> TRUE, uid |-> 1, rv |-> 2, holder |-> none, renew |-> 1, dur |-> 6, trans |-> 0 ]
+  9 Attach: pc=(h1 :> "rel_take" @@ h2 :> "attaching"); net={ [ holder |-> h2, renew |-> 1, dur |-> 6, trans |-> 1, from |-> h2, sent |-> 1, kind |-> "takeover", prec |-> 2, landBy |-> 2 ] }; wKind=(h1 :> "none" @@ h2 :> "takeover"); 
+ 10 Next: ; net={}; lease=[ exists |-> TRUE, uid |-> 1, rv |-> 3, holder |-> h2, renew |-> 1, dur |-> 6, trans |-> 1 ]
+ 11 Recv: expAt=(h1 :> 7 @@ h2 :> 7); nextRenew=(h1 :> 3 @@ h2 :> 3); pc=(h1 :> "rel_take" @@ h2 :> "hold"); ; myUid=(h1 :> 1 @@ h2 :> 1); myTrans=(h1 :> 0 @@ h2 :> 1); wKind=(h1 :> "none" @@ h2 :> "none"); myRv=(h1 :> 1 @@ h2 :> 3)
+ 12 Detach: pc=(h1 :> "rel_take" @@ h2 :> "detaching"); net={ [ holder |-> none, renew |-> 1, dur |-> 6, trans |-> 1, from |-> h2, sent |-> 1, kind |-> "detach", prec |-> 3, landBy |-> 2 ] }; wKind=(h1 :> "none" @@ h2 :> "detach"); 
+ 13 Next: ; net={}; lease=[ exists |-> TRUE, uid |-> 1, rv |-> 4, holder |-> none, renew |-> 1, dur |-> 6, trans |-> 1 ]
+ 14 TakeRead: pc=(h1 :> "rel_wait" @@ h2 :> "detaching"); net={ [ holder |-> h1, renew |-> 1, dur |-> 6, trans |-> 1, from |-> h1, sent |-> 1, kind |-> "take", prec |-> 4, landBy |-> 2 ] }; wKind=(h1 :> "take" @@ h2 :> "detach"); 
+ 15 Next: ; net={}; lease=[ exists |-> TRUE, uid |-> 1, rv |-> 5, holder |-> h1, renew |-> 1, dur |-> 6, trans |-> 1 ]
+ 16 Recv: pc=(h1 :> "rel_dcoll" @@ h2 :> "detaching"); ; net={ [ holder |-> none, renew |-> 0, dur |-> 0, trans |-> 0, from |-> h1, sent |-> 1, kind |-> "dcoll", prec |-> 0, landBy |-> 2 ] }; took=(h1 :> 5 @@ h2 :> 0); wKind=(h1 :> "dcoll" @@ h2 :> "detach"); myRv=(h1 :> 5 @@ h2 :> 3); 
+ 17 Next: ; net={}; claims={}; badRelease=TRUE; 

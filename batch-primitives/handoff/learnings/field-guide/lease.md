@@ -169,6 +169,7 @@ This section covers the batch's Lease: a small `coordination.k8s.io/v1` object n
   +20s    driver PUTs (rv=57)
   reaper  DELETE {precondition rv=42} -> 409 -> skip
   ```
+- **Model check:** the TLA+ spec agrees the confirmation wait helps a lot, but shows it bounds clock skew rather than removing the need for it: with the defaults the reaper must run less than about 80 s ahead (about 25 s for a stalled holder with `--skew-margin 5`), because renewals land up to one interval plus two network legs apart. See [TLA-2](../tla.md#tla-2).
 - **Related:** [LEASE-4](#lease-4), [LEASE-9](#lease-9), [LEASE-10](#lease-10), [LEASE-19](#lease-19), [BP-17](../best-practices.md#bp-17). [K8S-17](k8s.md#k8s-17) covers how delete outcomes are classified and [K8S-3](k8s.md#k8s-3) why the reaper deletes only the Lease (the reaper deliberately does not reuse `delete_batch_lease`, see [K8S-1](k8s.md#k8s-1)).
 
 </details>
@@ -357,6 +358,7 @@ This section covers the batch's Lease: a small `coordination.k8s.io/v1` object n
   take fails (transient)          -> count only, no finish
   take(rv=13) -> deletecollection -> live=0 -> DELETE lease @13
   ```
+- **Model check:** "or no Lease exists" is a snapshot, not a fence. The TLA+ spec found a 19-state trace where a stalled `release()` reads no Lease, a new batch reuses the same caller-chosen id, and the stale round's label deletecollection deletes the new batch's claims. Scoping release deletes to the Lease UID passes. See [TLA-1](../tla.md#tla-1).
 - **Related:** [LEASE-7](#lease-7), [LEASE-16](#lease-16), [LEASE-17](#lease-17), [LEASE-19](#lease-19). [K8S-1](k8s.md#k8s-1) covers why a 409 on the final Lease delete counts as deleted.
 
 </details>

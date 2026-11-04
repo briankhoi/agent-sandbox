@@ -2,8 +2,6 @@
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)
 
-<a id="sec-optimizations"></a>
-
 # Optimization showcase: how batch claim got fast and lean
 
 **How to read this page.** Each optimization answers one question: what does this limit protect? Work that doesn't touch that resource may skip the limit, but only behind a guard that falls back to the slow, safe path when the shortcut's assumption breaks. Most wins come from not doing work: fewer requests, waits, and bytes. Read the bill and the budget, scan the scoreboard, then open a card. Ids like [RETRY-15](field-guide/retry.md#retry-15) link to the full story in the field guide.

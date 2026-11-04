@@ -253,6 +253,9 @@ Model three variants: today (task B never holds the lock across an await), the r
 
 ## Further reading
 
+Next step: [Verifying the Lease protocol with TLA+](tla.md) applies the same ideas with TLA+ and TLC to the cross-process Lease protocol, which this in-process checker does not cover.
+
+
 - Chris Newcombe et al., "How Amazon Web Services Uses Formal Methods", *Communications of the ACM* 58(4), April 2015. PDF: https://lamport.azurewebsites.net/tla/formal-methods-amazon.pdf
 - Leslie Lamport's TLA+ home page (video course, PlusCal, TLC): https://lamport.azurewebsites.net/tla/tla.html
 - Hillel Wayne, *Learn TLA+*: https://learntla.com

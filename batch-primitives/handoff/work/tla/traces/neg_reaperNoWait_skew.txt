@@ -1,0 +1,13 @@
+  1 Initial: expAt=(h1 :> 0 @@ h2 :> 0); nextUid=1; rskew=5; alive=(h1 :> TRUE @@ h2 :> TRUE); reaperKilledConnected=FALSE; now=0; nextRenew=(h1 :> 0 @@ h2 :> 0); reaperKilled=FALSE; pc=(h1 :> "idle" @@ h2 :> "idle"); ; rpc="idle"; retried=(h1 :> FALSE @@ h2 :> FALSE); net={}; claims={}; lease=[ exists |-> FALSE, uid |-> 0, rv |-> 0, holder |-> none, renew |-> 0, dur |-> 0, trans |-> 0 ]; myUid=(h1 :> 0 @@ h2 :> 0); rAt=0; took=(h1 :> 0 @@ h2 :> 0); rInt=0; flaky=(h1 :> FALSE @@ h2 :> FALSE); myTrans=(h1 :> 0 @@ h2 :> 0); badRelease=FALSE; wKind=(h1 :> "none" @@ h2 :> "none"); myRv=(h1 :> 0 @@ h2 :> 0); err=(h1 :> FALSE @@ h2 :> FALSE); rounds=(h1 :> 0 @@ h2 :> 0); rRv=0; 
+  2 Claim: expAt=(h1 :> 6 @@ h2 :> 0); nextUid=2; nextRenew=(h1 :> 2 @@ h2 :> 0); pc=(h1 :> "hold" @@ h2 :> "idle"); claims={1}; lease=[ exists |-> TRUE, uid |-> 1, rv |-> 1, holder |-> h1, renew |-> 0, dur |-> 6, trans |-> 0 ]; myUid=(h1 :> 1 @@ h2 :> 0); myRv=(h1 :> 1 @@ h2 :> 0)
+  3 Tick: now=1
+  4 Tick: now=2
+  5 Renew: net={ [ holder |-> h1, renew |-> 2, dur |-> 6, trans |-> 0, from |-> h1, sent |-> 2, kind |-> "renew", prec |-> 1, landBy |-> 3 ] }; wKind=(h1 :> "renew" @@ h2 :> "none"); 
+  6 Tick: now=3
+  7 Next: ; net={}; lease=[ exists |-> TRUE, uid |-> 1, rv |-> 2, holder |-> h1, renew |-> 2, dur |-> 6, trans |-> 0 ]
+  8 Tick: now=4
+  9 Recv: expAt=(h1 :> 8 @@ h2 :> 0); nextRenew=(h1 :> 6 @@ h2 :> 0); ; wKind=(h1 :> "none" @@ h2 :> "none"); myRv=(h1 :> 2 @@ h2 :> 0)
+ 10 Tick: now=5
+ 11 Tick: now=6
+ 12 ReapList: rpc="waiting"; rAt=6; rInt=2; rRv=2
+ 13 ReapDelete: reaperKilledConnected=TRUE; reaperKilled=TRUE; rpc="idle"; lease=[ exists |-> FALSE, uid |-> 0, rv |-> 0, holder |-> none, renew |-> 0, dur |-> 0, trans |-> 0 ]; 
