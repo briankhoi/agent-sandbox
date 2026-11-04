@@ -55,12 +55,19 @@ class FakeBatch:
   def err(self):
     return self.error
 
+  def _check_healthy(self):
+    if self.released:
+      raise BatchError(f"batch '{self.batch_id}' has been detached or released")
+    if self.error is not None:
+      raise BatchError(f"batch '{self.batch_id}' has stopped") from self.error
+
   def members(self, warmpool=None):
     with self._lock:
       return [m for m in self._members.values()
               if warmpool is None or m.warmpool == warmpool]
 
   def acquire(self, warmpool, timeout=None, *, pod_annotations=None):
+    self._check_healthy()
     if self.acquire_error is not None:
       raise self.acquire_error
     with self._lock:
@@ -74,6 +81,7 @@ class FakeBatch:
     return m
 
   def connect(self, member):
+    self._check_healthy()
     s = MagicMock()
     s.claim_name = member.claim_name
     s.sandbox_id = member.sandbox_name
@@ -81,12 +89,14 @@ class FakeBatch:
     return s
 
   def release_member(self, member):
+    self._check_healthy()
     with self._lock:
       self._members.pop(member.claim_name, None)
     self.released_members.append(member.claim_name)
 
   def release(self):
-    self.released = True
+    with self._lock:
+      self.released = True
 
 
 def _batch_cluster(make_cluster, name="solo"):
@@ -195,6 +205,7 @@ def test_release_goes_through_the_batch(make_cluster):
   f.release(h)
   b = c.batches[0]
   assert b.released_members == [h.claim_name]
+  c.resources.delete_claim.assert_not_called()
   h.sandbox.terminate.assert_not_called()   # would delete the claim behind the batch
   assert c.active_claims == 0 and f._claims_reserved == 0
 
@@ -204,12 +215,16 @@ def test_teardown_releases_every_batch(make_cluster):
   f = _fleet(ClusterRegistry([c]))
   f.load_tasks(["img", "img"])
   f.plan()
-  f.acquire(f.tasks[0])
+  h0 = f.acquire(f.tasks[0])
   c.batches[0].error = BatchError("lease lost")
-  f.acquire(f.tasks[1])                     # the stopped batch is replaced
+  h1 = f.acquire(f.tasks[1])                     # the stopped batch is replaced
   assert len(c.batches) == 2
   f.teardown()
+  assert c.batches[0].released_members == []
+  c.resources.delete_claim.assert_called_once_with(h0.claim_name)
+  assert c.batches[1].released_members == [h1.claim_name]
   assert all(b.released for b in c.batches)
+  assert c.active_claims == 0 and f._claims_reserved == 0
 
 
 def test_teardown_releases_batches_when_a_handle_release_fails(make_cluster):
@@ -248,12 +263,14 @@ def test_acquire_racing_teardown_leaves_no_batch_open(make_cluster):
   assert len(c.batches) == 1 and f._claims_reserved == 0
 
 
-def test_claim_landing_after_teardown_is_released_through_the_batch(make_cluster):
+def test_claim_landing_after_teardown_falls_back_to_direct_claim_delete(make_cluster):
+  # Window 1 runs teardown inside batch.acquire before batch.connect, so connect
+  # raises BatchError on the released batch and rollback deletes the claim directly.
   c = _batch_cluster(make_cluster)
   f = _fleet(ClusterRegistry([c]))
   f.load_tasks(["img", "img"])
   f.plan()
-  f.acquire(f.tasks[0])
+  h0 = f.acquire(f.tasks[0])
   b = c.batches[0]
   claim_member = b.acquire
 
@@ -262,10 +279,34 @@ def test_claim_landing_after_teardown_is_released_through_the_batch(make_cluster
     f.teardown()
     return member
   b.acquire = acquire_during_teardown
-  with pytest.raises(FleetError):
+  with pytest.raises(BatchError):
     f.acquire(f.tasks[1])
-  assert b.released_members[-1] == f"{b.batch_id}-2"
-  assert not b.connected[-1].terminate.called
+  assert b.released_members == [h0.claim_name]
+  c.resources.delete_claim.assert_called_once_with(f"{b.batch_id}-2")
+  assert f._claims_reserved == 0
+
+  # Window 2 runs teardown after batch.connect returns, so fleet.acquire sees
+  # _torndown, deletes the claim directly once release_member rejects the released
+  # batch, and raises FleetError without calling sandbox.terminate().
+  c2 = _batch_cluster(make_cluster)
+  f2 = _fleet(ClusterRegistry([c2]))
+  f2.load_tasks(["img", "img"])
+  f2.plan()
+  h2 = f2.acquire(f2.tasks[0])
+  b2 = c2.batches[0]
+  connect_member = b2.connect
+
+  def connect_during_teardown(member):
+    sandbox = connect_member(member)
+    f2.teardown()
+    return sandbox
+  b2.connect = connect_during_teardown
+  with pytest.raises(FleetError):
+    f2.acquire(f2.tasks[1])
+  assert b2.released_members == [h2.claim_name]
+  c2.resources.delete_claim.assert_called_once_with(f"{b2.batch_id}-2")
+  assert not b2.connected[-1].terminate.called
+  assert f2._claims_reserved == 0
 
 
 def test_setup_after_teardown_opens_a_fresh_batch(make_cluster, monkeypatch):
@@ -292,8 +333,17 @@ def test_stopped_batch_is_replaced_and_old_members_still_release(make_cluster):
   c.batches[0].error = BatchError("lease lost")
   new = f.acquire(f.tasks[1])
   assert new.claim_name.startswith(c.batches[1].batch_id)
+  # When the direct fallback delete fails, fleet.release keeps the handle and
+  # its reserved slot so the caller can retry.
+  c.resources.delete_claim.side_effect = client.ApiException(status=500)
+  with pytest.raises(client.ApiException):
+    f.release(old)
+  assert old in f.handles() and c.active_claims == 2 and f._claims_reserved == 2
+  c.resources.delete_claim.side_effect = None
   f.release(old)
-  assert c.batches[0].released_members == [old.claim_name]
+  assert c.batches[0].released_members == []
+  c.resources.delete_claim.assert_called_with(old.claim_name)
+  assert c.active_claims == 1 and f._claims_reserved == 1
 
 
 def test_failure_after_acquire_releases_the_member(make_cluster, monkeypatch):

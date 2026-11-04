@@ -604,8 +604,9 @@ fleet = SandboxFleet(FleetConfig(
   the batch watch for claim loss and pod replacement in `is_alive()`, so callers
   that need container restart-count baselines for in-place OOM detection can call
   `handle.record_pod_identity()`.
-- `release` frees the member through the batch, and `teardown` releases every
-  batch the fleet opened, which deletes their remaining claims and their Leases.
+- `release` frees the member through the batch, or deletes its claim directly once
+  the batch has stopped or released, and `teardown` releases every batch the fleet
+  opened, which deletes their remaining claims and their Leases.
 - With the SDK's [batch reaper](../../clients/python/agentic-sandbox-client/README.md#batch-reaper)
   deployed, a driver that dies without tearing down loses its claims once its Lease
   goes stale, so no `reap(run_id=…)` is needed for them. Without the reaper they

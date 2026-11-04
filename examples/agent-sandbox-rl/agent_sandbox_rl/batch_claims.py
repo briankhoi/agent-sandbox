@@ -31,10 +31,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from k8s_agent_sandbox import BatchGroup
+from k8s_agent_sandbox import BatchError, BatchGroup
 from k8s_agent_sandbox.batch_state import still_reaches
 from k8s_agent_sandbox.batch_utils import BATCH_SHUTDOWN_MARGIN_SECONDS
 from k8s_agent_sandbox.utils import select_pod_ip
@@ -59,6 +59,7 @@ class BatchClaim:
   # time.monotonic() by which the controller deletes the claim (its shutdownTime),
   # measured from before the create, so it is never later than the real one.
   expires_at: float
+  cluster: "Cluster" = field(repr=False)
   rebaselined: bool = False
 
   def still_reaches(self) -> bool:
@@ -75,7 +76,15 @@ class BatchClaim:
         current, self.member.sandbox_name, select_pod_ip(self.member.pod_ips))
 
   def release(self) -> None:
-    self.batch.release_member(self.member)
+    try:
+      self.batch.release_member(self.member)
+    except BatchError:
+      # Once a batch stops (for example on BatchLeaseExpiredError) or teardown
+      # releases it, release_member raises BatchError so a detached handle cannot
+      # race a get_batch() takeover. BatchClaims generates random batch IDs and
+      # never detaches or re-attaches, so deleting the claim directly cannot hit
+      # another holder's recreated claim and tolerates 404 when already deleted.
+      self.cluster.resources.delete_claim(self.member.claim_name)
 
 
 class BatchClaims:
@@ -166,7 +175,8 @@ class BatchClaims:
         pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
     expires_at = (started + self._ready_timeout + self._settings.work_budget
                   + BATCH_SHUTDOWN_MARGIN_SECONDS)
-    return BatchClaim(batch=batch, member=member, expires_at=expires_at)
+    return BatchClaim(
+        batch=batch, member=member, expires_at=expires_at, cluster=cluster)
 
   def release_all(self) -> None:
     """Releases every batch this fleet opened. Errors are logged, so one cluster's
