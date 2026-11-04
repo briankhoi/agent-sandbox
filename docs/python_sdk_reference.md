@@ -197,7 +197,7 @@ for the given namespace.
 
 <a id="k8s_agent_sandbox.sandbox_client.SandboxClient.claim_batch"></a>
 
-##### claim\_batch
+#### claim\_batch
 
 ```python
 def claim_batch(groups: Sequence[BatchGroup],
@@ -286,7 +286,7 @@ an error that stops the watch or Lease renewal shows in ``err()``.
 
 <a id="k8s_agent_sandbox.sandbox_client.SandboxClient.get_batch"></a>
 
-##### get\_batch
+#### get\_batch
 
 ```python
 def get_batch(batch_id: str, namespace: str = "default") -> SandboxBatch
@@ -921,7 +921,7 @@ Represents one warmpool in a batch for multi-pool batch claiming.
 
 <a id="k8s_agent_sandbox.models.BatchGroup.min_ready"></a>
 
-##### min\_ready
+#### min\_ready
 
 Defaults to ``size``.
 
@@ -951,7 +951,7 @@ Represents the identity of a single claim in a batch.
 
 <a id="k8s_agent_sandbox.models.Member.warmpool"></a>
 
-##### warmpool
+#### warmpool
 
 The group this member belongs to.
 
@@ -1016,7 +1016,7 @@ A claimed batch also creates its claims on background worker threads.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.groups"></a>
 
-##### groups
+#### groups
 
 ```python
 @property
@@ -1027,7 +1027,7 @@ The batch's ``BatchGroup``\ s; one per warm pool.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.size"></a>
 
-##### size
+#### size
 
 ```python
 @property
@@ -1038,7 +1038,7 @@ The total number of claims across all groups.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.members"></a>
 
-##### members
+#### members
 
 ```python
 def members(warmpool: str | None = None) -> list[Member]
@@ -1048,7 +1048,7 @@ Returns a snapshot of the batch's members, optionally filtered to one warm pool.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.connect"></a>
 
-##### connect
+#### connect
 
 ```python
 def connect(member: Member) -> "Sandbox"
@@ -1069,7 +1069,7 @@ can no longer vouch for the member.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.err"></a>
 
-##### err
+#### err
 
 ```python
 def err() -> Exception | None
@@ -1083,7 +1083,7 @@ member with reason ``CreateFailed``.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.lease_degraded"></a>
 
-##### lease\_degraded
+#### lease\_degraded
 
 ```python
 def lease_degraded() -> bool
@@ -1096,7 +1096,7 @@ renewal stops on an error, such as the Lease expiring, so it can be polled at an
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.events"></a>
 
-##### events
+#### events
 
 ```python
 def events() -> Iterator[BatchEvent]
@@ -1126,7 +1126,7 @@ the previous iterator stopped. ``members()`` always shows each claim's current s
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.group_outcomes"></a>
 
-##### group\_outcomes
+#### group\_outcomes
 
 ```python
 def group_outcomes() -> Iterator[GroupOutcome]
@@ -1150,7 +1150,7 @@ continues with the groups that haven't yielded yet.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.wait_for_quorum"></a>
 
-##### wait\_for\_quorum
+#### wait\_for\_quorum
 
 ```python
 def wait_for_quorum() -> list[Member]
@@ -1180,7 +1180,7 @@ created, so a quorum reached after the deadline, before any consumer checks it, 
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.acquire"></a>
 
-##### acquire
+#### acquire
 
 ```python
 def acquire(warmpool: str,
@@ -1245,7 +1245,7 @@ or a missing pool or template.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.release_member"></a>
 
-##### release\_member
+#### release\_member
 
 ```python
 def release_member(member: Member) -> None
@@ -1269,7 +1269,7 @@ counts as deleted, and transient errors are retried. If the delete fails, callin
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.release_not_ready"></a>
 
-##### release\_not\_ready
+#### release\_not\_ready
 
 ```python
 def release_not_ready() -> None
@@ -1299,7 +1299,7 @@ calling ``release_not_ready`` again retries it.
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.release_group"></a>
 
-##### release\_group
+#### release\_group
 
 ```python
 def release_group(warmpool: str) -> None
@@ -1331,7 +1331,7 @@ scoped to the group's label. If they fail, calling ``release_group`` again retri
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.release"></a>
 
-##### release
+#### release
 
 ```python
 def release() -> None
@@ -1362,7 +1362,7 @@ raises ``BatchInUseError`` and deletes nothing. While it runs, a ``detach()`` ca
 
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.detach"></a>
 
-##### detach
+#### detach
 
 ```python
 def detach(grace: int | None = None) -> None
