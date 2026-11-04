@@ -1139,3 +1139,49 @@ def test_teardown_sweeps_remaining_handles_and_pools_when_handle_release_raises(
   assert h1.claim_name in c.batches[0].released_members
   c.resources.delete_warmpool.assert_called_once_with("pool-run-1")
   c.resources.delete_template.assert_called_once_with("tmpl-run-1")
+
+
+def test_dynamic_ondemand_acquires_call_ensure_pool_once_under_concurrency(make_cluster):
+  from agent_sandbox_rl import Task
+  c = _batch_cluster(make_cluster)
+  pool_ready = threading.Event()
+
+  def slow_create_pool(*args, **kwargs):
+    time.sleep(0.03)
+    pool_ready.set()
+
+  c.resources.create_warmpool.side_effect = slow_create_pool
+  open_batch = c.sandbox_client.claim_batch.side_effect
+
+  def checked_open_batch(groups, **kwargs):
+    assert pool_ready.is_set(), "claim_batch ran before on-demand warmpool creation finished"
+    return open_batch(groups, **kwargs)
+
+  c.sandbox_client.claim_batch.side_effect = checked_open_batch
+  f = _fleet(ClusterRegistry([c]), max_concurrent=16,
+             fail_fast=FailFastPolicy(enabled=False))
+
+  barrier = threading.Barrier(10)
+  out = []
+  errs = []
+
+  def worker(i):
+    try:
+      barrier.wait(timeout=5)
+      out.append(f.acquire(Task(id=f"t-{i}", image="unplanned:v1")))
+    except BaseException as exc:  # noqa: BLE001
+      errs.append(exc)
+
+  threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+  for th in threads:
+    th.start()
+  for th in threads:
+    th.join()
+  assert errs == [] and len(out) == 10
+  for j in range(5):
+    out.append(f.acquire(Task(id=f"seq-{j}", image="unplanned:v1")))
+  assert len(out) == 15
+  assert c.resources.ensure_template.call_count == 1
+  assert c.resources.create_warmpool.call_count == 1
+  assert c.active_replicas == 1
+  f.teardown()
