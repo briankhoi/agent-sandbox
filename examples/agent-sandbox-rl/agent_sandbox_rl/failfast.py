@@ -257,40 +257,212 @@ class ClaimWatchdog(threading.Thread):
                         policy=self.policy)
 
   def _resolve_pod_name(self) -> str | None:
-    ns = self.cluster.namespace
-    api = self.cluster.custom_api
-    try:
-      claim = api.get_namespaced_custom_object(
-          group=constants.GROUP, version=constants.VERSION, namespace=ns,
-          plural=constants.CLAIMS_PLURAL, name=self.claim_name,
-          _request_timeout=_REQUEST_TIMEOUT)
-    except client.ApiException as e:
-      if e.status == 404:
-        return None
-      raise
-    sb = (claim.get("status") or {}).get("sandbox") or {}
-    sandbox_name = sb.get("name") or sb.get("Name")
-    if not sandbox_name:
-      return None
-    # The pod normally shares the Sandbox's name; the controller annotates the
-    # Sandbox when it does not (mirrors the SDK's Sandbox.get_pod_name).
-    try:
-      sandbox = api.get_namespaced_custom_object(
-          group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
-          namespace=ns, plural=constants.SANDBOXES_PLURAL, name=sandbox_name,
-          _request_timeout=_REQUEST_TIMEOUT)
-    except client.ApiException as e:
-      if e.status != 404:
-        raise
-      return sandbox_name
-    annotations = (sandbox.get("metadata") or {}).get("annotations") or {}
-    return annotations.get(constants.POD_NAME_ANNOTATION) or sandbox_name
+    return resolve_pod_name_for_claim(self.cluster, self.claim_name)
 
   def _read_pod(self, name: str):
-    try:
-      return self.cluster.core_api.read_namespaced_pod_status(
-          name, self.cluster.namespace, _request_timeout=_REQUEST_TIMEOUT)
-    except client.ApiException as e:
-      if e.status == 404:
-        return None
+    return read_pod_status(self.cluster, name)
+
+
+def resolve_pod_name_for_sandbox(cluster: "Cluster", sandbox_name: str) -> str:
+  """Resolve the pod backing ``sandbox_name`` (via ``POD_NAME_ANNOTATION`` when set)."""
+  ns = cluster.namespace
+  api = cluster.custom_api
+  try:
+    sandbox = api.get_namespaced_custom_object(
+        group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
+        namespace=ns, plural=constants.SANDBOXES_PLURAL, name=sandbox_name,
+        _request_timeout=_REQUEST_TIMEOUT)
+  except client.ApiException as e:
+    if e.status != 404:
       raise
+    return sandbox_name
+  if not isinstance(sandbox, dict):
+    return sandbox_name
+  meta = sandbox.get("metadata")
+  annotations = (meta.get("annotations") if isinstance(meta, dict) else None) or {}
+  pod_name = (
+      annotations.get(constants.POD_NAME_ANNOTATION)
+      if isinstance(annotations, dict) else None
+  )
+  return pod_name if isinstance(pod_name, str) and pod_name else sandbox_name
+
+
+def resolve_pod_name_for_claim(cluster: "Cluster", claim_name: str) -> str | None:
+  """Resolve the pod backing ``claim_name`` once the controller binds a Sandbox."""
+  ns = cluster.namespace
+  api = cluster.custom_api
+  try:
+    claim = api.get_namespaced_custom_object(
+        group=constants.GROUP, version=constants.VERSION, namespace=ns,
+        plural=constants.CLAIMS_PLURAL, name=claim_name,
+        _request_timeout=_REQUEST_TIMEOUT)
+  except client.ApiException as e:
+    if e.status == 404:
+      return None
+    raise
+  if not isinstance(claim, dict):
+    return None
+  status = claim.get("status")
+  sb = (status.get("sandbox") if isinstance(status, dict) else None) or {}
+  if not isinstance(sb, dict):
+    return None
+  sandbox_name = sb.get("name") or sb.get("Name")
+  if not isinstance(sandbox_name, str) or not sandbox_name:
+    return None
+  return resolve_pod_name_for_sandbox(cluster, sandbox_name)
+
+
+def read_pod_status(cluster: "Cluster", name: str):
+  """Read pod status from ``cluster.core_api`` with bounded timeout (None on 404)."""
+  try:
+    return cluster.core_api.read_namespaced_pod_status(
+        name, cluster.namespace, _request_timeout=_REQUEST_TIMEOUT)
+  except client.ApiException as e:
+    if e.status == 404:
+      return None
+    raise
+
+
+class BatchWatchdog(threading.Thread):
+  """Poll cold-starting pending members of one `SandboxBatch`.
+
+  Warm adoptions reach ``READY`` in under a second — long before
+  ``policy.initial_delay_s`` — so `BatchWatchdog` reads ``batch.members()`` in
+  memory and performs zero Kubernetes ``GET``s on warm runs. When a member
+  remains ``PENDING`` past ``initial_delay_s`` and `classify_pod` returns a
+  `StartVerdict`, the verdict is recorded before ``batch.release_member(member)``
+  wakes the blocked `acquire()` call.
+  """
+
+  def __init__(
+      self,
+      cluster: "Cluster",
+      batch: Any,
+      policy: "FailFastPolicy",
+      record_verdict: Any,
+  ):
+    super().__init__(
+        name=f"asrl-batch-failfast-{getattr(batch, 'batch_id', 'batch')}",
+        daemon=True,
+    )
+    self.cluster = cluster
+    self.batch = batch
+    self.policy = policy
+    self._record_verdict = record_verdict
+    self._stop_evt = threading.Event()
+    self._decide_lock = threading.Lock()
+    self._last_acquire_at = 0.0
+    self._first_seen_at: dict[str, float] = {}
+    self._pod_names: dict[str, str] = {}
+    self._cond_first_seen: dict[str, dict[str, float]] = {}
+    self._cond_last_seen: dict[str, dict[str, float]] = {}
+
+  def note_acquire(self, started_at: float) -> None:
+    self._last_acquire_at = started_at
+
+  def stop(self) -> None:
+    with self._decide_lock:
+      self._stop_evt.set()
+
+  def _prune(self, claim_name: str) -> None:
+    self._first_seen_at.pop(claim_name, None)
+    self._pod_names.pop(claim_name, None)
+    self._cond_first_seen.pop(claim_name, None)
+    self._cond_last_seen.pop(claim_name, None)
+
+  def run(self) -> None:
+    while not self._stop_evt.is_set():
+      if self.batch.err() is not None or getattr(self.batch, "released", False):
+        return
+      sleep_s = self.policy.poll_s
+      try:
+        sleep_s = self._poll_once()
+      except Exception:  # noqa: BLE001 — best-effort; never disrupt healthy claims
+        logger.debug("batch fail-fast watchdog: poll failed for batch %s",
+                     getattr(self.batch, "batch_id", "?"), exc_info=True)
+      if self._stop_evt.wait(sleep_s):
+        return
+
+  def _poll_once(self) -> float:
+    members = self.batch.members()
+    now = time.monotonic()
+    pending = {
+        m.claim_name: m for m in members
+        if str(getattr(m, "state", "")) == "pending"
+    }
+    for gone in list(self._first_seen_at):
+      if gone not in pending:
+        self._prune(gone)
+
+    if not pending:
+      if now - self._last_acquire_at < 0.5:
+        return min(self.policy.poll_s, 0.02)
+      return self.policy.poll_s
+
+    min_wait: float | None = None
+    for claim_name, member in pending.items():
+      if self._stop_evt.is_set():
+        return 0.0
+      seen = self._first_seen_at.setdefault(claim_name, now)
+      elapsed = now - seen
+      if elapsed < self.policy.initial_delay_s:
+        rem = self.policy.initial_delay_s - elapsed
+        min_wait = rem if min_wait is None else min(min_wait, rem)
+        continue
+      try:
+        verdict = self._check_member(claim_name, member, now=now)
+      except Exception:  # noqa: BLE001 — isolated per member
+        logger.debug("batch fail-fast watchdog: check failed for claim %s",
+                     claim_name, exc_info=True)
+        continue
+      if verdict is None:
+        continue
+      with self._decide_lock:
+        if self._stop_evt.is_set():
+          return 0.0
+        self._record_verdict(claim_name, verdict)
+        logger.error(
+            "batch claim %s will not start (%s on pod %s): %s; releasing member",
+            claim_name, verdict.reason, verdict.pod_name, verdict.message)
+        try:
+          self.batch.release_member(member)
+        except Exception as exc:  # noqa: BLE001
+          if any(b.__name__ == "BatchError" for b in type(exc).__mro__):
+            try:
+              self.cluster.resources.delete_claim(
+                  claim_name, request_timeout=_REQUEST_TIMEOUT)
+            except Exception:  # noqa: BLE001
+              logger.warning("batch fail-fast watchdog: failed to delete claim %s",
+                             claim_name, exc_info=True)
+          else:
+            logger.warning("batch fail-fast watchdog: failed to release member %s",
+                           claim_name, exc_info=True)
+      self._prune(claim_name)
+
+    if min_wait is not None:
+      return min(self.policy.poll_s, max(0.0, min_wait))
+    return self.policy.poll_s
+
+  def _check_member(
+      self, claim_name: str, member: Any, *, now: float
+  ) -> StartVerdict | None:
+    pod_name = self._pod_names.get(claim_name)
+    if pod_name is None:
+      sb_name = getattr(member, "sandbox_name", None)
+      if isinstance(sb_name, str) and sb_name:
+        pod_name = resolve_pod_name_for_sandbox(self.cluster, sb_name)
+      else:
+        pod_name = resolve_pod_name_for_claim(self.cluster, claim_name)
+      if pod_name is None:
+        return None
+      self._pod_names[claim_name] = pod_name
+    pod = read_pod_status(self.cluster, pod_name)
+    if pod is None:
+      return None
+    return classify_pod(
+        pod,
+        now=now,
+        first_seen=self._cond_first_seen.setdefault(claim_name, {}),
+        last_seen=self._cond_last_seen.setdefault(claim_name, {}),
+        policy=self.policy,
+    )

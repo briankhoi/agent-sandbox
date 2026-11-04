@@ -26,8 +26,9 @@ from kubernetes import client
 from pydantic import ValidationError
 
 from agent_sandbox_rl import (AsyncSandboxFleet, BatchClaimConfig,
-                              ClusterRegistry, FleetConfig, SandboxFleet, constants,
-                              reuse_git_restore_sandbox,
+                              ClusterRegistry, FailFastPolicy, FleetConfig,
+                              SandboxFleet, SandboxStartError, constants,
+                              observability, reuse_git_restore_sandbox,
                               reuse_git_restore_sandbox_async)
 from agent_sandbox_rl.exceptions import FleetError
 from agent_sandbox_rl.handles import SandboxHandle
@@ -44,6 +45,7 @@ class FakeBatch:
     self._n = 0
     self._lock = threading.Lock()
     self._members: dict[str, Member] = {}
+    self._waiters: dict[str, threading.Event] = {}
     self.error = None
     self.acquired = []
     self.acquired_annotations = []
@@ -51,6 +53,8 @@ class FakeBatch:
     self.released_members = []
     self.released = False
     self.acquire_error = None
+    self.hold_pending = False
+    self.warm_delay_s = 0.0
 
   def err(self):
     return self.error
@@ -73,11 +77,40 @@ class FakeBatch:
     with self._lock:
       self._n += 1
       n = self._n
-      m = Member(claim_name=f"{self.batch_id}-{n}", sandbox_name=f"sb-{self.batch_id}-{n}",
-                 warmpool=warmpool, pod_ips=("10.1.0.5",), state=MemberState.READY)
-      self._members[m.claim_name] = m
+      claim_name = f"{self.batch_id}-{n}"
+      sandbox_name = f"sb-{self.batch_id}-{n}"
+      if self.hold_pending or self.warm_delay_s > 0:
+        m = Member(claim_name=claim_name, sandbox_name=sandbox_name,
+                   warmpool=warmpool, pod_ips=(), state=MemberState.PENDING)
+        ev = threading.Event()
+        self._waiters[claim_name] = ev
+      else:
+        m = Member(claim_name=claim_name, sandbox_name=sandbox_name,
+                   warmpool=warmpool, pod_ips=("10.1.0.5",), state=MemberState.READY)
+        ev = None
+      self._members[claim_name] = m
     self.acquired.append((warmpool, timeout))
     self.acquired_annotations.append(pod_annotations)
+    if ev is not None:
+      if self.warm_delay_s > 0 and not self.hold_pending:
+        ev.wait(self.warm_delay_s)
+        with self._lock:
+          self._waiters.pop(claim_name, None)
+          if claim_name in self.released_members:
+            raise BatchError(
+                f"acquired member '{claim_name}' was released before it was Ready")
+          m = Member(claim_name=claim_name, sandbox_name=sandbox_name,
+                     warmpool=warmpool, pod_ips=("10.1.0.5",), state=MemberState.READY)
+          self._members[claim_name] = m
+      else:
+        woke = ev.wait(timeout if timeout is not None else 5.0)
+        with self._lock:
+          self._waiters.pop(claim_name, None)
+        if claim_name in self.released_members:
+          raise BatchError(
+              f"acquired member '{claim_name}' was released before it was Ready")
+        if not woke:
+          raise BatchError(f"timed out waiting for {claim_name}")
     return m
 
   def connect(self, member):
@@ -92,11 +125,18 @@ class FakeBatch:
     self._check_healthy()
     with self._lock:
       self._members.pop(member.claim_name, None)
-    self.released_members.append(member.claim_name)
+      self.released_members.append(member.claim_name)
+      ev = self._waiters.pop(member.claim_name, None)
+    if ev is not None:
+      ev.set()
 
   def release(self):
     with self._lock:
       self.released = True
+      waiters = list(self._waiters.values())
+      self._waiters.clear()
+    for ev in waiters:
+      ev.set()
 
 
 def _batch_cluster(make_cluster, name="solo"):
@@ -519,3 +559,115 @@ async def test_async_recycle_rotates_a_batch_claim_before_it_expires(make_cluste
   assert len(c.batches[0].acquired) == 2
   await af.teardown()
   af.close()
+
+
+def test_batch_fail_fast_skips_pod_gets_on_warm_adoptions(make_cluster):
+  c = _batch_cluster(make_cluster)
+  open_batch = c.sandbox_client.claim_batch.side_effect
+
+  def warm_batch(groups, **kwargs):
+    b = open_batch(groups, **kwargs)
+    b.warm_delay_s = 0.03
+    return b
+  c.sandbox_client.claim_batch.side_effect = warm_batch
+  policy = FailFastPolicy(enabled=True, initial_delay_s=0.3, poll_s=0.01, grace_s=0)
+  f = _fleet(ClusterRegistry([c]), fail_fast=policy)
+  f.load_tasks(["img", "img"])
+  f.plan()
+  handles = [f.acquire(t) for t in f.tasks]
+  time.sleep(0.05)
+  assert len(handles) == 2
+  assert c.core_api.read_namespaced_pod_status.call_count == 0
+  assert c.custom_api.get_namespaced_custom_object.call_count == 0
+  wd = f._batch_claims._watchdogs["solo"]
+  assert wd.is_alive()
+  f.teardown()
+  wd.join(timeout=2)
+  assert not wd.is_alive()
+
+
+def test_batch_fail_fast_wakes_stuck_cold_start_with_sandbox_start_error(make_cluster):
+  c = _batch_cluster(make_cluster)
+  open_batch = c.sandbox_client.claim_batch.side_effect
+
+  def cold_batch(groups, **kwargs):
+    b = open_batch(groups, **kwargs)
+    b.hold_pending = True
+    return b
+  c.sandbox_client.claim_batch.side_effect = cold_batch
+  c.core_api.read_namespaced_pod_status.return_value = {
+      "metadata": {"name": "sb-b-solo-0-1"},
+      "status": {
+          "phase": "Pending",
+          "container_statuses": [{
+              "name": "agent-runtime",
+              "state": {"waiting": {"reason": "ImagePullBackOff",
+                                    "message": "Back-off pulling image"}},
+          }],
+      },
+  }
+  policy = FailFastPolicy(enabled=True, initial_delay_s=0.02, poll_s=0.01, grace_s=0)
+  f = _fleet(ClusterRegistry([c]), ready_timeout=30, fail_fast=policy)
+  f.load_tasks(["img"])
+  f.plan()
+  observability._ensure_metrics()
+  before_sf = (
+      observability.CLAIMS.labels(cluster="solo", status="start_failed")._value.get()
+      if observability.CLAIMS is not None else 0
+  )
+  before_err = (
+      observability.CLAIMS.labels(cluster="solo", status="error")._value.get()
+      if observability.CLAIMS is not None else 0
+  )
+  with pytest.raises(SandboxStartError) as ei:
+    f.acquire(f.tasks[0])
+  err = ei.value
+  b = c.batches[0]
+  assert err.reason == "ImagePullBackOff"
+  assert err.claim_name == f"{b.batch_id}-1"
+  assert err.pod_name == f"sb-{b.batch_id}-1"
+  assert err.image == "img"
+  assert isinstance(err.__cause__, BatchError)
+  assert b.released_members == [f"{b.batch_id}-1"]
+  if observability.CLAIMS is not None:
+    after_sf = observability.CLAIMS.labels(
+        cluster="solo", status="start_failed")._value.get()
+    after_err = observability.CLAIMS.labels(
+        cluster="solo", status="error")._value.get()
+    assert after_sf == before_sf + 1
+    assert after_err == before_err
+  assert f.handles() == [] and c.active_claims == 0 and f._claims_reserved == 0
+  wd = f._batch_claims._watchdogs["solo"]
+  f.teardown()
+  wd.join(timeout=2)
+  assert not wd.is_alive()
+
+
+def test_batch_fail_fast_stops_watchdog_on_replacement_and_respects_disabled(make_cluster):
+  c = _batch_cluster(make_cluster)
+  f_off = _fleet(ClusterRegistry([c]), fail_fast=FailFastPolicy(enabled=False))
+  f_off.load_tasks(["img"])
+  f_off.plan()
+  f_off.acquire(f_off.tasks[0])
+  assert f_off._batch_claims._watchdogs == {}
+  f_off.teardown()
+
+  c2 = _batch_cluster(make_cluster)
+  f = _fleet(
+      ClusterRegistry([c2]),
+      fail_fast=FailFastPolicy(enabled=True, initial_delay_s=1.0, poll_s=0.05),
+  )
+  f.load_tasks(["img", "img"])
+  f.plan()
+  f.acquire(f.tasks[0])
+  wd0 = f._batch_claims._watchdogs["solo"]
+  assert wd0.is_alive()
+  c2.batches[0].error = BatchError("lease lost")
+  f.acquire(f.tasks[1])
+  wd1 = f._batch_claims._watchdogs["solo"]
+  assert wd1 is not wd0 and wd0._stop_evt.is_set()
+  wd0.join(timeout=2)
+  assert not wd0.is_alive() and wd1.is_alive()
+  f.teardown()
+  wd1.join(timeout=2)
+  assert not wd1.is_alive()
