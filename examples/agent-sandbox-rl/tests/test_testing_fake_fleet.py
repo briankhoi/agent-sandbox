@@ -13,11 +13,26 @@
 # limitations under the License.
 
 """The FakeFleet test double behaves like the fleet where a framework's loop can tell."""
+import ast
 import inspect
+from pathlib import Path
+import sys
+import time
 
 import pytest
+from k8s_agent_sandbox.batch_utils import BATCH_SHUTDOWN_MARGIN_SECONDS
 
-from agent_sandbox_rl import FleetConfig, FleetOvercommitError, SandboxFleet, SandboxHandle, Task, sizing
+from agent_sandbox_rl import (
+    BatchClaimConfig,
+    FleetConfig,
+    FleetOvercommitError,
+    SandboxFleet,
+    SandboxHandle,
+    Task,
+    constants,
+    sizing,
+    testing as testing_mod,
+)
 from agent_sandbox_rl.config import run_namespace
 from agent_sandbox_rl.exceptions import FleetError
 from agent_sandbox_rl.lookahead import LookaheadWarmer
@@ -300,3 +315,41 @@ def test_a_lookahead_warmer_runs_against_the_fake():
   w.finish(1)
   w.close()
   assert sorted(f.unwarm_calls) == ["a", "b"]
+
+
+def test_fake_fleet_claim_expires_at_matches_claim_mode_and_keeps_imports_clean():
+  assert constants.BATCH_SHUTDOWN_MARGIN_SECONDS == BATCH_SHUTDOWN_MARGIN_SECONDS
+
+  per_claim = FakeFleet(FleetConfig(claim_mode="per_claim"))
+  per_claim.load_tasks(["img:a"])
+  per_claim.setup()
+  assert per_claim.acquire(per_claim.tasks[0]).claim_expires_at is None
+
+  cfg = FleetConfig(
+      claim_mode="batch",
+      claim_timeout=120,
+      batch_claims=BatchClaimConfig(work_budget=1800),
+  )
+  batch_fleet = FakeFleet(cfg)
+  batch_fleet.load_tasks(["img:a"])
+  batch_fleet.setup()
+  before = time.monotonic()
+  h = batch_fleet.acquire(batch_fleet.tasks[0])
+  after = time.monotonic()
+  want_offset = 120 + 1800 + constants.BATCH_SHUTDOWN_MARGIN_SECONDS
+  assert h.claim_expires_at is not None
+  assert before + want_offset <= h.claim_expires_at <= after + want_offset
+
+  # testing.py itself only imports stdlib and relative agent_sandbox_rl modules.
+  tree = ast.parse(Path(testing_mod.__file__).read_text(encoding="utf-8"))
+  for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+      for alias in node.names:
+        root = alias.name.split(".")[0]
+        assert root in sys.stdlib_module_names, f"unexpected import {alias.name} in testing.py"
+    elif isinstance(node, ast.ImportFrom):
+      if node.level == 0:
+        root = (node.module or "").split(".")[0]
+        assert root in sys.stdlib_module_names, (
+            f"unexpected import from {node.module} in testing.py"
+        )
