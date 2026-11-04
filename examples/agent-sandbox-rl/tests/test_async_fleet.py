@@ -285,3 +285,44 @@ async def test_async_acquire_batch_rolls_back_on_partial_failure(make_cluster):
   assert f.handles() == []
   assert c.active_claims == 0 and f._fleet._claims_reserved == 0
   f.close()
+
+
+async def test_async_acquire_batch_rolls_back_on_cancellation(make_cluster):
+  import threading
+  from agent_sandbox_rl import ClusterRegistry
+  c = make_cluster("solo")
+  f = _fleet(ClusterRegistry([c]), max_concurrent=4)
+  tasks = f.load_tasks(["img-0", "img-1", "img-2"])
+  await f.plan()
+  slow_pool = f.plan_.for_image("img-2").pool
+  orig = c.sandbox_client.create_sandbox.side_effect
+  in_slow = threading.Event()
+  unblock_slow = threading.Event()
+  fast_done = threading.Event()
+  fast_count = 0
+  fast_lock = threading.Lock()
+
+  def staged_create(**kw):
+    nonlocal fast_count
+    if kw.get("warmpool") == slow_pool:
+      in_slow.set()
+      unblock_slow.wait(timeout=5)
+      return orig(**kw)
+    res = orig(**kw)
+    with fast_lock:
+      fast_count += 1
+      if fast_count == 2:
+        fast_done.set()
+    return res
+
+  c.sandbox_client.create_sandbox.side_effect = staged_create
+  batch_task = asyncio.create_task(f.acquire_batch(tasks))
+  loop = asyncio.get_running_loop()
+  await loop.run_in_executor(None, lambda: (fast_done.wait(5), in_slow.wait(5)))
+  batch_task.cancel()
+  unblock_slow.set()
+  with pytest.raises(asyncio.CancelledError):
+    await batch_task
+  assert f.handles() == []
+  assert c.active_claims == 0 and f._fleet._claims_reserved == 0
+  f.close()

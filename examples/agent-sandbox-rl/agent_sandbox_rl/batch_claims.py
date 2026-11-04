@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("agent_sandbox_rl.batch_claims")
 
-_RELEASED_MEMBER_RE = re.compile(r"acquired member '([^']+)'")
+_RELEASED_MEMBER_RE = re.compile(r"(?:acquired member|while acquiring) '([^']+)'")
 
 
 def extract_batch_claim_name(exc: BaseException) -> str | None:
@@ -140,6 +140,11 @@ class BatchClaims:
       self, cluster_name: str, claim_name: str, verdict: StartVerdict
   ) -> None:
     with self._lock:
+      if (
+          (cluster_name, claim_name) not in self._verdicts
+          and len(self._verdicts) >= 4096
+      ):
+        self._verdicts.pop(next(iter(self._verdicts)), None)
       self._verdicts[(cluster_name, claim_name)] = verdict
 
   def pop_verdict(self, cluster_name: str, claim_name: str) -> StartVerdict | None:
@@ -223,10 +228,14 @@ class BatchClaims:
     started = time.monotonic()
     with self._lock:
       wd = self._watchdogs.get(cluster.name)
+      if wd is not None and wd.batch is not batch:
+        wd = None
     if wd is not None:
       wd.note_acquire(started)
     member = batch.acquire(
         pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
+    if wd is not None:
+      wd.mark_handed_out(member.claim_name)
     expires_at = (started + self._ready_timeout + self._settings.work_budget
                   + BATCH_SHUTDOWN_MARGIN_SECONDS)
     return BatchClaim(

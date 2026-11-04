@@ -870,3 +870,174 @@ def test_dynamic_ondemand_acquires_call_ensure_pool_once_under_concurrency(make_
   assert c.resources.create_warmpool.call_count == 1
   assert c.active_replicas == 1
   f.teardown()
+
+
+def test_batch_fail_fast_never_releases_handed_out_or_newly_ready_members(make_cluster):
+  from agent_sandbox_rl.batch_claims import extract_batch_claim_name
+  from agent_sandbox_rl.failfast import BatchWatchdog
+
+  assert extract_batch_claim_name(
+      BatchError("batch 'b-1' stopped while acquiring 'b-1-7'")) == "b-1-7"
+
+  c = _batch_cluster(make_cluster)
+  c.core_api.read_namespaced_pod_status.return_value = {
+      "metadata": {"name": "sb-b-solo-0-1"},
+      "status": {
+          "phase": "Pending",
+          "container_statuses": [{
+              "name": "agent-runtime",
+              "state": {"waiting": {"reason": "CrashLoopBackOff",
+                                    "message": "back-off"},
+                        "terminated": None, "running": None},
+              "last_state": {"terminated": {"reason": "OOMKilled"}},
+          }],
+      },
+  }
+  policy = FailFastPolicy(enabled=True, initial_delay_s=0.01, poll_s=0.01, grace_s=0)
+  f = _fleet(ClusterRegistry([c]), fail_fast=policy)
+  f.load_tasks(["img"])
+  f.plan()
+
+  # Part A: once acquire() returns a handle, flipping its member state back to
+  # PENDING (e.g. suspend()/resume() or mid-rollout container restart) must never
+  # cause BatchWatchdog to inspect or release the caller's live sandbox.
+  h = f.acquire(f.tasks[0])
+  b = c.batches[0]
+  pool = f.plan_.for_image("img").pool
+  with b._lock:
+    b._members[h.claim_name] = Member(
+        claim_name=h.claim_name, sandbox_name=h.sandbox_id,
+        warmpool=pool, pod_ips=(), state=MemberState.PENDING)
+  time.sleep(0.06)
+  assert b.released_members == []
+  assert c.core_api.read_namespaced_pod_status.call_count == 0
+  assert f._batch_claims._verdicts == {}
+  f.teardown()
+
+  # Part B: if a slow cold-start member transitions PENDING -> READY while
+  # _check_member() is in flight, BatchWatchdog must not release it or leak a verdict.
+  c2 = _batch_cluster(make_cluster)
+  b2 = FakeBatch("solo", 0)
+  claim_name = f"{b2.batch_id}-9"
+  b2._members[claim_name] = Member(
+      claim_name=claim_name, sandbox_name=f"sb-{claim_name}",
+      warmpool="pool-x", pod_ips=(), state=MemberState.PENDING)
+  verdicts = {}
+
+  def flip_ready_during_read(*args, **kwargs):
+    with b2._lock:
+      b2._members[claim_name] = Member(
+          claim_name=claim_name, sandbox_name=f"sb-{claim_name}",
+          warmpool="pool-x", pod_ips=("10.1.0.8",), state=MemberState.READY)
+    return {
+        "metadata": {"name": f"sb-{claim_name}"},
+        "status": {
+            "phase": "Pending",
+            "container_statuses": [{
+                "name": "agent-runtime",
+                "state": {"waiting": {"reason": "ImagePullBackOff",
+                                      "message": "pulling"}},
+            }],
+        },
+    }
+
+  c2.core_api.read_namespaced_pod_status.side_effect = flip_ready_during_read
+  wd = BatchWatchdog(
+      c2, b2, FailFastPolicy(enabled=True, initial_delay_s=0.0, poll_s=0.01, grace_s=0),
+      record_verdict=lambda cname, v: verdicts.__setitem__(cname, v))
+  wd._first_seen_at[claim_name] = time.monotonic() - 1.0
+  wd._poll_once()
+  assert b2.released_members == []
+  assert verdicts == {}
+
+  # Part C: _detached exits BatchWatchdog.run() cleanly.
+  b2._detached = True
+  wd.start()
+  wd.join(timeout=2)
+  assert not wd.is_alive()
+
+
+def test_concurrent_ondemand_rollback_preserves_shared_pool(make_cluster):
+  from agent_sandbox_rl import Task
+  c = _batch_cluster(make_cluster)
+  f = _fleet(ClusterRegistry([c]), max_concurrent=4,
+             fail_fast=FailFastPolicy(enabled=False))
+
+  creator_in_acquire = threading.Event()
+  sibling_reused = threading.Event()
+  call_num = 0
+  call_lock = threading.Lock()
+  open_batch = c.sandbox_client.claim_batch.side_effect
+
+  def rigged_open_batch(groups, **kwargs):
+    b = open_batch(groups, **kwargs)
+    real_acquire = b.acquire
+
+    def rigged_acquire(warmpool, timeout=None, *, pod_annotations=None):
+      nonlocal call_num
+      with call_lock:
+        call_num += 1
+        me = call_num
+      if me == 1:
+        creator_in_acquire.set()
+        sibling_reused.wait(timeout=5)
+        raise BatchError("creator claim failed")
+      h_mem = real_acquire(warmpool, timeout=timeout, pod_annotations=pod_annotations)
+      sibling_reused.set()
+      return h_mem
+
+    b.acquire = rigged_acquire
+    return b
+
+  c.sandbox_client.claim_batch.side_effect = rigged_open_batch
+
+  t1_err = []
+  t2_out = []
+
+  def run_creator():
+    try:
+      f.acquire(Task(id="t-1", image="unplanned:shared"))
+    except BaseException as exc:  # noqa: BLE001
+      t1_err.append(exc)
+
+  def run_sibling():
+    creator_in_acquire.wait(timeout=5)
+    t2_out.append(f.acquire(Task(id="t-2", image="unplanned:shared")))
+
+  th1 = threading.Thread(target=run_creator)
+  th2 = threading.Thread(target=run_sibling)
+  th1.start()
+  th2.start()
+  th1.join(timeout=5)
+  th2.join(timeout=5)
+
+  assert len(t1_err) == 1 and isinstance(t1_err[0], BatchError)
+  assert len(t2_out) == 1
+  # Because th2 shared the on-demand pool before th1 rolled back, th1 must NOT
+  # delete the shared SandboxWarmPool/SandboxTemplate out from under th2.
+  c.resources.delete_warmpool.assert_not_called()
+  c.resources.delete_template.assert_not_called()
+  assert c.active_replicas == 1
+  assert ("solo", "unplanned:shared") in f._ondemand
+  f.teardown()
+
+
+def test_sync_acquire_batch_rolls_back_on_keyboard_interrupt(make_cluster, monkeypatch):
+  c = _batch_cluster(make_cluster)
+  f = _fleet(ClusterRegistry([c]), max_concurrent=4,
+             fail_fast=FailFastPolicy(enabled=False))
+  tasks = f.load_tasks(["img-0", "img-1", "img-2"])
+  f.plan()
+
+  def interrupt_as_completed(fs):
+    # Let worker threads complete before raising KeyboardInterrupt in the waiter.
+    for fut in fs:
+      fut.result(timeout=5)
+    raise KeyboardInterrupt("ctrl-c")
+
+  monkeypatch.setattr("agent_sandbox_rl.fleet.as_completed", interrupt_as_completed)
+  with pytest.raises(KeyboardInterrupt):
+    f.acquire_batch(tasks)
+  assert f.handles() == []
+  assert c.active_claims == 0 and f._claims_reserved == 0
+  f.teardown()

@@ -351,6 +351,7 @@ class BatchWatchdog(threading.Thread):
     self._record_verdict = record_verdict
     self._stop_evt = threading.Event()
     self._decide_lock = threading.Lock()
+    self._handed_out: set[str] = set()
     self._last_acquire_at = 0.0
     self._first_seen_at: dict[str, float] = {}
     self._pod_names: dict[str, str] = {}
@@ -359,6 +360,17 @@ class BatchWatchdog(threading.Thread):
 
   def note_acquire(self, started_at: float) -> None:
     self._last_acquire_at = started_at
+
+  def mark_handed_out(self, claim_name: str) -> None:
+    """Mark ``claim_name`` as already returned to a caller.
+
+    Once handed out, a member whose readiness later flips back to ``pending``
+    (for example across ``suspend()``/``resume()`` or an in-place container
+    restart) belongs to the caller's ``is_alive()`` / rollout lifecycle and
+    must never be released by the cold-start watchdog.
+    """
+    with self._decide_lock:
+      self._handed_out.add(claim_name)
 
   def stop(self) -> None:
     with self._decide_lock:
@@ -372,7 +384,11 @@ class BatchWatchdog(threading.Thread):
 
   def run(self) -> None:
     while not self._stop_evt.is_set():
-      if self.batch.err() is not None or getattr(self.batch, "released", False):
+      if (
+          self.batch.err() is not None
+          or getattr(self.batch, "released", False)
+          or getattr(self.batch, "_detached", False)
+      ):
         return
       sleep_s = self.policy.poll_s
       try:
@@ -384,11 +400,15 @@ class BatchWatchdog(threading.Thread):
         return
 
   def _poll_once(self) -> float:
-    members = self.batch.members()
+    with self._decide_lock:
+      members = self.batch.members()
+      self._handed_out &= {m.claim_name for m in members}
+      handed = set(self._handed_out)
     now = time.monotonic()
     pending = {
         m.claim_name: m for m in members
-        if str(getattr(m, "state", "")) == "pending"
+        if m.claim_name not in handed
+        and str(getattr(m, "state", "")) == "pending"
     }
     for gone in list(self._first_seen_at):
       if gone not in pending:
@@ -420,6 +440,17 @@ class BatchWatchdog(threading.Thread):
       with self._decide_lock:
         if self._stop_evt.is_set():
           return 0.0
+        if claim_name in self._handed_out:
+          self._prune(claim_name)
+          continue
+        cur = next(
+            (m for m in self.batch.members(getattr(member, "warmpool", None))
+             if m.claim_name == claim_name),
+            None,
+        )
+        if cur is None or str(getattr(cur, "state", "")) != "pending":
+          self._prune(claim_name)
+          continue
         self._record_verdict(claim_name, verdict)
         logger.error(
             "batch claim %s will not start (%s on pod %s): %s; releasing member",

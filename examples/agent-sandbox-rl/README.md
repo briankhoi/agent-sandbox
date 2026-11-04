@@ -610,9 +610,9 @@ fleet = SandboxFleet(FleetConfig(
 - With the SDK's [batch reaper](../../clients/python/agentic-sandbox-client/README.md#batch-reaper)
   deployed, a driver that dies without tearing down loses its claims once its Lease
   goes stale, so no `reap(run_id=…)` is needed for them. Without the reaper they
-  stay until their `shutdownTime`. `reap(run_id=…)` deletes them but leaves the
-  run's batch Leases, which carry the run id label, so delete those with
-  `kubectl delete lease -l agents.x-k8s.io/asrl-run-id=<run id>`.
+  stay until their `shutdownTime`; `reap(run_id=…)` sweeps both the run's claims and
+  its batch Leases (carrying `agents.x-k8s.io/batch-id` and the run id label) when
+  Lease RBAC is present.
 - A driver that stalls or loses the API server for longer than `lease_duration`
   loses its Lease. The batch then stops and the reaper deletes its claims, so every
   rollout still running on it fails. The next acquire opens a new batch.
