@@ -16,6 +16,7 @@
 handle liveness, and the reaper's orphan sweep."""
 
 import threading
+import time
 import types
 from unittest.mock import MagicMock
 
@@ -388,6 +389,33 @@ def test_exec_raises_sandbox_lost_when_pod_is_gone(monkeypatch):
   with pytest.raises(SandboxLostError) as ei:
     h.exec("true")
   assert ei.value.pod_name == "p" and isinstance(ei.value.cause, client.ApiException)
+  assert ei.value.expired is False
+  assert "work_budget" not in str(ei.value) and "shutdownTime" not in str(ei.value)
+
+
+def test_exec_sandbox_lost_surfaces_work_budget_hint_when_batch_claim_expired(monkeypatch):
+  core = MagicMock()
+  core.read_namespaced_pod_status.side_effect = client.ApiException(status=404)
+  monkeypatch.setattr(handles_mod, "exec_in_pod",
+                      MagicMock(side_effect=client.ApiException(status=404)))
+
+  expired_handle = _handle(core)
+  expired_handle._batch_claim = types.SimpleNamespace(
+      expires_at=time.monotonic() - 1.0, still_reaches=lambda: False)
+  with pytest.raises(SandboxLostError) as ei:
+    expired_handle.exec("true")
+  assert ei.value.expired is True
+  assert "work_budget" in str(ei.value)
+  assert "shutdownTime" in str(ei.value)
+
+  active_handle = _handle(core)
+  active_handle._batch_claim = types.SimpleNamespace(
+      expires_at=time.monotonic() + 3600.0, still_reaches=lambda: False)
+  with pytest.raises(SandboxLostError) as ei2:
+    active_handle.exec("true")
+  assert ei2.value.expired is False
+  assert "work_budget" not in str(ei2.value)
+  assert "shutdownTime" not in str(ei2.value)
 
 
 def test_exec_reraises_original_error_when_pod_is_alive(monkeypatch):

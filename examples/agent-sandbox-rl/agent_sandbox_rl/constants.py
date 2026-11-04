@@ -35,6 +35,8 @@ SANDBOXES_PLURAL = "sandboxes"
 SANDBOX_NAME_HASH_LABEL = "agents.x-k8s.io/sandbox-name-hash"
 # Label stamped by k8s_agent_sandbox on every batch Lease and owned SandboxClaim.
 BATCH_ID_LABEL = "agents.x-k8s.io/batch-id"
+# Margin added to each batch claim's shutdownTime (mirrors k8s_agent_sandbox).
+BATCH_SHUTDOWN_MARGIN_SECONDS = 600
 
 # A warm sandbox pod must stay alive to be claimed and exec'd into. Task images
 # have their own entrypoint, so we override it to idle.
