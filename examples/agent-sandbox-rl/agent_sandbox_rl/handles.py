@@ -427,7 +427,10 @@ class SandboxHandle:
       return
     if not alive:
       self.close_session()
-      raise SandboxLostError(self.pod_name, self.claim_name, cause) from cause
+      exp = self.claim_expires_at
+      expired = exp is not None and time.monotonic() >= exp
+      raise SandboxLostError(
+          self.pod_name, self.claim_name, cause, expired=expired) from cause
 
   def open_session(self, *, container: str | None = None) -> "SandboxSession":
     """Open (once) a persistent exec session so subsequent ``exec()`` calls reuse
