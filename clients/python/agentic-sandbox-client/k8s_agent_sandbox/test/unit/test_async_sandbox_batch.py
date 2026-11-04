@@ -2466,9 +2466,9 @@ class TestReleaseMembers(BaseClaimBatchTest):
             nonlocal attempts
             attempts += 1
             if attempts == 1:
-                # The first create lands on the apiserver, then fails on the client so _create_one retries.
-                self.cluster.push(name, warmpool, ready=True, annotations=kwargs["annotations"])
+                # The first create lands on the apiserver, then fails on the client before the watch sees it.
                 raise k8s_client.ApiException(status=503)
+            self.cluster.push(name, warmpool, ready=True, annotations=kwargs["annotations"])
             attempt_two.set()
             await asyncio.wait_for(finish_retry.wait(), 5)
             raise k8s_client.ApiException(status=409)
@@ -2486,10 +2486,12 @@ class TestReleaseMembers(BaseClaimBatchTest):
 
     async def test_release_member_stops_create_retries_and_deletes_an_in_flight_retry(self):
         cases = (
+            ("fill", "seen_pending"),
             ("fill", "before_backoff"),
             ("fill", "during_backoff"),
             ("fill", "in_flight"),
             ("fill", "retry_then_fail"),
+            ("acquire", "seen_pending"),
             ("acquire", "before_backoff"),
             ("acquire", "during_backoff"),
             ("acquire", "in_flight"),
@@ -2500,26 +2502,34 @@ class TestReleaseMembers(BaseClaimBatchTest):
                 self.client.k8s_helper = helper = self.cluster.helper
                 self.cluster.ready_on_create = False
                 fail_first, in_backoff = asyncio.Event(), asyncio.Event()
+                entered_backoff, finish_backoff = asyncio.Event(), asyncio.Event()
                 attempt_two, finish_retry = asyncio.Event(), asyncio.Event()
                 in_first_delete, finish_first_delete = asyncio.Event(), asyncio.Event()
                 second_delete_failed = asyncio.Event()
-                for event in (fail_first, finish_retry, finish_first_delete):
+                for event in (fail_first, finish_backoff, finish_retry, finish_first_delete):
                     self.addCleanup(event.set)
                 attempts = 0
                 deletes = 0
+                first_attempt: list[tuple[str, dict[str, str]]] = []
 
                 async def create_claim(name, warmpool, namespace, **kwargs):
                     nonlocal attempts
                     attempts += 1
+                    annotations = kwargs["annotations"]
                     if attempts == 1:
-                        self.cluster.push(name, warmpool, ready=(origin == "fill"), annotations=kwargs["annotations"])
-                        if timing == "before_backoff":
+                        first_attempt.append((name, annotations))
+                        if timing in ("seen_pending", "before_backoff"):
+                            ready = origin == "fill" and timing != "seen_pending"
+                            self.cluster.push(name, warmpool, ready=ready, annotations=annotations)
+                        if timing in ("before_backoff", "during_backoff"):
                             await asyncio.wait_for(fail_first.wait(), 5)
                         raise k8s_client.ApiException(status=503)
+                    self.cluster.push(name, warmpool, ready=(origin == "fill"), annotations=annotations)
                     attempt_two.set()
-                    await asyncio.wait_for(finish_retry.wait(), 5)
+                    if timing in ("in_flight", "retry_then_fail"):
+                        await asyncio.wait_for(finish_retry.wait(), 5)
                     # Simulates a retry landing after release_member deleted the first claim.
-                    self.cluster.push(name, warmpool, ready=True, annotations=kwargs["annotations"])
+                    self.cluster.push(name, warmpool, ready=True, annotations=annotations)
                     if timing == "retry_then_fail":
                         raise k8s_client.ApiException(status=403)
 
@@ -2537,31 +2547,66 @@ class TestReleaseMembers(BaseClaimBatchTest):
 
                 def delay(_attempt, _err=None):
                     in_backoff.set()
-                    return 0.05 if timing == "during_backoff" else (10.0 if timing == "before_backoff" else 0.0)
+                    return 1.0 if timing == "during_backoff" else (10.0 if timing == "before_backoff" else 0.0)
 
                 helper.create_sandbox_claim = create_claim
                 helper.delete_sandbox_claim = delete_claim
                 with patch("k8s_agent_sandbox.batch_utils.retry_delay", new=delay):
                     batch = await self.claim([BatchGroup(warmpool="pool-a", size=1 if origin == "fill" else 0)])
                     if origin == "fill":
-                        [member] = await batch.wait_for_quorum()
                         acquire_task = None
                     else:
-                        acquire_timeout = 0.5 if timing in ("before_backoff", "during_backoff") else 5
+                        acquire_timeout = 0.5 if timing == "before_backoff" else 5
                         acquire_task = asyncio.create_task(batch.acquire("pool-a", timeout=acquire_timeout))
+
+                    if timing == "during_backoff":
+                        await _wait_until(lambda: len(first_attempt) == 1)
+                        orig_wait = batch._wait_for_stop
+
+                        async def wait_gate(timeout: float) -> bool:
+                            if timeout == 1.0:
+                                entered_backoff.set()
+                                await asyncio.wait_for(finish_backoff.wait(), 5)
+                                return batch._stop_creating.is_set()
+                            return await orig_wait(timeout)
+
+                        batch._wait_for_stop = wait_gate  # type: ignore[method-assign]
+                        fail_first.set()
+                        await asyncio.wait_for(entered_backoff.wait(), 5)
+                        claim_name, claim_annotations = first_attempt[0]
+                        self.cluster.push(
+                            claim_name, "pool-a", ready=(origin == "fill"), annotations=claim_annotations
+                        )
+
+                    if origin == "fill" and timing != "seen_pending":
+                        [member] = await batch.wait_for_quorum()
+                    else:
                         await _wait_until(lambda: len(batch.members()) == 1)
                         [member] = batch.members()
 
+                    if timing == "seen_pending":
+                        await asyncio.wait_for(in_backoff.wait(), 5)
+                        self.cluster.push(
+                            member.claim_name, "pool-a", ready=True, annotations=first_attempt[0][1]
+                        )
+                        if acquire_task is not None:
+                            self.assertEqual((await asyncio.wait_for(acquire_task, 5)).claim_name, member.claim_name)
+                        else:
+                            self.assertEqual((await batch.wait_for_quorum())[0].claim_name, member.claim_name)
+                            await _wait_until(lambda: all(c.done() for c in batch._creators))
+                        self.assertEqual((attempts, deletes), (1, 0))
+                        await batch._stop_background_tasks()
+                        continue
                     if timing == "before_backoff":
                         release_task = asyncio.create_task(batch.release_member(member))
                         await asyncio.wait_for(in_first_delete.wait(), 5)
                         fail_first.set()
                     elif timing == "during_backoff":
-                        await asyncio.wait_for(in_backoff.wait(), 5)
                         async with batch._lock:
                             batch._next_create_at = time.monotonic() + 10
                         release_task = asyncio.create_task(batch.release_member(member))
                         await asyncio.wait_for(in_first_delete.wait(), 5)
+                        finish_backoff.set()
                     else:
                         await asyncio.wait_for(attempt_two.wait(), 5)
                         release_task = asyncio.create_task(batch.release_member(member))

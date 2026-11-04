@@ -759,17 +759,13 @@ class AsyncSandboxBatch:
         try:
             # Once creating stops, the handle is detached or released, so _wait_acquired raises.
             if not await self._wait_for_stop(slot - time.monotonic()):
-                async with self._lock:
-                    # Like the fill, no create starts once err() is set, since nobody could keep the
-                    # claim alive.
-                    self._check_healthy()
-                    # Raises if release_group() released the claim while it waited for its slot.
-                    self._state.acquired_member(claim_name)
-
                 def can_send() -> bool:
                     # Checks again after waiting for a max_in_flight slot or before retrying, in case
-                    # release_group() or release_member() freed the claim or an earlier attempt finished.
-                    return self._state.acquired_member(claim_name) is None
+                    # release_group() or release_member() freed the claim or an earlier attempt landed.
+                    return (
+                        self._state.acquired_member(claim_name) is None
+                        and self._state.get_member(claim_name) is None
+                    )
 
                 def on_send() -> None:
                     nonlocal may_exist, sent
@@ -1552,7 +1548,19 @@ class AsyncSandboxBatch:
             sent = 0
 
             def can_send() -> bool:
-                return self._can_send_fill_create(claim_name, group.warmpool, retried=sent > 0)
+                self._expire_fill_if_due()
+                if self._state.fill_creates_released(group.warmpool, claim_name):
+                    if self._state.get_member(claim_name) is None:
+                        self._state.release_claim(claim_name, group.warmpool)
+                        self._changed.notify_all()
+                    return False
+                if self._state.get_member(claim_name) is not None:
+                    return False
+                if sent == 0 and self._state.group_failed(group.warmpool):
+                    self._state.record_skipped_create()
+                    self._changed.notify_all()
+                    return False
+                return True
 
             def on_send() -> None:
                 nonlocal sent
@@ -1589,20 +1597,6 @@ class AsyncSandboxBatch:
             and (can_send is None or can_send())
         )
 
-    def _can_send_fill_create(self, claim_name: str, warmpool: str, *, retried: bool = False) -> bool:
-        """Whether a fill create may still send a request. The caller holds ``self._lock``."""
-        self._expire_fill_if_due()
-        if self._state.fill_creates_released(warmpool, claim_name):
-            if self._state.get_member(claim_name) is None:
-                self._state.release_claim(claim_name, warmpool)
-                self._changed.notify_all()
-            return False
-        if not retried and self._state.group_failed(warmpool):
-            self._state.record_skipped_create()
-            self._changed.notify_all()
-            return False
-        return True
-
     async def _delete_released_create(self, claim_name: str, warmpool: str, *, retried: bool = False) -> None:
         """Deletes a fill claim whose create may have landed after the caller released it, its
         group, or ended the fill. A later release call retries a failed delete.
@@ -1611,7 +1605,7 @@ class AsyncSandboxBatch:
             if (
                 self._stop_creating.is_set()
                 or self._state.error() is not None
-                or not self._state.fill_creates_released(warmpool, claim_name if retried else "")
+                or not self._state.fill_creates_released(warmpool, claim_name if retried else None)
             ):
                 return
             if self._state.get_member(claim_name) is not None:

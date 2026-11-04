@@ -494,11 +494,14 @@ class BatchState:
         if self._pending_deletes.get(claim_name) == seq:
             del self._pending_deletes[claim_name]
 
-    def fill_creates_released(self, warmpool: str, claim_name: str = "") -> bool:
+    def fill_creates_released(self, warmpool: str, claim_name: str | None = None) -> bool:
         """Whether the caller stopped the group's fill creates, with ``release_group()`` or
         ``release_not_ready()``, or released ``claim_name``.
         """
-        return claim_name in self._released or warmpool in self._fill_stopped_pools
+        return (
+            (claim_name is not None and claim_name in self._released)
+            or warmpool in self._fill_stopped_pools
+        )
 
     def members(self, warmpool: str | None = None) -> list[Member]:
         """Returns a snapshot of the batch's members, optionally filtered to one pool."""
