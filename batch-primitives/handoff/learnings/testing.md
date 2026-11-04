@@ -83,7 +83,7 @@ This section covers how we tested code that runs on several threads or asyncio t
 
 - **Situation:** A create retry sleeps in backoff before its next attempt. The test needs `release_member()` to run while the retry is in backoff, then check what the retry does afterwards.
 - **What goes wrong:** With `backoff = 0.05s`, fast runs sometimes finished before entering backoff, and slow runs outran the sleep. The test was flaky and did not reliably hit the post-backoff check.
-- **What we do:** The test intercepts `_stop_creating.wait` (sync) and `_wait_for_stop` (async) at a sentinel backoff duration (1.0 s, returned by a patched `batch_utils.retry_delay`). The fake sets an `entered_backoff` Event and blocks until the test sets `finish_backoff`. This tests the exact post-backoff check with no real sleep and no flake risk.
+- **What we do:** The test intercepts `_stop_creating.wait` (sync) and `_wait_for_stop` (async) at a sentinel backoff duration (1.0 s, returned by a patched `batch_utils.retry_delay`). The fake sets an `entered_backoff` Event and blocks until the test sets `finish_backoff`. This tests the exact post-backoff check with no real sleep and no flake risk. Where a test must exercise a real bounded wait (`Semaphore.acquire(timeout=...)`) while polling for transient in-flight state (`"pool-b" in batch._prechecks` via 10 ms `_wait_until` in `test_fill_and_acquire_creates_share_max_in_flight`), size the short timeout an order of magnitude above the poll interval (`0.25 s`, not `0.04 s`), so CPU load cannot expire and clear `_prechecks` between two poll ticks (`2ecdf384`).
 - **Example:**
   ```python
   def wait_gate(timeout=None):

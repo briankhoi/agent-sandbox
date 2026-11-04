@@ -570,8 +570,8 @@ This section is about the public surface of the batch SDK: the types, method sig
 
 - **Situation:** The helper Lease methods, and the helper parameters in the batch modules, were typed `Any`, so mypy (Python's static type checker) checked nothing at those call sites.
 - **What goes wrong:** Typing them showed that `V1Lease.metadata` and `V1Lease.spec` are Optional on the client model, and that kubernetes_asyncio 36's stub types `holder_identity` as `str` although `None` is how the holder is cleared (per the 21/N commit message). The async client's atexit hook also passes an `AsyncV1Lease` into the sync cleanup path.
-- **What we do:** An overloaded `batch_utils.lease_parts(lease)` returns `(metadata, spec)` for sync or async Leases, or raises `BatchError` on a malformed Lease, and call sites unpack it. `k8s_helper.py` and `async_k8s_helper.py` type Lease methods as `V1Lease`. `async_sandbox_batch.py: AsyncSandboxBatch.detach` casts `None` for `holder_identity`. `sandbox_batch` types `last_lease` as `V1Lease | AsyncV1Lease` (21/N, `8ba561c3`, `7f65a8c0`).
-- **Related:** [API-8](#api-8).
+- **What we do:** An overloaded `batch_utils.lease_parts(lease)` returns `(metadata, spec)` for sync or async Leases, or raises `BatchError` on a malformed Lease, and call sites unpack it. Handling both `lease is None` outcomes (`not claim_items` -> `BatchNotFoundError`, else `BatchLeaseExpiredError`) once at the top of `_attach` also eliminated four `if lease is not None else None` ternaries and the downstream `lease is None or` arm before `lease_parts(lease)`. `k8s_helper.py` and `async_k8s_helper.py` type Lease methods as `V1Lease`. `async_sandbox_batch.py: AsyncSandboxBatch.detach` casts `None` for `holder_identity`. `sandbox_batch` types `last_lease` as `V1Lease | AsyncV1Lease`, and `batch_state.py: BatchState.mark_lost` types its heterogeneous `model_copy` dict as `dict[str, object]` instead of `dict[str, Any]` (21/N, `8ba561c3`, `7f65a8c0`).
+- **Related:** [API-8](#api-8), [PAT-27](../patterns.md#pat-27).
 
 </details>
 

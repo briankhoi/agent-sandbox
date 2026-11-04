@@ -12,8 +12,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="proc-1"></a>
 
-<a id="proc-1"></a>
-
 ### PROC-1 Write the rule first, then check every path against it
 
 **Takeaway:** For lifecycle or state changes, write the promise in one sentence, list every path that touches it (concurrent interleavings and later PRs that reroute it included), and give that list to the reviewer.
@@ -27,8 +25,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 - **Related:** [CLEAN-1](field-guide/clean.md#clean-1), [PROC-2](#proc-2).
 
 </details>
-
-<a id="proc-2"></a>
 
 <a id="proc-2"></a>
 
@@ -47,8 +43,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="proc-3"></a>
 
-<a id="proc-3"></a>
-
 ### PROC-3 Trace the end state before proposing a fix
 
 **Takeaway:** Before proposing, trace what happens to each piece of state (Lease, claims, handle, registry) and what the user can do next, with a code reference for each step. Mark anything unchecked as inferred.
@@ -60,8 +54,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 - **Related:** [LEASE-4](field-guide/lease.md#lease-4), [LEASE-14](field-guide/lease.md#lease-14).
 
 </details>
-
-<a id="proc-4"></a>
 
 <a id="proc-4"></a>
 
@@ -78,8 +70,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="proc-5"></a>
 
-<a id="proc-5"></a>
-
 ### PROC-5 Verify identifiers and numbers before they go public
 
 **Takeaway:** Check anything that will be posted publicly (PR numbers, commit hashes, file:line) against the source. Never recall it.
@@ -93,13 +83,9 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="proc-6"></a>
 
-<a id="proc-6"></a>
-
 ### PROC-6 Recommendations: list alternatives with costs, pick one, and hold it
 
 **Takeaway:** List the alternatives with their cost and pick one. Hold that pick under questions, and change it only on a new fact, which you name. When wrong, say "I was wrong about X because Y". A question is not pushback.
-
-<a id="proc-7"></a>
 
 <a id="proc-7"></a>
 
@@ -116,8 +102,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="proc-8"></a>
 
-<a id="proc-8"></a>
-
 ### PROC-8 Explain in "what happens / issue / fix"
 
 **Takeaway:** Explain each item as what is happening, the issue, and the proposed fix (or "being worked out"). Never refer to "finding 3" without restating it.
@@ -128,8 +112,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 - **What goes wrong:** A numbered list of findings without context confused the reader. This is also the shape the field guide uses.
 
 </details>
-
-<a id="proc-9"></a>
 
 <a id="proc-9"></a>
 
@@ -147,8 +129,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="proc-10"></a>
 
-<a id="proc-10"></a>
-
 ### PROC-10 Audit cross-cutting lock invariants across the whole stack and against real bounds
 
 **Takeaway:** When you introduce a teardown lock at the base of a stack, audit every delete and teardown site across all PRs in one pass. Check real timeout and TTL bounds before you flag a race as reachable, and check whether an exclusive lock serializes concurrent single-item I/O.
@@ -160,8 +140,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 - **Related:** [LOCK-17](field-guide/lock.md#lock-17), [LEASE-19](field-guide/lease.md#lease-19), [LEASE-21](field-guide/lease.md#lease-21).
 
 </details>
-
-<a id="proc-11"></a>
 
 <a id="proc-11"></a>
 
@@ -184,13 +162,9 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="git-1"></a>
 
-<a id="git-1"></a>
-
 ### GIT-1 Stacked PRs show the whole stack's diff
 
 **Takeaway:** Every open PR in a stack targets the same base, so its diff and its bot review include all lower PRs. For each comment, find the owning commit (`git log -S`, blame), say which PR owns it, and fix it there.
-
-<a id="git-2"></a>
 
 <a id="git-2"></a>
 
@@ -200,13 +174,9 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="git-3"></a>
 
-<a id="git-3"></a>
-
 ### GIT-3 Prove a restack is mechanical before syncing without review
 
 **Takeaway:** Check that every branch tree and every per-commit tree is identical, that `git range-diff` is all `=`, and that authors are clean. Only then sync without a new review.
-
-<a id="git-4"></a>
 
 <a id="git-4"></a>
 
@@ -216,13 +186,9 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="git-5"></a>
 
-<a id="git-5"></a>
-
 ### GIT-5 Keep a long stack consistent with review copies and one atomic push
 
 **Takeaway:** Push with one lease per branch, `git push --atomic --force-with-lease=<b>:<old> <new>:refs/heads/<b> ...`, so either every branch moves or none does.
-
-<a id="git-6"></a>
 
 <a id="git-6"></a>
 
@@ -239,21 +205,15 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="git-7"></a>
 
-<a id="git-7"></a>
-
 ### GIT-7 Reordering commits causes semantic conflicts that git doesn't flag
 
 **Takeaway:** When a commit moves below others, later commits may delete symbols it uses. After any non-mechanical restack, grep for removed symbols and type-check every commit.
 
 <a id="git-8"></a>
 
-<a id="git-8"></a>
-
 ### GIT-8 Wrap network git commands in `timeout`, and verify with `git ls-remote`
 
 **Takeaway:** SSH agent warnings can appear even when a push succeeded, so trust `git ls-remote`, not the terminal output.
-
-<a id="git-9"></a>
 
 <a id="git-9"></a>
 
@@ -271,8 +231,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="git-10"></a>
 
-<a id="git-10"></a>
-
 ### GIT-10 When several agents push to one stack, re-check live heads and diff the diffs
 
 **Takeaway:** Run `git ls-remote` across all stack branches right before syncing, rebase concurrent upper-branch commits onto the new lower head, and verify zero dropped hunks with a diff-of-diffs before the atomic push.
@@ -284,8 +242,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 - **What we do:** `git ls-remote` caught the moved and added branches before pushing. Rebasing the live 16/N to 20/N commits onto the new 15/N head and running `diff -u <(git diff old_top new_live_top) <(git diff our_old_top our_rebased_top)` caught two carry-forward hunks from the lower review round that would otherwise have been dropped.
 
 </details>
-
-<a id="git-11"></a>
 
 <a id="git-11"></a>
 
@@ -302,8 +258,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="git-12"></a>
 
-<a id="git-12"></a>
-
 ### GIT-12 Audit non-conflicting lifecycle hooks when `upstream/main` moves under a merge branch
 
 **Takeaway:** Whenever `upstream/main` moves beneath a feature branch or merge PR, diff `old_main..new_main` across shared SDK modules and audit every new lifecycle hook, destructor registration, and handle factory, even in files with zero merge conflicts.
@@ -312,11 +266,9 @@ These lessons are about how the work went, not what the code does. Most came fro
 <summary>The full story (24/N)</summary>
 
 - **What happened:** 24/N (`merge/main-into-batch-claim-2`) originally merged `upstream/main` at `355803af`. Later, `upstream/main` merged static `functools.partial` `atexit` hooks (`ae6bb389`), `_on_terminated` callbacks (`7b1a9fbc`), and the client-shared `_DefaultSSLContext` (`9f7999b3`), all touching `SandboxClient` and `AsyncSandboxClient`.
-- **What goes wrong:** git flags only textual overlaps. A new client hook such as `_attach_handle` setting `connector._default_ssl_context` produces zero conflict in `AsyncSandboxBatch.connect()`. And merging static `atexit` hooks alongside the instance-bound `_release_batches` breaks the zero-client-retention invariant unless the batch containers are passed statically too ([CLEAN-12](field-guide/clean.md#clean-12)).
+- **What goes wrong:** git flags only textual overlaps. A new client hook such as `_attach_handle` setting `connector._default_ssl_context` or `create_sandbox` forwarding `file_config` produces zero conflict in `AsyncSandboxBatch.connect()` ([PERF-19](field-guide/perf.md#perf-19)). Even inside the same function, non-overlapping hunks auto-merge cleanly when `main` turns `_delete_automatic_sandboxes(self)` and `_atexit_cleanup(self)` into `@staticmethod` functions at the top while the feature branch appends `self._release_batches(exiting=True)` or `self._active_batches` 30 lines lower, leaving a latent `NameError: name 'self' is not defined` inside the exit hook (`5a3cc71f`, [CLEAN-12](field-guide/clean.md#clean-12)).
 
 </details>
-
-<a id="git-13"></a>
 
 <a id="git-13"></a>
 
@@ -339,13 +291,9 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="agent-1"></a>
 
-<a id="agent-1"></a>
-
 ### AGENT-1 Use a fresh, independent verifier for every non-trivial change
 
 **Takeaway:** Give it the rule, the paths, and the base and head, but not your own findings, so it forms its own view.
-
-<a id="agent-2"></a>
 
 <a id="agent-2"></a>
 
@@ -355,21 +303,15 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 <a id="agent-3"></a>
 
-<a id="agent-3"></a>
-
 ### AGENT-3 Ask the minimality question explicitly
 
 **Takeaway:** Ask "Is there a smaller change with the same behavior? Does it add state, duplicate a rule, or widen a type?"
 
 <a id="agent-4"></a>
 
-<a id="agent-4"></a>
-
 ### AGENT-4 Briefs carry the binding rules, the exact heads, and what not to touch
 
 **Takeaway:** Say no live-branch pushes and no GitHub posts. Have the agent verify heads before acting, because server restarts can interrupt work midway.
-
-<a id="agent-5"></a>
 
 <a id="agent-5"></a>
 
@@ -384,8 +326,6 @@ These lessons are about how the work went, not what the code does. Most came fro
 - **Related:** [AGENT-1](#agent-1).
 
 </details>
-
----
 
 ---
 

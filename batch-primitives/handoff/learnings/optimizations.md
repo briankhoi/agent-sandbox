@@ -91,8 +91,6 @@ Ask once per batch, not once per claim.
 
 <a id="opt-1"></a>
 
-<a id="opt-1"></a>
-
 ### OPT-1 One watch for the whole batch
 
 - **Limit protects:** each caller learns when its claim is Ready; the per-claim path opens one watch per claim.
@@ -103,8 +101,6 @@ Ask once per batch, not once per claim.
 
 <a id="opt-2"></a>
 
-<a id="opt-2"></a>
-
 ### OPT-2 Delete the batch with deletecollection rounds
 
 - **Limit protects:** release() must remove every claim; N DELETEs cost N requests.
@@ -112,8 +108,6 @@ Ask once per batch, not once per claim.
 - **Guard:** a selector delete is a point-in-time snapshot and can time out while the server keeps deleting. Each round quiesces in-flight creates, re-takes the Lease, and re-counts live claims with a consistent read; it gives up after 3 rounds in a row without progress (`BATCH_RELEASE_MAX_IDLE_ROUNDS`).
 - **Result:** 1 request, 1 round for 10,000 claims (bench tip, scenario 2, "driver requests: deletecollection"), vs 10,000 DELETEs per-claim (analytical).
 - **Code:** `_delete_claims_in_rounds`. **Deep dive:** [K8S-8](field-guide/k8s.md#k8s-8), [RETRY-11](field-guide/retry.md#retry-11), [RACE-8](field-guide/race.md#race-8), [LEASE-18](field-guide/lease.md#lease-18), [BP-11](best-practices.md#bp-11)
-
-<a id="opt-8"></a>
 
 <a id="opt-8"></a>
 
@@ -130,8 +124,6 @@ Ask once per batch, not once per claim.
 
 <a id="opt-14"></a>
 
-<a id="opt-14"></a>
-
 ### OPT-14 Renew the Lease without reading it first
 
 - **Limit protects:** a renewal must not overwrite someone else's write.
@@ -139,8 +131,6 @@ Ask once per batch, not once per claim.
 - **Guard:** only a 409 triggers a GET, and the handle rewrites only if it is still the holder (its own lost write landed). Sync Lease requests go out once (urllib3 retries off), so a retry can't fake a conflict ([LEASE-28](field-guide/lease.md#lease-28), [LIB-6](field-guide/lib.md#lib-6)).
 - **Result:** not measured. Analytical: 2 requests per renewal down to 1, every lease_duration/3.
 - **Code:** `SandboxBatch._renew_once`, `_write_renewal`. **Deep dive:** [PERF-8](field-guide/perf.md#perf-8), [PAT-33](patterns.md#pat-33), [BP-4](best-practices.md#bp-4), [LEASE-28](field-guide/lease.md#lease-28)
-
-<a id="opt-15"></a>
 
 <a id="opt-15"></a>
 
@@ -158,8 +148,6 @@ Pace only the work that loads what the pacer protects.
 
 <a id="opt-3"></a>
 
-<a id="opt-3"></a>
-
 ### OPT-3 Warm credit: covered creates skip create_rps
 
 - **Limit protects:** create_rps keeps a cold burst from starting many pods on one node at once (10.2 s to first Ready unpaced vs 1.35 s at 50/s, 99a4a93d).
@@ -172,10 +160,9 @@ Pace only the work that loads what the pacer protects.
 - **Result:**
   - Before: 160 warm claims took 3.24 s at 50/s vs 1.46 s per-claim (99a4a93d); rolling p99 749 ms vs 560 ms (2ecdf384).
   - RL evidence (25/N, includes warm credit): 1.27 s vs 1.37 s per 160-sandbox step for the fixed per-claim path, from two separate sessions (`pr_board.md` 25/N, RL notes).
+  - On GKE (`BENCHMARK_TABLES.md`, commit 8f9ef46d), 640 warm sandboxes (`160 x 4`) reached all-Ready in 8.73 s (`p99` 8.50 s, zero 429s) vs 19.54 s (`p99` 19.30 s) for `per_claim`, a 2.24x speedup (`603 ms` vs `3,120 ms` to first Ready).
   - The first, latching version stuck at paced speed on GKE after one early 429 burst: 1,280 claims in 24.59 s vs 25.6 s at 50/s (notes commit 88792f54). The cooldown fixes this; after the fix, not measured.
-- **Code:** `batch_utils.WarmCredit`, `SandboxBatch._create_worker`, `acquire`. **Deep dive:** [RETRY-15](field-guide/retry.md#retry-15), [RETRY-16](field-guide/retry.md#retry-16), [PERF-13](field-guide/perf.md#perf-13), [PERF-10](field-guide/perf.md#perf-10)
-
-<a id="opt-7"></a>
+- **Code:** `batch_utils.WarmCredit`, `SandboxBatch._create_worker`, `acquire`. **Deep dive:** [RETRY-15](field-guide/retry.md#retry-15), [RETRY-16](field-guide/retry.md#retry-16), [PERF-13](field-guide/perf.md#perf-13), [PERF-10](field-guide/perf.md#perf-10), [PERF-21](field-guide/perf.md#perf-21)
 
 <a id="opt-7"></a>
 
@@ -186,8 +173,6 @@ Pace only the work that loads what the pacer protects.
 - **Guard:** ordinals are a monotonic high-water mark, never reused, so reordering never changes names ([K8S-18](field-guide/k8s.md#k8s-18), [LEASE-24](field-guide/lease.md#lease-24)).
 - **Result:** before (round-robin, create_rps 1000, max_in_flight 50), the RL first group took 0.65 s vs 0.16 s per-claim, since group 0's last claim was create 121 of 160 (`refs/benchmark_rerun_review.md` §2). After: not measured; analytically group 0 completes after its own 4 min_ready creates.
 - **Code:** `fill_create_plan`. **Deep dive:** [PERF-14](field-guide/perf.md#perf-14), [PAT-29](patterns.md#pat-29), [K8S-18](field-guide/k8s.md#k8s-18)
-
-<a id="opt-10"></a>
 
 <a id="opt-10"></a>
 
@@ -202,8 +187,6 @@ Pace only the work that loads what the pacer protects.
 - **Guard:** the decision runs in the same `_lock` section as `take()`, at most once per acquire, and every on-demand GET holds a max_in_flight slot, preserving pool headroom ([OPT-9](#opt-9)).
 - **Result:** RL evidence on GKE before the fix: 2.01 requests per env on 500 pools, up to 998 unbounded GETs at once (notes commit 88792f54, learnings 3.19). After: not measured; analytically about 1 request per env with a free slot, at most max_in_flight concurrent GETs.
 - **Code:** `SandboxBatch.acquire`. **Deep dive:** [RETRY-17](field-guide/retry.md#retry-17), [PERF-13](field-guide/perf.md#perf-13), [LOCK-16](field-guide/lock.md#lock-16)
-
-<a id="opt-11"></a>
 
 <a id="opt-11"></a>
 
@@ -226,8 +209,6 @@ Don't hold bytes nobody reads.
 
 <a id="opt-4"></a>
 
-<a id="opt-4"></a>
-
 ### OPT-4 Don't decode a response nobody reads
 
 - **Limit protects:** the client decodes each response for its caller, and deletecollection returns every deleted object.
@@ -235,8 +216,6 @@ Don't hold bytes nobody reads.
 - **Guard:** sync closes an unfinished response before `release_conn()`, so an interrupted drain can't return a dirty socket. Async checks the HTTP status itself, since raw mode skips it ([LIB-13](field-guide/lib.md#lib-13), [LIB-14](field-guide/lib.md#lib-14)).
 - **Result:** release() peak at N=5,000: 69.4 → 0.2 MB, release time unchanged within noise. At N=10,000 the whole 20/N stack gave 138.8 → 9.9 MB; that run hit the apiserver's 504, so the paged count ([OPT-6](#opt-6)) set the 9.9 MB (`pr_board.md` 20/N; C1-pr8-impl.md; e6dde9ff).
 - **Code:** `K8sHelper.delete_sandbox_claims_by_label(_preload_content=False)`. **Deep dive:** [PERF-7](field-guide/perf.md#perf-7), [LIB-13](field-guide/lib.md#lib-13), [LIB-14](field-guide/lib.md#lib-14), [BP-15](best-practices.md#bp-15)
-
-<a id="opt-5"></a>
 
 <a id="opt-5"></a>
 
@@ -250,8 +229,6 @@ Don't hold bytes nobody reads.
 - **Guard:** `git grep` proved no reader. The helper's return value changes, a compatibility risk for outside callers.
 - **Result:** at N=5,000, list peak 48.7 → 24.1 MB, retained result 46.4 → 18.9 MB (C1-pr8-impl.md). With paging: 69.4 → 24.1 MB, and 138.9 → 43.6 MB at N=10,000 (`pr_board.md` 20/N).
 - **Code:** `K8sHelper.list_sandbox_claim_objects`, f80c79b0. **Deep dive:** [PERF-6](field-guide/perf.md#perf-6)
-
-<a id="opt-6"></a>
 
 <a id="opt-6"></a>
 
@@ -269,8 +246,6 @@ Size shared resources for every user, and wake only who cares.
 
 <a id="opt-9"></a>
 
-<a id="opt-9"></a>
-
 ### OPT-9 Size the pool for the burst plus the watch and the heartbeat
 
 - **Limit protects:** max_in_flight requests share one HTTP pool with the long-lived watch and Lease renewals.
@@ -278,8 +253,6 @@ Size shared resources for every user, and wake only who cares.
 - **Guard:** an explicit max_in_flight that doesn't fit raises before any API call. The check covers one batch, not a reservation across batches ([PERF-17](field-guide/perf.md#perf-17)). The same bound later covered on-demand pool GETs ([OPT-10](#opt-10)).
 - **Result:** pool 100 with the check off: sync discarded a connection in 6 of 6 runs; pool 102: none (bench tip summary, #41). Async never discarded; its late renewals at 1,000 creates/s were likely a busy event loop, not the pool (same source).
 - **Code:** `check_pool_size`, `BATCH_POOL_HEADROOM`. **Deep dive:** [PERF-16](field-guide/perf.md#perf-16), [PERF-17](field-guide/perf.md#perf-17), [RETRY-19](field-guide/retry.md#retry-19), [BP-27](best-practices.md#bp-27)
-
-<a id="opt-13"></a>
 
 <a id="opt-13"></a>
 
@@ -294,8 +267,6 @@ Size shared resources for every user, and wake only who cares.
 ## Smarter algorithms
 
 Per-event cost should depend on what changed, not on N.
-
-<a id="opt-12"></a>
 
 <a id="opt-12"></a>
 

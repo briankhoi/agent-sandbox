@@ -507,6 +507,35 @@ This section covers who owns each resource the batch SDK creates (cached connect
 
 </details>
 
+<a id="clean-24"></a>
+
+## CLEAN-24 Track replaced batches for teardown, and fence lazy opens that race release_all
+
+**Takeaway:** When a manager lazily opens owned handles outside its lock and swaps out stopped ones, keep an append-only list of every handle ever opened for teardown, re-check a `closed` flag under the lock after each open, and release any handle opened mid-teardown on the spot.
+
+<details>
+<summary>The full story (25/N, f81e7e25, 92115dd8)</summary>
+
+- **Situation:** `examples/agent-sandbox-rl/agent_sandbox_rl/batch_claims.py: BatchClaims` manages one live `SandboxBatch` per cluster (`_live[cluster.name]`). `_batch_for` opens a batch lazily under a per-cluster lock (outside `self._lock` so one cluster's RPC never blocks another), and replaces a stopped batch (`batch.err() is not None`) with a fresh batch for new acquires while old members keep running.
+- **What goes wrong:** Two leaks appear if teardown only iterates `_live`:
+  - Overwriting `_live[cluster.name]` when a batch stops drops the old handle, so `release_all()` never calls `release()` on it to clean up its remaining claims and Lease (for example after a terminal watch error while renewal still holds the Lease).
+  - If `release_all()` runs while `_batch_for` is inside `claim_batch(...)`, registering the returned batch afterward leaves an active batch that no future `teardown()` will visit and whose `_renew_loop` keeps renewing its Lease forever, so even the reaper never collects it.
+- **What we do:** `BatchClaims` keeps `_opened: list[SandboxBatch]` alongside `_live` and appends every opened batch to `_opened`. `release_all()` sets `self._closed = True`, swaps `_opened` out under `self._lock`, clears `_live`, and calls `batch.release()` on each handle (logging errors so one cluster's failure never skips the others; `reopen()` clears `_closed` on a fresh `setup()`). When `claim_batch(...)` returns in `_batch_for`, it checks `self._closed` under `self._lock`; if `closed` is true, it leaves `_live` and `_opened` untouched, calls `batch.release()` immediately, and raises `FleetError`. Tests: `test_batch_claims.py: test_stopped_batch_is_replaced_and_old_members_still_release`, `test_acquire_racing_teardown_leaves_no_batch_open`, `test_teardown_releases_batches_when_a_handle_release_fails`.
+- **Example:**
+  ```python
+  with self._lock:
+      closed = self._closed
+      if not closed:
+          self._live[cluster.name] = batch
+          self._opened.append(batch)
+  if closed:
+      batch.release()
+      raise FleetError("fleet was torn down; call setup() before acquiring again")
+  ```
+- **Related:** [CLEAN-10](#clean-10), [CLEAN-21](#clean-21), [LEASE-31](lease.md#lease-31).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

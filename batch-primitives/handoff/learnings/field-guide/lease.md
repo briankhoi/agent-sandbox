@@ -609,6 +609,51 @@ This section covers the batch's Lease: a small `coordination.k8s.io/v1` object n
 
 </details>
 
+<a id="lease-31"></a>
+
+## LEASE-31 A caller that never reuses batch IDs or detaches may fall back to direct delete on BatchError
+
+**Takeaway:** A general SDK handle must refuse by-name deletes once its lease may be lost, because another holder or a recreated batch can own those deterministic names. A caller that generates unique IDs and never hands off ownership can safely catch that health error and run a 404-tolerant direct delete.
+
+<details>
+<summary>The full story (25/N (92115dd8))</summary>
+
+- **Situation:** In `examples/agent-sandbox-rl`, `SandboxHandle.release()` calls `BatchClaim.release()`, which delegates to `self.batch.release_member(self.member)`. A handle handed out earlier can be released after its batch stopped (`batch.err()` set, so `BatchClaims` opened a fresh batch for new acquires) or after `fleet.teardown()` called `batch.release()`.
+- **What goes wrong:** `SandboxBatch.release_member` raises `BatchError` once `err()` is set or `release()` has run ([LEASE-11](#lease-11)). Letting `BatchError` escape `handle.release()` fails caller cleanup and, if `batch.err()` came from a watch failure or `teardown()`'s `batch.release()` failed transiently, leaves the claim running until `shutdownTime` or reaper expiry. Catching `Exception` broadly, on the other hand, would swallow real `403` or `503` delete errors and fire a duplicate unguarded DELETE.
+- **What we do:** `batch_claims.py: BatchClaim.release` catches `BatchError` (and only `BatchError`, which `release_member` raises if and only if `_check_healthy()` fails) and calls `self.cluster.resources.delete_claim(self.member.claim_name)`, which treats `404` as success. That fallback is safe here because `BatchClaims` never passes a fixed `batch_id` (so `claim_batch` generates a random ID) and never calls `detach()` or `get_batch()`, so no other holder or recreated batch can ever own `<batch_id>-<ordinal>`. Tests: `test_batch_claims.py: test_stopped_batch_is_replaced_and_old_members_still_release`, `test_claim_landing_after_teardown_falls_back_to_direct_claim_delete`.
+- **Example:**
+  ```python
+  try:
+      self.batch.release_member(self.member)
+  except BatchError:
+      self.cluster.resources.delete_claim(self.member.claim_name)
+  ```
+- **Related:** [LEASE-11](#lease-11), [CLEAN-24](clean.md#clean-24), [TEST-17](../testing.md#test-17).
+
+</details>
+
+<a id="lease-32"></a>
+
+## LEASE-32 Stamp a local lower-bound expiry before create, and rotate recycled claims before shutdownTime
+
+**Takeaway:** When a pooled worker reuses an object that carries a fixed server-side TTL, stamp a conservative local expiry from the monotonic clock *before* creating the object, and retire the object once the remaining time falls below a safety multiple of observed task duration plus reset cost.
+
+<details>
+<summary>The full story (25/N (8cfb221f))</summary>
+
+- **Situation:** Every claim from `SandboxBatch.acquire` gets a fixed `spec.lifecycle.shutdownTime` (`now + quorum_timeout + work_budget + BATCH_SHUTDOWN_MARGIN_SECONDS`, [LEASE-27](#lease-27)). In RL sandbox recycling (`recycle.py`), one claimed sandbox runs many reset-and-rollout tasks back to back instead of releasing after one episode.
+- **What goes wrong:** Per-claim `create_sandbox` sets no `shutdownTime`, so the recycler originally rotated only on `max_reuses` or a dirty reset. Holding a batch claim across many tasks lets wall-clock time reach `shutdownTime`, and the controller deletes the claim mid-episode. Recording `expires_at` from `time.monotonic()` *after* `batch.acquire()` returns can also overestimate the remaining life if readiness took time after the server stamped `shutdownTime`.
+- **What we do:** `batch_claims.py: BatchClaims.acquire` reads `started = time.monotonic()` before `batch.acquire(...)` and sets `expires_at = started + self._ready_timeout + self._settings.work_budget + BATCH_SHUTDOWN_MARGIN_SECONDS`, so `expires_at` is never later than the claim's real `shutdownTime`. `SandboxHandle.claim_expires_at` exposes that deadline (`None` for per-claim handles). Before each reuse, `recycle.py: _claim_expiring` rotates the claim like a `max_reuses` hit when `expires_at - time.monotonic() < 2 * longest_task_s + reset_timeout`, leaving twice the group's longest task so far for runtime variance. Tests: `test_batch_claims.py: test_recycle_rotates_a_batch_claim_before_it_expires` and `test_async_recycle_rotates_a_batch_claim_before_it_expires`.
+- **Example:**
+  ```python
+  started = time.monotonic()
+  member = batch.acquire(pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
+  expires_at = started + self._ready_timeout + self._settings.work_budget + BATCH_SHUTDOWN_MARGIN_SECONDS
+  ```
+- **Related:** [LEASE-27](#lease-27).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

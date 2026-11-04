@@ -207,6 +207,29 @@ Every batch handle keeps a local copy of its SandboxClaims, and a background wat
 
 </details>
 
+<a id="watch-10"></a>
+
+## WATCH-10 Bypass a watch-backed liveness check once the target is rebaselined or the watch stops
+
+**Takeaway:** A watch-cached routing snapshot can answer liveness checks in zero RPCs only while the watch is live and the target still matches the snapshot you acquired. Once the caller replaces the pod or records a finer-grained pod baseline, or once the watch stops, fall through to a direct pod read.
+
+<details>
+<summary>The full story (25/N, 92115dd8)</summary>
+
+- **Situation:** In `examples/agent-sandbox-rl`, per-claim `fleet.acquire()` runs `SandboxHandle.record_pod_identity()` (one Pod GET) so `is_alive()` can detect pod replacement (`pod_uid`) and in-place container restarts (`runtime_restarts`). With `claim_mode="batch"`, `fleet.acquire()` skips that initial Pod GET because the batch watch already tracks claim loss and pod replacement (`sandbox_name` and `pod_ips`).
+- **What goes wrong:** Two transitions invalidate a comparison against the acquired `Member` snapshot:
+  - `SandboxHandle.refresh()` (for example after suspend and resume) moves the handle onto a brand-new pod whose IP differs from `member.pod_ips`. Comparing against the acquired `Member` would report every resumed sandbox as dead.
+  - Once `batch.err()` is set, the batch watch stops updating, so a stale `READY` entry in `batch.members()` would hide a deleted claim or replaced pod.
+- **What we do:** `SandboxHandle.is_alive()` (`handles.py`) consults `self._batch_claim.still_reaches()` only when `self._batch_claim is not None and self.pod_uid is None`, and returns `False` with zero GETs when `batch_state.still_reaches` sees claim loss or a changed sandbox or pod IP. `BatchClaim.still_reaches()` (`batch_claims.py`) returns `True` immediately when `self.rebaselined or self.batch.err() is not None`, falling through to `is_alive()`'s bounded Pod GET. `SandboxHandle.refresh()` sets `self._batch_claim.rebaselined = True` and calls `record_pod_identity()`. Callers that also want in-place container-restart baselines call `record_pod_identity()`, which sets `self.pod_uid` and routes later checks through the Pod GET. Test: `test_batch_claims.py: test_batch_acquire_skips_pod_get_and_is_alive_checks_the_batch_watch`.
+- **Example:**
+  ```text
+  acquire (batch)       -> 0 Pod GETs; is_alive() checks batch watch via still_reaches()
+  refresh() or err()    -> rebaselined / err set -> is_alive() falls through to Pod GET
+  ```
+- **Related:** [WATCH-8](#watch-8), [PERF-12](perf.md#perf-12).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

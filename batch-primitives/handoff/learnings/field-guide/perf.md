@@ -397,6 +397,74 @@ This section covers how the batch handle stays fast and lean when a batch holds 
 
 </details>
 
+<a id="perf-19"></a>
+
+## PERF-19 Wire shared client TLS state and optional config through secondary handle factories
+
+**Takeaway:** Whenever a secondary path constructs child handles directly instead of calling the client's main factory, forward every shared client resource (such as a cached `SSLContext` or transfer config). Pass newly added optional kwargs only when non-`None` so custom handle subclasses keep working.
+
+<details>
+<summary>The full story (24/N, 93e8cae8)</summary>
+
+- **Situation:** `AsyncSandboxClient` holds a `_DefaultSSLContext` callable that lazily builds and caches one `ssl.SSLContext` on first HTTPS use (`9f7999b3`) and wires it onto standalone handles in `_attach_handle`, and both `SandboxClient` and `AsyncSandboxClient` accept `file_config` for `create_sandbox` and `get_sandbox`. `SandboxBatch.connect` and `AsyncSandboxBatch.connect` build handles directly with `self._client.sandbox_class(...)` so batch handles are not registered in `_active_connection_sandboxes` ([CLEAN-8](clean.md#clean-8)).
+- **What goes wrong:** Because `connect()` bypassed `_attach_handle`, `AsyncSandboxBatch.connect` left `sandbox.connector._default_ssl_context` at its uncached `httpx.create_ssl_context` default. Connecting `N` members over HTTPS ran `ssl.create_default_context()` `N` times, parsing the CA bundle once per member instead of once per client. Both shells also dropped `self._client.file_config` (such as `max_download_size`). Forwarding `file_config=None` unconditionally, meanwhile, raises `TypeError` on caller-supplied `sandbox_class` subclasses that predate `file_config`.
+- **What we do:** `async_sandbox_batch.py: AsyncSandboxBatch.connect` sets `sandbox.connector._default_ssl_context = self._client._default_ssl_context`, and both `SandboxBatch.connect` and `AsyncSandboxBatch.connect` pass `**({"file_config": self._client.file_config} if self._client.file_config is not None else {})`. Pinned by `test_connected_handles_share_client_default_ssl_context` (wraps `ssl.create_default_context` and asserts one call across two connected members) and `test_forwards_client_file_config_when_set` (both shells).
+- **Example:**
+  ```python
+  sandbox = self._client.sandbox_class(
+      ...,
+      **({"file_config": self._client.file_config} if self._client.file_config is not None else {}),
+  )
+  sandbox.connector._default_ssl_context = self._client._default_ssl_context
+  ```
+- **Related:** [CLEAN-8](clean.md#clean-8), [PERF-18](#perf-18), [GIT-12](../process.md#git-12).
+
+</details>
+
+<a id="perf-20"></a>
+
+## PERF-20 Open an on-demand batch with one size-0 seed pool so later pools validate in parallel
+
+**Takeaway:** If a batch constructor validates every declared group sequentially up front, open a long-lived dynamic batch with a single `size=0` group from the first caller's pool and let later pools validate lazily on their own first `acquire()`.
+
+<details>
+<summary>The full story (25/N, f81e7e25)</summary>
+
+- **Situation:** `examples/agent-sandbox-rl/agent_sandbox_rl/batch_claims.py: BatchClaims._batch_for` opens one `SandboxBatch` per cluster for `FleetConfig(claim_mode="batch")`. A single evaluation or RL run can span hundreds of distinct per-task warm pools (`500` pools in the SWE-bench `500 x 1` shape).
+- **What goes wrong:** `claim_batch` runs `_precheck_pools` across all declared groups one after another before returning the handle ([PERF-11](#perf-11)). Passing all `P` task pools up front as `size=0` groups puts up to `2 * P` sequential GETs (`1,000` serial GETs for `500` pools) onto the first caller's thread before any claim is created.
+- **What we do:** `_batch_for` opens the batch under a per-cluster lock (`_cluster_lock`) with `[BatchGroup(warmpool=pool, size=0)]` for only the first `acquire()`'s pool (at most 2 GETs). Every other pool is validated once on the thread of its own first `SandboxBatch.acquire()`, coalesced per pool via `_prechecks` ([LOCK-15](lock.md#lock-15)) and bounded across pools by `max_in_flight` ([RETRY-17](retry.md#retry-17)). Pinned by `test_batch_claims.py: test_first_acquire_opens_one_batch_from_its_pool` and `test_concurrent_first_acquires_open_one_batch`.
+- **Example:**
+  ```text
+  up-front 500 pools -> 1,000 serial GETs on thread 1 before any POST
+  1 size-0 seed pool -> 2 GETs on thread 1; pools 2..500 check in parallel under max_in_flight
+  ```
+- **Related:** [PERF-11](#perf-11), [LOCK-15](lock.md#lock-15), [RETRY-17](retry.md#retry-17).
+
+</details>
+
+<a id="perf-21"></a>
+
+## PERF-21 Bounding client write concurrency speeds up end-to-end readiness by leaving server seats for the controller
+
+**Takeaway:** When a client creates declarative resources and waits for an in-cluster controller to reconcile them Ready, bounding in-flight client creates finishes faster than an unbounded burst. Flooding apiserver concurrency seats queues the controller's own reconciliation writes and delays readiness.
+
+<details>
+<summary>The full story (19/N, 25/N; GKE benchmark 8f9ef46d)</summary>
+
+- **Situation:** `SandboxBatch` caps concurrent creates, deletes, and on-demand pool GETs with `BoundedSemaphore(max_in_flight)` (`default=20`, configurable via `BatchClaimConfig.max_in_flight` in `25/N`). On GKE (`BENCHMARK_TABLES.md`, commit `8f9ef46d`), we benchmarked `batch (default)` (`max_in_flight=20`) against `batch (unbounded)` (`max_in_flight=998`, `create_rps=1000000.0` on a `1,000`-socket pool) and `per_claim` across 160 to 2,560 warm sandboxes.
+- **What goes wrong:** Every `SandboxClaim` POST still needs the controller to adopt a warm `Sandbox` and patch the claim's Ready status through the same kube-apiserver. Firing 640 unbounded claim POSTs at once saturates APF concurrency seats and queues or throttles the controller's adoption writes behind the client's own burst (even with zero client HTTP 429s, apiserver APF rejected 19 controller `PATCH` and `PUT` writes in run 1), inflating tail readiness.
+- **What we do:** Keep `BATCH_DEFAULT_MAX_IN_FLIGHT = 20` as the SDK and `BatchClaimConfig` default, and expose `max_in_flight` for cluster-specific tuning. At 640 warm sandboxes (`160 x 4`) on GKE, `batch (default)` (`max_in_flight=20`) reached all-Ready in `8.73 s` (`p99 = 8.50 s`, zero client and server 429s, `2.24x` faster than `per_claim`'s `19.54 s`), whereas `batch (unbounded)` (`max_in_flight=998`) regressed to `18.95 s` (`p99 = 18.65 s`).
+- **Example:**
+  ```text
+  GKE 640 warm sandboxes (160 x 4):
+    per_claim                 -> all Ready 19.54 s (p99 19.30 s, 640 watches)
+    batch (max_in_flight=998) -> all Ready 18.95 s (p99 18.65 s, controller queued)
+    batch (max_in_flight=20)  -> all Ready  8.73 s (p99  8.50 s, 1 watch, 0 429s)
+  ```
+- **Related:** [PERF-16](#perf-16), [RETRY-17](retry.md#retry-17), [BP-27](../best-practices.md#bp-27).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)
