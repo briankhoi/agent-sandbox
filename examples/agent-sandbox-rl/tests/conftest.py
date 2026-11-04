@@ -35,6 +35,7 @@ class FakeCluster:
     self.api_client = MagicMock()
     self.core_api = MagicMock()
     self.apps_api = MagicMock()
+    self.coordination_api = MagicMock()
     # Direct custom-object reads (snapshot listing by label at release): a
     # Sandbox without a selector yet and no PodSnapshots, unless a test says so.
     self.custom_api = MagicMock()
@@ -50,6 +51,7 @@ class FakeCluster:
     self.resources.list_warmpools.return_value = []
     self.resources.list_templates.return_value = []
     self.resources.list_claims.return_value = []
+    self.resources.list_leases.return_value = []
     self.resources.ensure_template.return_value = True
     self.resources.wait_for_pool_ready.return_value = True
     self._seq = 0

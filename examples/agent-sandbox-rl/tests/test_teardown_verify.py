@@ -38,8 +38,8 @@ def _patch_reap(monkeypatch, counts=None, error=None):
     calls.append((run_id, kw))
     if error:
       raise error
-    return dict(counts or {"claims": 0, "warmpools": 0, "sandboxes": 0, "templates": 0,
-                           "pods": "requested (force)"})
+    return dict(counts or {"claims": 0, "leases": 0, "warmpools": 0, "sandboxes": 0,
+                           "templates": 0, "pods": "requested (force)"})
   monkeypatch.setattr(sys.modules["agent_sandbox_rl.reaper"], "reap", fake)
   return calls
 
@@ -62,15 +62,17 @@ def test_teardown_without_verify_is_unchanged(make_cluster, monkeypatch):
 
 
 def test_verify_runs_the_run_scoped_reaper_per_cluster_and_reports(make_cluster, monkeypatch, caplog):
-  calls = _patch_reap(monkeypatch, counts={"claims": 0, "warmpools": 1, "sandboxes": 2,
-                                           "templates": 0, "pods": "requested (force)"})
+  calls = _patch_reap(monkeypatch, counts={"claims": 0, "leases": 0, "warmpools": 1,
+                                           "sandboxes": 2, "templates": 0,
+                                           "pods": "requested (force)"})
   c = make_cluster("solo")
   f = _fleet(c)
   with caplog.at_level("WARNING"):
     out = f.teardown(verify=True)
-  assert out == {"solo": {"claims": 0, "warmpools": 1, "sandboxes": 2, "templates": 0,
-                          "pods": 0, "remaining": {"claims": 0, "warmpools": 0,
-                                                   "templates": 0, "pods": 0}}}
+  assert out == {"solo": {"claims": 0, "leases": 0, "warmpools": 1, "sandboxes": 2,
+                          "templates": 0, "pods": 0,
+                          "remaining": {"claims": 0, "leases": 0, "warmpools": 0,
+                                        "templates": 0, "pods": 0}}}
   (run_id, kw), = calls
   assert run_id == f.run_id
   assert kw == {"context": "ctx-1", "namespace": c.namespace, "kubeconfig": "/kc", "in_cluster": False}
@@ -173,3 +175,18 @@ def test_verify_waits_for_a_sweep_another_thread_is_running(make_cluster, monkey
   gate.set()
   t.join(5); v.join(5)
   assert order[:2] == ["sweep-start", "sweep-end"] and calls
+
+
+def test_verify_detects_and_flags_leaked_batch_leases(make_cluster, monkeypatch, caplog):
+  _patch_reap(monkeypatch, counts={"claims": 0, "leases": 1, "warmpools": 0,
+                                   "sandboxes": 0, "templates": 0,
+                                   "pods": "requested (force)"})
+  c = make_cluster("solo")
+  f = _fleet(c)
+  c.resources.list_leases.return_value = ["batch-lease-still-here"]
+  with caplog.at_level("WARNING"):
+    out = f.teardown(verify=True)
+  assert out["solo"]["leases"] == 1
+  assert out["solo"]["remaining"]["leases"] == 1
+  assert any("NOT verified clean" in r.message and "leases" in r.message
+             for r in caplog.records)
