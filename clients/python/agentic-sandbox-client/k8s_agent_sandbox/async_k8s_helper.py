@@ -59,10 +59,17 @@ async def _claim_list_pages(
     label_selector: str,
     _request_timeout: float | None,
 ) -> AsyncIterator[tuple[dict[str, Any], bool]]:
-    """Yields the pages of one SandboxClaim list, each with whether it is the list's first page.
+    """Yields ``(page, first)`` pairs for one paginated ``SandboxClaim`` list.
 
-    A first page after other pages means the list restarted, so the caller drops what it gathered
-    from the earlier pages.
+    An unpaginated ``SandboxClaim`` list fetches every claim of a batch in one HTTP response,
+    holding the full raw JSON body and decoded text alongside the parsed dicts in driver memory
+    during ``claim_batch``, ``get_batch``, ``410`` watch re-lists, and release counts.
+    ``_claim_list_pages`` fetches the list in ``CLAIM_LIST_PAGE_SIZE`` chunks so driver memory
+    holds only one page's response buffer at a time while keeping a single consistent snapshot
+    at the first page's ``resourceVersion``.
+
+    Yielding ``(page, first)`` tells the caller when the list starts (or restarts after a ``410``
+    continue-token expiry) so the caller discards anything it gathered from earlier pages.
     """
     continue_token: str | None = None
     restarted = False
@@ -90,6 +97,8 @@ async def _claim_list_pages(
         yield page, continue_token is None
         # A page may be empty while more follow, so only the continue token ends the list.
         continue_token = (page.get("metadata") or {}).get("continue") or None
+        # Drop the generator frame's reference before fetching the next page so driver memory
+        # never holds two pages at once.
         del page
         if continue_token is None:
             return
@@ -656,7 +665,8 @@ class AsyncK8sHelper:
                 items = []
                 resource_version = (page.get("metadata") or {}).get("resourceVersion", "0")
             page_items = page.get("items", [])
-            # Nothing in the SDK reads managedFields, so drop it instead of keeping it for every claim of the batch.
+            # Nothing in the SDK reads managedFields, so drop it only in memory from each parsed
+            # dict to lower driver memory without modifying the live SandboxClaim in the cluster.
             for claim in page_items:
                 (claim.get("metadata") or {}).pop("managedFields", None)
             items.extend(page_items)
@@ -665,8 +675,16 @@ class AsyncK8sHelper:
     async def count_live_sandbox_claims(
         self, namespace: str, label_selector: str, _request_timeout: float | None = None
     ) -> int:
-        """Counts the SandboxClaims matching a label selector that aren't being deleted, holding
-        one page of the list at a time.
+        """Counts matching ``SandboxClaim`` objects without ``metadata.deletionTimestamp``,
+        holding one page of the list at a time.
+
+        Between ``deletecollection`` rounds, ``release()`` and ``release_group()`` run a
+        consistent read only to check whether any non-terminating claims still need deletion and
+        whether the round made progress. Calling ``list_sandbox_claim_objects`` would materialize
+        every surviving claim dict in driver memory just to count them (especially after a
+        ``deletecollection`` timeout on a large batch), whereas ``count_live_sandbox_claims``
+        folds one page at a time into an ``int`` and drops each page before advancing the
+        generator.
 
         Args:
             _request_timeout: Optional total timeout in seconds for each page, forwarded to kubernetes_asyncio.
@@ -680,6 +698,7 @@ class AsyncK8sHelper:
             if first:
                 live = 0
             live += sum(1 for c in page.get("items", []) if not (c.get("metadata") or {}).get("deletionTimestamp"))
+            # Drop this frame's reference before advancing the generator to fetch the next page.
             del page
         return live
 
@@ -801,7 +820,7 @@ class AsyncK8sHelper:
         # reads it. The sync client raises ApiException for a non-2xx response before returning it,
         # while the async client returns an unread response without checking its status, so only the
         # async helper checks the status.
-        response = await self.custom_objects_api.delete_collection_namespaced_custom_object(
+        response = cast(aiohttp.ClientResponse, await self.custom_objects_api.delete_collection_namespaced_custom_object(
             group=CLAIM_API_GROUP,
             version=CLAIM_API_VERSION,
             namespace=namespace,
@@ -809,7 +828,7 @@ class AsyncK8sHelper:
             label_selector=label_selector,
             _preload_content=False,
             _request_timeout=_request_timeout,
-        )
+        ))
         try:
             if not 200 <= response.status <= 299:
                 # Replace invalid UTF-8 bytes so a binary proxy error page still raises ApiException
