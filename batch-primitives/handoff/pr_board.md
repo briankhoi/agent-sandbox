@@ -29,12 +29,12 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 17/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (17/N) | merged #2153 (`6feedc5c`, tree equals `1a0cee64`) | `1a0cee64` | local agent (fix: coordinator 2) |
 | 18/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (18/N) | merged #2154 (`a97eeae7`, tree equals `73a16a7a`) | `73a16a7a` | local agent (types: coordinator 2) |
 | 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip warm-pool create pacing and stop create retries on release (19/N) | ready, not opened (4-commit split + round-3 fixes + active-voice/"why" comment audit synced 2026-11-04 on `a97eeae7`: `65f92220`, `967661f1`, `5201cd88`, `0081826e`) | `0081826e` | local agent |
-| 20/N | `feat/batch-8-list-memory` (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (20/N) | ready, not opened (verified 2026-10-28 `work/results/C2-pr8-fixes.md`; restacked onto `0081826e` 2026-11-04) | `b7a59f29` | local agent (coordinator 2) |
-| 21/N | `feat/batch-9-types` (types PR) | refactor(python-sdk): replace Any with exact helper and Lease types in batch modules (21/N) | ready, not opened (verified 2026-10-28 `work/results/B5-types-pr.md`; restacked onto `b7a59f29` 2026-11-04) | `6b0472a4` | local agent (coordinator 2) |
-| 22/N | `feat/batch-10-deletecollection-retry` (retry PR) | fix(python-sdk): stop urllib3 from retrying timed-out claim deletecollection and count requests (22/N) | ready, not opened (verified 2026-10-28 `work/results/C3-deletecollection-retry.md`; restacked onto `6b0472a4` 2026-11-04) | `5dde1575` | local agent (coordinator 2) |
-| 23/N | `feat/batch-11-acquire-annotations` (Task 7 SDK) | feat(python-sdk): pass pod_annotations in batch acquire (23/N) | ready, not opened (verified 2026-10-28 `work/results/H2-task7-acquire-annotations.md`; restacked onto `5dde1575` 2026-11-04) | `d314209e` | local agent (coordinator 3) |
-| 24/N | `merge/main-into-batch-claim-2` (branch sync, stacked on `23/N`) | merge(batch): merge main into feature/batch-claim (24/N) | ready, not opened (synced 2026-11-04 on `d314209e` + `bcf5d4a0` with `/label tide/merge-method-merge`; Q1-Q3 implemented & independently verified) | `b4cf6575` | stack / coordinator 3 |
-| 25/N | `feat/rl-batch-claim-mode` (4 commits stacked on `24/N`) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch (25/N) | ready, not opened (synced 2026-11-04 on `b4cf6575`, targeting `feature/batch-claim`; Q1-Q3 implemented & independently verified) | `3a25143c` | stack / coordinator 3 |
+| 20/N | `feat/batch-8-list-memory` (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (20/N) | ready, not opened (deep-audited, fixed & synced 2026-11-04 on `0081826e`: `72f3ebd1`, `80d9e62e`, `482d1fd8`, `39dcd169`) | `39dcd169` | local agent (coordinator 2) |
+| 21/N | `feat/batch-9-types` (types PR) | refactor(python-sdk): replace Any with exact helper and Lease types in batch modules (21/N) | ready, not opened (deep-audited, simplified `_attach` & `mark_lost` types, synced 2026-11-04 on `39dcd169`: `42b1a368`, `617d34b0`) | `617d34b0` | local agent (coordinator 2) |
+| 22/N | `feat/batch-10-deletecollection-retry` (retry PR) | fix(python-sdk): stop urllib3 from retrying timed-out or throttled claim collection requests (22/N) | ready, not opened (deep-audited, extended to `list_sandbox_claim_objects` + `respect_retry_after_header=False`, synced 2026-11-04 on `617d34b0`: `9d3f4a75`) | `9d3f4a75` | local agent (coordinator 2) |
+| 23/N | `feat/batch-11-acquire-annotations` (Task 7 SDK) | feat(python-sdk): pass pod_annotations in batch acquire (23/N) | ready, not opened (deep-audited & synced 2026-11-04 on `9d3f4a75`: `31a78d12`, `ba3bc84c`) | `ba3bc84c` | local agent (coordinator 3) |
+| 24/N | `merge/main-into-batch-claim-2` (branch sync, stacked on `23/N`) | merge(batch): merge main into feature/batch-claim (24/N) | ready, not opened (synced 2026-11-04 on `ba3bc84c` + `bcf5d4a0` with `/label tide/merge-method-merge`: `0bb19f14`, `dfc38f64`, `070d0abe`) | `070d0abe` | stack / coordinator 3 |
+| 25/N | `feat/rl-batch-claim-mode` (4 commits stacked on `24/N`) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch (25/N) | ready, not opened (synced 2026-11-04 on `070d0abe`, targeting `feature/batch-claim`) | `2d731966` | stack / coordinator 3 |
 | RL | `feat/rl-sandbox-client-race` (1 commit on upstream main) | fix(rl): build Cluster.sandbox_client once under concurrent first use | ready, not opened (independent of the stack, targets `main`) | `834656b9` | cloud |
 | SDK fix | `fix/python-sdk-release-terminated-handles` (1 commit on upstream main `7f40dc1a`) | fix(python-sdk): untrack terminated sandbox handles from client registry | **merged** upstream #2085 as squash `7b1a9fbc` (Fixes #2082; merged by 2026-11-02; shepherd prompt `work/prompts/G7-pr-shepherd-2085-2087.md`) | `0a1eb20b` (CodeRabbit round 1 folded 2026-10-28) | cloud shepherd thread (item G) |
 | SDK fix | `fix/python-sdk-free-closed-connectors` (1 commit on upstream main `6342c063`) | fix(python-sdk): break handle-to-connector reference cycle on close | open upstream #2086 (Fixes #2083; opened 2026-10-28, targets `main`; shepherd prompt `work/prompts/G7-pr-shepherd-2085-2087.md`) | `a996361e` (rebased on main 2026-11-02; tomergee nit answered, no change) | cloud shepherd thread (item G) |
@@ -191,23 +191,43 @@ This PR is the nineteenth in a series of PRs to implement a batch. It skips `cre
 
 ### 20/N PR 8 (ready, not opened)
 This PR is the twentieth in a series of PRs to implement a batch. It lowers the memory peak of listing and releasing a large batch.
-- Claim lists are paged at 500 (client-go's page size). The first page's resourceVersion still starts the watch, and an expired continue token restarts the list once.
-- Listed claims drop `metadata.managedFields`, which nothing in the SDK reads.
+- `_claim_list_pages` lists claims in pages of 500 (client-go's page size). The first page's resourceVersion still starts the watch, and an expired continue token restarts the list once.
+- `list_sandbox_claim_objects` drops `metadata.managedFields`, which nothing in the SDK reads, from each claim as its page arrives.
 - The release rounds count the claims not yet being deleted page by page, freeing each page before fetching the next, instead of holding every remaining claim.
-- `delete_sandbox_claims_by_label` drains the deletecollection response unread and releases the connection in a `finally` block. The async helper raises `ApiException` for a non-2xx response itself, because `kubernetes_asyncio` doesn't check the status of an unread response.
+- `delete_sandbox_claims_by_label` drains raw `deletecollection` chunks unread without decompressing them, closes an unfinished sync response before `release_conn()` so a mid-stream interruption cannot return a dirty socket to the pool, and releases the connection in a `finally` block. The async helper raises `ApiException` for a non-2xx response itself (decoding non-UTF-8 error pages with replacement characters), because `kubernetes_asyncio` returns an unread response without checking its status.
 - Measured on kind with 5,000 claims (sync): `release()` peak drops from 69.4 MB to 0.2 MB (and from 81.7 MB to 11.8 MB when deletecollection times out); claim-list peak drops from 69.4 MB to 48.7 MB with paging and to 24.1 MB (retained dicts 46.4 MB to 18.9 MB) after dropping `managedFields`. At 10,000 claims, `release()` peak drops from 138.8 MB to 9.9 MB and list peak from 138.9 MB to 43.6 MB. Release time is unchanged within noise.
 
 ### 21/N Types PR (ready, not opened)
-This PR is the twenty-first in a series of PRs to implement a batch. It replaces `Any` with the helper and `V1Lease` types in the batch modules.
-- The `helper` parameter on `_precheck_pools`, `_take_batch_lease`, `_delete_batch_objects` and `_delete_claims_in_rounds` is typed as `K8sHelper` in `sandbox_batch.py` and `AsyncK8sHelper` in `async_sandbox_batch.py`.
-- `read_batch_lease`, `replace_batch_lease` and `create_batch_lease` on `K8sHelper` and `AsyncK8sHelper`, along with `_write_renewal`, `_take_batch_lease` and `_delete_batch_objects` on the batch handles, use `V1Lease` instead of `Any`.
-- `batch_utils.lease_parts(lease)` returns `(lease.metadata, lease.spec)` and raises `BatchError` if either is `None`, so callers don't repeat `None` checks for fields the API server always populates.
+This PR is the twenty-first in a series of PRs to implement a batch. It replaces `Any` with exact helper and `V1Lease` types in the batch modules.
+- Types the `helper` parameter on `_precheck_pools`, `_take_batch_lease`, `_delete_batch_objects`, and `_delete_claims_in_rounds` as `K8sHelper` in `sandbox_batch.py` and `AsyncK8sHelper` in `async_sandbox_batch.py`.
+- Types `read_batch_lease`, `replace_batch_lease`, and `create_batch_lease` on `K8sHelper` and `AsyncK8sHelper`, along with `_write_renewal`, `_take_batch_lease`, and `_delete_batch_objects` on the batch handles, with `V1Lease` instead of `Any` (and narrows `BatchState.mark_lost`'s update dict to `dict[str, object]`).
+- Adds overloaded `batch_utils.lease_parts(lease)` returning `(lease.metadata, lease.spec)` and raising `BatchError` if either is `None`, and handles `lease is None` up front in `_attach` so callers don't repeat `None` checks for fields the API server always populates.
 
 ### 22/N Claim collection retry PR (ready, not opened)
-This PR is the twenty-second in a series of PRs to implement a batch. It stops `urllib3` from retrying timed-out sync claim `deletecollection` and count requests inside a release round.
-- `kubernetes` leaves `configuration.retries` as `None` by default, so `urllib3` uses `Retry(3)` and silently repeats a timed-out `DELETE` or `GET` three times inside one SDK call before returning to `_delete_claims_in_rounds`.
-- `K8sHelper` now runs `delete_sandbox_claims_by_label` and `count_live_sandbox_claims` on a client copy configured with `urllib3.Retry(3, read=False)`, which keeps connection retries while surfacing read timeouts and mid-response protocol errors after one attempt so `_delete_claims_in_rounds` can check progress and manage rounds itself.
+This PR is the twenty-second in a series of PRs to implement a batch. It stops `urllib3` from retrying timed-out or `Retry-After` throttled sync claim collection requests inside one SDK call.
+- `kubernetes` leaves `configuration.retries` as `None` by default, so `urllib3` uses `Retry(3)`, which repeats a timed-out `GET` or `DELETE` three times inside one SDK call and sleeps up to 6 hours on `429`/`503` `Retry-After` headers before returning to batch callers.
+- `K8sHelper` now runs `list_sandbox_claim_objects`, `count_live_sandbox_claims`, and `delete_sandbox_claims_by_label` on a client copy configured with `urllib3.Retry(3, read=False, respect_retry_after_header=False)`, keeping connection retries while surfacing read timeouts, mid-response protocol errors, and `Retry-After` responses after one attempt so `_claim`, `_attach`, `_watch_loop`, and `_delete_claims_in_rounds` enforce their own deadlines, `Retry-After` caps, and Lease renewals.
 - `AsyncK8sHelper` needs no change because `aiohttp` does not retry requests.
+
+### 23/N Acquire annotations PR (ready, not opened)
+This PR is the twenty-third in a series of PRs to implement a batch. It lets callers pass pod annotations when acquiring a batch member.
+- `SandboxBatch.acquire` and `AsyncSandboxBatch.acquire` accept keyword-only `pod_annotations: dict[str, str] | None = None`, validate them with `build_pod_metadata(None, pod_annotations)` before touching the cluster, and set `spec.additionalPodMetadata` on the created `SandboxClaim` across create retries (omitting it when `None` or empty).
+- Updates `README.md` and regenerates `docs/python_sdk_reference.md`.
+
+### 24/N Branch sync merge PR (ready, not opened)
+This PR merges `main` (`bcf5d4a0`) into `feature/batch-claim` so the branch picks up recent Python SDK and `examples/agent-sandbox-rl` changes before `25/N`. Open with `/label tide/merge-method-merge`.
+- Merges `main` into `feature/batch-claim`, preserving `main`'s static `atexit` client cleanup (`#2087`) and terminated-handle eviction (`#2085`) alongside batch exit cleanup while keeping batch-connected handles cached until `release_member()` or the watch marks them `LOST`.
+- Forwards `client.file_config` (`#2041`) and `AsyncSandboxClient._default_ssl_context` (`#2132`) in `SandboxBatch.connect()` and `AsyncSandboxBatch.connect()`.
+- Regenerates `docs/python_sdk_reference.md` with `main`'s 4-level heading `sed` rule.
+
+### 25/N RL batch claim mode (ready, not opened)
+Branch `feat/rl-batch-claim-mode`, 4 commits on `24/N`, targeting `feature/batch-claim` under `examples/agent-sandbox-rl/`.
+- Title: `feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch (25/N)`.
+- `FleetConfig(claim_mode="batch")` makes `fleet.acquire` and `fleet.release` claim through a per-cluster SDK batch (Design C, approved 2026-10-21), forwarding snapshot `pod_annotations` through `batch.acquire(..., pod_annotations=...)` (`23/N`). The default stays per-claim.
+- Recycled batch claims rotate before they expire (RL Lease default 300 s, approved 2026-10-21).
+- Updates the RL `README.md`.
+- Results, kind, 160 sandboxes per step (measured): sync batch 1.27 s, async batch 1.32 s (0 errors, no leaks), so the async path needs no changes. Async per-claim 1.75 s, sync per-claim 3.88 s. The 3.1x sync headline is inflated by the client race below, so the honest no-limit win is about 1.3x (inferred). Cost wins stand: 243 vs 640 API requests, 1 vs 160 watches. The batch is at its floor on kind (requests done at about 0.4 s, controller adoption to 1.08 s).
+- Detail: `rl-design/async_speed_gap.md`, `rl-design/rl_design_decision.md`.
 
 ### SDK fix: terminated-handle memory leak (three PRs, target `main`, not in the batch stack)
 Owner: coordinator 1 (item G). A long-running async driver grew from 94 MB to 1.75 GB over 2,400 sandboxes (measured, `bench/async-mem-probe`). With all three PRs, growth per 100 sandboxes went from 90.1 MB to 0.46 MB, and memory kept per terminated sandbox from 0.667 MB to 0.0001 MB (measured by G, verified by coordinator 1's checker).
@@ -215,15 +235,6 @@ Owner: coordinator 1 (item G). A long-running async driver grew from 94 MB to 1.
 - PR 2 (#2086, Fixes #2083): a closed handle's connector drops its links back to the handle, so it is freed without the cyclic GC. Async in the connector's final `close()`, sync in `Sandbox.close_connection()`.
 - PR 3 (#2087, Fixes #2084): the exit hook holds only the registry data, not the client, so closed clients are freed; exit cleanup unchanged. Both clients; stacked on #2085 (`do-not-merge/hold` until #2085 merges).
 - Filed issue and PR texts: `work/results/issues-final.md`. Shepherd prompt for #2085–#2087: `work/prompts/G7-pr-shepherd-2085-2087.md`.
-
-### RL batch claim mode (ready, not opened)
-Branch `feat/rl-batch-claim-mode`, 4 commits on 18/N. Targets the RL library under `examples/agent-sandbox-rl/`.
-- Title: feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch.
-- `FleetConfig(claim_mode="batch")` makes `fleet.acquire` and `fleet.release` claim through a per-cluster SDK batch (Design C, approved 2026-10-21). The default stays per-claim.
-- Recycled batch claims rotate before they expire (RL Lease default 300 s, approved 2026-10-21).
-- Documented in the RL README.
-- Results, kind, 160 sandboxes per step (measured): sync batch 1.27 s, async batch 1.32 s (0 errors, no leaks), so the async path needs no changes. Async per-claim 1.75 s, sync per-claim 3.88 s. The 3.1x sync headline is inflated by the client race below, so the honest no-limit win is about 1.3x (inferred). Cost wins stand: 243 vs 640 API requests, 1 vs 160 watches. The batch is at its floor on kind (requests done at about 0.4 s, controller adoption to 1.08 s).
-- Detail: `rl-design/async_speed_gap.md`, `rl-design/rl_design_decision.md`.
 
 ### RL sandbox client race (ready, not opened)
 Branch `feat/rl-sandbox-client-race`, 1 commit on upstream `main` (`834656b9`). Draft: `/mnt/project-files/pr-descriptions/rl_sandbox_client_race.md`.
