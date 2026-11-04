@@ -28,7 +28,7 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 16/N | `feat/batch-6-acquire-nbbp5j` (PR 6) | feat(python-sdk): add acquire (16/N) | merged #1991 (`dc9ea439`, tree equals `692d7229`) | `692d7229` | local agent |
 | 17/N | `feat/batch-transport-ltlfdm` | feat(python-sdk): connect batch members through their watched pod IP (17/N) | merged #2153 (`6feedc5c`, tree equals `1a0cee64`) | `1a0cee64` | local agent (fix: coordinator 2) |
 | 18/N | `feat/batch-reaper-ymtd6t` | feat(python-sdk): add the batch reaper (18/N) | merged #2154 (`a97eeae7`, tree equals `73a16a7a`) | `73a16a7a` | local agent (types: coordinator 2) |
-| 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip create and acquire pacing for claims a warm pool covers (19/N) | ready, not opened (4-commit split + round-3 fixes + active-voice/"why" comment audit synced 2026-11-04 on `a97eeae7`: `65f92220`, `967661f1`, `5201cd88`, `0081826e`) | `0081826e` | local agent |
+| 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip warm-pool create pacing and stop create retries on release (19/N) | ready, not opened (4-commit split + round-3 fixes + active-voice/"why" comment audit synced 2026-11-04 on `a97eeae7`: `65f92220`, `967661f1`, `5201cd88`, `0081826e`) | `0081826e` | local agent |
 | 20/N | `feat/batch-8-list-memory` (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (20/N) | ready, not opened (verified 2026-10-28 `work/results/C2-pr8-fixes.md`; restacked onto `0081826e` 2026-11-04) | `b7a59f29` | local agent (coordinator 2) |
 | 21/N | `feat/batch-9-types` (types PR) | refactor(python-sdk): replace Any with exact helper and Lease types in batch modules (21/N) | ready, not opened (verified 2026-10-28 `work/results/B5-types-pr.md`; restacked onto `b7a59f29` 2026-11-04) | `6b0472a4` | local agent (coordinator 2) |
 | 22/N | `feat/batch-10-deletecollection-retry` (retry PR) | fix(python-sdk): stop urllib3 from retrying timed-out claim deletecollection and count requests (22/N) | ready, not opened (verified 2026-10-28 `work/results/C3-deletecollection-retry.md`; restacked onto `6b0472a4` 2026-11-04) | `5dde1575` | local agent (coordinator 2) |
@@ -181,10 +181,13 @@ This PR is the eighteenth in a series of PRs to implement a batch. It cleans up 
 - `python -m k8s_agent_sandbox.batch_reaper` runs once and finds Leases past their duration plus a skew margin. It deletes only those Leases, each with a resourceVersion precondition, and never touches claims, so its RBAC is `list`, `get` and `delete` on Leases. `--dry-run` only logs.
 
 ### 19/N PR 7 (ready, not opened)
-This PR is the nineteenth in a series of PRs to implement a batch. It stops pacing claims that a warm pool already covers.
-- `claim_batch` and `acquire` read the pool's `status.readyReplicas` in the precheck and skip `create_rps` pacing for as many claims as there are ready warm sandboxes. Claims beyond that stay paced, and `max_in_flight` still bounds creates.
+This PR is the nineteenth in a series of PRs to implement a batch. It skips `create_rps` pacing for claims that a warm pool's Ready sandboxes cover and stops pending create retries when a caller releases claims.
+- `claim_batch` and `acquire()` read each pool's `status.readyReplicas` during the pool precheck and skip `create_rps` pacing for as many creates as the pool's Ready sandboxes cover. Claims beyond that count stay paced, `max_in_flight` still bounds concurrent creates, and once the apiserver answers any create with `429`, the batch paces every later create at `create_rps`.
+- Once callers spend the Ready count from a pool's precheck, `acquire()` re-reads the pool's `status.readyReplicas` at most once per second per pool, bounded by `acquire()`'s deadline without suppressing concurrent longer-deadline refreshes when a short-deadline read times out.
+- Fill and `acquire()` create loops re-check detach, release, group failure, and watch-observed claims before and after waiting on `max_in_flight` and before retry backoffs and pacing-slot reservations, and never send past an expired `acquire()` deadline (excluding `BatchError` from async transport retries so `BatchTimeoutError` fails fast).
+- `release_member()`, `release_group()`, and `release_not_ready()` stop pending create retries immediately, cleanup deletes an in-flight create retry that lands after `release_member()`'s delete, and `BatchState` sequences overlapping member deletes so an older delete finishing late cannot clear a newer failed cleanup delete.
 - Measured on kind for the RL prototype, pacing never bound on an all-warm run (0 429s). Without this PR the batch loses to per-claim creates (3.37 vs 1.43 s).
-- Docstrings and the SDK reference describe warm credit.
+- Updates `README.md`, docstrings, and the Python SDK reference.
 
 ### 20/N PR 8 (ready, not opened)
 This PR is the twentieth in a series of PRs to implement a batch. It lowers the memory peak of listing and releasing a large batch.
