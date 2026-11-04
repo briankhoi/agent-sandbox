@@ -33,6 +33,8 @@ SANDBOXES_PLURAL = "sandboxes"
 
 # Annotations / labels.
 SANDBOX_NAME_HASH_LABEL = "agents.x-k8s.io/sandbox-name-hash"
+# Label stamped by k8s_agent_sandbox on every batch Lease and owned SandboxClaim.
+BATCH_ID_LABEL = "agents.x-k8s.io/batch-id"
 
 # A warm sandbox pod must stay alive to be claimed and exec'd into. Task images
 # have their own entrypoint, so we override it to idle.

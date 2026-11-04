@@ -139,6 +139,8 @@ def _reap_with_cluster(cluster: Cluster, run_id: str | None, *,
     counts[kind] = len(names)
 
   _sweep("claims", r.list_claims, r.delete_claim)
+  keep_leases = _protected_leases(cluster, selector, protect_claims_of)
+  _sweep("leases", r.list_leases, r.delete_lease, keep=keep_leases)
   _sweep("warmpools", r.list_warmpools, r.delete_warmpool, keep=protected_pools)
   # Sandboxes reachable by label (none today; kept for a controller that copies
   # the label) plus the ones the claims and pools pointed at.
@@ -314,6 +316,30 @@ def _in_use_elsewhere(cluster: Cluster, protect_claims_of, *,
   return pools, templates, pod_selectors
 
 
+def _protected_leases(cluster: Cluster, selector: str,
+                      protect_claims_of) -> set[str]:
+  """Batch Lease names under ``selector`` whose ``RUN_ID_LABEL`` is protected."""
+  if protect_claims_of is None:
+    return set()
+  list_objs = getattr(cluster.resources, "_list_lease_objects", None)
+  if not callable(list_objs):
+    return set()
+  try:
+    objs = list_objs(selector)
+  except Exception:  # noqa: BLE001
+    return set()
+  if not isinstance(objs, list):
+    return set()
+  keep: set[str] = set()
+  for obj in objs:
+    meta = (obj.get("metadata") if isinstance(obj, dict) else None) or {}
+    name = meta.get("name")
+    rid = (meta.get("labels") or {}).get(constants.RUN_ID_LABEL)
+    if isinstance(name, str) and name and protect_claims_of(rid):
+      keep.add(name)
+  return keep
+
+
 def _delete_pods_except(cluster: Cluster, selector: str,
                         protected_selectors: set[str]) -> tuple[int, int]:
   """Force-delete the pods matching ``selector``, except those matching any of
@@ -372,17 +398,27 @@ def find_orphan_runs(cluster: Cluster, alive_run_ids: Iterable[str], *,
   now = now or datetime.now(timezone.utc)
   managed = f"{constants.MANAGED_BY_LABEL}={constants.MANAGED_BY_VALUE}"
   seen: dict[str, dict] = {}
+  objs_to_scan: list[dict] = []
   for plural in (constants.CLAIMS_PLURAL, constants.WARMPOOLS_PLURAL,
                  constants.TEMPLATES_PLURAL):
-    for obj in cluster.resources._list_objects(plural, managed):  # noqa: SLF001
-      rid = ((obj.get("metadata") or {}).get("labels") or {}).get(constants.RUN_ID_LABEL)
-      if not rid:
-        continue
-      created = _created_at(obj)
-      age = (now - created).total_seconds() if created else float("inf")
-      rec = seen.setdefault(rid, {"objects": 0, "newest_age_s": float("inf")})
-      rec["objects"] += 1
-      rec["newest_age_s"] = min(rec["newest_age_s"], age)
+    objs_to_scan.extend(cluster.resources._list_objects(plural, managed))  # noqa: SLF001
+  list_leases = getattr(cluster.resources, "_list_lease_objects", None)
+  if callable(list_leases):
+    try:
+      lease_objs = list_leases(managed)
+      if isinstance(lease_objs, list):
+        objs_to_scan.extend(lease_objs)
+    except Exception:  # noqa: BLE001
+      logger.debug("reap: could not list batch leases for orphan discovery", exc_info=True)
+  for obj in objs_to_scan:
+    rid = ((obj.get("metadata") or {}).get("labels") or {}).get(constants.RUN_ID_LABEL)
+    if not rid:
+      continue
+    created = _created_at(obj)
+    age = (now - created).total_seconds() if created else float("inf")
+    rec = seen.setdefault(rid, {"objects": 0, "newest_age_s": float("inf")})
+    rec["objects"] += 1
+    rec["newest_age_s"] = min(rec["newest_age_s"], age)
   return {rid: rec for rid, rec in seen.items()
           if rid not in alive and rec["newest_age_s"] >= min_age_s}
 

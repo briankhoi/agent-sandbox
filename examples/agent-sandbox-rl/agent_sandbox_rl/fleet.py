@@ -1961,6 +1961,7 @@ class SandboxFleet:
     """What of this run is in the namespace right now, by kind."""
     return {
         "claims": len(c.resources.list_claims(label_selector=self.run_selector())),
+        "leases": len(c.resources.list_leases(label_selector=self.run_selector())),
         "warmpools": len(c.resources.list_warmpools(label_selector=self.run_selector())),
         "templates": len(c.resources.list_templates(label_selector=self.run_selector())),
         "pods": int(c.resources.count_pods(label_selector=self.pod_run_selector())),
@@ -2051,7 +2052,7 @@ class SandboxFleet:
         # the explicit `all_managed=True` sweep).
         sel = self.run_selector()
         if self._shared_run_id:
-          claims, pools, tmpls = [], [], []
+          claims, leases, pools, tmpls = [], [], [], []
         else:
           logger.info("teardown: sweeping run %s on cluster %s (%s)",
                       self.run_id, c.name, sel)
@@ -2059,11 +2060,12 @@ class SandboxFleet:
           # their adopted sandbox alive even after the pool is gone).
           try:
             claims = c.resources.list_claims(label_selector=sel)
+            leases = c.resources.list_leases(label_selector=sel)
             pools = c.resources.list_warmpools(label_selector=sel)
             tmpls = c.resources.list_templates(label_selector=sel)
           except Exception as exc:
             logger.exception("Failed to list resources on cluster %s during teardown: %s", c.name, exc)
-            claims, pools, tmpls = [], [], []
+            claims, leases, pools, tmpls = [], [], [], []
         # Adopted pools/templates are swept out of the delete set explicitly. They
         # normally don't carry our managed label at all, but they can — adopting a
         # pool an earlier run of this SDK left behind is a legitimate use — and
@@ -2078,18 +2080,19 @@ class SandboxFleet:
                         len(kept_p), len(kept_t), c.name)
           pools = [p for p in pools if (c.name, p) not in self._adopted_pools]
           tmpls = [t for t in tmpls if (c.name, t) not in self._adopted_templates]
-        total_items = len(claims) + len(pools) + len(tmpls)
+        total_items = len(claims) + len(leases) + len(pools) + len(tmpls)
         if total_items > 0:
           workers = max(1, min(total_items, self.config.max_concurrent))
           with ThreadPoolExecutor(max_workers=workers) as ex:
-            # Phase 1: Sweep stray claims first so adopted sandboxes aren't leaked.
-            if claims:
+            # Sweep stray claims and batch Leases before pools so adopted sandboxes aren't leaked.
+            if claims or leases:
               claim_futs = [ex.submit(c.resources.delete_claim, claim) for claim in claims]
+              claim_futs.extend(ex.submit(c.resources.delete_lease, lease) for lease in leases)
               for f in as_completed(claim_futs):
                 try:
                   f.result()
                 except Exception as exc:
-                  logger.exception("Failed to delete claim during teardown: %s", exc)
+                  logger.exception("Failed to delete claim/lease during teardown: %s", exc)
             # Phase 2: Delete pools and templates concurrently.
             rest_futs = [ex.submit(c.resources.delete_warmpool, pool) for pool in pools]
             rest_futs.extend(ex.submit(c.resources.delete_template, tmpl) for tmpl in tmpls)

@@ -867,3 +867,74 @@ def test_record_pod_identity_at_acquire_and_best_effort():
   h2.record_pod_identity()                       # never raises
   assert (h2.pod_uid, h2.runtime_restarts) == (None, None)
 
+
+def test_resources_list_and_delete_leases_guard_against_system_leases():
+  from agent_sandbox_rl.resources import Resources
+  coord = MagicMock()
+  r = Resources(MagicMock(), MagicMock(), "ns", coordination_api=coord)
+  for bad in ("", "   "):
+    with pytest.raises(ValueError, match="non-empty label_selector"):
+      r.list_leases(bad)
+
+  # Even if an API mock ignores the selector and returns leader-election or node
+  # Leases without agents.x-k8s.io/batch-id, list_leases never returns them.
+  coord.list_namespaced_lease.return_value = types.SimpleNamespace(
+      items=[
+          client.V1Lease(metadata=client.V1ObjectMeta(
+              name="agent-sandbox-controller-leader",
+              labels={"app": "agent-sandbox-rl"})),
+          client.V1Lease(metadata=client.V1ObjectMeta(
+              name="kube-node-lease", labels={})),
+          client.V1Lease(metadata=client.V1ObjectMeta(
+              name="batch-abc",
+              labels={
+                  "app": "agent-sandbox-rl",
+                  constants.RUN_ID_LABEL: "r1",
+                  constants.BATCH_ID_LABEL: "batch-abc",
+              })),
+      ],
+      metadata=types.SimpleNamespace(_continue=None),
+  )
+  names = r.list_leases(f"{constants.RUN_ID_LABEL}=r1")
+  assert names == ["batch-abc"]
+  sel_used = coord.list_namespaced_lease.call_args.kwargs["label_selector"]
+  assert f"{constants.RUN_ID_LABEL}=r1" in sel_used
+  assert constants.BATCH_ID_LABEL in sel_used
+
+  r.delete_lease("batch-abc")
+  coord.delete_namespaced_lease.assert_called_once()
+  coord.delete_namespaced_lease.side_effect = client.ApiException(status=404)
+  r.delete_lease("already-gone")                 # 404 swallowed like delete_claim
+
+
+def test_reaper_sweeps_batch_leases_while_keeping_protected_runs():
+  from agent_sandbox_rl.resources import Resources
+  c = MagicMock()
+  c.namespace = "ns"
+  coord = MagicMock()
+  custom = MagicMock()
+  custom.list_namespaced_custom_object.return_value = {"items": []}
+  core = MagicMock()
+  c.core_api = core
+  c.resources = Resources(custom, core, "ns", coordination_api=coord)
+  coord.list_namespaced_lease.return_value = {
+      "items": [
+          {"metadata": {"name": "agent-sandbox-controller-leader",
+                        "labels": {"app": "agent-sandbox-rl"}}},
+          {"metadata": {"name": "batch-dead",
+                        "labels": {"app": "agent-sandbox-rl",
+                                   constants.RUN_ID_LABEL: "dead",
+                                   constants.BATCH_ID_LABEL: "batch-dead"}}},
+          {"metadata": {"name": "batch-live",
+                        "labels": {"app": "agent-sandbox-rl",
+                                   constants.RUN_ID_LABEL: "live",
+                                   constants.BATCH_ID_LABEL: "batch-live"}}},
+      ],
+      "metadata": {},
+  }
+  counts = reaper_mod._reap_with_cluster(
+      c, None, delete_pods=False, protect_claims_of=lambda rid: rid == "live")
+  assert counts["leases"] == 1
+  deleted = [k.kwargs["name"] for k in coord.delete_namespaced_lease.call_args_list]
+  assert deleted == ["batch-dead"]
+
