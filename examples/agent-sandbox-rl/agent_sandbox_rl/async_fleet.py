@@ -70,7 +70,7 @@ class AsyncSandboxFleet:
     if self._executor is None:
       mc = max(1, self._fleet.config.max_concurrent)
       win = self._fleet.config.window_size or mc
-      workers = min(1024, max(64, mc + 2 * win + 16))
+      workers = min(4096, max(64, mc + 64, mc + 2 * win + 16))
       self._executor = ThreadPoolExecutor(
           max_workers=workers, thread_name_prefix="asrl-async")
       logger.debug("async fleet thread pool: %d workers", workers)
