@@ -1,0 +1,388 @@
+{
+  "params": {
+    "driver": "bench_core",
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": null,
+    "batch_create_rps": null,
+    "batch_lease_duration": 300,
+    "batch_work_budget": 3600,
+    "overcommit_factor": 3.5,
+    "strategies": "naive,sliding,pipelined",
+    "recycle": false,
+    "images_file": "images/swebench500.txt",
+    "images": 500,
+    "rollouts": 6,
+    "total_tasks": 3000,
+    "concurrency": 500,
+    "claim_concurrency": 500,
+    "max_warmpool_size": 1,
+    "warm_per_task": false,
+    "colocate": false,
+    "enable_cow": false,
+    "placement": "image-affinity",
+    "window_size": 200,
+    "avg_image_gb": null,
+    "usable_disk_gb": null,
+    "termination_grace_seconds": 0,
+    "max_reuses": 32,
+    "reset_timeout": 30.0,
+    "cpu": "125m",
+    "memory": "1Gi",
+    "runtime_class": "gvisor",
+    "context": null,
+    "in_cluster": true,
+    "namespace": "agent-sandbox-rl",
+    "node_selector": {
+      "cloud.google.com/gke-nodepool": "gvisor-pool"
+    },
+    "testbed": "/testbed",
+    "probe": "true",
+    "out": "/out/result.json"
+  },
+  "variants": [
+    {
+      "strategy": "naive",
+      "recycle": false,
+      "label": "naive",
+      "claim_mode": "per_claim",
+      "batch_max_in_flight": null,
+      "wall_s": 688.7,
+      "fatal_error": null,
+      "report_total_s": 688.69,
+      "total_tasks": 3000,
+      "tasks_ok": 3000,
+      "tasks_err": 0,
+      "claims": 3000,
+      "s_per_task": 0.2296,
+      "goodput_tasks_per_s": 4.36,
+      "throughput_tasks_per_s": 4.36,
+      "warm_replicas_peak": 500,
+      "env_ready_ok_s": {
+        "n": 3000,
+        "avg": 381.001,
+        "p50": 369.371,
+        "p90": 561.019,
+        "p95": 582.862,
+        "p99": 602.309,
+        "max": 686.462
+      },
+      "phases": {
+        "preflight": {
+          "n": 1,
+          "avg": 0.16,
+          "total": 0.16,
+          "max": 0.16
+        },
+        "plan": {
+          "n": 1,
+          "avg": 0.01,
+          "total": 0.01,
+          "max": 0.01
+        },
+        "create_warmpool": {
+          "n": 500,
+          "avg": 0.299,
+          "total": 149.4,
+          "max": 0.88
+        },
+        "wait_pool_ready": {
+          "n": 500,
+          "avg": 9.531,
+          "total": 4765.54,
+          "max": 108.61
+        },
+        "claim": {
+          "n": 3000,
+          "avg": 55.871,
+          "total": 167611.78,
+          "max": 370.55
+        },
+        "process": {
+          "n": 3000,
+          "avg": 1.622,
+          "total": 4866.18,
+          "max": 7.79
+        },
+        "release": {
+          "n": 3000,
+          "avg": 0.041,
+          "total": 123.56,
+          "max": 0.86
+        },
+        "teardown": {
+          "n": 1,
+          "avg": 1.29,
+          "total": 1.29,
+          "max": 1.29
+        }
+      },
+      "proc_before": {
+        "open_fds": 7,
+        "open_sockets": 2,
+        "vm_rss_mb": 120.57,
+        "vm_hwm_mb": 120.57,
+        "threads": 1
+      },
+      "proc_after": {
+        "open_fds": 536,
+        "open_sockets": 531,
+        "vm_rss_mb": 390.97,
+        "vm_hwm_mb": 403.18,
+        "threads": 733
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 496,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 467
+          }
+        }
+      },
+      "errors_sample": []
+    },
+    {
+      "strategy": "sliding",
+      "recycle": false,
+      "label": "sliding",
+      "claim_mode": "per_claim",
+      "batch_max_in_flight": null,
+      "wall_s": 707.8,
+      "fatal_error": null,
+      "report_total_s": 707.83,
+      "total_tasks": 3000,
+      "tasks_ok": 2991,
+      "tasks_err": 9,
+      "claims": 2991,
+      "s_per_task": 0.2359,
+      "goodput_tasks_per_s": 4.23,
+      "throughput_tasks_per_s": 4.24,
+      "warm_replicas_peak": 200,
+      "env_ready_ok_s": {
+        "n": 2991,
+        "avg": 383.255,
+        "p50": 488.379,
+        "p90": 630.987,
+        "p95": 638.355,
+        "p99": 679.276,
+        "max": 705.63
+      },
+      "phases": {
+        "preflight": {
+          "n": 1,
+          "avg": 0.11,
+          "total": 0.11,
+          "max": 0.11
+        },
+        "plan": {
+          "n": 1,
+          "avg": 0.01,
+          "total": 0.01,
+          "max": 0.01
+        },
+        "create_warmpool": {
+          "n": 500,
+          "avg": 0.521,
+          "total": 260.56,
+          "max": 1.53
+        },
+        "wait_pool_ready": {
+          "n": 500,
+          "avg": 7.599,
+          "total": 3799.48,
+          "max": 109.59
+        },
+        "claim": {
+          "n": 3000,
+          "avg": 17.848,
+          "total": 53543.6,
+          "max": 319.95
+        },
+        "process": {
+          "n": 2991,
+          "avg": 2.742,
+          "total": 8201.89,
+          "max": 19.69
+        },
+        "release": {
+          "n": 2991,
+          "avg": 0.061,
+          "total": 181.34,
+          "max": 1.11
+        },
+        "teardown": {
+          "n": 1,
+          "avg": 0.04,
+          "total": 0.04,
+          "max": 0.04
+        }
+      },
+      "proc_before": {
+        "open_fds": 7,
+        "open_sockets": 2,
+        "vm_rss_mb": 374.84,
+        "vm_hwm_mb": 405.88,
+        "threads": 2
+      },
+      "proc_after": {
+        "open_fds": 698,
+        "open_sockets": 693,
+        "vm_rss_mb": 452.66,
+        "vm_hwm_mb": 460.68,
+        "threads": 814
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 910,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 485
+          }
+        }
+      },
+      "errors_sample": [
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '555e1104-4c76-4f72-ac76-5b2372fc4b1b', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:51:22 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '858a68e3-18ed-44dc-84f8-6535154ddfff', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:51:22 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'f4902b1b-05dd-4712-b5f7-dc2877269397', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:51:22 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '7911b96f-3f60-4c0e-b020-f97c4b07e3d9', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:51:22 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '4fa324dd-fc8d-4ca2-b876-6db0e6c6e346', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:51:22 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '09df7636-8a2c-4c67-bed8-485573c6402f', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:51:22 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '9b5f504f-c829-4a90-b403-57c0d2676e22', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:51:22 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '76632a7a-e7d7-4241-b4be-f4e3634cbd26', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:51:22 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n"
+      ]
+    },
+    {
+      "strategy": "pipelined",
+      "recycle": false,
+      "label": "pipelined",
+      "claim_mode": "per_claim",
+      "batch_max_in_flight": null,
+      "wall_s": 249.7,
+      "fatal_error": "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'd9214944-ba0f-45da-84d0-5271ace117ff', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '29', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:56:57 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+      "report_total_s": 249.69,
+      "total_tasks": 3000,
+      "tasks_ok": 1065,
+      "tasks_err": 1935,
+      "claims": 1065,
+      "s_per_task": 0.0832,
+      "goodput_tasks_per_s": 4.27,
+      "throughput_tasks_per_s": 12.01,
+      "warm_replicas_peak": 367,
+      "env_ready_ok_s": {
+        "n": 1065,
+        "avg": 91.043,
+        "p50": 90.499,
+        "p90": 108.837,
+        "p95": 116.15,
+        "p99": 123.356,
+        "max": 247.434
+      },
+      "phases": {
+        "preflight": {
+          "n": 1,
+          "avg": 0.11,
+          "total": 0.11,
+          "max": 0.11
+        },
+        "plan": {
+          "n": 1,
+          "avg": 0.01,
+          "total": 0.01,
+          "max": 0.01
+        },
+        "create_warmpool": {
+          "n": 400,
+          "avg": 0.77,
+          "total": 308.18,
+          "max": 1.91
+        },
+        "wait_pool_ready": {
+          "n": 367,
+          "avg": 9.592,
+          "total": 3520.1,
+          "max": 109.69
+        },
+        "claim": {
+          "n": 1200,
+          "avg": 11.659,
+          "total": 13990.32,
+          "max": 180.81
+        },
+        "process": {
+          "n": 1065,
+          "avg": 3.038,
+          "total": 3235.95,
+          "max": 15.61
+        },
+        "release": {
+          "n": 1065,
+          "avg": 0.058,
+          "total": 62.11,
+          "max": 0.41
+        },
+        "prefetch": {
+          "n": 1,
+          "avg": 111.65,
+          "total": 111.65,
+          "max": 111.65
+        },
+        "teardown": {
+          "n": 1,
+          "avg": 0.63,
+          "total": 0.63,
+          "max": 0.63
+        }
+      },
+      "proc_before": {
+        "open_fds": 698,
+        "open_sockets": 693,
+        "vm_rss_mb": 427.53,
+        "vm_hwm_mb": 472.84,
+        "threads": 2
+      },
+      "proc_after": {
+        "open_fds": 524,
+        "open_sockets": 519,
+        "vm_rss_mb": 472.5,
+        "vm_hwm_mb": 480.74,
+        "threads": 581
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 361,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 341
+          }
+        }
+      },
+      "errors_sample": [
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'd9214944-ba0f-45da-84d0-5271ace117ff', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '29', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:56:57 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n"
+      ]
+    }
+  ]
+}

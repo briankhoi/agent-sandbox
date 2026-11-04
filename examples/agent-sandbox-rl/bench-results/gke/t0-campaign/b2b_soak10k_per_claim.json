@@ -1,0 +1,1767 @@
+{
+  "params": {
+    "context": null,
+    "in_cluster": true,
+    "namespace": "agent-sandbox-rl",
+    "node_selector": "cloud.google.com/gke-nodepool=gvisor-pool",
+    "images_file": "images/r2e_subset_500.txt",
+    "problems": 200,
+    "rollouts": 6,
+    "concurrency": 1000,
+    "claim_concurrency": 500,
+    "strategies": "naive,sliding,pipelined",
+    "recycle": false,
+    "recycle_only": false,
+    "max_reuses": 32,
+    "max_warmpool_size": 1,
+    "warm_per_task": false,
+    "colocate": false,
+    "enable_cow": false,
+    "reset_timeout": 30.0,
+    "cpu": "125m",
+    "memory": "512Mi",
+    "runtime_class": "gvisor",
+    "testbed": "/testbed",
+    "probe": "true",
+    "window_size": 0,
+    "avg_image_gb": 0.0,
+    "usable_disk_gb": 0.0,
+    "termination_grace_seconds": 0,
+    "overcommit_factor": 4.5,
+    "warm_create_budget": 240,
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": 0,
+    "batch_create_rps": 0.0,
+    "batch_lease_duration": 300,
+    "batch_work_budget": 3600,
+    "out": "/out/result.json",
+    "mode": "soak",
+    "replicas_per_image": 4,
+    "concurrencies": "100,200,500,1000",
+    "repeats": 1,
+    "verify_exec": false,
+    "total_claims": 10000,
+    "wave_size": 200
+  },
+  "result": {
+    "mode": "soak",
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": null,
+    "total_claims": 10000,
+    "total_ok": 10000,
+    "total_err": 0,
+    "wave_size": 200,
+    "standing_pools": 200,
+    "replicas_per_image": 4,
+    "setup_s": 22.97,
+    "soak_wall_s": 1358.3,
+    "proc_init": {
+      "open_fds": 7,
+      "open_sockets": 2,
+      "vm_rss_mb": 120.4,
+      "vm_hwm_mb": 120.4,
+      "threads": 1,
+      "tcp_states": {}
+    },
+    "proc_end_before_teardown": {
+      "open_fds": 207,
+      "open_sockets": 202,
+      "vm_rss_mb": 379.54,
+      "vm_hwm_mb": 379.54,
+      "threads": 1800,
+      "tcp_states": {
+        "ESTABLISHED": 200
+      }
+    },
+    "proc_after_teardown": {
+      "open_fds": 246,
+      "open_sockets": 241,
+      "vm_rss_mb": 354.82,
+      "vm_hwm_mb": 498.56,
+      "threads": 1,
+      "tcp_states": {
+        "ESTABLISHED": 239
+      }
+    },
+    "waves": [
+      {
+        "wave": 0,
+        "cumulative_claims": 200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 800,
+          "desired": 800,
+          "wait_s": 0.1,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.395,
+        "claims_per_s": 45.51,
+        "release_wall_s": 0.573,
+        "latency_s": {
+          "avg": 2.1639,
+          "p50": 2.2516,
+          "p95": 3.6078,
+          "p99": 3.8993,
+          "max": 3.9618
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 172.48,
+          "vm_hwm_mb": 172.48,
+          "threads": 201,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 1,
+        "cumulative_claims": 400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 649,
+          "desired": 800,
+          "wait_s": 0.06,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.744,
+        "claims_per_s": 42.16,
+        "release_wall_s": 0.802,
+        "latency_s": {
+          "avg": 2.9621,
+          "p50": 2.9619,
+          "p95": 4.5414,
+          "p99": 4.6875,
+          "max": 4.738
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 182.42,
+          "vm_hwm_mb": 182.42,
+          "threads": 203,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 2,
+        "cumulative_claims": 600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 537,
+          "desired": 800,
+          "wait_s": 0.07,
+          "timed_out": false
+        },
+        "acquire_wall_s": 5.999,
+        "claims_per_s": 33.34,
+        "release_wall_s": 1.359,
+        "latency_s": {
+          "avg": 3.5157,
+          "p50": 3.548,
+          "p95": 5.2513,
+          "p99": 5.7788,
+          "max": 5.9943
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 187.35,
+          "vm_hwm_mb": 187.39,
+          "threads": 218,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 3,
+        "cumulative_claims": 800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 447,
+          "desired": 800,
+          "wait_s": 0.12,
+          "timed_out": false
+        },
+        "acquire_wall_s": 5.412,
+        "claims_per_s": 36.96,
+        "release_wall_s": 0.832,
+        "latency_s": {
+          "avg": 3.3129,
+          "p50": 3.1862,
+          "p95": 4.7586,
+          "p99": 5.3591,
+          "max": 5.4069
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 190.95,
+          "vm_hwm_mb": 190.95,
+          "threads": 230,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 4,
+        "cumulative_claims": 1000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 437,
+          "desired": 800,
+          "wait_s": 0.05,
+          "timed_out": false
+        },
+        "acquire_wall_s": 5.399,
+        "claims_per_s": 37.04,
+        "release_wall_s": 0.63,
+        "latency_s": {
+          "avg": 3.3279,
+          "p50": 3.2061,
+          "p95": 4.7714,
+          "p99": 5.3844,
+          "max": 5.3927
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 194.05,
+          "vm_hwm_mb": 194.14,
+          "threads": 230,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 5,
+        "cumulative_claims": 1200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 343,
+          "desired": 800,
+          "wait_s": 0.18,
+          "timed_out": false
+        },
+        "acquire_wall_s": 9.004,
+        "claims_per_s": 22.21,
+        "release_wall_s": 0.369,
+        "latency_s": {
+          "avg": 3.1181,
+          "p50": 3.1601,
+          "p95": 4.5635,
+          "p99": 4.8617,
+          "max": 8.9999
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 197.57,
+          "vm_hwm_mb": 197.57,
+          "threads": 241,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 6,
+        "cumulative_claims": 1400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 575,
+          "desired": 800,
+          "wait_s": 0.06,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.433,
+        "claims_per_s": 45.12,
+        "release_wall_s": 0.502,
+        "latency_s": {
+          "avg": 2.2092,
+          "p50": 2.297,
+          "p95": 3.9912,
+          "p99": 4.073,
+          "max": 4.4107
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 206.24,
+          "vm_hwm_mb": 206.24,
+          "threads": 331,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 7,
+        "cumulative_claims": 1600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 539,
+          "desired": 800,
+          "wait_s": 0.08,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.29,
+        "claims_per_s": 46.62,
+        "release_wall_s": 0.633,
+        "latency_s": {
+          "avg": 2.8215,
+          "p50": 3.0449,
+          "p95": 4.1058,
+          "p99": 4.2696,
+          "max": 4.2844
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 210.43,
+          "vm_hwm_mb": 210.52,
+          "threads": 333,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 8,
+        "cumulative_claims": 1800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 512,
+          "desired": 800,
+          "wait_s": 0.09,
+          "timed_out": false
+        },
+        "acquire_wall_s": 5.534,
+        "claims_per_s": 36.14,
+        "release_wall_s": 0.92,
+        "latency_s": {
+          "avg": 2.8085,
+          "p50": 2.7008,
+          "p95": 4.5276,
+          "p99": 5.339,
+          "max": 5.528
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 213.68,
+          "vm_hwm_mb": 214.02,
+          "threads": 339,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 9,
+        "cumulative_claims": 2000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 445,
+          "desired": 800,
+          "wait_s": 0.06,
+          "timed_out": false
+        },
+        "acquire_wall_s": 6.535,
+        "claims_per_s": 30.61,
+        "release_wall_s": 0.821,
+        "latency_s": {
+          "avg": 4.2686,
+          "p50": 4.2598,
+          "p95": 6.4343,
+          "p99": 6.4946,
+          "max": 6.5297
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 217.03,
+          "vm_hwm_mb": 217.39,
+          "threads": 350,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 10,
+        "cumulative_claims": 2200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 334,
+          "desired": 800,
+          "wait_s": 0.1,
+          "timed_out": false
+        },
+        "acquire_wall_s": 145.41,
+        "claims_per_s": 1.38,
+        "release_wall_s": 0.328,
+        "latency_s": {
+          "avg": 4.2877,
+          "p50": 3.7163,
+          "p95": 5.1173,
+          "p99": 6.1317,
+          "max": 145.4039
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 219.05,
+          "vm_hwm_mb": 219.05,
+          "threads": 350,
+          "tcp_states": {
+            "CLOSE_WAIT": 95,
+            "ESTABLISHED": 105
+          }
+        }
+      },
+      {
+        "wave": 11,
+        "cumulative_claims": 2400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 700,
+          "desired": 800,
+          "wait_s": 0.02,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.891,
+        "claims_per_s": 40.89,
+        "release_wall_s": 0.668,
+        "latency_s": {
+          "avg": 2.4278,
+          "p50": 2.2613,
+          "p95": 4.2843,
+          "p99": 4.559,
+          "max": 4.7764
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 226.05,
+          "vm_hwm_mb": 226.39,
+          "threads": 447,
+          "tcp_states": {
+            "ESTABLISHED": 198,
+            "CLOSE_WAIT": 2
+          }
+        }
+      },
+      {
+        "wave": 12,
+        "cumulative_claims": 2600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 535,
+          "desired": 800,
+          "wait_s": 0.06,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.815,
+        "claims_per_s": 41.54,
+        "release_wall_s": 0.353,
+        "latency_s": {
+          "avg": 2.53,
+          "p50": 2.5843,
+          "p95": 4.3384,
+          "p99": 4.6585,
+          "max": 4.8081
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 228.95,
+          "vm_hwm_mb": 229.26,
+          "threads": 452,
+          "tcp_states": {
+            "ESTABLISHED": 198,
+            "CLOSE_WAIT": 2
+          }
+        }
+      },
+      {
+        "wave": 13,
+        "cumulative_claims": 2800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 405,
+          "desired": 800,
+          "wait_s": 0.09,
+          "timed_out": false
+        },
+        "acquire_wall_s": 26.892,
+        "claims_per_s": 7.44,
+        "release_wall_s": 0.573,
+        "latency_s": {
+          "avg": 3.1096,
+          "p50": 2.9208,
+          "p95": 4.5764,
+          "p99": 23.8329,
+          "max": 26.8865
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 232.32,
+          "vm_hwm_mb": 232.63,
+          "threads": 464,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 14,
+        "cumulative_claims": 3000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 575,
+          "desired": 800,
+          "wait_s": 0.17,
+          "timed_out": false
+        },
+        "acquire_wall_s": 20.476,
+        "claims_per_s": 9.77,
+        "release_wall_s": 0.393,
+        "latency_s": {
+          "avg": 3.3204,
+          "p50": 3.221,
+          "p95": 5.6611,
+          "p99": 6.3148,
+          "max": 20.4707
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 235.3,
+          "vm_hwm_mb": 235.63,
+          "threads": 488,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 15,
+        "cumulative_claims": 3200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 665,
+          "desired": 800,
+          "wait_s": 0.05,
+          "timed_out": false
+        },
+        "acquire_wall_s": 6.286,
+        "claims_per_s": 31.81,
+        "release_wall_s": 0.493,
+        "latency_s": {
+          "avg": 3.2413,
+          "p50": 3.5758,
+          "p95": 5.7281,
+          "p99": 6.0851,
+          "max": 6.2447
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 240.04,
+          "vm_hwm_mb": 240.04,
+          "threads": 539,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 16,
+        "cumulative_claims": 3400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 538,
+          "desired": 800,
+          "wait_s": 0.19,
+          "timed_out": false
+        },
+        "acquire_wall_s": 6.062,
+        "claims_per_s": 32.99,
+        "release_wall_s": 0.367,
+        "latency_s": {
+          "avg": 3.8577,
+          "p50": 3.8575,
+          "p95": 5.5422,
+          "p99": 6.0539,
+          "max": 6.0561
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 242.45,
+          "vm_hwm_mb": 242.62,
+          "threads": 542,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 17,
+        "cumulative_claims": 3600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 433,
+          "desired": 800,
+          "wait_s": 0.13,
+          "timed_out": false
+        },
+        "acquire_wall_s": 15.891,
+        "claims_per_s": 12.59,
+        "release_wall_s": 0.235,
+        "latency_s": {
+          "avg": 3.7092,
+          "p50": 3.7026,
+          "p95": 5.2815,
+          "p99": 14.3978,
+          "max": 15.8848
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 244.41,
+          "vm_hwm_mb": 244.88,
+          "threads": 544,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 18,
+        "cumulative_claims": 3800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 475,
+          "desired": 800,
+          "wait_s": 0.04,
+          "timed_out": false
+        },
+        "acquire_wall_s": 155.719,
+        "claims_per_s": 1.28,
+        "release_wall_s": 0.369,
+        "latency_s": {
+          "avg": 3.4515,
+          "p50": 2.7988,
+          "p95": 4.1394,
+          "p99": 5.5725,
+          "max": 155.7132
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 249.43,
+          "vm_hwm_mb": 249.43,
+          "threads": 594,
+          "tcp_states": {
+            "ESTABLISHED": 101,
+            "CLOSE_WAIT": 99
+          }
+        }
+      },
+      {
+        "wave": 19,
+        "cumulative_claims": 4000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 690,
+          "desired": 800,
+          "wait_s": 0.03,
+          "timed_out": false
+        },
+        "acquire_wall_s": 5.068,
+        "claims_per_s": 39.46,
+        "release_wall_s": 0.78,
+        "latency_s": {
+          "avg": 2.462,
+          "p50": 2.3473,
+          "p95": 3.9674,
+          "p99": 4.2107,
+          "max": 4.815
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 255.38,
+          "vm_hwm_mb": 255.87,
+          "threads": 685,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 20,
+        "cumulative_claims": 4200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 548,
+          "desired": 800,
+          "wait_s": 0.07,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.828,
+        "claims_per_s": 41.42,
+        "release_wall_s": 0.435,
+        "latency_s": {
+          "avg": 2.3945,
+          "p50": 2.4609,
+          "p95": 4.4608,
+          "p99": 4.5712,
+          "max": 4.8226
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 258.03,
+          "vm_hwm_mb": 258.03,
+          "threads": 689,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 21,
+        "cumulative_claims": 4400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 421,
+          "desired": 800,
+          "wait_s": 0.08,
+          "timed_out": false
+        },
+        "acquire_wall_s": 17.88,
+        "claims_per_s": 11.19,
+        "release_wall_s": 0.267,
+        "latency_s": {
+          "avg": 2.6933,
+          "p50": 2.5065,
+          "p95": 4.5352,
+          "p99": 5.044,
+          "max": 17.8754
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 260.14,
+          "vm_hwm_mb": 260.87,
+          "threads": 689,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 22,
+        "cumulative_claims": 4600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 469,
+          "desired": 800,
+          "wait_s": 0.03,
+          "timed_out": false
+        },
+        "acquire_wall_s": 30.838,
+        "claims_per_s": 6.49,
+        "release_wall_s": 0.319,
+        "latency_s": {
+          "avg": 2.9312,
+          "p50": 3.1242,
+          "p95": 4.2368,
+          "p99": 15.5521,
+          "max": 30.7041
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 264.69,
+          "vm_hwm_mb": 264.99,
+          "threads": 756,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 23,
+        "cumulative_claims": 4800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 691,
+          "desired": 800,
+          "wait_s": 0.04,
+          "timed_out": false
+        },
+        "acquire_wall_s": 3.891,
+        "claims_per_s": 51.4,
+        "release_wall_s": 0.973,
+        "latency_s": {
+          "avg": 2.066,
+          "p50": 2.2317,
+          "p95": 3.1369,
+          "p99": 3.7161,
+          "max": 3.7487
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 270.26,
+          "vm_hwm_mb": 270.36,
+          "threads": 836,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 24,
+        "cumulative_claims": 5000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 537,
+          "desired": 800,
+          "wait_s": 0.11,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.573,
+        "claims_per_s": 43.74,
+        "release_wall_s": 0.65,
+        "latency_s": {
+          "avg": 2.5976,
+          "p50": 2.3746,
+          "p95": 4.3002,
+          "p99": 4.5571,
+          "max": 4.5668
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 273.19,
+          "vm_hwm_mb": 273.36,
+          "threads": 837,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 25,
+        "cumulative_claims": 5200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 415,
+          "desired": 800,
+          "wait_s": 0.06,
+          "timed_out": false
+        },
+        "acquire_wall_s": 30.737,
+        "claims_per_s": 6.51,
+        "release_wall_s": 0.458,
+        "latency_s": {
+          "avg": 3.1301,
+          "p50": 3.0371,
+          "p95": 4.4329,
+          "p99": 5.0525,
+          "max": 30.7313
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 275.39,
+          "vm_hwm_mb": 275.61,
+          "threads": 837,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 26,
+        "cumulative_claims": 5400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 645,
+          "desired": 800,
+          "wait_s": 0.03,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.763,
+        "claims_per_s": 41.99,
+        "release_wall_s": 0.501,
+        "latency_s": {
+          "avg": 2.4145,
+          "p50": 2.2685,
+          "p95": 4.0429,
+          "p99": 4.6545,
+          "max": 4.7456
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 279.24,
+          "vm_hwm_mb": 279.36,
+          "threads": 880,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 27,
+        "cumulative_claims": 5600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 482,
+          "desired": 800,
+          "wait_s": 0.05,
+          "timed_out": false
+        },
+        "acquire_wall_s": 146.737,
+        "claims_per_s": 1.36,
+        "release_wall_s": 0.487,
+        "latency_s": {
+          "avg": 3.5823,
+          "p50": 2.1237,
+          "p95": 3.6983,
+          "p99": 145.2551,
+          "max": 146.7318
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 282.91,
+          "vm_hwm_mb": 282.91,
+          "threads": 893,
+          "tcp_states": {
+            "CLOSE_WAIT": 91,
+            "ESTABLISHED": 109
+          }
+        }
+      },
+      {
+        "wave": 28,
+        "cumulative_claims": 5800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 430,
+          "desired": 800,
+          "wait_s": 0.04,
+          "timed_out": false
+        },
+        "acquire_wall_s": 38.876,
+        "claims_per_s": 5.14,
+        "release_wall_s": 0.305,
+        "latency_s": {
+          "avg": 2.6036,
+          "p50": 2.2288,
+          "p95": 3.9419,
+          "p99": 28.5574,
+          "max": 38.872
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 289.17,
+          "vm_hwm_mb": 289.73,
+          "threads": 977,
+          "tcp_states": {
+            "ESTABLISHED": 197,
+            "CLOSE_WAIT": 3
+          }
+        }
+      },
+      {
+        "wave": 29,
+        "cumulative_claims": 6000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 754,
+          "desired": 800,
+          "wait_s": 0.02,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.592,
+        "claims_per_s": 43.55,
+        "release_wall_s": 0.322,
+        "latency_s": {
+          "avg": 2.2736,
+          "p50": 2.3039,
+          "p95": 3.8908,
+          "p99": 4.3323,
+          "max": 4.5531
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 294.34,
+          "vm_hwm_mb": 294.34,
+          "threads": 1041,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 30,
+        "cumulative_claims": 6200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 597,
+          "desired": 800,
+          "wait_s": 0.08,
+          "timed_out": false
+        },
+        "acquire_wall_s": 5.089,
+        "claims_per_s": 39.3,
+        "release_wall_s": 0.65,
+        "latency_s": {
+          "avg": 2.7476,
+          "p50": 2.8635,
+          "p95": 4.1983,
+          "p99": 4.7274,
+          "max": 5.0811
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 297.0,
+          "vm_hwm_mb": 297.0,
+          "threads": 1041,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 31,
+        "cumulative_claims": 6400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 439,
+          "desired": 800,
+          "wait_s": 0.07,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.419,
+        "claims_per_s": 45.26,
+        "release_wall_s": 0.583,
+        "latency_s": {
+          "avg": 2.6147,
+          "p50": 2.5312,
+          "p95": 4.2638,
+          "p99": 4.4025,
+          "max": 4.414
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 301.4,
+          "vm_hwm_mb": 301.6,
+          "threads": 1082,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 32,
+        "cumulative_claims": 6600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 371,
+          "desired": 800,
+          "wait_s": 0.06,
+          "timed_out": false
+        },
+        "acquire_wall_s": 45.894,
+        "claims_per_s": 4.36,
+        "release_wall_s": 0.279,
+        "latency_s": {
+          "avg": 3.5941,
+          "p50": 3.1097,
+          "p95": 4.5348,
+          "p99": 29.8084,
+          "max": 45.8883
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 305.81,
+          "vm_hwm_mb": 305.81,
+          "threads": 1130,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 33,
+        "cumulative_claims": 6800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 774,
+          "desired": 800,
+          "wait_s": 0.04,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.716,
+        "claims_per_s": 42.41,
+        "release_wall_s": 0.447,
+        "latency_s": {
+          "avg": 2.2115,
+          "p50": 2.0769,
+          "p95": 3.7879,
+          "p99": 4.175,
+          "max": 4.5558
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 310.8,
+          "vm_hwm_mb": 310.8,
+          "threads": 1196,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 34,
+        "cumulative_claims": 7000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 614,
+          "desired": 800,
+          "wait_s": 0.15,
+          "timed_out": false
+        },
+        "acquire_wall_s": 5.025,
+        "claims_per_s": 39.8,
+        "release_wall_s": 0.776,
+        "latency_s": {
+          "avg": 2.7435,
+          "p50": 2.5932,
+          "p95": 4.4378,
+          "p99": 4.5265,
+          "max": 5.0207
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 313.33,
+          "vm_hwm_mb": 313.71,
+          "threads": 1200,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 35,
+        "cumulative_claims": 7200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 476,
+          "desired": 800,
+          "wait_s": 0.07,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.967,
+        "claims_per_s": 40.26,
+        "release_wall_s": 0.495,
+        "latency_s": {
+          "avg": 2.5593,
+          "p50": 2.4908,
+          "p95": 3.9785,
+          "p99": 4.7715,
+          "max": 4.9618
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 317.54,
+          "vm_hwm_mb": 317.83,
+          "threads": 1240,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 36,
+        "cumulative_claims": 7400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 390,
+          "desired": 800,
+          "wait_s": 0.1,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.933,
+        "claims_per_s": 40.54,
+        "release_wall_s": 0.341,
+        "latency_s": {
+          "avg": 2.6917,
+          "p50": 2.6774,
+          "p95": 4.3636,
+          "p99": 4.899,
+          "max": 4.9269
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 320.05,
+          "vm_hwm_mb": 320.58,
+          "threads": 1245,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 37,
+        "cumulative_claims": 7600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 300,
+          "desired": 800,
+          "wait_s": 4.65,
+          "timed_out": false
+        },
+        "acquire_wall_s": 195.399,
+        "claims_per_s": 1.02,
+        "release_wall_s": 0.327,
+        "latency_s": {
+          "avg": 11.4508,
+          "p50": 2.3718,
+          "p95": 154.6762,
+          "p99": 184.5851,
+          "max": 195.3924
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 323.93,
+          "vm_hwm_mb": 323.95,
+          "threads": 1245,
+          "tcp_states": {
+            "ESTABLISHED": 92,
+            "CLOSE_WAIT": 108
+          }
+        }
+      },
+      {
+        "wave": 38,
+        "cumulative_claims": 7800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 684,
+          "desired": 800,
+          "wait_s": 0.02,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.347,
+        "claims_per_s": 46.01,
+        "release_wall_s": 0.49,
+        "latency_s": {
+          "avg": 2.1864,
+          "p50": 2.2188,
+          "p95": 3.7907,
+          "p99": 4.0037,
+          "max": 4.1494
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 330.77,
+          "vm_hwm_mb": 331.2,
+          "threads": 1344,
+          "tcp_states": {
+            "ESTABLISHED": 195,
+            "CLOSE_WAIT": 5
+          }
+        }
+      },
+      {
+        "wave": 39,
+        "cumulative_claims": 8000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 526,
+          "desired": 800,
+          "wait_s": 0.43,
+          "timed_out": false
+        },
+        "acquire_wall_s": 12.15,
+        "claims_per_s": 16.46,
+        "release_wall_s": 0.177,
+        "latency_s": {
+          "avg": 2.5915,
+          "p50": 2.5797,
+          "p95": 3.9778,
+          "p99": 12.1434,
+          "max": 12.1447
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 333.97,
+          "vm_hwm_mb": 334.32,
+          "threads": 1354,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 40,
+        "cumulative_claims": 8200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 511,
+          "desired": 800,
+          "wait_s": 0.03,
+          "timed_out": false
+        },
+        "acquire_wall_s": 13.999,
+        "claims_per_s": 14.29,
+        "release_wall_s": 0.398,
+        "latency_s": {
+          "avg": 2.333,
+          "p50": 2.2822,
+          "p95": 3.9039,
+          "p99": 7.2445,
+          "max": 13.7296
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 340.21,
+          "vm_hwm_mb": 340.21,
+          "threads": 1435,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 41,
+        "cumulative_claims": 8400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 507,
+          "desired": 800,
+          "wait_s": 0.13,
+          "timed_out": false
+        },
+        "acquire_wall_s": 26.255,
+        "claims_per_s": 7.62,
+        "release_wall_s": 0.327,
+        "latency_s": {
+          "avg": 2.6657,
+          "p50": 2.159,
+          "p95": 4.1012,
+          "p99": 16.8987,
+          "max": 26.2513
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 345.04,
+          "vm_hwm_mb": 345.19,
+          "threads": 1489,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 42,
+        "cumulative_claims": 8600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 666,
+          "desired": 800,
+          "wait_s": 0.02,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.598,
+        "claims_per_s": 43.5,
+        "release_wall_s": 0.68,
+        "latency_s": {
+          "avg": 2.4721,
+          "p50": 2.6551,
+          "p95": 3.927,
+          "p99": 4.1099,
+          "max": 4.5035
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 349.48,
+          "vm_hwm_mb": 349.81,
+          "threads": 1531,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 43,
+        "cumulative_claims": 8800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 516,
+          "desired": 800,
+          "wait_s": 0.06,
+          "timed_out": false
+        },
+        "acquire_wall_s": 21.236,
+        "claims_per_s": 9.42,
+        "release_wall_s": 0.371,
+        "latency_s": {
+          "avg": 2.676,
+          "p50": 2.5886,
+          "p95": 4.3342,
+          "p99": 4.8811,
+          "max": 21.23
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 352.05,
+          "vm_hwm_mb": 352.3,
+          "threads": 1531,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 44,
+        "cumulative_claims": 9000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 626,
+          "desired": 800,
+          "wait_s": 0.02,
+          "timed_out": false
+        },
+        "acquire_wall_s": 18.613,
+        "claims_per_s": 10.75,
+        "release_wall_s": 0.32,
+        "latency_s": {
+          "avg": 2.4978,
+          "p50": 2.653,
+          "p95": 3.6112,
+          "p99": 4.1865,
+          "max": 18.6081
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 358.07,
+          "vm_hwm_mb": 358.07,
+          "threads": 1611,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 45,
+        "cumulative_claims": 9200,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 681,
+          "desired": 800,
+          "wait_s": 0.03,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.196,
+        "claims_per_s": 47.67,
+        "release_wall_s": 0.902,
+        "latency_s": {
+          "avg": 2.293,
+          "p50": 2.4062,
+          "p95": 3.4577,
+          "p99": 3.741,
+          "max": 4.1641
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 363.12,
+          "vm_hwm_mb": 363.43,
+          "threads": 1661,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 46,
+        "cumulative_claims": 9400,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 504,
+          "desired": 800,
+          "wait_s": 0.07,
+          "timed_out": false
+        },
+        "acquire_wall_s": 166.259,
+        "claims_per_s": 1.2,
+        "release_wall_s": 0.256,
+        "latency_s": {
+          "avg": 3.8866,
+          "p50": 2.3584,
+          "p95": 3.4693,
+          "p99": 158.0128,
+          "max": 166.2235
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 367.54,
+          "vm_hwm_mb": 367.54,
+          "threads": 1679,
+          "tcp_states": {
+            "CLOSE_WAIT": 121,
+            "ESTABLISHED": 79
+          }
+        }
+      },
+      {
+        "wave": 47,
+        "cumulative_claims": 9600,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 701,
+          "desired": 800,
+          "wait_s": 0.03,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.435,
+        "claims_per_s": 45.1,
+        "release_wall_s": 0.49,
+        "latency_s": {
+          "avg": 2.2306,
+          "p50": 2.3914,
+          "p95": 3.8727,
+          "p99": 4.2343,
+          "max": 4.2798
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 373.86,
+          "vm_hwm_mb": 373.92,
+          "threads": 1787,
+          "tcp_states": {
+            "ESTABLISHED": 195,
+            "CLOSE_WAIT": 5
+          }
+        }
+      },
+      {
+        "wave": 48,
+        "cumulative_claims": 9800,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 545,
+          "desired": 800,
+          "wait_s": 0.11,
+          "timed_out": false
+        },
+        "acquire_wall_s": 4.753,
+        "claims_per_s": 42.08,
+        "release_wall_s": 0.41,
+        "latency_s": {
+          "avg": 2.4899,
+          "p50": 2.4917,
+          "p95": 3.773,
+          "p99": 4.2331,
+          "max": 4.7356
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 377.61,
+          "vm_hwm_mb": 377.92,
+          "threads": 1793,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      },
+      {
+        "wave": 49,
+        "cumulative_claims": 10000,
+        "wave_claims": 200,
+        "ok": 200,
+        "err": 0,
+        "warm_wait": {
+          "ready": 401,
+          "desired": 800,
+          "wait_s": 0.07,
+          "timed_out": false
+        },
+        "acquire_wall_s": 37.152,
+        "claims_per_s": 5.38,
+        "release_wall_s": 0.363,
+        "latency_s": {
+          "avg": 3.0351,
+          "p50": 2.4894,
+          "p95": 4.3617,
+          "p99": 29.9928,
+          "max": 37.1314
+        },
+        "proc": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 379.54,
+          "vm_hwm_mb": 379.54,
+          "threads": 1800,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        }
+      }
+    ],
+    "verify_teardown": {
+      "bench": {
+        "claims": 0,
+        "leases": 0,
+        "warmpools": 0,
+        "sandboxes": 0,
+        "templates": 0,
+        "pods": 2323,
+        "remaining": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "pods": 1600
+        }
+      }
+    },
+    "errors_sample": []
+  }
+}

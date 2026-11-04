@@ -1,0 +1,545 @@
+{
+  "params": {
+    "context": null,
+    "in_cluster": true,
+    "namespace": "agent-sandbox-rl",
+    "node_selector": "cloud.google.com/gke-nodepool=gvisor-pool",
+    "images_file": "images/r2e_subset_500.txt",
+    "problems": 200,
+    "rollouts": 6,
+    "concurrency": 1000,
+    "claim_concurrency": 500,
+    "strategies": "naive,sliding,pipelined",
+    "recycle": false,
+    "recycle_only": false,
+    "max_reuses": 32,
+    "max_warmpool_size": 1,
+    "warm_per_task": false,
+    "colocate": false,
+    "enable_cow": false,
+    "reset_timeout": 30.0,
+    "cpu": "125m",
+    "memory": "512Mi",
+    "runtime_class": "gvisor",
+    "testbed": "/testbed",
+    "probe": "true",
+    "window_size": 0,
+    "avg_image_gb": 0.0,
+    "usable_disk_gb": 0.0,
+    "termination_grace_seconds": 0,
+    "overcommit_factor": 3.5,
+    "warm_create_budget": 250,
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": 0,
+    "batch_create_rps": 0.0,
+    "batch_lease_duration": 300,
+    "batch_work_budget": 3600,
+    "out": "/out/result.json",
+    "mode": "burst",
+    "replicas_per_image": 5,
+    "concurrencies": "100,200,500,1000",
+    "repeats": 2,
+    "verify_exec": false,
+    "total_claims": 10000,
+    "wave_size": 200
+  },
+  "result": {
+    "mode": "burst",
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": null,
+    "standing_pools": 200,
+    "replicas_per_image": 5,
+    "standing_total": 1000,
+    "setup_s": 33.51,
+    "points": [
+      {
+        "concurrency": 100,
+        "repeat": 0,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "wait_s": 0.02,
+          "timed_out": false
+        },
+        "burst_wall_s": 1.793,
+        "claims_per_s": 55.77,
+        "release_wall_s": 0.303,
+        "ok": 100,
+        "err": 0,
+        "probe_err": 0,
+        "latency_s": {
+          "avg": 0.9251,
+          "p50": 0.9227,
+          "p90": 1.5578,
+          "p95": 1.6133,
+          "p99": 1.6556,
+          "max": 1.6556
+        },
+        "proc_before": {
+          "open_fds": 8,
+          "open_sockets": 3,
+          "vm_rss_mb": 134.6,
+          "vm_hwm_mb": 135.52,
+          "threads": 2,
+          "tcp_states": {
+            "ESTABLISHED": 1
+          }
+        },
+        "proc_held": {
+          "open_fds": 107,
+          "open_sockets": 102,
+          "vm_rss_mb": 152.36,
+          "vm_hwm_mb": 152.36,
+          "threads": 101,
+          "tcp_states": {
+            "ESTABLISHED": 100
+          }
+        },
+        "proc_after": {
+          "open_fds": 107,
+          "open_sockets": 102,
+          "vm_rss_mb": 152.46,
+          "vm_hwm_mb": 152.46,
+          "threads": 101,
+          "tcp_states": {
+            "ESTABLISHED": 100
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 100,
+        "repeat": 1,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "wait_s": 3.09,
+          "timed_out": false
+        },
+        "burst_wall_s": 1.702,
+        "claims_per_s": 58.74,
+        "release_wall_s": 0.237,
+        "ok": 100,
+        "err": 0,
+        "probe_err": 0,
+        "latency_s": {
+          "avg": 0.9374,
+          "p50": 1.0794,
+          "p90": 1.4206,
+          "p95": 1.5215,
+          "p99": 1.6369,
+          "max": 1.6369
+        },
+        "proc_before": {
+          "open_fds": 107,
+          "open_sockets": 102,
+          "vm_rss_mb": 154.21,
+          "vm_hwm_mb": 154.21,
+          "threads": 101,
+          "tcp_states": {
+            "ESTABLISHED": 100
+          }
+        },
+        "proc_held": {
+          "open_fds": 107,
+          "open_sockets": 102,
+          "vm_rss_mb": 158.65,
+          "vm_hwm_mb": 158.65,
+          "threads": 103,
+          "tcp_states": {
+            "ESTABLISHED": 100
+          }
+        },
+        "proc_after": {
+          "open_fds": 107,
+          "open_sockets": 102,
+          "vm_rss_mb": 158.66,
+          "vm_hwm_mb": 158.66,
+          "threads": 103,
+          "tcp_states": {
+            "ESTABLISHED": 100
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 200,
+        "repeat": 0,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "wait_s": 4.64,
+          "timed_out": false
+        },
+        "burst_wall_s": 3.395,
+        "claims_per_s": 58.91,
+        "release_wall_s": 0.52,
+        "ok": 200,
+        "err": 0,
+        "probe_err": 0,
+        "latency_s": {
+          "avg": 1.768,
+          "p50": 1.7805,
+          "p90": 2.7512,
+          "p95": 2.8353,
+          "p99": 2.9895,
+          "max": 3.0567
+        },
+        "proc_before": {
+          "open_fds": 107,
+          "open_sockets": 102,
+          "vm_rss_mb": 160.62,
+          "vm_hwm_mb": 160.62,
+          "threads": 103,
+          "tcp_states": {
+            "ESTABLISHED": 100
+          }
+        },
+        "proc_held": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 180.24,
+          "vm_hwm_mb": 180.24,
+          "threads": 201,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        },
+        "proc_after": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 180.36,
+          "vm_hwm_mb": 180.36,
+          "threads": 201,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 200,
+        "repeat": 1,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "wait_s": 9.23,
+          "timed_out": false
+        },
+        "burst_wall_s": 3.74,
+        "claims_per_s": 53.48,
+        "release_wall_s": 0.552,
+        "ok": 200,
+        "err": 0,
+        "probe_err": 0,
+        "latency_s": {
+          "avg": 1.7693,
+          "p50": 1.9511,
+          "p90": 2.7178,
+          "p95": 2.9246,
+          "p99": 3.2478,
+          "max": 3.6367
+        },
+        "proc_before": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 184.74,
+          "vm_hwm_mb": 184.74,
+          "threads": 201,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        },
+        "proc_held": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 193.32,
+          "vm_hwm_mb": 193.32,
+          "threads": 250,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        },
+        "proc_after": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 193.5,
+          "vm_hwm_mb": 193.5,
+          "threads": 252,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 500,
+        "repeat": 0,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "wait_s": 4.84,
+          "timed_out": false
+        },
+        "burst_wall_s": 7.206,
+        "claims_per_s": 69.39,
+        "release_wall_s": 0.67,
+        "ok": 500,
+        "err": 0,
+        "probe_err": 0,
+        "latency_s": {
+          "avg": 3.4892,
+          "p50": 3.5897,
+          "p90": 4.9923,
+          "p95": 5.3143,
+          "p99": 5.8326,
+          "max": 6.0073
+        },
+        "proc_before": {
+          "open_fds": 207,
+          "open_sockets": 202,
+          "vm_rss_mb": 196.06,
+          "vm_hwm_mb": 196.06,
+          "threads": 252,
+          "tcp_states": {
+            "ESTABLISHED": 200
+          }
+        },
+        "proc_held": {
+          "open_fds": 455,
+          "open_sockets": 450,
+          "vm_rss_mb": 244.52,
+          "vm_hwm_mb": 245.75,
+          "threads": 506,
+          "tcp_states": {
+            "ESTABLISHED": 448
+          }
+        },
+        "proc_after": {
+          "open_fds": 455,
+          "open_sockets": 450,
+          "vm_rss_mb": 246.98,
+          "vm_hwm_mb": 246.98,
+          "threads": 557,
+          "tcp_states": {
+            "ESTABLISHED": 448
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 500,
+        "repeat": 1,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "wait_s": 15.35,
+          "timed_out": false
+        },
+        "burst_wall_s": 31.963,
+        "claims_per_s": 14.67,
+        "release_wall_s": 0.568,
+        "ok": 469,
+        "err": 31,
+        "probe_err": 0,
+        "latency_s": {
+          "avg": 5.1937,
+          "p50": 4.1673,
+          "p90": 6.2144,
+          "p95": 7.0642,
+          "p99": 31.955,
+          "max": 31.9584
+        },
+        "proc_before": {
+          "open_fds": 455,
+          "open_sockets": 450,
+          "vm_rss_mb": 251.71,
+          "vm_hwm_mb": 251.71,
+          "threads": 557,
+          "tcp_states": {
+            "ESTABLISHED": 448
+          }
+        },
+        "proc_held": {
+          "open_fds": 474,
+          "open_sockets": 469,
+          "vm_rss_mb": 269.18,
+          "vm_hwm_mb": 269.38,
+          "threads": 660,
+          "tcp_states": {
+            "ESTABLISHED": 467
+          }
+        },
+        "proc_after": {
+          "open_fds": 474,
+          "open_sockets": 469,
+          "vm_rss_mb": 269.21,
+          "vm_hwm_mb": 269.38,
+          "threads": 660,
+          "tcp_states": {
+            "ESTABLISHED": 467
+          }
+        },
+        "errors_sample": [
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'b67ab31f-8a74-42e4-ae01-d05d46ba9192', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '31', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:24:07 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'c67cd13f-027a-4b46-937b-b8b44ba1c21c', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '31', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:24:07 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '59f179d9-d7c7-42d7-bab4-e7c6fb955ab4', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '31', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:24:07 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '57dedd54-77c0-42b7-9b0b-0fdfd0aa60a6', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '31', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:24:07 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '053a39ef-e46b-4944-bfc1-2dcf2b13934f', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '31', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:24:07 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n"
+        ]
+      },
+      {
+        "concurrency": 1000,
+        "repeat": 0,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "wait_s": 0.02,
+          "timed_out": false
+        },
+        "burst_wall_s": 15.32,
+        "claims_per_s": 65.27,
+        "release_wall_s": 30.77,
+        "ok": 1000,
+        "err": 0,
+        "probe_err": 0,
+        "latency_s": {
+          "avg": 6.7674,
+          "p50": 6.5977,
+          "p90": 10.7907,
+          "p95": 11.2009,
+          "p99": 12.0761,
+          "max": 12.4799
+        },
+        "proc_before": {
+          "open_fds": 474,
+          "open_sockets": 469,
+          "vm_rss_mb": 269.76,
+          "vm_hwm_mb": 269.76,
+          "threads": 660,
+          "tcp_states": {
+            "ESTABLISHED": 467
+          }
+        },
+        "proc_held": {
+          "open_fds": 885,
+          "open_sockets": 880,
+          "vm_rss_mb": 353.72,
+          "vm_hwm_mb": 358.0,
+          "threads": 1252,
+          "tcp_states": {
+            "ESTABLISHED": 878
+          }
+        },
+        "proc_after": {
+          "open_fds": 885,
+          "open_sockets": 880,
+          "vm_rss_mb": 360.45,
+          "vm_hwm_mb": 360.45,
+          "threads": 1374,
+          "tcp_states": {
+            "ESTABLISHED": 878
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 1000,
+        "repeat": 1,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "wait_s": 144.26,
+          "timed_out": false
+        },
+        "burst_wall_s": 35.171,
+        "claims_per_s": 20.53,
+        "release_wall_s": 31.553,
+        "ok": 722,
+        "err": 278,
+        "probe_err": 0,
+        "latency_s": {
+          "avg": 14.7335,
+          "p50": 6.9956,
+          "p90": 34.5714,
+          "p95": 34.7809,
+          "p99": 35.1399,
+          "max": 35.1621
+        },
+        "proc_before": {
+          "open_fds": 885,
+          "open_sockets": 880,
+          "vm_rss_mb": 398.56,
+          "vm_hwm_mb": 398.56,
+          "threads": 1374,
+          "tcp_states": {
+            "CLOSE_WAIT": 877,
+            "ESTABLISHED": 1
+          }
+        },
+        "proc_held": {
+          "open_fds": 885,
+          "open_sockets": 880,
+          "vm_rss_mb": 426.79,
+          "vm_hwm_mb": 429.48,
+          "threads": 1738,
+          "tcp_states": {
+            "ESTABLISHED": 603,
+            "CLOSE_WAIT": 275
+          }
+        },
+        "proc_after": {
+          "open_fds": 885,
+          "open_sockets": 880,
+          "vm_rss_mb": 427.03,
+          "vm_hwm_mb": 429.48,
+          "threads": 1738,
+          "tcp_states": {
+            "ESTABLISHED": 603,
+            "CLOSE_WAIT": 275
+          }
+        },
+        "errors_sample": [
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '0b26f76f-8a63-4ce3-8015-a836871e6b3a', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '29', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:27:57 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '86a37b52-b6ef-462b-9946-7cb7103ec766', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '29', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:27:57 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '1859ff86-305e-48e7-b787-0af6902aa5df', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '29', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:27:57 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '7d4f99d0-8faa-468a-b351-a1b0f9b50dd1', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '29', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:27:57 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+          "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'a0b43897-743d-4fd1-b879-7b1103eeacb9', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '29', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 16:27:57 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n"
+        ]
+      }
+    ],
+    "verify_teardown": {
+      "bench": {
+        "claims": 0,
+        "leases": 0,
+        "warmpools": 0,
+        "sandboxes": 0,
+        "templates": 0,
+        "pods": 2033,
+        "remaining": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "pods": 1722
+        }
+      }
+    }
+  }
+}

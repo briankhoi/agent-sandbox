@@ -1,0 +1,515 @@
+{
+  "params": {
+    "context": null,
+    "in_cluster": true,
+    "namespace": "agent-sandbox-rl",
+    "node_selector": "cloud.google.com/gke-nodepool=gvisor-pool",
+    "images_file": "images/r2e_subset_500.txt",
+    "problems": 64,
+    "rollouts": 16,
+    "concurrency": 1024,
+    "claim_concurrency": 500,
+    "strategies": "naive",
+    "recycle": false,
+    "recycle_only": false,
+    "max_reuses": 32,
+    "max_warmpool_size": 16,
+    "warm_per_task": true,
+    "colocate": false,
+    "enable_cow": false,
+    "reset_timeout": 30.0,
+    "cpu": "125m",
+    "memory": "512Mi",
+    "runtime_class": "gvisor",
+    "testbed": "/testbed",
+    "probe": "cd /testbed && git status >/dev/null && git log --oneline -5 >/dev/null && sleep 5",
+    "window_size": 0,
+    "avg_image_gb": 0.0,
+    "usable_disk_gb": 0.0,
+    "termination_grace_seconds": 0,
+    "overcommit_factor": 4.0,
+    "warm_create_budget": 256,
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": 0,
+    "batch_create_rps": 0.0,
+    "batch_lease_duration": 300,
+    "batch_work_budget": 3600,
+    "out": "/out/result.json",
+    "steps": 8,
+    "shards_per_image": 1,
+    "hold": false,
+    "step_dwell": 0.0,
+    "exec_concurrency": 0,
+    "exec_timeout": 120.0,
+    "driver": "run_step_bench",
+    "images": 64,
+    "tasks_per_step": 1024,
+    "node_selector_parsed": {
+      "cloud.google.com/gke-nodepool": "gvisor-pool"
+    }
+  },
+  "variants": [
+    {
+      "strategy": "naive",
+      "recycle": false,
+      "label": "naive",
+      "claim_mode": "per_claim",
+      "batch_max_in_flight": null,
+      "variant_wall_s": 903.03,
+      "proc_before": {
+        "open_fds": 7,
+        "open_sockets": 2,
+        "vm_rss_mb": 119.8,
+        "vm_hwm_mb": 119.8,
+        "threads": 1
+      },
+      "proc_after": {
+        "open_fds": 999,
+        "open_sockets": 994,
+        "vm_rss_mb": 761.84,
+        "vm_hwm_mb": 892.62,
+        "threads": 1
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 2324,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 1781
+          }
+        }
+      },
+      "steps": [
+        {
+          "step": 0,
+          "step_wall_s": 52.34,
+          "env_ready_all_s": 39.73,
+          "env_ready_avg_s": 37.48,
+          "env_ready_p50_s": 37.44,
+          "env_ready_p90_s": 39.16,
+          "env_ready_p95_s": 39.3,
+          "env_ready_p99_s": 39.46,
+          "task_done_all_s": 52.31,
+          "tasks": 1024,
+          "ok": 479,
+          "err": 545,
+          "claims": 479,
+          "pool_provisioning": {
+            "create_warmpool": {
+              "n": 64,
+              "avg": 0.058,
+              "total": 3.71,
+              "max": 0.09
+            },
+            "wait_pool_ready": {
+              "n": 64,
+              "avg": 6.441,
+              "total": 412.25,
+              "max": 7.93
+            }
+          },
+          "claim": {
+            "n": 1024,
+            "avg": 2.956,
+            "total": 3027.44,
+            "max": 9.42
+          },
+          "process": {
+            "n": 479,
+            "avg": 8.086,
+            "total": 3873.16,
+            "max": 13.36
+          },
+          "release": {
+            "n": 479,
+            "avg": 0.039,
+            "total": 18.81,
+            "max": 0.29
+          },
+          "reset": null,
+          "teardown": null,
+          "proc": {
+            "open_fds": 625,
+            "open_sockets": 620,
+            "vm_rss_mb": 366.8,
+            "vm_hwm_mb": 372.34,
+            "threads": 1006
+          }
+        },
+        {
+          "step": 1,
+          "step_wall_s": 32.6,
+          "env_ready_all_s": 19.01,
+          "env_ready_avg_s": 9.58,
+          "env_ready_p50_s": 8.25,
+          "env_ready_p90_s": 16.29,
+          "env_ready_p95_s": 17.37,
+          "env_ready_p99_s": 18.01,
+          "task_done_all_s": 32.57,
+          "tasks": 1024,
+          "ok": 1024,
+          "err": 0,
+          "claims": 1024,
+          "pool_provisioning": {
+            "wait_pool_ready": {
+              "n": 64,
+              "avg": 0.008,
+              "total": 0.5,
+              "max": 0.01
+            }
+          },
+          "claim": {
+            "n": 1024,
+            "avg": 7.501,
+            "total": 7680.54,
+            "max": 15.51
+          },
+          "process": {
+            "n": 1024,
+            "avg": 7.43,
+            "total": 7608.05,
+            "max": 21.46
+          },
+          "release": {
+            "n": 1024,
+            "avg": 0.109,
+            "total": 111.98,
+            "max": 0.97
+          },
+          "reset": null,
+          "teardown": null,
+          "proc": {
+            "open_fds": 934,
+            "open_sockets": 929,
+            "vm_rss_mb": 501.94,
+            "vm_hwm_mb": 506.62,
+            "threads": 1393
+          }
+        },
+        {
+          "step": 2,
+          "step_wall_s": 120.26,
+          "env_ready_all_s": 114.86,
+          "env_ready_avg_s": 25.07,
+          "env_ready_p50_s": 24.14,
+          "env_ready_p90_s": 31.52,
+          "env_ready_p95_s": 32.23,
+          "env_ready_p99_s": 33.13,
+          "task_done_all_s": 120.24,
+          "tasks": 1024,
+          "ok": 847,
+          "err": 177,
+          "claims": 847,
+          "pool_provisioning": {
+            "wait_pool_ready": {
+              "n": 64,
+              "avg": 0.288,
+              "total": 18.41,
+              "max": 10.83
+            }
+          },
+          "claim": {
+            "n": 1024,
+            "avg": 5.766,
+            "total": 5904.28,
+            "max": 97.13
+          },
+          "process": {
+            "n": 847,
+            "avg": 6.549,
+            "total": 5547.37,
+            "max": 10.82
+          },
+          "release": {
+            "n": 847,
+            "avg": 0.12,
+            "total": 101.82,
+            "max": 0.67
+          },
+          "reset": null,
+          "teardown": null,
+          "proc": {
+            "open_fds": 890,
+            "open_sockets": 885,
+            "vm_rss_mb": 562.96,
+            "vm_hwm_mb": 564.59,
+            "threads": 1818
+          }
+        },
+        {
+          "step": 3,
+          "step_wall_s": 119.46,
+          "env_ready_all_s": 111.19,
+          "env_ready_avg_s": 100.66,
+          "env_ready_p50_s": 98.83,
+          "env_ready_p90_s": 108.26,
+          "env_ready_p95_s": 109.34,
+          "env_ready_p99_s": 110.23,
+          "task_done_all_s": 119.44,
+          "tasks": 1024,
+          "ok": 1024,
+          "err": 0,
+          "claims": 1024,
+          "pool_provisioning": {
+            "wait_pool_ready": {
+              "n": 64,
+              "avg": 19.508,
+              "total": 1248.51,
+              "max": 89.47
+            }
+          },
+          "claim": {
+            "n": 1024,
+            "avg": 8.884,
+            "total": 9097.17,
+            "max": 18.05
+          },
+          "process": {
+            "n": 1024,
+            "avg": 6.363,
+            "total": 6515.31,
+            "max": 11.99
+          },
+          "release": {
+            "n": 1024,
+            "avg": 0.121,
+            "total": 124.33,
+            "max": 0.62
+          },
+          "reset": null,
+          "teardown": null,
+          "proc": {
+            "open_fds": 1031,
+            "open_sockets": 1026,
+            "vm_rss_mb": 640.43,
+            "vm_hwm_mb": 653.62,
+            "threads": 2395
+          }
+        },
+        {
+          "step": 4,
+          "step_wall_s": 81.64,
+          "env_ready_all_s": 67.52,
+          "env_ready_avg_s": 58.3,
+          "env_ready_p50_s": 57.22,
+          "env_ready_p90_s": 64.73,
+          "env_ready_p95_s": 65.24,
+          "env_ready_p99_s": 66.45,
+          "task_done_all_s": 81.61,
+          "tasks": 1024,
+          "ok": 813,
+          "err": 211,
+          "claims": 813,
+          "pool_provisioning": {
+            "wait_pool_ready": {
+              "n": 64,
+              "avg": 6.77,
+              "total": 433.3,
+              "max": 45.65
+            }
+          },
+          "claim": {
+            "n": 1024,
+            "avg": 6.159,
+            "total": 6306.67,
+            "max": 15.7
+          },
+          "process": {
+            "n": 813,
+            "avg": 7.144,
+            "total": 5807.89,
+            "max": 22.17
+          },
+          "release": {
+            "n": 813,
+            "avg": 0.11,
+            "total": 89.76,
+            "max": 0.54
+          },
+          "reset": null,
+          "teardown": null,
+          "proc": {
+            "open_fds": 943,
+            "open_sockets": 938,
+            "vm_rss_mb": 698.44,
+            "vm_hwm_mb": 700.07,
+            "threads": 2759
+          }
+        },
+        {
+          "step": 5,
+          "step_wall_s": 200.54,
+          "env_ready_all_s": 194.69,
+          "env_ready_avg_s": 182.34,
+          "env_ready_p50_s": 181.61,
+          "env_ready_p90_s": 189.25,
+          "env_ready_p95_s": 190.68,
+          "env_ready_p99_s": 191.53,
+          "task_done_all_s": 200.51,
+          "tasks": 1024,
+          "ok": 1024,
+          "err": 0,
+          "claims": 1024,
+          "pool_provisioning": {
+            "wait_pool_ready": {
+              "n": 64,
+              "avg": 36.05,
+              "total": 2307.17,
+              "max": 172.17
+            }
+          },
+          "claim": {
+            "n": 1024,
+            "avg": 7.767,
+            "total": 7953.76,
+            "max": 21.6
+          },
+          "process": {
+            "n": 1024,
+            "avg": 6.686,
+            "total": 6846.43,
+            "max": 10.9
+          },
+          "release": {
+            "n": 1024,
+            "avg": 0.128,
+            "total": 130.82,
+            "max": 0.8
+          },
+          "reset": null,
+          "teardown": null,
+          "proc": {
+            "open_fds": 918,
+            "open_sockets": 913,
+            "vm_rss_mb": 773.61,
+            "vm_hwm_mb": 778.32,
+            "threads": 3089
+          }
+        },
+        {
+          "step": 6,
+          "step_wall_s": 223.73,
+          "env_ready_all_s": 215.88,
+          "env_ready_avg_s": 54.58,
+          "env_ready_p50_s": 52.92,
+          "env_ready_p90_s": 64.43,
+          "env_ready_p95_s": 64.66,
+          "env_ready_p99_s": 64.72,
+          "task_done_all_s": 222.1,
+          "tasks": 1024,
+          "ok": 637,
+          "err": 387,
+          "claims": 637,
+          "pool_provisioning": {
+            "wait_pool_ready": {
+              "n": 64,
+              "avg": 1.696,
+              "total": 108.56,
+              "max": 40.97
+            }
+          },
+          "claim": {
+            "n": 1024,
+            "avg": 5.756,
+            "total": 5894.01,
+            "max": 170.77
+          },
+          "process": {
+            "n": 637,
+            "avg": 6.248,
+            "total": 3980.13,
+            "max": 8.09
+          },
+          "release": {
+            "n": 637,
+            "avg": 0.084,
+            "total": 53.78,
+            "max": 0.54
+          },
+          "reset": null,
+          "teardown": null,
+          "proc": {
+            "open_fds": 911,
+            "open_sockets": 906,
+            "vm_rss_mb": 804.47,
+            "vm_hwm_mb": 808.27,
+            "threads": 3089
+          }
+        },
+        {
+          "step": 7,
+          "step_wall_s": 44.47,
+          "env_ready_all_s": 36.17,
+          "env_ready_avg_s": 13.46,
+          "env_ready_p50_s": 9.12,
+          "env_ready_p90_s": 36.0,
+          "env_ready_p95_s": 36.03,
+          "env_ready_p99_s": 36.14,
+          "task_done_all_s": 43.73,
+          "tasks": 1024,
+          "ok": 754,
+          "err": 270,
+          "claims": 755,
+          "pool_provisioning": {
+            "wait_pool_ready": {
+              "n": 64,
+              "avg": 0.009,
+              "total": 0.6,
+              "max": 0.02
+            }
+          },
+          "claim": {
+            "n": 1024,
+            "avg": 8.597,
+            "total": 8803.72,
+            "max": 35.57
+          },
+          "process": {
+            "n": 755,
+            "avg": 6.23,
+            "total": 4703.87,
+            "max": 8.85
+          },
+          "release": {
+            "n": 755,
+            "avg": 0.079,
+            "total": 59.47,
+            "max": 0.48
+          },
+          "reset": null,
+          "teardown": {
+            "n": 1,
+            "avg": 0.71,
+            "total": 0.71,
+            "max": 0.71
+          },
+          "proc": {
+            "open_fds": 999,
+            "open_sockets": 994,
+            "vm_rss_mb": 842.31,
+            "vm_hwm_mb": 851.6,
+            "threads": 3089
+          }
+        }
+      ],
+      "errors_sample": [
+        "s0 ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'ad0e76da-c256-449b-9c26-0f8943a0e086', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '1', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 15:54:04 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "s0 ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '8b019ea7-54c6-4822-95fe-d265a267d3a3', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '1', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 15:54:04 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "s0 ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '0b05a24e-a504-41f4-9140-7eb6d7acdd0c', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '1', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 15:54:04 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "s0 ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '09fc2141-e42e-494a-94d6-daf42900d646', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '1', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 15:54:04 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "s2 ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '4bd96654-c2a2-4032-8734-2bb4d9b38dbf', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '3', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 15:55:16 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "s2 ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'f376a70d-17e0-410e-9b80-41c2ba84a465', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '3', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 15:55:16 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "s2 ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'df37d684-afe2-48ae-bf17-bcc8aa6465e8', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '3', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 15:55:16 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+        "s2 ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': 'b3c09f2d-fe9f-4b87-b73b-7ef270c5f016', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '3', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 15:55:16 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,379 @@
+{
+  "params": {
+    "driver": "bench_core",
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": null,
+    "batch_create_rps": null,
+    "batch_lease_duration": 300,
+    "batch_work_budget": 3600,
+    "overcommit_factor": 3.5,
+    "strategies": "naive,sliding,pipelined",
+    "recycle": false,
+    "images_file": "images/swebench500.txt",
+    "images": 500,
+    "rollouts": 1,
+    "total_tasks": 500,
+    "concurrency": 500,
+    "claim_concurrency": 500,
+    "max_warmpool_size": 1,
+    "warm_per_task": false,
+    "colocate": false,
+    "enable_cow": false,
+    "placement": "image-affinity",
+    "window_size": 200,
+    "avg_image_gb": null,
+    "usable_disk_gb": null,
+    "termination_grace_seconds": 0,
+    "max_reuses": 32,
+    "reset_timeout": 30.0,
+    "cpu": "250m",
+    "memory": "512Mi",
+    "runtime_class": "gvisor",
+    "context": null,
+    "in_cluster": true,
+    "namespace": "agent-sandbox-rl",
+    "node_selector": {
+      "cloud.google.com/gke-nodepool": "gvisor-pool"
+    },
+    "testbed": "/testbed",
+    "probe": "true",
+    "out": "/out/result.json"
+  },
+  "variants": [
+    {
+      "strategy": "naive",
+      "recycle": false,
+      "label": "naive",
+      "claim_mode": "per_claim",
+      "batch_max_in_flight": null,
+      "wall_s": 447.1,
+      "fatal_error": null,
+      "report_total_s": 446.77,
+      "total_tasks": 500,
+      "tasks_ok": 500,
+      "tasks_err": 0,
+      "claims": 500,
+      "s_per_task": 0.8942,
+      "goodput_tasks_per_s": 1.12,
+      "throughput_tasks_per_s": 1.12,
+      "warm_replicas_peak": 500,
+      "env_ready_ok_s": {
+        "n": 500,
+        "avg": 430.496,
+        "p50": 430.461,
+        "p90": 433.262,
+        "p95": 434.541,
+        "p99": 434.844,
+        "max": 435.533
+      },
+      "phases": {
+        "preflight": {
+          "n": 1,
+          "avg": 0.17,
+          "total": 0.17,
+          "max": 0.17
+        },
+        "plan": {
+          "n": 1,
+          "avg": 0.0,
+          "total": 0.0,
+          "max": 0.0
+        },
+        "create_warmpool": {
+          "n": 500,
+          "avg": 0.412,
+          "total": 205.87,
+          "max": 1.43
+        },
+        "wait_pool_ready": {
+          "n": 500,
+          "avg": 9.536,
+          "total": 4768.23,
+          "max": 211.94
+        },
+        "claim": {
+          "n": 500,
+          "avg": 4.525,
+          "total": 2262.31,
+          "max": 8.95
+        },
+        "process": {
+          "n": 500,
+          "avg": 2.292,
+          "total": 1145.96,
+          "max": 12.47
+        },
+        "release": {
+          "n": 500,
+          "avg": 0.123,
+          "total": 61.41,
+          "max": 0.43
+        },
+        "teardown": {
+          "n": 1,
+          "avg": 1.23,
+          "total": 1.23,
+          "max": 1.23
+        }
+      },
+      "proc_before": {
+        "open_fds": 7,
+        "open_sockets": 2,
+        "vm_rss_mb": 119.28,
+        "vm_hwm_mb": 119.28,
+        "threads": 1
+      },
+      "proc_after": {
+        "open_fds": 479,
+        "open_sockets": 474,
+        "vm_rss_mb": 287.54,
+        "vm_hwm_mb": 306.84,
+        "threads": 509
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 1000,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 801
+          }
+        }
+      },
+      "errors_sample": []
+    },
+    {
+      "strategy": "sliding",
+      "recycle": false,
+      "label": "sliding",
+      "claim_mode": "per_claim",
+      "batch_max_in_flight": null,
+      "wall_s": 295.1,
+      "fatal_error": null,
+      "report_total_s": 295.14,
+      "total_tasks": 500,
+      "tasks_ok": 500,
+      "tasks_err": 0,
+      "claims": 500,
+      "s_per_task": 0.5903,
+      "goodput_tasks_per_s": 1.69,
+      "throughput_tasks_per_s": 1.69,
+      "warm_replicas_peak": 200,
+      "env_ready_ok_s": {
+        "n": 500,
+        "avg": 186.115,
+        "p50": 194.355,
+        "p90": 290.971,
+        "p95": 291.463,
+        "p99": 292.057,
+        "max": 292.195
+      },
+      "phases": {
+        "preflight": {
+          "n": 1,
+          "avg": 0.12,
+          "total": 0.12,
+          "max": 0.12
+        },
+        "plan": {
+          "n": 1,
+          "avg": 0.01,
+          "total": 0.01,
+          "max": 0.01
+        },
+        "create_warmpool": {
+          "n": 500,
+          "avg": 0.605,
+          "total": 302.7,
+          "max": 2.5
+        },
+        "wait_pool_ready": {
+          "n": 500,
+          "avg": 15.739,
+          "total": 7869.69,
+          "max": 120.96
+        },
+        "claim": {
+          "n": 500,
+          "avg": 1.905,
+          "total": 952.65,
+          "max": 4.43
+        },
+        "process": {
+          "n": 500,
+          "avg": 2.349,
+          "total": 1174.52,
+          "max": 5.61
+        },
+        "release": {
+          "n": 500,
+          "avg": 0.076,
+          "total": 38.22,
+          "max": 0.6
+        },
+        "teardown": {
+          "n": 1,
+          "avg": 0.06,
+          "total": 0.06,
+          "max": 0.06
+        }
+      },
+      "proc_before": {
+        "open_fds": 7,
+        "open_sockets": 2,
+        "vm_rss_mb": 285.62,
+        "vm_hwm_mb": 317.42,
+        "threads": 2
+      },
+      "proc_after": {
+        "open_fds": 208,
+        "open_sockets": 203,
+        "vm_rss_mb": 312.23,
+        "vm_hwm_mb": 317.42,
+        "threads": 234
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 183,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 142
+          }
+        }
+      },
+      "errors_sample": []
+    },
+    {
+      "strategy": "pipelined",
+      "recycle": false,
+      "label": "pipelined",
+      "claim_mode": "per_claim",
+      "batch_max_in_flight": null,
+      "wall_s": 147.5,
+      "fatal_error": "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '9c3d6653-5bf5-4dd1-9a59-2328d089102d', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '31', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:28:15 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n",
+      "report_total_s": 147.46,
+      "total_tasks": 500,
+      "tasks_ok": 192,
+      "tasks_err": 308,
+      "claims": 192,
+      "s_per_task": 0.2949,
+      "goodput_tasks_per_s": 1.3,
+      "throughput_tasks_per_s": 3.39,
+      "warm_replicas_peak": 385,
+      "env_ready_ok_s": {
+        "n": 192,
+        "avg": 31.393,
+        "p50": 31.283,
+        "p90": 32.261,
+        "p95": 32.533,
+        "p99": 33.543,
+        "max": 59.469
+      },
+      "phases": {
+        "preflight": {
+          "n": 1,
+          "avg": 0.11,
+          "total": 0.11,
+          "max": 0.11
+        },
+        "plan": {
+          "n": 1,
+          "avg": 0.01,
+          "total": 0.01,
+          "max": 0.01
+        },
+        "create_warmpool": {
+          "n": 400,
+          "avg": 0.746,
+          "total": 298.46,
+          "max": 2.34
+        },
+        "wait_pool_ready": {
+          "n": 385,
+          "avg": 9.057,
+          "total": 3486.81,
+          "max": 118.06
+        },
+        "claim": {
+          "n": 200,
+          "avg": 2.964,
+          "total": 592.7,
+          "max": 31.69
+        },
+        "process": {
+          "n": 192,
+          "avg": 2.148,
+          "total": 412.47,
+          "max": 5.52
+        },
+        "release": {
+          "n": 192,
+          "avg": 0.084,
+          "total": 16.06,
+          "max": 0.29
+        },
+        "prefetch": {
+          "n": 1,
+          "avg": 119.43,
+          "total": 119.43,
+          "max": 119.43
+        },
+        "teardown": {
+          "n": 1,
+          "avg": 0.42,
+          "total": 0.42,
+          "max": 0.42
+        }
+      },
+      "proc_before": {
+        "open_fds": 7,
+        "open_sockets": 2,
+        "vm_rss_mb": 294.16,
+        "vm_hwm_mb": 317.42,
+        "threads": 2
+      },
+      "proc_after": {
+        "open_fds": 392,
+        "open_sockets": 387,
+        "vm_rss_mb": 322.6,
+        "vm_hwm_mb": 330.14,
+        "threads": 218
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 185,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 164
+          }
+        }
+      },
+      "errors_sample": [
+        "ApiException: (429)\nReason: Too Many Requests\nHTTP response headers: HTTPHeaderDict({'Audit-Id': '9c3d6653-5bf5-4dd1-9a59-2328d089102d', 'Cache-Control': 'no-cache, private', 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '31', 'X-Content-Type-Options': 'nosniff', 'X-Kubernetes-Pf-Flowschema-Uid': '95f6bbc2-71f3-4afe-a3b0-63d38b9db9ea', 'X-Kubernetes-Pf-Prioritylevel-Uid': 'f2abbe9a-52b4-4d84-94f2-93c633dd1b4d', 'Date': 'Wed, 04 Nov 2026 20:28:15 GMT', 'Content-Length': '43'})\nHTTP response body: Too many requests, please try again later.\n\n"
+      ]
+    }
+  ]
+}
