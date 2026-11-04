@@ -1,6 +1,6 @@
 # Workstream B: `agent-sandbox-rl` Batch Claim Mode (`25/N`) Follow-up Optimizations & Hardening
 
-> **Base branch:** `origin/feat/rl-batch-claim-mode` (`3a25143c`, stacked linearly on `24/N` `origin/merge/main-into-batch-claim-2` `b4cf6575` = `1/N..23/N` + `upstream/main` `bcf5d4a0`)
+> **Base branch:** `origin/feat/rl-batch-claim-mode` (stacked linearly on `24/N` `origin/merge/main-into-batch-claim-2` = `1/N..23/N` + `upstream/main` `bcf5d4a0`)
 > **Target directory:** `examples/agent-sandbox-rl/` (do **not** modify `clients/python/` in this workstream unless explicitly requested)
 
 ---
@@ -40,8 +40,8 @@ Read `examples/agent-sandbox-rl/docs/batch_rl_integration_improvements.md` (avai
 Do **not** undo or alter any of those contracts, and do **not** modify files outside `examples/agent-sandbox-rl/`.
 
 ### 4. Deliverables (Implement in Commit Order)
-Implement all 8 items from Part 3 of `examples/agent-sandbox-rl/docs/batch_rl_integration_improvements.md` in clean, well-tested commits:
-1. **`P0-1`:** Fix stopped/released `SandboxBatch` `BatchError` crash on `BatchClaim.release()` and make `FakeBatch.release_member` faithful to `15/N`'s `SandboxBatch._check_healthy()`.
+Implement the items from Part 3 of `examples/agent-sandbox-rl/docs/batch_rl_integration_improvements.md` in clean, well-tested commits:
+1. **`P0-1` *(check first — already folded into `25/N` if branched from `51c9f541`+)*:** Check `agent_sandbox_rl/batch_claims.py:BatchClaim.release`. If it already catches `BatchError` and calls `self.cluster.resources.delete_claim(self.member.claim_name)` (with `FakeBatch._check_healthy()` in `tests/test_batch_claims.py`), skip `P0-1` and start at `P0-2`; otherwise apply `P0-1` first.
 2. **`P0-2`:** Switch REST `read_namespaced_pod_status` in `handles.py` (`record_pod_identity()` and `is_alive()`) from `exec_core_api()` to shared `cluster.core_api` (keeping `exec_core_api()` strictly for `stream()` websocket exec/sessions).
 3. **`P0-3`:** Add per-batch `BatchWatchdog` (`fail_fast` parity for `claim_mode="batch"` cold starts, `0` `GET`s before `initial_delay_s`).
 4. **`P0-4`:** Sweep and verify batch `coordination.k8s.io/v1` `Lease` objects in `reaper.py` and `SandboxFleet.verify_teardown()` (with non-empty `label_selector` guard).
@@ -181,7 +181,7 @@ Add a lightweight **per-batch `BatchWatchdog`** (1 daemon thread per opened `San
 ### `P0-4`: Sweep & Verify Batch `Lease`s in `reaper.py` and `SandboxFleet.verify_teardown()`
 
 #### Problem
-Every `SandboxBatch` creates a `coordination.k8s.io/v1` `Lease` carrying `self.config.labels` (including `agent-sandbox-rl/managed-by=agent-sandbox-rl` and `agent-sandbox-rl/run-id=<run_id>`) plus `agent-sandbox.sigs.k8s.io/batch-id=<batch_id>`. Every batch `SandboxClaim` has a `metadata.ownerReferences` entry pointing to that `Lease`.
+Every `SandboxBatch` creates a `coordination.k8s.io/v1` `Lease` carrying `self.config.labels` (including `agent-sandbox-rl/managed-by=agent-sandbox-rl` and `agent-sandbox-rl/run-id=<run_id>`) plus `agents.x-k8s.io/batch-id=<batch_id>` (`BATCH_ID_LABEL` from `k8s_agent_sandbox.constants`). Every batch `SandboxClaim` has a `metadata.ownerReferences` entry pointing to that `Lease`.
 Currently:
 - `Resources` (`agent_sandbox_rl/resources.py`) has no `list_leases` / `delete_lease` helpers (`CoordinationV1Api`).
 - `reaper.py` (`reap()` / `reap_orphans()`) sweeps claims, warmpools, templates, sandboxes, pods, and prepull daemonsets — **not** batch `Lease`s. Orphaned Leases linger until `batch_reaper` runs (if deployed), and deleting the `Lease` lets Kubernetes GC clean up owned claims automatically.
@@ -191,7 +191,7 @@ Currently:
 1. **`Cluster` (`cluster.py`) & `Resources` (`resources.py`):**
    - Add lazy or eager `coordination_api = client.CoordinationV1Api(self.api_client)` on `Cluster` and pass it (optional, defaulting to `None` so existing `Resources(custom_api, core_api, ns)` call sites and unit-test fixtures don't break!) into `Resources`.
    - Add `list_leases(label_selector: str)` and `delete_lease(name: str)` to `Resources`:
-     - **Safety guard:** refuse empty `label_selector` (`if not label_selector: raise ValueError(...)`) AND add `--` / selector guard `agents.x-k8s.io/batch-id` or the caller's `RUN_ID_LABEL` / `MANAGED_BY_LABEL` selector so `kube-node-lease` or controller leader-election Leases (like `agent-sandbox-controller-leader`) can **never** be matched! Even better: only return Leases that **also** carry the `agent-sandbox.sigs.k8s.io/batch-id` label (`BATCH_ID_LABEL` from `k8s_agent_sandbox.batch_utils`), so non-batch Leases in the namespace are structurally untouchable!
+     - **Safety guard:** refuse empty `label_selector` (`if not label_selector: raise ValueError(...)`) AND ensure only Leases that **also** carry the `agents.x-k8s.io/batch-id` label (`BATCH_ID_LABEL` from `k8s_agent_sandbox.constants`) are returned/deleted (for example by appending `,agents.x-k8s.io/batch-id` to `label_selector` or filtering `metadata.labels`), so `kube-node-lease` or controller leader-election Leases (like `agent-sandbox-controller-leader`) in the namespace are structurally untouchable!
      - `delete_lease` ignores `404`, matching `delete_claim`.
 2. **`reaper.py`:**
    - In `_reap_with_cluster`, list and delete matching batch Leases (only for runs NOT protected by `protect_claims_of`!) and include `"leases": deleted_count` in the returned `counts` dict (or `0` when none). Check existing `tests/test_reaper.py` assertions on `counts` keys first so existing reaper tests don't break if they assert exact dict equality! *(Important: inspect `tests/test_reaper.py` before deciding whether `"leases"` is always present or only when `coordination_api` is wired / non-zero — keep 100% backward compatibility with `tests/test_reaper.py`!)*
