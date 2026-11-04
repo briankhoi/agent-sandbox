@@ -618,6 +618,20 @@ class SandboxHandle:
       # Through the batch, so it stops tracking the member; terminating the
       # connected Sandbox would delete the claim behind the batch's back.
       self._batch_claim.release()
+      if self.sandbox is not None:
+        snapshots = (
+            getattr(self.sandbox, "_snapshots", None)
+            or getattr(self.sandbox, "snapshots", None)
+        )
+        if hasattr(snapshots, "delete_manual_triggers"):
+          try:
+            snapshots.delete_manual_triggers()
+          except Exception as exc:  # noqa: BLE001 — best-effort trigger cleanup
+            logger.warning(
+                "failed to delete snapshot manual triggers for %s: %s",
+                self.sandbox_id, exc)
+        if hasattr(self.sandbox, "_snapshots"):
+          self.sandbox._snapshots = None
       return
     if self.sandbox is not None:
       self.sandbox.terminate()
