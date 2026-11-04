@@ -16,9 +16,10 @@ You don't need to read it front to back. Use it like a textbook with an index.
 | See the performance wins side by side, with measured results | [Optimization showcase](learnings/optimizations.md) |
 | Look up a specific race, edge case, or optimization | [Field guide](#sec-field-guide) |
 | Improve how you test concurrent code | [Testing techniques](learnings/testing.md) |
+| Check every interleaving, not just the ones you thought of | [Verification](learnings/verification.md) |
 | Avoid our process and git mistakes | [Process, git, and working with agents](learnings/process.md) |
 
-**Entry shape.** Field-guide entries have a stable id (`LEASE-4`, `RACE-3`, ...), a title, and a bold **Takeaway** you can read on its own. Click "The full story" to expand the situation, what goes wrong, what we do, and an example. Pattern cards are `PAT-n`, best practices are `BP-n`, optimizations are `OPT-n`.
+**Entry shape.** Field-guide entries have a stable id (`LEASE-4`, `RACE-3`, ...), a title, and a bold **Takeaway** you can read on its own. Click "The full story" to expand the situation, what goes wrong, what we do, and an example. Pattern cards are `PAT-n`, best practices are `BP-n`, optimizations are `OPT-n`, verification principles are `VER-n`.
 
 **Adding an entry.** Pick the section whose big idea fits, take the next free id, use the same shape, cite the PR and the code (`file.py: Symbol`), and write in active voice. Base every claim on code or a measurement. If an old entry number (like "learnings 3.1") appears in older notes, the [old-to-new table](#appendix-a) maps it.
 
@@ -82,7 +83,7 @@ If you only read this list, you still get most of the value. Each idea links to 
 7. **Teardown undoes only what the scope acquired, and a resource is always owned by exactly one closer or still registered.** ([CLEAN-1](learnings/field-guide/clean.md#clean-1), [CLEAN-11](learnings/field-guide/clean.md#clean-11))
 8. **Scope backoff, rate limits, and locks to the resource that is actually contended, and check deadlines before you reserve capacity.** ([RETRY-6](learnings/field-guide/retry.md#retry-6), [RETRY-7](learnings/field-guide/retry.md#retry-7), [LOCK-10](learnings/field-guide/lock.md#lock-10))
 9. **Read your HTTP library's source before trusting its defaults.** Hidden retries, Retry-After sleeps, and connection reuse broke deadlines here. ([LIB-6](learnings/field-guide/lib.md#lib-6), [LIB-7](learnings/field-guide/lib.md#lib-7), [LIB-13](learnings/field-guide/lib.md#lib-13))
-10. **Make races deterministic in tests.** Trigger the competing action from inside a test double at the exact interleaving point, and mutation-check every test. ([TEST-8](learnings/testing.md#test-8), [TEST-1](learnings/testing.md#test-1))
+10. **Make races deterministic in tests, and model-check what tests can't enumerate.** Trigger the competing action from inside a test double at the exact interleaving point, mutation-check every test, and let a small BFS model checker explore every interleaving of locks, signals, and cancellation. It caught a deadlock in 15/N that no test had found. ([TEST-8](learnings/testing.md#test-8), [TEST-1](learnings/testing.md#test-1), [Verification](learnings/verification.md))
 
 ---
 
@@ -164,6 +165,7 @@ This is the deep part. Each section is its own page and groups entries around on
 | [Best practices we followed, and where they come from](learnings/best-practices.md) | Industry practices (`BP-`) we followed, why they scale, and their sources. |
 | [Optimization showcase: how batch claim got fast and lean](learnings/optimizations.md) | The performance wins (`OPT-`) side by side: what each limit protects, why a shortcut may skip it, the guard that keeps it correct, and the measured result. |
 | [Testing techniques for concurrent and distributed code](learnings/testing.md) | Techniques (`TEST-`) for making concurrent and distributed code testable. |
+| [Verification: checking every interleaving, not just the ones you thought of](learnings/verification.md) | Model checking (`VER-`): how a small BFS checker over every interleaving caught a deadlock tests missed, and principles to reuse. |
 | [Process, git, and working with agents](learnings/process.md) | Review, git, and subagent lessons (`PROC-`, `GIT-`, `AGENT-`). |
 
 ---
@@ -201,8 +203,8 @@ Older notes (state.md, prompts, decision files) cite entries by their pre-restru
 | 3.7 | [RACE-1](learnings/field-guide/race.md#race-1) |
 | 3.8 | [COUNT-6](learnings/field-guide/count.md#count-6) |
 | 3.9 | [RETRY-6](learnings/field-guide/retry.md#retry-6) |
-| 3.10 | [RACE-4](learnings/field-guide/race.md#race-4) |
 | 3.10 | [RACE-5](learnings/field-guide/race.md#race-5) |
+| 3.10 | [RACE-4](learnings/field-guide/race.md#race-4) |
 | 3.11 | [LOCK-16](learnings/field-guide/lock.md#lock-16) |
 | 3.12 | [RETRY-7](learnings/field-guide/retry.md#retry-7) |
 | 3.13 | [LIB-5](learnings/field-guide/lib.md#lib-5) |
