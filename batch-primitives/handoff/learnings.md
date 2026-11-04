@@ -12,10 +12,10 @@ Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and tra
 
 Nearly every edge case on this board comes from one of four recurring design questions:
 
-1. **Two observers on one object (Watch vs RPC, Local vs Cluster).** Whenever both a background watch and an HTTP call observe the same resource, ask what happens when the watch sees the result before the HTTP response returns, and validate every failure precondition before mutating local state (3.6, 3.7, 3.8, 3.10, 4.3).
-2. **Monotonic lifecycle and completion state.** Teardown and stream-completion predicates must move in one direction only. Refuse new work before draining active work, and never compute "is the stream done?" from a live gauge that can drop after an item was already handed out (1.7, 4.4).
-3. **Teardown matches how ownership entered scope.** Implicit cleanup undoes only what that scope took (release a claimed batch, detach an attached one; keep the live owner separate from leftover connections to close), while explicit destructive calls delete everything (1.2-1.6, 1.8, 1.9, 3.3).
-4. **Match lock and backoff scope to the shared resource.** Hold a state lock across the whole check-and-mutate step (copying needed values into locals before releasing), restore state synchronously in `finally`, and scope retries or locks to the contended resource so single-item I/O does not stall unrelated workers (2.1, 2.2, 3.3b, 3.9, 3.11, 4.1, 4.5, 4.6, 4.7, 6.10).
+1. **Two observers on one object (Watch vs RPC, Local vs Cluster).** Whenever both a background watch and an HTTP call observe the same resource, ask what happens when the watch sees the result before the HTTP response returns, and validate every failure precondition before mutating local state (3.6, 3.7, 3.8, 3.10, 3.14, 3.15, 3.16, 4.3).
+2. **Monotonic lifecycle and completion state.** Teardown and stream-completion predicates must move in one direction only. Refuse new work before draining active work, and never compute "is the stream done?" from a live gauge that can drop after an item was already handed out (1.7, 4.4, 4.9).
+3. **Teardown matches how ownership entered scope.** Implicit cleanup undoes only what that scope took (release a claimed batch, detach an attached one; keep the live owner separate from leftover connections to close), while explicit destructive calls delete everything (1.2-1.6, 1.8, 1.9, 1.10, 3.3, 4.8).
+4. **Match lock and backoff scope to the shared resource.** Hold a state lock across the whole check-and-mutate step (copying needed values into locals before releasing), restore state synchronously in `finally`, and scope retries or locks to the contended resource so single-item I/O does not stall unrelated workers (2.1, 2.2, 3.3b, 3.9, 3.11, 3.12, 3.13, 4.1, 4.5, 4.6, 4.7, 6.10).
 
 ---
 
@@ -73,6 +73,12 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **Issue:** setting `may_exist = True` up front makes a timeout during pacing or `max_in_flight` send an unnecessary `DELETE` (which also contends for `max_in_flight`), and when attempt 1 fails with a clean `409 AlreadyExists` or `403`, deleting by name can destroy a foreign claim this batch never created. Setting `may_exist = True` only after `_create_one` returns leaks claims when attempt 1 hits the wire and then cancels mid-flight, times out before a retry, or fails non-transiently on attempt 2 after attempt 1's response dropped.
 - **Fix:** start `may_exist = False`, flip it in an `on_send` callback right before each socket write inside the `max_in_flight` guard, and on a caught `Exception` recompute `may_exist = sent > 1 or _is_transient_error(e)` while keeping `may_exist` across `BatchTimeoutError` and `BaseException` interrupts (16/N, `810d3773`).
 - **Takeaway:** name-based rollback must track whether an ambiguous write actually left the client. Never delete before acquiring the send slot or after a clean first-attempt rejection, and always delete after any transmitted attempt whose server outcome remains uncertain.
+
+### 1.10 Fail closed on cached pod-IP connections when bypassing handle release
+- **What happened:** standalone `Sandbox.terminate()` invokes `_on_terminated` to evict the handle from `SandboxClient._active_connection_sandboxes` (`7b1a9fbc`), whereas `SandboxBatch.connect()` caches `(sandbox, pod_ip)` in `batch._connected[claim_name]` seeded with the watched pod IP.
+- **Issue:** wiring `_on_terminated` to pop `batch._connected[claim_name]` on direct `sandbox.terminate()` creates a window before the batch watch observes the claim's deletion where `batch._state` still marks the member `READY` while `batch._connected` is empty; a second `batch.connect(member)` in that window constructs a fresh handle seeded with the terminating pod's IP.
+- **Fix:** leave `_on_terminated` unset on batch-connected handles so `batch._connected` retains the closed `(sandbox, pod_ip)` entry (failing closed with `is_active == False`) until `batch.release_member()` or the watch marks the member `LOST` and moves the entry to `_stale_connections` (24/N).
+- **Takeaway:** when a cache pairs a connection with watch-derived routing state (`pod_ip`), only the path that updates the routing state (`release_member` or the watch) may evict the cache entry; out-of-band handle close must mark the cached handle closed in place rather than clearing the slot for a stale re-seed.
 
 ---
 
@@ -181,6 +187,24 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **Fix:** exclude `BatchError` up front in `async_sandbox_batch._is_transport_error` and re-raise `except BatchError: raise` before generic create-failure wrapping in `acquire()` (19/N).
 - **Takeaway:** whenever a domain exception inherits from built-in `TimeoutError` or `OSError` for caller convenience, exclude the domain base class explicitly in every internal transport-retry predicate and broad `except Exception:` wrapper along its call chain.
 
+### 3.14 Unstarted vs in-flight work when cancelling a failed group
+- **What happened:** once a batch group cannot reach `min_ready` (`group_failed`), `_create_worker` skips remaining fill creates and increments `_skipped_creates` so `fill_settled()` knows those ordinals will never arrive.
+- **Issue:** checking `group_failed` before retry attempts as well as before attempt 1 let a claim whose attempt 1 already stored the object on the apiserver (before timing out on the client) count in `_skipped_creates` and later arrive on the watch in `_resolved`, double-counting one ordinal toward settlement.
+- **Fix:** gate `group_failed` plus `record_skipped_create()` on `sent == 0` so only creates that never sent an HTTP attempt count as skipped, while already-transmitted creates reconcile through the watch or `record_create_failure` (19/N).
+- **Takeaway:** "skip remaining work" counters apply only to items that never left the client. Once attempt 1 hits the wire, the server may already hold the object, so completion accounting must wait for the RPC or watch outcome rather than counting the item as never started.
+
+### 3.15 Label-scoped `deletecollection` races concurrent creates in the same label set
+- **What happened:** `release_group(warmpool)` deletes existing claims in a pool with a label-scoped `DELETE` (`deletecollection`), while a concurrent `acquire(warmpool)` may already have a `POST /sandboxclaims` in flight carrying that group label.
+- **Issue:** Kubernetes `deletecollection` lists and deletes only objects visible in etcd when the `DELETE` runs; an in-flight `POST` that commits right afterwards survives the group delete with no error on either call.
+- **Fix:** register in-flight acquires per pool in `_acquiring` before releasing the batch lock to send `POST`. When `release_group` marks those names released while they are still in `_acquiring`, `drop_acquired` sees `was_acquiring=True` and issues a follow-up single-object `DELETE` by name (16/N, 19/N).
+- **Takeaway:** server-side bulk deletes by label are point-in-time snapshots, not tombstones against concurrent writers. Register in-flight creates in local state before sending the `POST` so a concurrent bulk delete obligates the creator to delete its own late-landing resource by name.
+
+### 3.16 Re-check cancel and release state before raising a wait timeout
+- **What happened:** `_send_create` waits up to `deadline - time.monotonic()` on the `max_in_flight` semaphore before raising `BatchTimeoutError`.
+- **Issue:** if `detach()`, `release()`, `err()`, `release_group()`, or watch observation of an earlier attempt occurs right as the semaphore wait expires, raising `BatchTimeoutError` unconditionally misreports a handle teardown or an already-created claim as a slot timeout (and triggers a spurious rollback delete or wrong exception type).
+- **Fix:** re-acquire `_lock` after the semaphore timeout and check `_can_still_send(can_send)` before raising `BatchTimeoutError`, returning cleanly so the caller surfaces the lifecycle `BatchError` or observes the existing member (19/N).
+- **Takeaway:** whenever a bounded resource wait times out, re-check cancellation, teardown, and goal-already-met predicates under the state lock before raising the timeout error.
+
 ---
 
 ## 4. Thread safety and registries
@@ -225,6 +249,18 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **Fix:** isolate all state transitions in `BatchState` (`batch_state.py`) with zero I/O, timers, or locks, so both shells hold their own lock, call the same `BatchState` methods, and run only transport, sleeping, and waiter notifications themselves (16/N, `9ba5a6c6`).
 - **Takeaway:** when maintaining sync and async surfaces in lockstep, put every state transition and invariant in a pure Sans-I/O state core so concurrency shells own only scheduling, locking, and network calls.
 
+### 4.8 Bind process-global `atexit` hooks to static functions and in-place mutable registries
+- **What happened:** `atexit.register(self._cleanup)` pins `self` in the `atexit` module for the life of the Python process unless unregistered, leaking closed `SandboxClient` and `AsyncSandboxClient` instances (`ae6bb389`), while batch exit cleanup also needs access to active and closing batches.
+- **Issue:** binding `self` retains the entire client after cleanup, capturing container snapshots at `__init__` misses batches registered later, and rebinding container attributes (`self._active_batches = {}`) detaches the client from the containers held by the hook.
+- **Fix:** register a `@staticmethod` via `functools.partial` over the client's in-place mutable containers (`_active_connection_sandboxes`, `_explicit_claims`, `_active_batches`, `_closing_batches`, and sync `_batches_lock`), mutate those containers strictly in place without rebinding attributes, and verify with `gc.disable()` plus `weakref.ref(client)` that a cleaned-up client frees immediately by reference counting while a dropped client with an active batch still cleans up at exit (24/N).
+- **Takeaway:** never bind `self` into process-global exit hooks on reusable client objects. Bind static helpers to in-place mutable registries so emptying the registries drops all strong references automatically while uncleaned resources remain reachable until exit.
+
+### 4.9 Per-thread active-operation counters prevent signal-handler self-deadlock on teardown barriers
+- **What happened:** `detach()` and `release()` wait for in-flight member and group deletes (`_wait_active_deletes`) before stopping Lease renewal or giving up the Lease.
+- **Issue:** in synchronous code, a `SIGINT` or `SIGTERM` handler (or re-entrant callback) can run on the very thread currently inside `_member_delete()` and call `batch.release()` or `batch.detach()`. A plain integer `_active_deletes` counter makes that thread wait forever for itself to finish.
+- **Fix:** track sync active deletes in `Counter[int]` keyed by `threading.get_ident()`, and wait until `sum(count for tid, count in _active_deletes.items() if tid != me) == 0` so teardown waits for every other thread's deletes without deadlocking on its own thread (15/N, `113fae28`).
+- **Takeaway:** synchronous drain barriers that signal handlers may enter must track active operations per thread ID and exclude the calling thread from the wait condition.
+
 ---
 
 ## 5. Testing
@@ -236,6 +272,7 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **Measure before trusting results after an environment incident.** After a disk-full reboot we reran every check instead of reusing outputs that might be partial.
 - **Do not collapse asynchronous watch delivery into synchronous RPC mocks when testing races.** Pushing Attempt 1's watch event synchronously inside the mocked Attempt 1 `POST` prevented Attempt 2 from reaching the `in_flight` race once `can_send()` checked `get_member(claim_name) is None`, which briefly led us to drop a valid production guard instead of fixing the mock's causal ordering (19/N).
 - **Lease-expiry e2e suites need both `SIGKILL` (expired) and `SIGSTOP` (paused within duration).** Killing one holder past `leaseDurationSeconds + skew_margin` proves stale batches are reaped, while pausing a holder with `SIGSTOP` for less than `leaseDurationSeconds`, running the reaper, resuming with `SIGCONT`, and asserting `batch.err() is None` proves a quiet or stalled holder is never reaped early (18/N, `73a16a7a`).
+- **Gate retry backoff sleeps on an event instead of timing races with short sleeps.** Using `backoff = 0.05s` to test `release_member()` "during backoff" let fast runs finish before entering backoff or outrun the sleep; intercepting `_stop_creating.wait` and `_wait_for_stop` at the sentinel backoff duration sets `entered_backoff` and blocks until `finish_backoff`, testing the exact post-backoff check in `0ms` with zero flake risk (19/N).
 
 ---
 
@@ -323,3 +360,9 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **What happened:** `24/N` (`merge/main-into-batch-claim-2`) originally merged `upstream/main` at `355803af`, and `upstream/main` later merged static `functools.partial` `atexit` hooks (`ae6bb389`), `_on_terminated` callbacks (`7b1a9fbc`), and client-shared `_DefaultSSLContext` (`9f7999b3`) touching `SandboxClient` and `AsyncSandboxClient`.
 - **Issue:** git only flags textual overlaps; a new client hook such as `_attach_handle` setting `connector._default_ssl_context` produces zero conflict in `AsyncSandboxBatch.connect()`, and merging static `atexit` hooks alongside instance-bound `_release_batches` breaks the zero-client-retention invariant unless batch containers are passed statically too.
 - **Takeaway:** whenever `upstream/main` moves beneath a feature branch or merge PR, diff `old_main..new_main` across shared SDK modules and audit every new lifecycle hook, destructor registration, and handle factory site even in files with zero git merge conflicts.
+
+### 7.5 Re-parenting true two-parent merge commits across stack rebases
+- **What happened:** `24/N` (`merge/main-into-batch-claim-2`) sits linearly on `23/N` as a true two-parent merge commit (`/label tide/merge-method-merge`) so Prow preserves `main`'s commit ancestry instead of squashing `main` onto `feature/batch-claim`.
+- **Issue:** plain `git rebase` drops merge commits (or replays every commit from `main`), and when `23/N`'s tree changes from a lower-stack review fix, re-using the old merge tree drops those lower-stack changes.
+- **Fix:** when `19/N` through `23/N` restack mechanically with an unchanged `23/N` tree, re-parent the merge commit directly with `git commit-tree M^{tree} -p <new-23N> -p <main>` and cherry-pick `24/N`'s follow-up commits; when `23/N`'s tree changes, merge `<main>` into `<new-23N>` (carrying forward the conflict resolutions) and regenerate docs.
+- **Takeaway:** treat two-parent branch-sync commits differently depending on whether the first parent's tree changed: `git commit-tree` re-parents an unchanged tree in O(1), whereas a changed first-parent tree requires a real three-way merge so lower-stack fixes survive.
