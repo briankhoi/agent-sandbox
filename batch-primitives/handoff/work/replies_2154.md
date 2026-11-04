@@ -11,3 +11,7 @@
 > Owning PR: `17/N` (#2153, merged into `feature/batch-claim` as `6feedc5c`), so this hunk is no longer in `#2154` now that the branch is rebased onto `6feedc5c`.
 >
 > Requiring `sum(max_in_flight + 2)` across every active batch also overstates steady-state pool usage. A batch uses up to `max_in_flight` connections only during short create or delete bursts; once Ready, it holds `1` watch connection continuously while `_renew_loop` sleeps between renewals and borrows `1` connection for a few milliseconds per `PUT`. Telling callers holding 9 Ready batches while claiming a 10th to provision `10 * 22 = 220` connections instead of sizing for overlapping bursts (~`31`) would over-provision idle handles, so `README.md` intentionally keeps the general concurrent-batch sizing note.
+
+## `vicentefb` issue comment (`6619500469`, `SIGSTOP` e2e case next to `SIGKILL`)
+
+> Rebased onto `6feedc5c` and added `test_reaper_leaves_a_paused_drivers_batch_within_lease_duration` next to the `SIGKILL` test in `test/e2e/clients/python/test_batch_e2e.py` (`73a16a7a`): it pauses the driver with `SIGSTOP` past one renew interval (`11s` < `lease_duration=30s`), runs `batch_reaper.reap` and checks nothing is reaped, resumes with `SIGCONT`, waits for the next Lease renewal, and checks `batch.err() is None`.
