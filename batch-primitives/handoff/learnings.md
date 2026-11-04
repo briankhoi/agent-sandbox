@@ -1,394 +1,288 @@
-# Learnings board (shared)
+# Learnings: batch claiming in the agent-sandbox Python SDK
 
-Edge cases, concurrency lessons, trade-offs and process lessons from the batch-claiming work in the agent-sandbox Python SDK, written so they transfer to other projects. Any agent may add entries. Keep each entry short and in the same shape. Base claims on code or measurements, and cite the PR or commit when it helps.
+This doc collects what we learned building batch claiming (PRs 1/N to 23/N) so we can reuse it on similar problems. It covers distributed-systems edge cases, concurrency, Kubernetes semantics, HTTP library quirks, performance, API design, testing, and how the work itself went. Every entry is grounded in code we shipped or a measurement we took, and cites the PR (k/N) that owns it.
 
-Entry shape: **What happened** (the situation), **Issue** (what went wrong or could), **Fix** (what we settled on, and rejected alternatives if useful), **Takeaway** (the reusable lesson).
+You don't need to read it front to back. Use it like a textbook with an index.
 
-Started 2026-10-26 by the stack conversation (SDK stack, PRs 8/N to 11/N and transport).
+## How to read this doc
 
----
+| If you want to... | Read |
+| :-- | :-- |
+| Get the big picture in five minutes | [Start here](#start-here) |
+| Learn the Kubernetes concepts behind the feature | [Kubernetes primer](learnings/kubernetes-primer.md) |
+| See the handful of ideas behind almost every edge case | [Mental models](#sec-models) |
+| Borrow elegant code structures | [Patterns and code structure](learnings/patterns.md) |
+| Know which industry practice a choice follows, and why it scales | [Best practices](learnings/best-practices.md) |
+| Look up a specific race, edge case, or optimization | [Field guide](#sec-field-guide) |
+| Improve how you test concurrent code | [Testing techniques](learnings/testing.md) |
+| Avoid our process and git mistakes | [Process, git, and working with agents](learnings/process.md) |
 
-## 0. Four mental models behind the entries below
+**Entry shape.** Field-guide entries have a stable id (`LEASE-4`, `RACE-3`, ...), a title, and a bold **Takeaway** you can read on its own. Click "The full story" to expand the situation, what goes wrong, what we do, and an example. Pattern cards are `PAT-n`, best practices are `BP-n`.
 
-Nearly every edge case on this board comes from one of four recurring design questions:
-
-1. **Two observers on one object (Watch vs RPC, Local vs Cluster).** Whenever both a background watch and an HTTP call observe the same resource, ask what happens when the watch sees the result before the HTTP response returns, and validate every failure precondition before mutating local state (3.6, 3.7, 3.8, 3.10, 3.14, 3.15, 3.16, 4.3).
-2. **Monotonic lifecycle and completion state.** Teardown and stream-completion predicates must move in one direction only. Refuse new work before draining active work, and never compute "is the stream done?" from a live gauge that can drop after an item was already handed out (1.7, 4.4, 4.9).
-3. **Teardown matches how ownership entered scope.** Implicit cleanup undoes only what that scope took (release a claimed batch, detach an attached one; keep the live owner separate from leftover connections to close; close unfinished HTTP responses before returning their pool slot), while explicit destructive calls delete everything (1.2-1.6, 1.8, 1.9, 1.10, 1.11, 3.3, 4.8).
-4. **Match lock and backoff scope to the shared resource.** Hold a state lock across the whole check-and-mutate step (copying needed values into locals before releasing), restore state synchronously in `finally`, and scope retries, cooldowns, or concurrency semaphores to the contended resource so single-item I/O or a brief burst does not starve or permanently throttle later work (2.1, 2.2, 3.3b, 3.9, 3.11, 3.12, 3.13, 3.17, 3.18, 3.19, 4.1, 4.5, 4.6, 4.7, 6.10).
-
----
-
-## 1. Resource cleanup and ownership
-
-### 1.1 A failed stop skipped the close
-- **What happened:** client cleanup stopped a batch's background work, then closed its cached connections (which hold port-forward subprocesses).
-- **Issue:** if the stop raised, the close never ran, and the port-forwards leaked.
-- **Fix:** close in a `finally` after the stop (#2049).
-- **Takeaway:** when cleanup has several independent steps, a failure in one must not skip the others. Release resources in `finally`, not in sequence.
-
-### 1.2 Clear-then-close lost connections that failed to close
-- **What happened:** cleanup cleared the cache, then closed each connection.
-- **Issue:** a close that raised or was cancelled lost its connection for good. Nothing could retry it, which broke the client's own documented promise that a connection that fails to close stays tracked for a retry.
-- **Fix:** take one entry out of the cache under the lock, close it, and put it back only if the close did not succeed (#2049).
-- **Takeaway:** a resource is either owned by exactly one closer or still registered. Never let it be neither. Check what your API already promises (docstrings) and keep that promise on every path.
-
-### 1.3 Keeping entries in the cache while closing caused double closes
-- **What happened:** a first attempt kept each entry in the cache until its close succeeded.
-- **Issue:** two cleanups running at once (detach() and the client's close(), or two threads) could close the same connection twice.
-- **Fix:** take the entry out under the lock before closing, so exactly one caller owns it, then put it back on failure.
-- **Takeaway:** "remove under lock, act, restore on failure" gives single ownership. "Leave in place until done" gives double work under concurrency.
-
-### 1.4 Overlapping cleanups untracked a connection still being closed
-- **What happened:** cleanup A took the last connection and was closing it. Cleanup B saw an empty cache and unregistered the batch. A's close failed and put the connection back on a handle nobody tracked.
-- **Fix:** a put-back also tells the client to keep tracking the handle, and the client keeps finished handles with leftovers in a separate set.
-- **Takeaway:** "empty right now" is not "done". When a removal is decided from a snapshot, check what an in-flight operation can add back afterwards.
-
-### 1.5 One registry slot per key pushed an old handle out
-- **What happened:** the client registry holds one handle per batch. After a detach() whose close failed, re-attaching with get_batch replaced the old handle, and its leftover connection became unreachable.
-- **Constraint:** keeping both handles in the main registry was unsafe, because cleanup calls release() there and release() deletes the batch's claims by label without checking who holds the Lease.
-- **Fix:** a second small set of finished handles that only need their connections closed. Cleanup retries them and never calls release() or stop on them. The main registry stays one live handle per batch.
-- **Takeaway:** separate "the live owner" from "leftovers still to clean up". Mixing them forces either data loss (overwrite) or destructive actions on the wrong object.
-
-### 1.6 Stale connections must never be handed out, but must still be closed
-- **What happened:** the watch drops a cached connection when its member is lost or moves pods, then closes it.
-- **Issue:** a failed or cancelled close dropped the connection, and putting it back in the main cache would let connect() hand out a stale connection.
-- **Fix:** a separate stale list that connect() never reads, closed by later cleanups (transport round).
-- **Takeaway:** if an object must be both "unusable" and "still owed cleanup", give it a place readers never look.
-
-### 1.7 Cleanup must stop new resources from being created
-- **What happened:** client cleanup stopped a batch but left it usable.
-- **Issue:** a caller still holding the handle could call connect() afterwards and create a connection that no cleanup would ever close.
-- **Fix:** cleanup marks the handle detached first, so connect() raises. Where waiters sleep on a condition variable, also notify them, or they hang forever (PR 3).
-- **Takeaway:** shutting down means "refuse new work" first, then "finish old work". When you flip a state flag that waiters depend on, wake the waiters.
-
-### 1.8 Implicit exit cleanup must match how the handle entered scope
-- **What happened:** `get_batch` takes over the batch's Lease, and client exit cleanup called `release()` on every registered batch, including ones attached through `get_batch`.
-- **Issue:** an inspection or handoff caller that attached with `get_batch` deleted the batch's claims and Lease when its `with` block exited instead of handing the batch on.
-- **Fix:** `get_batch` sets `_attached = True`. Implicit exit cleanup detaches attached batches with `detach()`'s default grace and releases claimed ones, while explicit `delete_all()` releases all of them (13/N, `7fba1f53`). Sync exit cleanup also reads `_exit_detaches()` under `batch._lock` so it cannot race a concurrent `detach()` setting `_detach_grace`.
-- **Takeaway:** separate "created by me" from "attached by me". Implicit scope exit should undo only what that scope acquired, while explicit destructive methods act on everything.
-
-### 1.9 Name-based rollback deletes must track whether an ambiguous write hit the wire
-- **What happened:** when `acquire()` fails, times out, or hits an interrupt before its claim becomes Ready, `_drop_acquired` rolls back by deleting `claim_name` by name.
-- **Issue:** setting `may_exist = True` up front makes a timeout during pacing or `max_in_flight` send an unnecessary `DELETE` (which also contends for `max_in_flight`), and when attempt 1 fails with a clean `409 AlreadyExists` or `403`, deleting by name can destroy a foreign claim this batch never created. Setting `may_exist = True` only after `_create_one` returns leaks claims when attempt 1 hits the wire and then cancels mid-flight, times out before a retry, or fails non-transiently on attempt 2 after attempt 1's response dropped.
-- **Fix:** start `may_exist = False`, flip it in an `on_send` callback right before each socket write inside the `max_in_flight` guard, and on a caught `Exception` recompute `may_exist = sent > 1 or _is_transient_error(e)` while keeping `may_exist` across `BatchTimeoutError` and `BaseException` interrupts (16/N, `810d3773`).
-- **Takeaway:** name-based rollback must track whether an ambiguous write actually left the client. Never delete before acquiring the send slot or after a clean first-attempt rejection, and always delete after any transmitted attempt whose server outcome remains uncertain.
-
-### 1.10 Fail closed on cached pod-IP connections when bypassing handle release
-- **What happened:** standalone `Sandbox.terminate()` invokes `_on_terminated` to evict the handle from `SandboxClient._active_connection_sandboxes` (`7b1a9fbc`), whereas `SandboxBatch.connect()` caches `(sandbox, pod_ip)` in `batch._connected[claim_name]` seeded with the watched pod IP.
-- **Issue:** wiring `_on_terminated` to pop `batch._connected[claim_name]` on direct `sandbox.terminate()` creates a window before the batch watch observes the claim's deletion where `batch._state` still marks the member `READY` while `batch._connected` is empty; a second `batch.connect(member)` in that window constructs a fresh handle seeded with the terminating pod's IP.
-- **Fix:** leave `_on_terminated` unset on batch-connected handles so `batch._connected` retains the closed `(sandbox, pod_ip)` entry (failing closed with `is_active == False`) until `batch.release_member()` or the watch marks the member `LOST` and moves the entry to `_stale_connections` (24/N).
-- **Takeaway:** when a cache pairs a connection with watch-derived routing state (`pod_ip`), only the path that updates the routing state (`release_member` or the watch) may evict the cache entry; out-of-band handle close must mark the cached handle closed in place rather than clearing the slot for a stale re-seed.
-
-### 1.11 `urllib3` `release_conn()` returns an unfinished response's dirty socket to the pool
-- **What happened:** `delete_sandbox_claims_by_label` asks for `_preload_content=False`, drains chunks with `response.stream()`, and calls `response.release_conn()` in `finally:` so an interruption cannot leave a pooled connection checked out.
-- **Issue:** unlike `aiohttp` (`BaseConnector._release` checks `protocol.should_close` and closes incomplete transports automatically), `urllib3.HTTPResponse.release_conn()` unconditionally returns `self._connection` to `HTTPConnectionPool.pool` without checking whether the body reached EOF. When `KeyboardInterrupt`, `GeneratorExit`, or a mid-chunk error exits the `for` loop before EOF, `response.closed` stays `False`, `http.client.HTTPConnection` keeps the open response attached with unread bytes on the wire, and the next request on that pool fails in `getresponse()` with unretried `ProtocolError('Connection aborted.', ResponseNotReady('Request-sent'))` (measured on `urllib3==2.8.0`). In addition, `response.stream()` defaults to `decode_content=True`, decompressing discarded JSON chunks.
-- **Fix:** drain with `response.stream(decode_content=False)`, close unfinished responses first in `finally:` (`if not response.closed: response.close()`) before `response.release_conn()` so EOF drains keep reusing the keep-alive socket while mid-stream exits close the dirty socket, and decode async non-2xx error bodies with `errors="replace"` so binary proxy `502` pages still raise `ApiException` instead of `UnicodeDecodeError` (20/N).
-- **Takeaway:** returning a streaming HTTP connection to a pool is only safe after EOF. Verify whether your HTTP library closes incomplete streams on release (`aiohttp` does; `urllib3` `release_conn()` does not) and explicitly close unfinished responses before releasing their pool slot.
+**Adding an entry.** Pick the section whose big idea fits, take the next free id, use the same shape, cite the PR and the code (`file.py: Symbol`), and write in active voice. Base every claim on code or a measurement. If an old entry number (like "learnings 3.1") appears in older notes, the [old-to-new table](#appendix-a) maps it.
 
 ---
 
-## 2. Cancellation and interrupts
+<a id="start-here"></a>
 
-### 2.1 A cancelled task can be cancelled again while awaiting a lock
-- **What happened:** the async put-back did `async with lock` in a `finally` after a cancelled close.
-- **Issue:** a second cancel while waiting for the lock skipped the put-back.
-- **Fix:** do the put-back with no await. In asyncio, code without an await cannot be interrupted, so a plain `dict.setdefault` is atomic.
-- **Takeaway:** in asyncio, the safest critical section is one with no await at all. Don't take a lock just to make a single dict operation "safe".
+## Start here
 
-### 2.2 KeyboardInterrupt is not an Exception
-- **What happened:** the sync put-back ran only for `Exception`.
-- **Issue:** Ctrl-C during a close (a `BaseException`) skipped it.
-- **Fix:** `closed = False; try: closed = close() finally: if not closed: put back`, the same shape async needed for `CancelledError`.
-- **Takeaway:** restore-on-failure logic belongs in `finally` keyed on a success flag, not in `except Exception`. Async `CancelledError` and sync `KeyboardInterrupt` both bypass `except Exception`.
+### The feature in one paragraph
 
-### 2.3 Don't force network cleanup into `finally` on cancellation
-- **What happened:** a reviewer asked to run batch cleanup in a `finally` when delete_all() is cancelled.
-- **Why we declined:** nothing became unreachable (the batches stayed registered, so the next close() or context exit stops them), and a `finally` would run network calls with up to 90 s timeouts after the caller asked to cancel.
-- **Takeaway:** cancellation-safe means "nothing is lost and a retry works", not "do everything anyway". Prefer retryable state over blocking a cancel.
+`SandboxClient.claim_batch()` claims N SandboxClaims across one or more warm pools in one call and returns a `SandboxBatch` handle at once (`AsyncSandboxBatch` for asyncio, with the same behavior). The handle creates the claims in the background at a paced rate, watches all of them through one label-scoped watch, and hands out Ready members through one of three consumers: `events()` (stream), `group_outcomes()` (per group), or `wait_for_quorum()` (all groups at once). A `coordination.k8s.io/v1` Lease records that the batch is alive. Every claim points at the Lease through an ownerReference, so deleting the Lease, whether by `release()`, a reaper CronJob, or a person, makes the Kubernetes garbage collector delete the claims. `detach()` hands the batch to another process, which takes it over with `get_batch()`.
 
----
+### The moving parts
 
-## 3. Distributed state (Leases, retries, races with yourself)
+```mermaid
+flowchart TD
+    Caller["Caller code"] --> Client["SandboxClient / AsyncSandboxClient<br/>claim_batch, get_batch, registry, exit cleanup"]
+    Client --> Shell["SandboxBatch / AsyncSandboxBatch shell<br/>locks, threads or tasks, I/O"]
+    Shell --> Core["BatchState (Sans-I/O core)<br/>members, fill accounting, consumer modes"]
+    Shell --> Utils["batch_utils<br/>validation, Lease rules, backoff, WarmCredit"]
+    Shell --> Helper["K8sHelper / AsyncK8sHelper<br/>list, watch, Lease CRUD, deletecollection"]
+    Helper --> API["Kubernetes apiserver"]
+    subgraph Background["Inside the shell"]
+        Watch["watch loop<br/>(one stream for all claims)"]
+        Renew["Lease renewal loop<br/>(every D/3)"]
+        Creators["create workers<br/>(max_in_flight, paced at create_rps)"]
+    end
+    Shell --- Background
+    API --> GC["Garbage collector<br/>deletes claims whose Lease is gone"]
+    Reaper["batch_reaper CronJob<br/>deletes stale Leases"] --> API
+```
 
-### 3.1 Concurrent detach() on one handle got a 409
-- **What happened:** two code paths (a signal handler and a `finally`, or two async tasks) called detach() at once. Both read the Lease, the first released it, and the second's write had a stale resourceVersion.
-- **Issue:** the second call raised although the release had succeeded.
-- **Fix:** on 409, re-read. If this handle no longer holds the Lease, treat the release as done (11/N).
-- **Takeaway:** on an optimistic-concurrency conflict, re-read and check whether the goal is already met before failing.
+### Glossary
 
-### 3.2 Racing your own late write
-- **What happened:** detach() cancels Lease renewal first, but an in-flight renewal (or a timed-out sync request) can still be applied by the server afterwards and bump the resourceVersion.
-- **Issue:** after a 409, the re-read shows this handle still holding the Lease, and detach() raised for a benign race.
-- **Fix:** retry the release once on the fresh Lease, then raise if it still fails (Vicente's suggestion on #1996).
-- **Takeaway:** cancelling a request client-side does not cancel it server-side. After you stop a writer, assume one more of its writes may land. Retry exactly once, so real conflicts still surface.
+| Term | Meaning here |
+| :-- | :-- |
+| **Batch** | A set of SandboxClaims named `<batch-id>-<ordinal>`, labeled `agents.x-k8s.io/batch-id=<batch-id>`, owned by one Lease. |
+| **Group** | One warm pool's share of a batch (`BatchGroup(warmpool, size, min_ready)`). |
+| **Fill** | The initial claims `claim_batch` creates. They carry the group annotations. Claims from `acquire()` are not part of the fill. |
+| **Member** | The SDK's snapshot of one claim: `PENDING`, `READY`, `FAILED`, or `LOST`. |
+| **Ordinal** | The number in a claim name. One batch-wide counter that never reuses a value. |
+| **Handle** | A `SandboxBatch` object. Several handles can exist for one batch over time, but only the Lease holder may act on it. |
+| **Holder identity** | The string in the Lease's `holderIdentity` that names the handle holding it. |
+| **D** | The Lease duration (`leaseDurationSeconds`), 60 s by default. The handle renews every D/3. |
+| **Pacing** | `create_rps` limits how fast creates start. `max_in_flight` limits how many requests run at once. |
+| **Warm credit** | The number of Ready sandboxes in a warm pool. Creates that credit covers skip pacing, because they start no pod. |
+| **Release / detach** | `release()` deletes the claims and the Lease. `detach()` keeps everything and gives up the Lease so `get_batch()` can take over. |
+| **Reaper** | `python -m k8s_agent_sandbox.batch_reaper`. It deletes Leases whose holders died, and the garbage collector does the rest. |
 
-### 3.3 Cleanup released (deleted) a batch the caller was handing off
-- **What happened:** detach() failed at the Lease write and left the handle registered. Later client cleanup treated it as abandoned and called release(), which deletes the batch.
-- **Fix:** cleanup retries detach() with the caller's original grace (stored on the handle), and never releases a half-detached handle. release() clears the stored grace, so the latest call wins.
-- **Limits:** it is a safety net. Cleanup only runs on explicit close/delete_all, a context exit, or atexit with `cleanup=True`. Async atexit cannot await detach(). After a crash nothing runs, the Lease expires, and the reaper frees the batch. A late retry either completes the handoff or quietly finds the batch already reaped. `get_batch` then fails clearly (`BatchLeaseExpiredError` / `BatchNotFoundError`) rather than returning a cleaned-up batch.
-- **Takeaway:** cleanup must distinguish "abandoned" from "in the middle of a handoff", and honour the caller's latest intent. Destructive defaults need an explicit check of what the caller was trying to do.
+### Ten ideas worth remembering
 
-### 3.3b A shared field read twice across a lock gap
-- **What happened:** detach() resolved the grace under the lock, then read the field again at write time. release() clears that field when it starts, and it can run from another thread or task while detach() is between its lock block and its write.
-- **Issue:** detach() wrote a Lease with no duration. A retry loop added later read the field once more, which widened the window.
-- **Fix:** copy the value into a local inside the lock block, and use the local for every write attempt (PR 2).
-- **Takeaway:** a value decided under a lock must be carried in a local, not re-read from shared state after the lock is released. Every added retry or loop that re-reads shared state is a new race window.
+If you only read this list, you still get most of the value. Each idea links to the entries that teach it.
 
-### 3.4 Lease expiry is the leak guard; don't defeat it
-- **Option rejected:** restart Lease renewal after a failed detach() so the batch stays alive. It would keep a batch held for the whole process lifetime even if nobody retries.
-- **Takeaway:** a lease-based design needs something that eventually frees resources when the holder disappears. Don't add "keep alive on failure" paths that bypass it.
-
-### 3.5 Library error wrapping is not what the docs or names suggest
-- **What happened:** get_batch's docstring said a network failure raises `ApiException`.
-- **Verified:** sync `kubernetes` wraps only an unretried urllib3 `SSLError` into `ApiException(status=0)`. With default retries, urllib3 raises `MaxRetryError` first (measured against an expired certificate). Async `kubernetes_asyncio` wraps nothing from aiohttp.
-- **Also:** a TLS EOF (`ssl.SSLEOFError`) mid-stream is a dropped connection, not a certificate problem, so the watch retries it like a reset while other TLS failures stay fatal (8/N).
-- **Takeaway:** verify which exceptions actually escape a client library by reading its code and, if cheap, by measuring. A plausible docstring fix (`ApiException ... or a TLS failure`) was wrong and got reverted.
-
-### 3.6 Disabling urllib3 retries changes which connection exceptions surface
-- **What happened:** the sync Lease client sets `retries=False` so urllib3 does not stretch Lease timeouts, while `_TRANSPORT_ERRORS` originally assumed urllib3 wrapped connection failures into `MaxRetryError`.
-- **Issue:** with `retries=False` on urllib3 2.x, a refused or timed-out connect raises a raw `ConnectTimeoutError` or `NewConnectionError` instead of `MaxRetryError`, stopping `release()` on the first transient blip.
-- **Fix:** add `urllib3.exceptions.ConnectTimeoutError` (superclass of `NewConnectionError` and `NameResolutionError`) to sync `_TRANSPORT_ERRORS` (13/N, `3bb66de3`).
-- **Takeaway:** changing a transport client's retry config changes its exception surface. Re-audit the exception tuple whenever `retries` changes.
-
-### 3.7 The watch can outrun the create RPC response
-- **What happened:** a background worker creates a claim over HTTP while the watch observes the batch. When `release_not_ready()` stopped the fill, `_delete_released_create` deleted any claim whose create call returned afterwards.
-- **Issue:** when a create landed on the apiserver before `release_not_ready()` (slow HTTP response, or a client timeout followed by a `409 AlreadyExists` retry), the watch already marked the claim Ready, handed it out to the caller, and had `release_not_ready()` keep it. Then `_delete_released_create` deleted that live Ready sandbox.
-- **Fix:** check under `_lock` whether `_state` already tracks the claim in `_members`; if so, the watch saw it before the release call and that release call decided to keep it, so return without deleting (15/N).
-- **Takeaway:** when both an RPC response and a watch stream report the same object, the watch can see the object first. Reconcile late RPC completions against current state instead of assuming the RPC caller is first to observe the result.
-
-### 3.8 Reconciling pessimistic recovery counts when late work lands
-- **What happened:** at `get_batch` attach, ordinals below a pool's highest listed ordinal that are absent from the list count as lost (`_missing`) because their earlier create may have failed before a crash.
-- **Issue:** if an in-flight create from the previous holder landed right after the attach list, `upsert_claim` added the new member without taking back the missing count, counting one ordinal slot twice.
-- **Fix:** track `_missing` per pool separately from confirmed losses so a newly arriving fill claim in that pool takes back one missing count first (13/N, `8ad5a407`).
-- **Takeaway:** when recovery makes a pessimistic assumption for missing items, track assumed losses separately from confirmed ones so late arrivals reconcile the count instead of double-counting.
-
-### 3.9 Scope retry backoff to the contended resource
-- **What happened:** every create retry advanced the shared `_next_create_at` pacing cursor by its full exponential backoff.
-- **Issue:** one single-socket transport blip stalled all 20 creator workers, whereas APF `Retry-After` genuinely applies to the whole priority level.
-- **Fix:** split retries by cause (13/N, `0bf8e443`). A response with `Retry-After` moves the shared pacing cursor so all workers back off together; transport errors and 5xx/429 without `Retry-After` sleep locally on that worker and then reserve a normal pacing slot, matching `client-go`.
-- **Takeaway:** server-wide pushback (`Retry-After`) belongs on the shared rate limiter, while single-connection blips should sleep locally and then re-enter normal pacing.
-
-### 3.10 A mid-retry delete turns a `409 AlreadyExists` retry into a resurrecting `201 Created`
-- **What happened:** claim creation retries transient transport timeouts and treats `409 AlreadyExists` on attempt 2+ as confirmation that attempt 1 stored the claim (`create_error_outcome`). Meanwhile, the watch independently observes the cluster.
-- **Issue:** when attempt 1 stores the claim on the apiserver but its HTTP response times out on the client, the watch can surface that claim to the caller while `_create_one` is still in retry backoff or sending attempt 2. If the caller then deletes that single claim with `release_member()`, attempt 2 arrives after the delete, gets `201 Created` instead of `409`, and recreates a claim the caller already released.
-- **Fix:** reuse the existing release and member checks (`fill_creates_released` + `get_member(claim_name) is not None` for fill claims, and `acquired_member` + `get_member(claim_name) is None` for `acquire()`) so retries skip before backoff, deadline checks, slot reservation, and HTTP send once the watch saw attempt 1 or the caller released the claim; delete any retry that was already on the wire when `release_member()` ran; and map each entry in `_pending_deletes` to a monotonic sequence so the earlier delete finishing late cannot clear a failed cleanup delete (19/N).
-- **Takeaway:** idempotency by `409 AlreadyExists` holds only while nothing deletes the resource between retry attempts. When a watch can expose attempt 1's resource to a caller before the create retry loop finishes, check both whether the watch already observed attempt 1 and whether the caller already deleted it before and after each retry, and version pending-delete state so overlapping deletes cannot clear newer obligations.
-
-### 3.11 Shared single-flight refreshes across callers with different deadlines
-- **What happened:** concurrent `acquire()` calls on the same warm pool share one `_refresh_warm_credit` GET behind a per-pool lock, and a failed GET records `0` credit so callers do not hammer a broken endpoint during the `1s` refresh interval.
-- **Issue:** using the fixed `30s` request timeout inside the refresh let a caller with `timeout=0.05` block for `30s`, ignoring its own deadline. Once we capped the GET to `min(30s, remaining)`, a short-deadline caller timing out at `0.05s` recorded `0` credit and suppressed concurrent `timeout=600` callers from refreshing a healthy warm pool for the next second.
-- **Fix:** check batch health and `refresh_due` before touching the per-pool lock, cap `get_sandbox_warmpool` to `min(BATCH_REQUEST_TIMEOUT_SECONDS, remaining)`, and return without recording `0` when `time.monotonic() >= deadline` so a waiting caller with time left can still refresh immediately (19/N).
-- **Takeaway:** when callers with heterogeneous deadlines coalesce onto one shared I/O refresh, bound each attempt by that leader's remaining deadline, and never record a negative cache entry when the leader's own deadline cut the read short.
-
-### 3.12 Check rate-limit slots against the caller's deadline before reserving capacity
-- **What happened:** `acquire(warmpool, timeout)` and its create retries reserve slots from the batch's shared `create_rps` cursor (`_next_create_at`).
-- **Issue:** under heavy load `_next_create_at` can already sit past the caller's `deadline`. Reserving a slot anyway burns a monotonic ordinal, pushes `_next_create_at` further out for callers behind it, sleeps past the timeout, creates a doomed claim on the apiserver, and immediately sends a `DELETE` to tear it down.
-- **Fix:** raise `BatchTimeoutError` under `_lock` whenever `max(now, _next_create_at) >= deadline` before allocating an ordinal or reserving a slot, and repeat the check in `_check_retry_deadline` before retry backoffs and retry slots (16/N, `810d3773`).
-- **Takeaway:** when callers carry deadlines in front of a shared rate limiter, verify that the earliest available slot precedes the deadline before mutating state or reserving capacity, so doomed requests shed load instead of amplifying queue delay and server churn.
-
-### 3.13 Domain `TimeoutError` subclasses match `asyncio.TimeoutError` on Python 3.11+
-- **What happened:** `BatchTimeoutError(BatchError, TimeoutError)` subclasses built-in `TimeoutError` so `except TimeoutError:` catches SDK timeouts alongside `except BatchError:`, while `async_sandbox_batch._is_transport_error` checks `isinstance(error, asyncio.TimeoutError)`.
-- **Issue:** on Python 3.11+, `asyncio.TimeoutError` aliases built-in `TimeoutError`. When `_send_create` raised `BatchTimeoutError` inside `_create_one` after `deadline` expired waiting for `max_in_flight`, `_is_transport_error` matched it as a retryable socket blip, and a broad `except Exception:` create-failure wrapper in `acquire()` would miswrap it as `TerminalMemberError(CreateFailed)` unless `BatchError` was re-raised first.
-- **Fix:** exclude `BatchError` up front in `async_sandbox_batch._is_transport_error` and re-raise `except BatchError: raise` before generic create-failure wrapping in `acquire()` (19/N).
-- **Takeaway:** whenever a domain exception inherits from built-in `TimeoutError` or `OSError` for caller convenience, exclude the domain base class explicitly in every internal transport-retry predicate and broad `except Exception:` wrapper along its call chain.
-
-### 3.14 Unstarted vs in-flight work when cancelling a failed group
-- **What happened:** once a batch group cannot reach `min_ready` (`group_failed`), `_create_worker` skips remaining fill creates and increments `_skipped_creates` so `fill_settled()` knows those ordinals will never arrive.
-- **Issue:** checking `group_failed` before retry attempts as well as before attempt 1 let a claim whose attempt 1 already stored the object on the apiserver (before timing out on the client) count in `_skipped_creates` and later arrive on the watch in `_resolved`, double-counting one ordinal toward settlement.
-- **Fix:** gate `group_failed` plus `record_skipped_create()` on `sent == 0` so only creates that never sent an HTTP attempt count as skipped, while already-transmitted creates reconcile through the watch or `record_create_failure` (19/N).
-- **Takeaway:** "skip remaining work" counters apply only to items that never left the client. Once attempt 1 hits the wire, the server may already hold the object, so completion accounting must wait for the RPC or watch outcome rather than counting the item as never started.
-
-### 3.15 Label-scoped `deletecollection` races concurrent creates in the same label set
-- **What happened:** `release_group(warmpool)` deletes existing claims in a pool with a label-scoped `DELETE` (`deletecollection`), while a concurrent `acquire(warmpool)` may already have a `POST /sandboxclaims` in flight carrying that group label.
-- **Issue:** Kubernetes `deletecollection` lists and deletes only objects visible in etcd when the `DELETE` runs; an in-flight `POST` that commits right afterwards survives the group delete with no error on either call.
-- **Fix:** register in-flight acquires per pool in `_acquiring` before releasing the batch lock to send `POST`. When `release_group` marks those names released while they are still in `_acquiring`, `drop_acquired` sees `was_acquiring=True` and issues a follow-up single-object `DELETE` by name (16/N, 19/N).
-- **Takeaway:** server-side bulk deletes by label are point-in-time snapshots, not tombstones against concurrent writers. Register in-flight creates in local state before sending the `POST` so a concurrent bulk delete obligates the creator to delete its own late-landing resource by name.
-
-### 3.16 Re-check cancel and release state before raising a wait timeout
-- **What happened:** `_send_create` waits up to `deadline - time.monotonic()` on the `max_in_flight` semaphore before raising `BatchTimeoutError`.
-- **Issue:** if `detach()`, `release()`, `err()`, `release_group()`, or watch observation of an earlier attempt occurs right as the semaphore wait expires, raising `BatchTimeoutError` unconditionally misreports a handle teardown or an already-created claim as a slot timeout (and triggers a spurious rollback delete or wrong exception type).
-- **Fix:** re-acquire `_lock` after the semaphore timeout and check `_can_still_send(can_send)` before raising `BatchTimeoutError`, returning cleanly so the caller surfaces the lifecycle `BatchError` or observes the existing member (19/N).
-- **Takeaway:** whenever a bounded resource wait times out, re-check cancellation, teardown, and goal-already-met predicates under the state lock before raising the timeout error.
-
-### 3.17 `urllib3.Retry` sleeps on `Retry-After` even when `status_forcelist` is unset
-- **What happened:** `K8sHelper` configured claim collection calls with `urllib3.Retry(3, read=False)` so `urllib3` would keep connection retries without repeating timed-out `GET` or `DELETE` reads inside one SDK call, while `list_sandbox_claim_objects` initially stayed on `custom_objects_api` (`Retry(3)`).
-- **Issue:** `urllib3.Retry` defaults `respect_retry_after_header=True` (`RETRY_AFTER_STATUS_CODES = {413, 429, 503}`, `DEFAULT_RETRY_AFTER_MAX = 21600s`) and evaluates that branch in `Retry.is_retry()` independently of `status_forcelist`. On a `429` or `503` carrying `Retry-After`, `urllib3` sleeps uninterruptibly up to 6 hours and retries 3 times inside a single SDK call before `_delete_claims_in_rounds` can check `guard()`, cap backoff at `30s`, or renew the 60s batch Lease. Leaving `list_sandbox_claim_objects` on `Retry(3)` also retried read timeouts 3 times (`4 * 30s = 120s`) in `_claim` after Lease creation and before `_renew_loop` started, outlasting a 60s Lease.
-- **Fix:** set `urllib3.Retry(3, read=False, respect_retry_after_header=False)` on `_CLAIM_COLLECTION_RETRIES` and route all three claim collection methods (`list_sandbox_claim_objects`, `count_live_sandbox_claims`, and `delete_sandbox_claims_by_label`) through `_claim_collection_api` (22/N).
-- **Takeaway:** disabling status retries or read retries in `urllib3.Retry` does not disable `Retry-After` sleeping and retrying on `413`/`429`/`503`. Pass `respect_retry_after_header=False` whenever higher-level application logic owns deadline, Lease-renewal, or `Retry-After` capping.
-
-### 3.18 Temporary `429` cooldowns on warm-credit caches must still deduct paced creates
-- **What happened:** `WarmCredit.throttle()` originally latched `self.throttled = True` permanently for the life of the `SandboxBatch` after a single `429` create response.
-- **Issue:** a brief early APF `429` burst on GKE permanently disabled warm-credit fast paths across the rest of a large step and across all subsequent training steps on a long-lived `SandboxBatch` (`1280 / 50 = 25.6 s` measured `24.59 s`, `2560 / 50 = 51.2 s` measured `47.40 s`), even after warm pools recovered 100% Ready capacity. Simply expiring `throttled` after `max(retry_after, 5s)` without accounting for creates sent during cooldown leaves cached pre-`429` `readyReplicas` untouched, over-crediting cold claims once cooldown ends.
-- **Fix:** replace the permanent boolean with `_throttled_until = max(_throttled_until, monotonic() + max(retry_after or 0.0, 5.0))`, suppress `_refresh_warm_credit` while `_is_throttled()` holds, and call `spend(warmpool)` on each paced create so creates sent during cooldown still consume cached warm credit (19/N).
-- **Takeaway:** rate-limit pushback is transient, so bypasses built on capacity caches should enter a bounded cooldown (`max(Retry-After, floor)`) rather than a permanent latch, while continuing to debit cached capacity for requests dispatched through the fallback pacer.
-
-### 3.19 Skip capacity-cache refreshes when the pacer has an open slot, and bound discovery GETs under `max_in_flight`
-- **What happened:** `acquire()` called `_refresh_warm_credit(warmpool, deadline)` whenever cached credit hit `0` and `1s` had elapsed, and both `_check_pool` (first-use WarmPool + Template GETs) and `_refresh_warm_credit` ran outside `self._in_flight`.
-- **Issue:** when `now >= self._next_create_at` (for example at step start, at low streaming rates below `create_rps`, or with a high `create_rps`), `_reserve_create_slot(now)` already dispatches in `0ms`, so a blocking WarmPool GET saves `0ms` while doubling API calls per acquire (`2.01 req/env` on 500 distinct pools). Worse, 500 concurrent `acquire()` calls across 500 pools fired up to `998` un-semaphored GETs at once, violating `17/N`'s `pool_size >= max_in_flight + 2` Lease-renewal invariant and flooding APF seats into `429`s.
-- **Fix:** check `self._next_create_at > now` under `self._lock` in the same critical section as `self._warm_credit.take(warmpool)` before calling `_refresh_warm_credit`, and acquire `self._in_flight` bounded by `deadline` around the HTTP GETs in both `_check_pool` and `_refresh_warm_credit` (cancelling follower futures if `_check_pool` times out before acquiring its slot so surviving followers take over cleanly) (19/N).
-- **Takeaway:** never pay an RPC to bypass a rate limiter whose next slot is already open, and route every background or on-demand metadata read through the handle's concurrency semaphore so multi-pool fan-out preserves connection-pool and APF headroom.
+1. **Prove ownership from the server's own records, not from local state or a clock.** Compare UIDs, resourceVersions, and transition counters, and make every contended write conditional. ([LEASE-2](learnings/field-guide/lease.md#lease-2), [LEASE-17](learnings/field-guide/lease.md#lease-17), [K8S-1](learnings/field-guide/k8s.md#k8s-1))
+2. **Waiting is safe, deleting early is not.** Order thresholds so the destructive actor always acts last, and confirm death before you destroy. ([LEASE-4](learnings/field-guide/lease.md#lease-4), [LEASE-8](learnings/field-guide/lease.md#lease-8))
+3. **When a watch and an RPC see the same object, the watch can win.** Reconcile late RPC results against current state. ([RACE-1](learnings/field-guide/race.md#race-1), [RACE-4](learnings/field-guide/race.md#race-4))
+4. **Track whether an ambiguous write left the client.** That decides whether you may, or must, delete by name. ([RACE-3](learnings/field-guide/race.md#race-3), [LEASE-13](learnings/field-guide/lease.md#lease-13))
+5. **Keep decisions in a pure core and I/O in thin shells.** Then per-event work stays O(1), races become plain call sequences in tests, and sync and async share one brain. ([layering](learnings/patterns.md#layering), [PAT-1](learnings/patterns.md#pat-1), [PERF-1](learnings/field-guide/perf.md#perf-1), [TEST-3](learnings/testing.md#test-3))
+6. **Completion is a one-way latch.** Count final decisions, not live gauges. ([COUNT-1](learnings/field-guide/count.md#count-1))
+7. **Teardown undoes only what the scope acquired, and a resource is always owned by exactly one closer or still registered.** ([CLEAN-1](learnings/field-guide/clean.md#clean-1), [CLEAN-11](learnings/field-guide/clean.md#clean-11))
+8. **Scope backoff, rate limits, and locks to the resource that is actually contended, and check deadlines before you reserve capacity.** ([RETRY-6](learnings/field-guide/retry.md#retry-6), [RETRY-7](learnings/field-guide/retry.md#retry-7), [LOCK-10](learnings/field-guide/lock.md#lock-10))
+9. **Read your HTTP library's source before trusting its defaults.** Hidden retries, Retry-After sleeps, and connection reuse broke deadlines here. ([LIB-6](learnings/field-guide/lib.md#lib-6), [LIB-7](learnings/field-guide/lib.md#lib-7), [LIB-13](learnings/field-guide/lib.md#lib-13))
+10. **Make races deterministic in tests.** Trigger the competing action from inside a test double at the exact interleaving point, and mutation-check every test. ([TEST-8](learnings/testing.md#test-8), [TEST-1](learnings/testing.md#test-1))
 
 ---
 
-## 4. Thread safety and registries
+<a id="sec-models"></a>
 
-### 4.1 Check-then-act on a shared dict
-- **What happened:** `if registry.get(key) is batch: del registry[key]` in a sync client used from several threads.
-- **Issue:** another thread could register a new handle between the check and the delete, and the delete removed the new one.
-- **Fix:** one lock around registration, the identity check plus delete, and cleanup snapshots. Async needs no lock when there is no await between check and act.
-- **Takeaway:** under the GIL single dict operations are atomic, but two in a row are not. Make the lock cover every access to the structure (we missed `claim_batch` and a snapshot at first, so the lock rule was stated in half the places).
+## Mental models
 
-### 4.2 Deterministic race tests
-- **What we did:** a dict subclass whose `get` or `clear` starts the competing operation on another thread and joins with a short timeout. With the lock, the other thread blocks. Without it, it interleaves, and the test fails every time.
-- **Takeaway:** race tests can be deterministic if a test double triggers the interleaving at the exact point. Keep such doubles minimal, and adjust them only when the code under test legitimately changes (our double later had to race only on its first lookup).
+Nearly every edge case in this doc comes from one of these recurring design questions. When you face a new problem, ask them in order.
 
-### 4.3 Check every failure precondition before mutating local state
-- **What happened:** `release_member`, `release_not_ready`, and `release_group` checked `_detached` under `_lock`, dropped members from `_state`, and only checked `_lease_released` and `err()` later inside `_delete_claim`.
-- **Issue:** when `err()` was set, the call dropped members from `members()`, deleted nothing on the cluster, and raised `BatchError`, leaving the in-memory view out of sync with the cluster.
-- **Fix:** check `_lease_released` and `_state.error()` under `_lock` before mutating `_state` (15/N).
-- **Takeaway:** validate every precondition that can reject an operation before mutating in-memory state, so a failed call leaves both local state and cluster state untouched.
+### 1. Two observers on one object
 
-### 4.4 Completion predicates must be monotonic, never derived from a live gauge
-- **What happened:** `fill_settled()` checked `_ready_count + len(_unable) + _skipped_creates == _fill_total`, where `_ready_count` rose and fell with live Ready status.
-- **Issue:** after a Ready member was handed out (or dropped with a failed group) and later flipped NotReady on a watch event, `_ready_count` dropped and unsettled a finished `events()` stream. Conversely, marking a member settled on bare `Ready` before its group or quorum decided ended `events()` early if a held member flickered NotReady and later recovered.
-- **Fix:** replace `_ready_count` in settlement with a sticky `_resolved` set that adds a fill claim only once its consumer fate is final: handed out, dropped with a failed group or quorum, unable, or released (13/N, `8ad5a407`).
-- **Takeaway:** stream termination is a one-way latch. Track whether each item has reached a final consumer decision rather than summing mutable live health counters.
+A background watch and an HTTP call both observe the same resource, and either can see the result first. Ask: what happens if the watch sees it before the response returns? What if the response is lost but the write landed? Validate every failure precondition before you mutate local state.
+See [RACE-1](learnings/field-guide/race.md#race-1) to [RACE-8](learnings/field-guide/race.md#race-8), [WATCH-7](learnings/field-guide/watch.md#watch-7), [LOCK-4](learnings/field-guide/lock.md#lock-4).
 
-### 4.5 Singleflight futures must isolate waiter timeouts from the shared work
-- **What happened:** the first `acquire()` on an unseen warm pool runs `_check_pool`, and concurrent `acquire()` calls on that pool wait on one shared `Future` in `_prechecks[warmpool]`.
-- **Issue:** in `asyncio`, passing the shared `Future` directly to `asyncio.wait_for` cancels the shared check when one short-timeout waiter expires, aborting the precheck for callers with longer deadlines. Conversely, when an interrupt cancels the task or thread running the check, waiters receive `CancelledError` even though nobody cancelled them, and when the check itself raises `TimeoutError` it looks like the waiter's own deadline unless disambiguated.
-- **Fix:** async waiters wrap the future in `asyncio.shield`, both shells check `check.done()` on `TimeoutError` so a check-level timeout surfaces its real error, an uncancelled waiter whose leader hit an interrupt loops and runs the check itself, and failed checks clear `_prechecks[warmpool]` without caching (16/N, `810d3773`).
-- **Takeaway:** when coalescing callers with independent deadlines onto one in-flight `Future`, shield the shared future from individual waiter timeouts, let a surviving waiter take over when the leader aborts, and cache only successes.
+### 2. Ownership must be provable, and every failure falls toward safety
 
-### 4.6 Match wakeup granularity and semaphore hold time to the waiter's scope
-- **What happened:** batch fill consumers share one `Condition` (`_changed.notify_all()`), while `acquire()` waits for one claim to leave `PENDING`, and create and delete loops bound HTTP concurrency with `BoundedSemaphore(max_in_flight)`.
-- **Issue:** putting `N` concurrent `acquire()` calls on `_changed` wakes all `N` waiters on every watch event for unrelated claims and on intermediate `PENDING` updates. Holding `max_in_flight` across retry backoff sleeps lets sleeping retries starve active creates and cleanup deletes of HTTP pool slots.
-- **Fix:** give each `acquire()` a per-claim `Event` in `_acquire_waiters[claim_name]` installed under `_lock` before sending the create, cleared under `_lock` before reading state, and woken only on non-`PENDING` updates, `DELETED`, release, or batch stop (16/N, `810d3773`), and acquire `_in_flight` inside each individual HTTP attempt so retries release their slot before sleeping (15/N, `113fae28`).
-- **Takeaway:** broadcast conditions fit aggregate stream consumers, while single-key callers need per-key events to avoid quadratic wakeups, and concurrency semaphores should wrap only live I/O attempts rather than backoff sleeps.
+Ownership of a shared object (the Lease) must be provable from the server's records. Every path fails toward "keep the work" or "let expiry clean up", never toward "delete something that might be live".
+See the [LEASE](learnings/field-guide/lease.md) section, especially [LEASE-4](learnings/field-guide/lease.md#lease-4), [LEASE-6](learnings/field-guide/lease.md#lease-6), [LEASE-17](learnings/field-guide/lease.md#lease-17).
 
-### 4.7 Keep state transitions in a Sans-I/O core shared by sync and async shells
-- **What happened:** the Python SDK ships parallel sync (`SandboxBatch`) and async (`AsyncSandboxBatch`) handles with identical consumer, release, ordinal, and `acquire()` semantics.
-- **Issue:** duplicating state-machine transitions across `threading` and `asyncio` modules invites subtle parity bugs whenever a review round refines settlement, missing-claim recovery, or release tombstones.
-- **Fix:** isolate all state transitions in `BatchState` (`batch_state.py`) with zero I/O, timers, or locks, so both shells hold their own lock, call the same `BatchState` methods, and run only transport, sleeping, and waiter notifications themselves (16/N, `9ba5a6c6`).
-- **Takeaway:** when maintaining sync and async surfaces in lockstep, put every state transition and invariant in a pure Sans-I/O state core so concurrency shells own only scheduling, locking, and network calls.
+### 3. Lifecycle and completion state move in one direction
 
-### 4.8 Bind process-global `atexit` hooks to static functions and in-place mutable registries
-- **What happened:** `atexit.register(self._cleanup)` pins `self` in the `atexit` module for the life of the Python process unless unregistered, leaking closed `SandboxClient` and `AsyncSandboxClient` instances (`ae6bb389`), while batch exit cleanup also needs access to active and closing batches.
-- **Issue:** binding `self` retains the entire client after cleanup, capturing container snapshots at `__init__` misses batches registered later, and rebinding container attributes (`self._active_batches = {}`) detaches the client from the containers held by the hook.
-- **Fix:** register a `@staticmethod` via `functools.partial` over the client's in-place mutable containers (`_active_connection_sandboxes`, `_explicit_claims`, `_active_batches`, `_closing_batches`, and sync `_batches_lock`), mutate those containers strictly in place without rebinding attributes, and verify with `gc.disable()` plus `weakref.ref(client)` that a cleaned-up client frees immediately by reference counting while a dropped client with an active batch still cleans up at exit (24/N).
-- **Takeaway:** never bind `self` into process-global exit hooks on reusable client objects. Bind static helpers to in-place mutable registries so emptying the registries drops all strong references automatically while uncleaned resources remain reachable until exit.
+Teardown flags and "is the stream done?" predicates only ever move forward. Refuse new work before you drain active work. Never compute completion from a live gauge that can drop after you already handed something out.
+See [COUNT](learnings/field-guide/count.md), [CLEAN-10](learnings/field-guide/clean.md#clean-10), [LOCK-5](learnings/field-guide/lock.md#lock-5).
 
-### 4.9 Per-thread active-operation counters prevent signal-handler self-deadlock on teardown barriers
-- **What happened:** `detach()` and `release()` wait for in-flight member and group deletes (`_wait_active_deletes`) before stopping Lease renewal or giving up the Lease.
-- **Issue:** in synchronous code, a `SIGINT` or `SIGTERM` handler (or re-entrant callback) can run on the very thread currently inside `_member_delete()` and call `batch.release()` or `batch.detach()`. A plain integer `_active_deletes` counter makes that thread wait forever for itself to finish.
-- **Fix:** track sync active deletes in `Counter[int]` keyed by `threading.get_ident()`, and wait until `sum(count for tid, count in _active_deletes.items() if tid != me) == 0` so teardown waits for every other thread's deletes without deadlocking on its own thread (15/N, `113fae28`).
-- **Takeaway:** synchronous drain barriers that signal handlers may enter must track active operations per thread ID and exclude the calling thread from the wait condition.
+### 4. Teardown matches how ownership entered scope
+
+Implicit cleanup undoes only what that scope took: release a claimed batch, detach an attached one, close only connections you still own. Explicit destructive calls act on everything.
+See the [CLEAN](learnings/field-guide/clean.md) section and [LEASE-22](learnings/field-guide/lease.md#lease-22).
+
+### 5. Match lock, backoff, and capacity scope to the shared resource
+
+Hold a lock across the whole check-and-mutate step and copy needed values into locals. Restore state in `finally`. Scope retries, cooldowns, and semaphores to the contended resource, so one item's trouble doesn't starve or throttle the rest.
+See the [LOCK](learnings/field-guide/lock.md) and [RETRY](learnings/field-guide/retry.md) sections.
+
+### 6. Every observation can arrive late, twice, or by another path
+
+The same fact ("this claim is gone") can come from a deletionTimestamp, a DELETED event, a re-list, or a failed create. Make every transition idempotent, and keep local-only facts sticky against "absent from the server".
+See [WATCH-3](learnings/field-guide/watch.md#watch-3), [COUNT-1](learnings/field-guide/count.md#count-1), [RACE-2](learnings/field-guide/race.md#race-2).
+
+### 7. Interrupts are not exceptions
+
+`KeyboardInterrupt` and `asyncio.CancelledError` skip `except Exception`. A signal handler can re-enter your teardown on the same thread. Design every restore-on-failure step and every barrier for that.
+See the [CANCEL](learnings/field-guide/cancel.md) section.
 
 ---
 
-## 5. Testing
+<a id="sec-field-guide"></a>
 
-- **Mutation-check every new or changed test.** Break the code it protects and confirm it fails for the intended reason. Several tests passed against broken code until checked: `assert_called_once` on an async mock passes without the await (fix: `assert_awaited_once`); a sync put-back had no owning test once a later PR rerouted cleanup; a no-grace retry branch had no test.
-- **Fix the test double, never production code, when a double misbehaves.** A `MagicMock` attribute is truthy, so `if batch._connected` broke a test, and the fix was setting `_connected={}` on the mock. Earlier, production code had been widened to suit a mock; that was reverted.
-- **One owning test per contract at the strongest boundary.** When a later PR reroutes a path (sync cleanup becoming release-based), re-check that each contract still has an owning test there.
-- **Lint "changed lines only" can miss errors.** pycodestyle `--diff` reports E303 on the unchanged line after an added blank line, so it slipped through. Also run the check on the whole changed file for blank-line rules.
-- **Measure before trusting results after an environment incident.** After a disk-full reboot we reran every check instead of reusing outputs that might be partial.
-- **Do not collapse asynchronous watch delivery into synchronous RPC mocks when testing races.** Pushing Attempt 1's watch event synchronously inside the mocked Attempt 1 `POST` prevented Attempt 2 from reaching the `in_flight` race once `can_send()` checked `get_member(claim_name) is None`, which briefly led us to drop a valid production guard instead of fixing the mock's causal ordering (19/N).
-- **Lease-expiry e2e suites need both `SIGKILL` (expired) and `SIGSTOP` (paused within duration).** Killing one holder past `leaseDurationSeconds + skew_margin` proves stale batches are reaped, while pausing a holder with `SIGSTOP` for less than `leaseDurationSeconds`, running the reaper, resuming with `SIGCONT`, and asserting `batch.err() is None` proves a quiet or stalled holder is never reaped early (18/N, `73a16a7a`).
-- **Gate retry backoff sleeps on an event instead of timing races with short sleeps.** Using `backoff = 0.05s` to test `release_member()` "during backoff" let fast runs finish before entering backoff or outrun the sleep; intercepting `_stop_creating.wait` and `_wait_for_stop` at the sentinel backoff duration sets `entered_backoff` and blocks until `finish_backoff`, testing the exact post-backoff check in `0ms` with zero flake risk (19/N).
-- **Run every unit suite that calls a modified internal signature, even when `mypy` passes.** Adding a required `seq` argument to `BatchState.note_deleted` passed `mypy` and both shell suites (`test_sandbox_batch.py`, `test_async_sandbox_batch.py`), yet failed two direct `state.note_deleted(...)` calls in `test_batch_state.py` because `mypy` skips unannotated `TestCase` method bodies when `check_untyped_defs` is unset (19/N).
-- **Keep test doubles faithful to lifecycle preconditions.** Omitting `15/N`'s `_check_healthy()` guard from `FakeBatch.release_member` in `test_batch_claims.py` hid that the real `SandboxBatch.release_member` raises `BatchError` once `batch.err()` is set or `batch.release()` has run, which needed a `404`-safe `delete_claim` fallback in `BatchClaim.release()` (`25/N`).
+## Field guide: edge cases, races, and optimizations
 
----
+This is the deep part. Each section is its own page and groups entries around one big idea, stated in its intro. Inside a section, entries go from the most fundamental and reusable to the most specialized, so the first few entries of each page are the best place to start. Skim the bold takeaways, and expand "The full story" when an entry matters for what you're doing.
 
-## 6. Process lessons (how the work went wrong and what fixed it)
+| Section | Ids | Entries |
+| :-- | :-- | --: |
+| [Watching the cluster: list, watch, and the local cache](learnings/field-guide/watch.md) | `WATCH-` | 9 |
+| [Leases, liveness, handoff, and the reaper](learnings/field-guide/lease.md) | `LEASE-` | 30 |
+| [Two observers: when the watch and an RPC see the same object](learnings/field-guide/race.md) | `RACE-` | 8 |
+| [Retries, backoff, pacing, and deadlines](learnings/field-guide/retry.md) | `RETRY-` | 19 |
+| [Concurrency inside one process: locks, waiters, and shared work](learnings/field-guide/lock.md) | `LOCK-` | 20 |
+| [Cancellation, interrupts, and sync/async parity](learnings/field-guide/cancel.md) | `CANCEL-` | 24 |
+| [Cleanup and resource ownership](learnings/field-guide/clean.md) | `CLEAN-` | 23 |
+| [Completion and accounting: when is the batch done?](learnings/field-guide/count.md) | `COUNT-` | 14 |
+| [Kubernetes API semantics that bit us (or could have)](learnings/field-guide/k8s.md) | `K8S-` | 20 |
+| [HTTP client and Python runtime quirks](learnings/field-guide/lib.md) | `LIB-` | 19 |
+| [Performance and memory at scale](learnings/field-guide/perf.md) | `PERF-` | 18 |
+| [API design: making the right thing easy and the wrong thing hard](learnings/field-guide/api.md) | `API-` | 29 |
 
-### 6.1 Write the rule first, then check every path against it
-- **What happened:** a cleanup fix grew over three rounds (close in `finally`, keep failed closes, take-out-and-put-back). Each round was reviewed against its own question. CodeRabbit then found two paths that broke the overall promise ("a failed close is always retried"): a detach() path we had scoped out, and overlapping cleanups that no verifier was asked about.
-- **Takeaway:** for lifecycle or state changes, write the promise in one sentence, list every path that touches it (including concurrent interleavings and later PRs that reroute it), and give that list to the reviewer. Reviewers answer the questions they are given.
+## The other pages
 
-### 6.2 Never scope a gap out silently
-- **What happened:** to keep a round small, a comment was narrowed instead of fixing a real gap.
-- **Takeaway:** for every valid gap, either fold the fix into the owning PR or propose a separate PR, and let the owner decide. Narrowing a promise is a decision for the owner, not for the implementer.
-
-### 6.3 Trace the end state before proposing a fix
-- **What happened:** a proposed fix ("let the Lease expire") was justified with "the batch can still be re-attached". That contradicted an already verified fact: get_batch rejects a stale Lease.
-- **Takeaway:** before proposing, trace what happens to each piece of state (Lease, claims, handle, registry) and what the user can do next, with a code reference for each step. Mark anything unchecked as inferred.
-
-### 6.4 "It was like that before" is not a reason during design
-- **What happened:** a reviewer comment was declined because "the merged 1/N code already does clear-then-close".
-- **Takeaway:** while a design is still open, judge it on its merits and its documented promises. Precedent in your own unmerged or recent code is not evidence.
-
-### 6.5 Verify identifiers and numbers
-- **What happened:** a subagent invented a PR number ("#2052") in a paste-ready reply.
-- **Takeaway:** anything that will be posted publicly (PR numbers, commit hashes, file:line) must be checked against the source, not recalled.
-
-### 6.6 Recommendations: alternatives, costs, and holding a position
-- **Takeaway:** list the alternatives with their cost and pick one. Hold that pick under questions. Change it only on a new fact, and name the fact. When wrong, say "I was wrong about X because Y". A question is not pushback.
-
-### 6.7 Minimal fixes
-- **Takeaway:** "smallest" means the smallest resulting code with each rule stated once, not the smallest diff. Before adding state, list the data already available. After applying any change, including a reviewer's suggestion taken literally, re-read the whole function and module for a condition now expressed twice. Example: adding `ssl.SSLEOFError` to a tuple duplicated a helper's own EOF branch.
-
-### 6.8 Communicate in "what happens / issue / fix"
-- **What happened:** a list of numbered findings without context confused the reader.
-- **Takeaway:** explain each item as what is happening, the issue, and the proposed fix (or "being worked out"). Never refer to "finding 3" without restating it.
-
-### 6.9 Verify a finding is a bug before proposing a PR for it
-- **What happened:** a verifier noted that async `close()` did not take `_lifecycle_lock`, and a handoff recommended a separate PR to avoid scoping a finding out. Checking `__aexit__()`, `delete_all()`, and `aiohttp`/`httpx` afterwards showed that cluster-cleanup paths already waited on the lock and bare `close()` matched standard immediate transport teardown.
-- **Takeaway:** "never scope things out" applies after a gap is verified to be real. Check caller entrypoints, the documented contract, and standard library practice before proposing a fix or follow-up PR, and recommend no change when the behavior is intended.
-
-### 6.10 Audit cross-cutting lock invariants across the stack and against system bounds
-- **What happened:** adding `_lifecycle_lock` to 12/N (`detach()` and `release()`) surfaced follow-on findings in 15/N (`release_*`) and 16/N (`acquire()`) one round at a time. A verifier finding that `detach()` stops `_renew_loop` while waiting behind a slow delete was also proposed as a fix before checking that `get_batch` rejects an expired Lease and the reaper margin (`leaseDurationSeconds + 60s >= 120s`) exceeds the 90s max delete retry time. And putting an exclusive `_lifecycle_lock` around `release_member` serializes concurrent single-member HTTP deletes.
-- **Takeaway:** when introducing a new teardown lock at the base of a stack, audit every delete and teardown site across all PRs in one pass, check real timeout and TTL bounds before flagging a race as reachable, and check whether an exclusive lock serializes concurrent single-item I/O.
-
-### 6.11 SDK defaults must compose, and validator guards only cover paths that call them
-- **What happened:** when triaging CodeRabbit on 18/N, we defended `check_pool_size` raising `ValueError` on `<= 4`-core hosts (`cpu_count() * 5 <= 20 < 20 + 2`) as intended fail-fast behavior, and dismissed `or None` on sync `api_pool_size()` because `validate_pool_size` rejects `pool_size <= 0`. Upstream review on 17/N caught both: zero-arg `SandboxClient().claim_batch(...)` and `BatchClaimer` failed out of the box on 2- and 4-core machines, and `validate_pool_size` never inspects an injected `ApiClient` whose `configuration.connection_pool_maxsize = 0` (`LifoQueue(maxsize=0)` in `urllib3` is unbounded).
-- **Takeaway:** two defaults from the same SDK must compose without raising; adapt (and log) when the caller omits a concurrency knob, and fail fast only when an explicit caller value contradicts the client's capacity. Before claiming an upstream validator makes a branch unreachable, check every constructor path (including dependency-injected objects that bypass that validator).
+| Page | What it gives you |
+| :-- | :-- |
+| [Kubernetes primer: the concepts this feature taught us](learnings/kubernetes-primer.md) | The Kubernetes concepts behind the feature, each with how we use it, a gotcha, and a snippet to try. |
+| [Patterns and code structure worth stealing](learnings/patterns.md) | Elegant code structures (`PAT-`) with small snippets and when to reach for them. |
+| [Best practices we followed, and where they come from](learnings/best-practices.md) | Industry practices (`BP-`) we followed, why they scale, and their sources. |
+| [Testing techniques for concurrent and distributed code](learnings/testing.md) | Techniques (`TEST-`) for making concurrent and distributed code testable. |
+| [Process, git, and working with agents](learnings/process.md) | Review, git, and subagent lessons (`PROC-`, `GIT-`, `AGENT-`). |
 
 ---
 
-## 7. Stacked PRs and git
+<a id="appendix-a"></a>
 
-- **Stacked PRs show the whole stack's diff.** Every open PR targets the same base, so its diff and its bot review include all lower PRs. For each comment, find the owning commit (`git log -S`, blame), say which PR owns it, and fix it there.
-- **Squash merges change hashes but keep trees.** After a merge, confirm the squash commit's tree equals the branch tree before restacking (`git rev-parse <squash>^{tree} <branch>^{tree}`).
-- **Prove a restack is mechanical.** Check that every branch tree and every per-commit tree is identical, that `git range-diff` is all `=`, and that authors are clean. Only then sync without a new review.
-- **`git rebase --update-refs` moves every local branch that points at rebased commits**, including old review copies. Delete stale local copies (after checking they are on the remote) first.
-- **Review copies plus an atomic push with one lease per branch** (`git push --atomic --force-with-lease=<b>:<old> <new>:refs/heads/<b> ...`) keeps a long stack consistent: either every branch moves or none does.
-- **A PR merged before its review fixes landed.** Put the fixes in a new small PR on the merged base, insert it into the series, and renumber the open PRs with a script that asserts exactly one "(k/N)" in the title and one ordinal in the body, then reads both back.
-- **Semantic conflicts after reordering.** When a commit moves below others, later commits may delete symbols it uses. After any non-mechanical restack, grep for removed symbols and type-check every commit.
-- **Wrap network git commands in `timeout` and verify with `git ls-remote`.** SSH agent warnings can appear even when the push succeeded.
+## Appendix A: old entry numbers
 
----
+Older notes (state.md, prompts, decision files) cite entries by their pre-restructure numbers, like "learnings 3.1". This table maps each old number to its new home.
 
-## 8. Working with subagents
+| Old | New |
+| :-- | :-- |
+| 0 (four mental models) | [Mental models](#sec-models) |
+| 1.1 | [CLEAN-4](learnings/field-guide/clean.md#clean-4) |
+| 1.2 | [CLEAN-1](learnings/field-guide/clean.md#clean-1) |
+| 1.3 | [CLEAN-1](learnings/field-guide/clean.md#clean-1) |
+| 1.4 | [CLEAN-6](learnings/field-guide/clean.md#clean-6) |
+| 1.5 | [CLEAN-7](learnings/field-guide/clean.md#clean-7) |
+| 1.6 | [CLEAN-3](learnings/field-guide/clean.md#clean-3) |
+| 1.7 | [CLEAN-10](learnings/field-guide/clean.md#clean-10) |
+| 1.8 | [CLEAN-11](learnings/field-guide/clean.md#clean-11) |
+| 1.9 | [RACE-3](learnings/field-guide/race.md#race-3) |
+| 1.10 | [CLEAN-9](learnings/field-guide/clean.md#clean-9) |
+| 1.11 | [LIB-13](learnings/field-guide/lib.md#lib-13) |
+| 2.1 | [CANCEL-3](learnings/field-guide/cancel.md#cancel-3) |
+| 2.2 | [CANCEL-1](learnings/field-guide/cancel.md#cancel-1) |
+| 2.3 | [CANCEL-6](learnings/field-guide/cancel.md#cancel-6) |
+| 3.1 | [LEASE-15](learnings/field-guide/lease.md#lease-15) |
+| 3.2 | [LEASE-16](learnings/field-guide/lease.md#lease-16) |
+| 3.3 | [LEASE-22](learnings/field-guide/lease.md#lease-22) |
+| 3.3b | [LOCK-3](learnings/field-guide/lock.md#lock-3) |
+| 3.4 | [LEASE-6](learnings/field-guide/lease.md#lease-6) |
+| 3.5 | [LIB-1](learnings/field-guide/lib.md#lib-1) |
+| 3.6 | [LIB-3](learnings/field-guide/lib.md#lib-3) |
+| 3.7 | [RACE-1](learnings/field-guide/race.md#race-1) |
+| 3.8 | [COUNT-6](learnings/field-guide/count.md#count-6) |
+| 3.9 | [RETRY-6](learnings/field-guide/retry.md#retry-6) |
+| 3.10 | [RACE-4](learnings/field-guide/race.md#race-4) |
+| 3.10 | [RACE-5](learnings/field-guide/race.md#race-5) |
+| 3.11 | [LOCK-16](learnings/field-guide/lock.md#lock-16) |
+| 3.12 | [RETRY-7](learnings/field-guide/retry.md#retry-7) |
+| 3.13 | [LIB-5](learnings/field-guide/lib.md#lib-5) |
+| 3.14 | [COUNT-5](learnings/field-guide/count.md#count-5) |
+| 3.15 | [RACE-7](learnings/field-guide/race.md#race-7) |
+| 3.16 | [LOCK-7](learnings/field-guide/lock.md#lock-7) |
+| 3.17 | [LIB-7](learnings/field-guide/lib.md#lib-7) |
+| 3.18 | [RETRY-16](learnings/field-guide/retry.md#retry-16) |
+| 3.19 | [RETRY-17](learnings/field-guide/retry.md#retry-17) |
+| 4.1 | [LOCK-1](learnings/field-guide/lock.md#lock-1) |
+| 4.2 | [TEST-8](learnings/testing.md#test-8) (lock-wrapper successor in [TEST-9](learnings/testing.md#test-9)) |
+| 4.3 | [LOCK-4](learnings/field-guide/lock.md#lock-4) |
+| 4.4 | [COUNT-1](learnings/field-guide/count.md#count-1) |
+| 4.5 | [LOCK-15](learnings/field-guide/lock.md#lock-15) |
+| 4.6 | [LOCK-12](learnings/field-guide/lock.md#lock-12), [LOCK-10](learnings/field-guide/lock.md#lock-10) |
+| 4.7 | [How the code is layered](learnings/patterns.md#layering), [BP-33](learnings/best-practices.md#bp-33) |
+| 4.8 | [CLEAN-12](learnings/field-guide/clean.md#clean-12) |
+| 4.9 | [CANCEL-12](learnings/field-guide/cancel.md#cancel-12) |
+| 5 (SIGKILL/SIGSTOP e2e bullet) | [TEST-23](learnings/testing.md#test-23) |
+| 5 (asynchronous watch delivery bullet) | [TEST-16](learnings/testing.md#test-16) |
+| 5 (doubles faithful to lifecycle preconditions bullet) | [TEST-17](learnings/testing.md#test-17) |
+| 5 (fix the test double bullet) | [TEST-17](learnings/testing.md#test-17) |
+| 5 (gate backoff sleeps bullet) | [TEST-4](learnings/testing.md#test-4) |
+| 5 (lint changed lines only bullet) | [TEST-25](learnings/testing.md#test-25) |
+| 5 (measure after environment incident bullet) | [TEST-26](learnings/testing.md#test-26) |
+| 5 (mutation-check bullet) | [TEST-1](learnings/testing.md#test-1) |
+| 5 (one owning test per contract bullet) | [TEST-2](learnings/testing.md#test-2) |
+| 5 (run every unit suite / mypy bullet) | [TEST-25](learnings/testing.md#test-25) |
+| 6.1 | [PROC-1](learnings/process.md#proc-1) |
+| 6.2 | [PROC-2](learnings/process.md#proc-2) |
+| 6.3 | [PROC-3](learnings/process.md#proc-3) |
+| 6.4 | [PROC-4](learnings/process.md#proc-4) |
+| 6.5 | [PROC-5](learnings/process.md#proc-5) |
+| 6.6 | [PROC-6](learnings/process.md#proc-6) |
+| 6.7 | [PROC-7](learnings/process.md#proc-7) |
+| 6.8 | [PROC-8](learnings/process.md#proc-8) |
+| 6.9 | [PROC-9](learnings/process.md#proc-9) |
+| 6.10 | [PROC-10](learnings/process.md#proc-10) |
+| 6.11 | [PROC-11](learnings/process.md#proc-11) |
+| 7 (--update-refs) | [GIT-4](learnings/process.md#git-4) |
+| 7 (PR merged before fixes) | [GIT-6](learnings/process.md#git-6) |
+| 7 (atomic push) | [GIT-5](learnings/process.md#git-5) |
+| 7 (prove a restack is mechanical) | [GIT-3](learnings/process.md#git-3) |
+| 7 (semantic conflicts) | [GIT-7](learnings/process.md#git-7) |
+| 7 (squash merges keep trees) | [GIT-2](learnings/process.md#git-2) |
+| 7 (stacked PRs show the whole diff) | [GIT-1](learnings/process.md#git-1) |
+| 7 (timeout + ls-remote) | [GIT-8](learnings/process.md#git-8) |
+| 7.1 | [GIT-9](learnings/process.md#git-9) |
+| 7.2 | [GIT-10](learnings/process.md#git-10) |
+| 7.3 | [GIT-11](learnings/process.md#git-11) |
+| 7.4 | [GIT-12](learnings/process.md#git-12) |
+| 7.5 | [GIT-13](learnings/process.md#git-13) |
+| 8 (briefs) | [AGENT-4](learnings/process.md#agent-4) |
+| 8 (fresh verifier) | [AGENT-1](learnings/process.md#agent-1) |
+| 8 (measurements) | [AGENT-2](learnings/process.md#agent-2) |
+| 8 (minimality question) | [AGENT-3](learnings/process.md#agent-3) |
 
-- Use a fresh, independent verifier for every non-trivial change. Give it the rule, the paths, and the base and head, but not your own findings.
-- Ask the verifier for mutation measurements, not opinions ("removing X must fail a test").
-- Ask explicitly: "Is there a smaller change with the same behavior? Does it add state, duplicate a rule, or widen a type?"
-- Briefs must carry the binding rules and exact heads, and must say what not to touch (no live-branch pushes, no GitHub posts). Verify heads before acting, because server restarts can interrupt work midway.
+<a id="appendix-b"></a>
 
-### 7.1 A three-dot compare between stacked branches shows the whole PR
-- **What happened:** a review link compared the live PR branch with its review copy using `compare/<live>...<copy>`. Both sit on the same upstream base, so GitHub diffed from that base and showed +3k lines instead of the ~1k under review.
-- **Fix:** build a synthetic commit with the old commit as parent and the new tree (`git commit-tree`), push it as `review-diff/<topic>`, and check `git diff --shortstat` before sending.
-- **Takeaway:** a three-dot compare diffs from the merge base, not from the left commit. For rewritten history always link a synthetic commit, and check the size first.
+## Appendix B: entries by PR
 
-### 7.2 Re-check live stack heads and run a diff-of-diffs when multiple agents sync
-- **What happened:** while a review round on 12/N and 15/N waited for approval, another agent pushed per-claim `_acquire_waiters` to 16/N through 19/N and added 20/N (`feat/batch-8-list-memory`) on top of the pre-review 15/N head.
-- **Fix:** `git ls-remote` caught the moved and added branches before pushing. Rebasing the live 16/N through 20/N commits onto the new 15/N head and running `diff -u <(git diff old_top new_live_top) <(git diff our_old_top our_rebased_top)` caught two carry-forward hunks from the lower review round that would otherwise have been dropped.
-- **Takeaway:** when multiple agents push to a stack, always run `git ls-remote` across all stack branches right before syncing, rebase concurrent upper-branch commits onto the new lower head, and verify zero dropped hunks with a diff-of-diffs before pushing atomically.
+Use this to find every lesson a PR taught. It lists the entries whose story or location cites that PR.
 
-### 7.3 Commit messages that name a PR show up on that PR
-- **What happened:** notes-branch commits such as "paste-ready replies for #1824 and #1988" appeared on those upstream PRs as "briankhoi added a commit that referenced this pull request".
-- **Takeaway:** never put `#<number>` in a commit message on any branch of the fork. Refer to stack positions (13/N) instead, and grep new commit messages for `#[0-9]` before pushing.
-
-### 7.4 Audit non-conflicting lifecycle hooks when `upstream/main` advances under a merge branch
-- **What happened:** `24/N` (`merge/main-into-batch-claim-2`) originally merged `upstream/main` at `355803af`, and `upstream/main` later merged static `functools.partial` `atexit` hooks (`ae6bb389`), `_on_terminated` callbacks (`7b1a9fbc`), and client-shared `_DefaultSSLContext` (`9f7999b3`) touching `SandboxClient` and `AsyncSandboxClient`.
-- **Issue:** git only flags textual overlaps; a new client hook such as `_attach_handle` setting `connector._default_ssl_context` produces zero conflict in `AsyncSandboxBatch.connect()`, and merging static `atexit` hooks alongside instance-bound `_release_batches` breaks the zero-client-retention invariant unless batch containers are passed statically too.
-- **Takeaway:** whenever `upstream/main` moves beneath a feature branch or merge PR, diff `old_main..new_main` across shared SDK modules and audit every new lifecycle hook, destructor registration, and handle factory site even in files with zero git merge conflicts.
-
-### 7.5 Re-parenting true two-parent merge commits across stack rebases
-- **What happened:** `24/N` (`merge/main-into-batch-claim-2`) sits linearly on `23/N` as a true two-parent merge commit (`/label tide/merge-method-merge`) so Prow preserves `main`'s commit ancestry instead of squashing `main` onto `feature/batch-claim`.
-- **Issue:** plain `git rebase` drops merge commits (or replays every commit from `main`), and when `23/N`'s tree changes from a lower-stack review fix, re-using the old merge tree drops those lower-stack changes.
-- **Fix:** when `19/N` through `23/N` restack mechanically with an unchanged `23/N` tree, re-parent the merge commit directly with `git commit-tree M^{tree} -p <new-23N> -p <main>` and cherry-pick `24/N`'s follow-up commits; when `23/N`'s tree changes, merge `<main>` into `<new-23N>` (carrying forward the conflict resolutions) and regenerate docs.
-- **Takeaway:** treat two-parent branch-sync commits differently depending on whether the first parent's tree changed: `git commit-tree` re-parents an unchanged tree in O(1), whereas a changed first-parent tree requires a real three-way merge so lower-stack fixes survive.
+| PR | Entries |
+| :-- | :-- |
+| 1/N | [WATCH-1](learnings/field-guide/watch.md#watch-1), [WATCH-3](learnings/field-guide/watch.md#watch-3), [LEASE-2](learnings/field-guide/lease.md#lease-2), [LEASE-3](learnings/field-guide/lease.md#lease-3), [LEASE-4](learnings/field-guide/lease.md#lease-4), [LEASE-5](learnings/field-guide/lease.md#lease-5), [LEASE-9](learnings/field-guide/lease.md#lease-9), [LEASE-14](learnings/field-guide/lease.md#lease-14), [LEASE-15](learnings/field-guide/lease.md#lease-15), [LEASE-30](learnings/field-guide/lease.md#lease-30), [RETRY-2](learnings/field-guide/retry.md#retry-2), [RETRY-4](learnings/field-guide/retry.md#retry-4), [LOCK-2](learnings/field-guide/lock.md#lock-2), [LOCK-20](learnings/field-guide/lock.md#lock-20), [CANCEL-2](learnings/field-guide/cancel.md#cancel-2), [CANCEL-10](learnings/field-guide/cancel.md#cancel-10), [CANCEL-15](learnings/field-guide/cancel.md#cancel-15), [CANCEL-17](learnings/field-guide/cancel.md#cancel-17), [CANCEL-21](learnings/field-guide/cancel.md#cancel-21), [CANCEL-24](learnings/field-guide/cancel.md#cancel-24), [CLEAN-5](learnings/field-guide/clean.md#clean-5), [CLEAN-8](learnings/field-guide/clean.md#clean-8), [CLEAN-19](learnings/field-guide/clean.md#clean-19), [CLEAN-22](learnings/field-guide/clean.md#clean-22), [K8S-10](learnings/field-guide/k8s.md#k8s-10), [K8S-11](learnings/field-guide/k8s.md#k8s-11), [K8S-12](learnings/field-guide/k8s.md#k8s-12), [K8S-13](learnings/field-guide/k8s.md#k8s-13), [K8S-15](learnings/field-guide/k8s.md#k8s-15), [K8S-16](learnings/field-guide/k8s.md#k8s-16), [LIB-10](learnings/field-guide/lib.md#lib-10), [LIB-11](learnings/field-guide/lib.md#lib-11), [API-2](learnings/field-guide/api.md#api-2), [API-6](learnings/field-guide/api.md#api-6), [API-9](learnings/field-guide/api.md#api-9), [API-10](learnings/field-guide/api.md#api-10), [API-26](learnings/field-guide/api.md#api-26), [TEST-7](learnings/testing.md#test-7), [TEST-22](learnings/testing.md#test-22), [TEST-24](learnings/testing.md#test-24), [PAT-5](learnings/patterns.md#pat-5), [PAT-7](learnings/patterns.md#pat-7), [PAT-8](learnings/patterns.md#pat-8), [PAT-23](learnings/patterns.md#pat-23), [PAT-25](learnings/patterns.md#pat-25), [PAT-28](learnings/patterns.md#pat-28), [PAT-32](learnings/patterns.md#pat-32), [BP-1](learnings/best-practices.md#bp-1), [BP-3](learnings/best-practices.md#bp-3), [BP-4](learnings/best-practices.md#bp-4), [BP-7](learnings/best-practices.md#bp-7), [BP-10](learnings/best-practices.md#bp-10), [BP-13](learnings/best-practices.md#bp-13), [BP-14](learnings/best-practices.md#bp-14), [BP-20](learnings/best-practices.md#bp-20), [BP-21](learnings/best-practices.md#bp-21), [BP-22](learnings/best-practices.md#bp-22), [BP-31](learnings/best-practices.md#bp-31), [BP-32](learnings/best-practices.md#bp-32), [BP-33](learnings/best-practices.md#bp-33) |
+| 2/N | [LEASE-14](learnings/field-guide/lease.md#lease-14), [RETRY-4](learnings/field-guide/retry.md#retry-4), [RETRY-8](learnings/field-guide/retry.md#retry-8), [LIB-1](learnings/field-guide/lib.md#lib-1), [LIB-2](learnings/field-guide/lib.md#lib-2), [LIB-10](learnings/field-guide/lib.md#lib-10), [TEST-7](learnings/testing.md#test-7), [PAT-26](learnings/patterns.md#pat-26), [PAT-32](learnings/patterns.md#pat-32), [BP-20](learnings/best-practices.md#bp-20), [BP-21](learnings/best-practices.md#bp-21) |
+| 3/N | [LEASE-2](learnings/field-guide/lease.md#lease-2), [LEASE-4](learnings/field-guide/lease.md#lease-4), [LEASE-5](learnings/field-guide/lease.md#lease-5), [LEASE-6](learnings/field-guide/lease.md#lease-6), [LEASE-7](learnings/field-guide/lease.md#lease-7), [LEASE-14](learnings/field-guide/lease.md#lease-14), [LEASE-28](learnings/field-guide/lease.md#lease-28), [RETRY-9](learnings/field-guide/retry.md#retry-9), [RETRY-10](learnings/field-guide/retry.md#retry-10), [K8S-16](learnings/field-guide/k8s.md#k8s-16), [LIB-3](learnings/field-guide/lib.md#lib-3), [LIB-4](learnings/field-guide/lib.md#lib-4), [LIB-6](learnings/field-guide/lib.md#lib-6), [PERF-8](learnings/field-guide/perf.md#perf-8), [API-12](learnings/field-guide/api.md#api-12), [TEST-5](learnings/testing.md#test-5), [PAT-33](learnings/patterns.md#pat-33), [BP-1](learnings/best-practices.md#bp-1), [BP-2](learnings/best-practices.md#bp-2), [BP-3](learnings/best-practices.md#bp-3), [BP-4](learnings/best-practices.md#bp-4), [BP-20](learnings/best-practices.md#bp-20), [BP-23](learnings/best-practices.md#bp-23), [BP-31](learnings/best-practices.md#bp-31), [BP-34](learnings/best-practices.md#bp-34) |
+| 4/N | [WATCH-3](learnings/field-guide/watch.md#watch-3), [COUNT-2](learnings/field-guide/count.md#count-2), [K8S-11](learnings/field-guide/k8s.md#k8s-11), [API-1](learnings/field-guide/api.md#api-1), [API-2](learnings/field-guide/api.md#api-2), [PAT-23](learnings/patterns.md#pat-23) |
+| 5/N | [COUNT-2](learnings/field-guide/count.md#count-2), [K8S-4](learnings/field-guide/k8s.md#k8s-4), [BP-12](learnings/best-practices.md#bp-12) |
+| 6/N | [WATCH-7](learnings/field-guide/watch.md#watch-7), [WATCH-9](learnings/field-guide/watch.md#watch-9), [LOCK-2](learnings/field-guide/lock.md#lock-2), [API-2](learnings/field-guide/api.md#api-2), [API-10](learnings/field-guide/api.md#api-10) |
+| 7/N | [K8S-18](learnings/field-guide/k8s.md#k8s-18), [LIB-12](learnings/field-guide/lib.md#lib-12), [API-26](learnings/field-guide/api.md#api-26), [TEST-21](learnings/testing.md#test-21), [PAT-22](learnings/patterns.md#pat-22), [PAT-30](learnings/patterns.md#pat-30), [BP-23](learnings/best-practices.md#bp-23) |
+| 8/N | [WATCH-8](learnings/field-guide/watch.md#watch-8), [LIB-1](learnings/field-guide/lib.md#lib-1), [LIB-2](learnings/field-guide/lib.md#lib-2), [LIB-4](learnings/field-guide/lib.md#lib-4), [PAT-26](learnings/patterns.md#pat-26), [BP-21](learnings/best-practices.md#bp-21), [PROC-7](learnings/process.md#proc-7) |
+| 9/N | [LEASE-23](learnings/field-guide/lease.md#lease-23), [LOCK-1](learnings/field-guide/lock.md#lock-1), [LOCK-14](learnings/field-guide/lock.md#lock-14), [CLEAN-1](learnings/field-guide/clean.md#clean-1), [CLEAN-2](learnings/field-guide/clean.md#clean-2), [CLEAN-4](learnings/field-guide/clean.md#clean-4), [CLEAN-5](learnings/field-guide/clean.md#clean-5), [CLEAN-8](learnings/field-guide/clean.md#clean-8), [CLEAN-10](learnings/field-guide/clean.md#clean-10), [CLEAN-12](learnings/field-guide/clean.md#clean-12), [TEST-2](learnings/testing.md#test-2), [TEST-8](learnings/testing.md#test-8), [TEST-14](learnings/testing.md#test-14), [GIT-6](learnings/process.md#git-6) |
+| 10/N | [WATCH-9](learnings/field-guide/watch.md#watch-9), [LEASE-20](learnings/field-guide/lease.md#lease-20), [LEASE-22](learnings/field-guide/lease.md#lease-22), [LEASE-23](learnings/field-guide/lease.md#lease-23), [LOCK-1](learnings/field-guide/lock.md#lock-1), [LOCK-3](learnings/field-guide/lock.md#lock-3), [LOCK-6](learnings/field-guide/lock.md#lock-6), [LOCK-14](learnings/field-guide/lock.md#lock-14), [CANCEL-1](learnings/field-guide/cancel.md#cancel-1), [CANCEL-3](learnings/field-guide/cancel.md#cancel-3), [CLEAN-1](learnings/field-guide/clean.md#clean-1), [CLEAN-2](learnings/field-guide/clean.md#clean-2), [CLEAN-3](learnings/field-guide/clean.md#clean-3), [CLEAN-5](learnings/field-guide/clean.md#clean-5), [CLEAN-6](learnings/field-guide/clean.md#clean-6), [CLEAN-7](learnings/field-guide/clean.md#clean-7), [LIB-1](learnings/field-guide/lib.md#lib-1), [TEST-8](learnings/testing.md#test-8), [TEST-14](learnings/testing.md#test-14), [PAT-11](learnings/patterns.md#pat-11), [PROC-1](learnings/process.md#proc-1), [GIT-6](learnings/process.md#git-6) |
+| 11/N | [LEASE-15](learnings/field-guide/lease.md#lease-15), [LEASE-16](learnings/field-guide/lease.md#lease-16), [LOCK-3](learnings/field-guide/lock.md#lock-3), [LOCK-18](learnings/field-guide/lock.md#lock-18), [CLEAN-22](learnings/field-guide/clean.md#clean-22), [TEST-14](learnings/testing.md#test-14), [BP-3](learnings/best-practices.md#bp-3), [BP-32](learnings/best-practices.md#bp-32) |
+| 12/N | [WATCH-2](learnings/field-guide/watch.md#watch-2), [LEASE-1](learnings/field-guide/lease.md#lease-1), [LEASE-3](learnings/field-guide/lease.md#lease-3), [LEASE-5](learnings/field-guide/lease.md#lease-5), [LEASE-7](learnings/field-guide/lease.md#lease-7), [LEASE-11](learnings/field-guide/lease.md#lease-11), [LEASE-12](learnings/field-guide/lease.md#lease-12), [LEASE-16](learnings/field-guide/lease.md#lease-16), [LEASE-17](learnings/field-guide/lease.md#lease-17), [LEASE-18](learnings/field-guide/lease.md#lease-18), [LEASE-19](learnings/field-guide/lease.md#lease-19), [LEASE-20](learnings/field-guide/lease.md#lease-20), [LEASE-22](learnings/field-guide/lease.md#lease-22), [LEASE-23](learnings/field-guide/lease.md#lease-23), [LEASE-27](learnings/field-guide/lease.md#lease-27), [LEASE-29](learnings/field-guide/lease.md#lease-29), [LEASE-30](learnings/field-guide/lease.md#lease-30), [RACE-2](learnings/field-guide/race.md#race-2), [RACE-8](learnings/field-guide/race.md#race-8), [RETRY-1](learnings/field-guide/retry.md#retry-1), [RETRY-2](learnings/field-guide/retry.md#retry-2), [RETRY-3](learnings/field-guide/retry.md#retry-3), [RETRY-5](learnings/field-guide/retry.md#retry-5), [RETRY-8](learnings/field-guide/retry.md#retry-8), [RETRY-11](learnings/field-guide/retry.md#retry-11), [LOCK-3](learnings/field-guide/lock.md#lock-3), [LOCK-9](learnings/field-guide/lock.md#lock-9), [LOCK-17](learnings/field-guide/lock.md#lock-17), [LOCK-18](learnings/field-guide/lock.md#lock-18), [LOCK-19](learnings/field-guide/lock.md#lock-19), [CANCEL-8](learnings/field-guide/cancel.md#cancel-8), [CANCEL-10](learnings/field-guide/cancel.md#cancel-10), [CANCEL-13](learnings/field-guide/cancel.md#cancel-13), [CANCEL-17](learnings/field-guide/cancel.md#cancel-17), [CANCEL-22](learnings/field-guide/cancel.md#cancel-22), [CLEAN-12](learnings/field-guide/clean.md#clean-12), [CLEAN-13](learnings/field-guide/clean.md#clean-13), [CLEAN-15](learnings/field-guide/clean.md#clean-15), [CLEAN-19](learnings/field-guide/clean.md#clean-19), [CLEAN-20](learnings/field-guide/clean.md#clean-20), [CLEAN-21](learnings/field-guide/clean.md#clean-21), [CLEAN-22](learnings/field-guide/clean.md#clean-22), [K8S-1](learnings/field-guide/k8s.md#k8s-1), [K8S-2](learnings/field-guide/k8s.md#k8s-2), [K8S-4](learnings/field-guide/k8s.md#k8s-4), [K8S-5](learnings/field-guide/k8s.md#k8s-5), [K8S-6](learnings/field-guide/k8s.md#k8s-6), [K8S-7](learnings/field-guide/k8s.md#k8s-7), [K8S-13](learnings/field-guide/k8s.md#k8s-13), [K8S-17](learnings/field-guide/k8s.md#k8s-17), [K8S-18](learnings/field-guide/k8s.md#k8s-18), [LIB-4](learnings/field-guide/lib.md#lib-4), [LIB-10](learnings/field-guide/lib.md#lib-10), [LIB-15](learnings/field-guide/lib.md#lib-15), [LIB-17](learnings/field-guide/lib.md#lib-17), [LIB-19](learnings/field-guide/lib.md#lib-19), [PERF-9](learnings/field-guide/perf.md#perf-9), [PERF-10](learnings/field-guide/perf.md#perf-10), [PERF-14](learnings/field-guide/perf.md#perf-14), [API-4](learnings/field-guide/api.md#api-4), [API-5](learnings/field-guide/api.md#api-5), [API-8](learnings/field-guide/api.md#api-8), [API-24](learnings/field-guide/api.md#api-24), [API-29](learnings/field-guide/api.md#api-29), [TEST-1](learnings/testing.md#test-1), [TEST-7](learnings/testing.md#test-7), [TEST-8](learnings/testing.md#test-8), [TEST-9](learnings/testing.md#test-9), [TEST-11](learnings/testing.md#test-11), [TEST-14](learnings/testing.md#test-14), [TEST-16](learnings/testing.md#test-16), [TEST-18](learnings/testing.md#test-18), [PAT-4](learnings/patterns.md#pat-4), [PAT-8](learnings/patterns.md#pat-8), [PAT-10](learnings/patterns.md#pat-10), [PAT-15](learnings/patterns.md#pat-15), [PAT-17](learnings/patterns.md#pat-17), [PAT-20](learnings/patterns.md#pat-20), [PAT-23](learnings/patterns.md#pat-23), [PAT-26](learnings/patterns.md#pat-26), [PAT-28](learnings/patterns.md#pat-28), [PAT-29](learnings/patterns.md#pat-29), [PAT-31](learnings/patterns.md#pat-31), [PAT-32](learnings/patterns.md#pat-32), [PAT-33](learnings/patterns.md#pat-33), [BP-2](learnings/best-practices.md#bp-2), [BP-5](learnings/best-practices.md#bp-5), [BP-7](learnings/best-practices.md#bp-7), [BP-8](learnings/best-practices.md#bp-8), [BP-10](learnings/best-practices.md#bp-10), [BP-11](learnings/best-practices.md#bp-11), [BP-13](learnings/best-practices.md#bp-13), [BP-18](learnings/best-practices.md#bp-18), [BP-20](learnings/best-practices.md#bp-20), [BP-21](learnings/best-practices.md#bp-21), [BP-22](learnings/best-practices.md#bp-22), [BP-25](learnings/best-practices.md#bp-25), [BP-29](learnings/best-practices.md#bp-29), [BP-32](learnings/best-practices.md#bp-32), [BP-34](learnings/best-practices.md#bp-34), [BP-36](learnings/best-practices.md#bp-36), [PROC-10](learnings/process.md#proc-10) |
+| 13/N | [WATCH-6](learnings/field-guide/watch.md#watch-6), [WATCH-7](learnings/field-guide/watch.md#watch-7), [LEASE-22](learnings/field-guide/lease.md#lease-22), [RACE-2](learnings/field-guide/race.md#race-2), [RETRY-2](learnings/field-guide/retry.md#retry-2), [RETRY-5](learnings/field-guide/retry.md#retry-5), [RETRY-6](learnings/field-guide/retry.md#retry-6), [RETRY-13](learnings/field-guide/retry.md#retry-13), [LOCK-13](learnings/field-guide/lock.md#lock-13), [LOCK-14](learnings/field-guide/lock.md#lock-14), [LOCK-20](learnings/field-guide/lock.md#lock-20), [CANCEL-21](learnings/field-guide/cancel.md#cancel-21), [CLEAN-4](learnings/field-guide/clean.md#clean-4), [CLEAN-11](learnings/field-guide/clean.md#clean-11), [CLEAN-12](learnings/field-guide/clean.md#clean-12), [COUNT-1](learnings/field-guide/count.md#count-1), [COUNT-2](learnings/field-guide/count.md#count-2), [COUNT-3](learnings/field-guide/count.md#count-3), [COUNT-4](learnings/field-guide/count.md#count-4), [COUNT-6](learnings/field-guide/count.md#count-6), [COUNT-9](learnings/field-guide/count.md#count-9), [COUNT-12](learnings/field-guide/count.md#count-12), [COUNT-13](learnings/field-guide/count.md#count-13), [COUNT-14](learnings/field-guide/count.md#count-14), [K8S-19](learnings/field-guide/k8s.md#k8s-19), [LIB-3](learnings/field-guide/lib.md#lib-3), [LIB-6](learnings/field-guide/lib.md#lib-6), [PERF-1](learnings/field-guide/perf.md#perf-1), [PERF-2](learnings/field-guide/perf.md#perf-2), [API-2](learnings/field-guide/api.md#api-2), [API-9](learnings/field-guide/api.md#api-9), [API-11](learnings/field-guide/api.md#api-11), [API-13](learnings/field-guide/api.md#api-13), [API-14](learnings/field-guide/api.md#api-14), [API-15](learnings/field-guide/api.md#api-15), [API-16](learnings/field-guide/api.md#api-16), [API-17](learnings/field-guide/api.md#api-17), [API-18](learnings/field-guide/api.md#api-18), [TEST-2](learnings/testing.md#test-2), [TEST-3](learnings/testing.md#test-3), [TEST-6](learnings/testing.md#test-6), [TEST-8](learnings/testing.md#test-8), [TEST-9](learnings/testing.md#test-9), [TEST-10](learnings/testing.md#test-10), [PAT-1](learnings/patterns.md#pat-1), [PAT-3](learnings/patterns.md#pat-3), [PAT-4](learnings/patterns.md#pat-4), [PAT-5](learnings/patterns.md#pat-5), [PAT-8](learnings/patterns.md#pat-8), [PAT-9](learnings/patterns.md#pat-9), [PAT-13](learnings/patterns.md#pat-13), [PAT-14](learnings/patterns.md#pat-14), [PAT-23](learnings/patterns.md#pat-23), [PAT-25](learnings/patterns.md#pat-25), [PAT-26](learnings/patterns.md#pat-26), [PAT-28](learnings/patterns.md#pat-28), [BP-21](learnings/best-practices.md#bp-21), [BP-24](learnings/best-practices.md#bp-24), [BP-30](learnings/best-practices.md#bp-30), [BP-36](learnings/best-practices.md#bp-36) |
+| 14/N | [WATCH-6](learnings/field-guide/watch.md#watch-6), [CANCEL-5](learnings/field-guide/cancel.md#cancel-5), [CANCEL-7](learnings/field-guide/cancel.md#cancel-7), [COUNT-10](learnings/field-guide/count.md#count-10), [COUNT-11](learnings/field-guide/count.md#count-11), [PERF-1](learnings/field-guide/perf.md#perf-1), [API-4](learnings/field-guide/api.md#api-4), [API-11](learnings/field-guide/api.md#api-11), [API-13](learnings/field-guide/api.md#api-13), [API-14](learnings/field-guide/api.md#api-14), [API-15](learnings/field-guide/api.md#api-15), [API-17](learnings/field-guide/api.md#api-17), [API-18](learnings/field-guide/api.md#api-18), [TEST-3](learnings/testing.md#test-3), [TEST-6](learnings/testing.md#test-6), [PAT-2](learnings/patterns.md#pat-2), [PAT-23](learnings/patterns.md#pat-23), [PAT-24](learnings/patterns.md#pat-24) |
+| 15/N | [WATCH-4](learnings/field-guide/watch.md#watch-4), [WATCH-9](learnings/field-guide/watch.md#watch-9), [LEASE-11](learnings/field-guide/lease.md#lease-11), [LEASE-13](learnings/field-guide/lease.md#lease-13), [LEASE-21](learnings/field-guide/lease.md#lease-21), [RACE-1](learnings/field-guide/race.md#race-1), [RACE-2](learnings/field-guide/race.md#race-2), [RACE-3](learnings/field-guide/race.md#race-3), [RETRY-1](learnings/field-guide/retry.md#retry-1), [RETRY-12](learnings/field-guide/retry.md#retry-12), [RETRY-13](learnings/field-guide/retry.md#retry-13), [RETRY-14](learnings/field-guide/retry.md#retry-14), [LOCK-4](learnings/field-guide/lock.md#lock-4), [LOCK-9](learnings/field-guide/lock.md#lock-9), [LOCK-10](learnings/field-guide/lock.md#lock-10), [LOCK-11](learnings/field-guide/lock.md#lock-11), [LOCK-19](learnings/field-guide/lock.md#lock-19), [CANCEL-4](learnings/field-guide/cancel.md#cancel-4), [CANCEL-11](learnings/field-guide/cancel.md#cancel-11), [CANCEL-12](learnings/field-guide/cancel.md#cancel-12), [CANCEL-23](learnings/field-guide/cancel.md#cancel-23), [CLEAN-10](learnings/field-guide/clean.md#clean-10), [CLEAN-18](learnings/field-guide/clean.md#clean-18), [COUNT-3](learnings/field-guide/count.md#count-3), [COUNT-7](learnings/field-guide/count.md#count-7), [COUNT-9](learnings/field-guide/count.md#count-9), [COUNT-12](learnings/field-guide/count.md#count-12), [K8S-6](learnings/field-guide/k8s.md#k8s-6), [K8S-8](learnings/field-guide/k8s.md#k8s-8), [K8S-14](learnings/field-guide/k8s.md#k8s-14), [LIB-12](learnings/field-guide/lib.md#lib-12), [PERF-1](learnings/field-guide/perf.md#perf-1), [PERF-3](learnings/field-guide/perf.md#perf-3), [PERF-9](learnings/field-guide/perf.md#perf-9), [PERF-18](learnings/field-guide/perf.md#perf-18), [API-9](learnings/field-guide/api.md#api-9), [API-10](learnings/field-guide/api.md#api-10), [API-19](learnings/field-guide/api.md#api-19), [API-20](learnings/field-guide/api.md#api-20), [API-21](learnings/field-guide/api.md#api-21), [API-22](learnings/field-guide/api.md#api-22), [API-24](learnings/field-guide/api.md#api-24), [TEST-1](learnings/testing.md#test-1), [TEST-3](learnings/testing.md#test-3), [TEST-11](learnings/testing.md#test-11), [TEST-17](learnings/testing.md#test-17), [TEST-24](learnings/testing.md#test-24), [PAT-1](learnings/patterns.md#pat-1), [PAT-5](learnings/patterns.md#pat-5), [PAT-16](learnings/patterns.md#pat-16), [PAT-19](learnings/patterns.md#pat-19), [PAT-20](learnings/patterns.md#pat-20), [PAT-25](learnings/patterns.md#pat-25), [PAT-31](learnings/patterns.md#pat-31), [BP-11](learnings/best-practices.md#bp-11), [BP-13](learnings/best-practices.md#bp-13), [BP-27](learnings/best-practices.md#bp-27), [PROC-10](learnings/process.md#proc-10), [GIT-10](learnings/process.md#git-10) |
+| 16/N | [WATCH-3](learnings/field-guide/watch.md#watch-3), [WATCH-4](learnings/field-guide/watch.md#watch-4), [WATCH-5](learnings/field-guide/watch.md#watch-5), [LEASE-11](learnings/field-guide/lease.md#lease-11), [LEASE-24](learnings/field-guide/lease.md#lease-24), [LEASE-25](learnings/field-guide/lease.md#lease-25), [LEASE-26](learnings/field-guide/lease.md#lease-26), [LEASE-27](learnings/field-guide/lease.md#lease-27), [RACE-3](learnings/field-guide/race.md#race-3), [RACE-6](learnings/field-guide/race.md#race-6), [RACE-7](learnings/field-guide/race.md#race-7), [RETRY-6](learnings/field-guide/retry.md#retry-6), [RETRY-7](learnings/field-guide/retry.md#retry-7), [RETRY-18](learnings/field-guide/retry.md#retry-18), [LOCK-5](learnings/field-guide/lock.md#lock-5), [LOCK-12](learnings/field-guide/lock.md#lock-12), [LOCK-15](learnings/field-guide/lock.md#lock-15), [CANCEL-5](learnings/field-guide/cancel.md#cancel-5), [CANCEL-6](learnings/field-guide/cancel.md#cancel-6), [CANCEL-14](learnings/field-guide/cancel.md#cancel-14), [CANCEL-18](learnings/field-guide/cancel.md#cancel-18), [CANCEL-19](learnings/field-guide/cancel.md#cancel-19), [CANCEL-20](learnings/field-guide/cancel.md#cancel-20), [CLEAN-16](learnings/field-guide/clean.md#clean-16), [CLEAN-17](learnings/field-guide/clean.md#clean-17), [COUNT-8](learnings/field-guide/count.md#count-8), [COUNT-11](learnings/field-guide/count.md#count-11), [K8S-8](learnings/field-guide/k8s.md#k8s-8), [LIB-18](learnings/field-guide/lib.md#lib-18), [PERF-11](learnings/field-guide/perf.md#perf-11), [PERF-18](learnings/field-guide/perf.md#perf-18), [API-4](learnings/field-guide/api.md#api-4), [API-8](learnings/field-guide/api.md#api-8), [API-9](learnings/field-guide/api.md#api-9), [API-20](learnings/field-guide/api.md#api-20), [API-24](learnings/field-guide/api.md#api-24), [API-25](learnings/field-guide/api.md#api-25), [API-29](learnings/field-guide/api.md#api-29), [TEST-2](learnings/testing.md#test-2), [TEST-3](learnings/testing.md#test-3), [TEST-6](learnings/testing.md#test-6), [TEST-13](learnings/testing.md#test-13), [TEST-15](learnings/testing.md#test-15), [TEST-18](learnings/testing.md#test-18), [PAT-7](learnings/patterns.md#pat-7), [PAT-8](learnings/patterns.md#pat-8), [PAT-10](learnings/patterns.md#pat-10), [PAT-12](learnings/patterns.md#pat-12), [PAT-13](learnings/patterns.md#pat-13), [PAT-17](learnings/patterns.md#pat-17), [PAT-18](learnings/patterns.md#pat-18), [PAT-25](learnings/patterns.md#pat-25), [BP-3](learnings/best-practices.md#bp-3), [BP-5](learnings/best-practices.md#bp-5), [BP-26](learnings/best-practices.md#bp-26), [BP-28](learnings/best-practices.md#bp-28), [BP-29](learnings/best-practices.md#bp-29), [BP-30](learnings/best-practices.md#bp-30), [BP-33](learnings/best-practices.md#bp-33), [PROC-10](learnings/process.md#proc-10) |
+| 17/N | [WATCH-3](learnings/field-guide/watch.md#watch-3), [WATCH-8](learnings/field-guide/watch.md#watch-8), [WATCH-9](learnings/field-guide/watch.md#watch-9), [RETRY-19](learnings/field-guide/retry.md#retry-19), [LOCK-2](learnings/field-guide/lock.md#lock-2), [LOCK-6](learnings/field-guide/lock.md#lock-6), [LOCK-14](learnings/field-guide/lock.md#lock-14), [CLEAN-2](learnings/field-guide/clean.md#clean-2), [CLEAN-3](learnings/field-guide/clean.md#clean-3), [LIB-15](learnings/field-guide/lib.md#lib-15), [PERF-12](learnings/field-guide/perf.md#perf-12), [PERF-16](learnings/field-guide/perf.md#perf-16), [PERF-17](learnings/field-guide/perf.md#perf-17), [PERF-18](learnings/field-guide/perf.md#perf-18), [API-2](learnings/field-guide/api.md#api-2), [API-4](learnings/field-guide/api.md#api-4), [API-7](learnings/field-guide/api.md#api-7), [TEST-7](learnings/testing.md#test-7), [TEST-14](learnings/testing.md#test-14), [PAT-11](learnings/patterns.md#pat-11), [BP-27](learnings/best-practices.md#bp-27), [PROC-11](learnings/process.md#proc-11) |
+| 18/N | [LEASE-1](learnings/field-guide/lease.md#lease-1), [LEASE-4](learnings/field-guide/lease.md#lease-4), [LEASE-7](learnings/field-guide/lease.md#lease-7), [LEASE-8](learnings/field-guide/lease.md#lease-8), [LEASE-9](learnings/field-guide/lease.md#lease-9), [LEASE-10](learnings/field-guide/lease.md#lease-10), [LEASE-19](learnings/field-guide/lease.md#lease-19), [RACE-8](learnings/field-guide/race.md#race-8), [CLEAN-14](learnings/field-guide/clean.md#clean-14), [CLEAN-20](learnings/field-guide/clean.md#clean-20), [CLEAN-23](learnings/field-guide/clean.md#clean-23), [K8S-1](learnings/field-guide/k8s.md#k8s-1), [K8S-2](learnings/field-guide/k8s.md#k8s-2), [K8S-3](learnings/field-guide/k8s.md#k8s-3), [K8S-5](learnings/field-guide/k8s.md#k8s-5), [K8S-17](learnings/field-guide/k8s.md#k8s-17), [K8S-20](learnings/field-guide/k8s.md#k8s-20), [PERF-15](learnings/field-guide/perf.md#perf-15), [API-6](learnings/field-guide/api.md#api-6), [TEST-23](learnings/testing.md#test-23), [PAT-8](learnings/patterns.md#pat-8), [PAT-34](learnings/patterns.md#pat-34), [BP-6](learnings/best-practices.md#bp-6), [BP-9](learnings/best-practices.md#bp-9), [BP-13](learnings/best-practices.md#bp-13), [BP-17](learnings/best-practices.md#bp-17), [BP-31](learnings/best-practices.md#bp-31), [BP-35](learnings/best-practices.md#bp-35), [PROC-11](learnings/process.md#proc-11) |
+| 19/N | [WATCH-4](learnings/field-guide/watch.md#watch-4), [LEASE-26](learnings/field-guide/lease.md#lease-26), [RACE-1](learnings/field-guide/race.md#race-1), [RACE-2](learnings/field-guide/race.md#race-2), [RACE-3](learnings/field-guide/race.md#race-3), [RACE-4](learnings/field-guide/race.md#race-4), [RACE-5](learnings/field-guide/race.md#race-5), [RACE-6](learnings/field-guide/race.md#race-6), [RACE-7](learnings/field-guide/race.md#race-7), [RETRY-7](learnings/field-guide/retry.md#retry-7), [RETRY-15](learnings/field-guide/retry.md#retry-15), [RETRY-16](learnings/field-guide/retry.md#retry-16), [RETRY-17](learnings/field-guide/retry.md#retry-17), [RETRY-18](learnings/field-guide/retry.md#retry-18), [LOCK-7](learnings/field-guide/lock.md#lock-7), [LOCK-8](learnings/field-guide/lock.md#lock-8), [LOCK-9](learnings/field-guide/lock.md#lock-9), [LOCK-15](learnings/field-guide/lock.md#lock-15), [LOCK-16](learnings/field-guide/lock.md#lock-16), [CANCEL-2](learnings/field-guide/cancel.md#cancel-2), [CANCEL-9](learnings/field-guide/cancel.md#cancel-9), [CANCEL-14](learnings/field-guide/cancel.md#cancel-14), [CANCEL-15](learnings/field-guide/cancel.md#cancel-15), [CANCEL-16](learnings/field-guide/cancel.md#cancel-16), [CANCEL-18](learnings/field-guide/cancel.md#cancel-18), [CANCEL-20](learnings/field-guide/cancel.md#cancel-20), [CLEAN-16](learnings/field-guide/clean.md#clean-16), [CLEAN-17](learnings/field-guide/clean.md#clean-17), [CLEAN-18](learnings/field-guide/clean.md#clean-18), [COUNT-4](learnings/field-guide/count.md#count-4), [COUNT-5](learnings/field-guide/count.md#count-5), [COUNT-13](learnings/field-guide/count.md#count-13), [LIB-2](learnings/field-guide/lib.md#lib-2), [LIB-5](learnings/field-guide/lib.md#lib-5), [LIB-9](learnings/field-guide/lib.md#lib-9), [PERF-10](learnings/field-guide/perf.md#perf-10), [PERF-13](learnings/field-guide/perf.md#perf-13), [API-23](learnings/field-guide/api.md#api-23), [TEST-4](learnings/testing.md#test-4), [TEST-6](learnings/testing.md#test-6), [TEST-12](learnings/testing.md#test-12), [TEST-16](learnings/testing.md#test-16), [TEST-25](learnings/testing.md#test-25), [PAT-6](learnings/patterns.md#pat-6), [PAT-10](learnings/patterns.md#pat-10), [PAT-18](learnings/patterns.md#pat-18), [PAT-26](learnings/patterns.md#pat-26), [BP-2](learnings/best-practices.md#bp-2), [BP-6](learnings/best-practices.md#bp-6), [BP-25](learnings/best-practices.md#bp-25), [BP-26](learnings/best-practices.md#bp-26), [BP-27](learnings/best-practices.md#bp-27), [BP-28](learnings/best-practices.md#bp-28), [BP-31](learnings/best-practices.md#bp-31), [BP-34](learnings/best-practices.md#bp-34) |
+| 20/N | [K8S-4](learnings/field-guide/k8s.md#k8s-4), [K8S-5](learnings/field-guide/k8s.md#k8s-5), [K8S-9](learnings/field-guide/k8s.md#k8s-9), [LIB-13](learnings/field-guide/lib.md#lib-13), [LIB-14](learnings/field-guide/lib.md#lib-14), [LIB-15](learnings/field-guide/lib.md#lib-15), [LIB-16](learnings/field-guide/lib.md#lib-16), [PERF-4](learnings/field-guide/perf.md#perf-4), [PERF-5](learnings/field-guide/perf.md#perf-5), [PERF-6](learnings/field-guide/perf.md#perf-6), [PERF-7](learnings/field-guide/perf.md#perf-7), [TEST-1](learnings/testing.md#test-1), [TEST-19](learnings/testing.md#test-19), [PAT-21](learnings/patterns.md#pat-21), [BP-9](learnings/best-practices.md#bp-9), [BP-10](learnings/best-practices.md#bp-10), [BP-11](learnings/best-practices.md#bp-11), [BP-12](learnings/best-practices.md#bp-12), [BP-15](learnings/best-practices.md#bp-15), [GIT-10](learnings/process.md#git-10) |
+| 21/N | [API-28](learnings/field-guide/api.md#api-28), [PAT-27](learnings/patterns.md#pat-27), [BP-18](learnings/best-practices.md#bp-18) |
+| 22/N | [LEASE-29](learnings/field-guide/lease.md#lease-29), [LIB-6](learnings/field-guide/lib.md#lib-6), [LIB-7](learnings/field-guide/lib.md#lib-7), [LIB-8](learnings/field-guide/lib.md#lib-8), [LIB-9](learnings/field-guide/lib.md#lib-9), [LIB-12](learnings/field-guide/lib.md#lib-12), [TEST-20](learnings/testing.md#test-20), [TEST-21](learnings/testing.md#test-21), [PAT-22](learnings/patterns.md#pat-22), [BP-23](learnings/best-practices.md#bp-23) |
+| 23/N | [API-3](learnings/field-guide/api.md#api-3), [API-27](learnings/field-guide/api.md#api-27), [TEST-24](learnings/testing.md#test-24) |
+| 24/N | [CLEAN-9](learnings/field-guide/clean.md#clean-9), [CLEAN-12](learnings/field-guide/clean.md#clean-12), [GIT-12](learnings/process.md#git-12), [GIT-13](learnings/process.md#git-13) |
+| 25/N | [TEST-17](learnings/testing.md#test-17) |
