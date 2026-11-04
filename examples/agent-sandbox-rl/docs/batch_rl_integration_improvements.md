@@ -16,13 +16,14 @@ You are implementing **Workstream B**: hardening, parity, and scale optimization
 Read `examples/agent-sandbox-rl/docs/batch_rl_integration_improvements.md` (available on `origin/bench/rl-gke`) in full before writing any code. It contains:
 - Exact line-level analysis of `25/N` (`origin/feat/rl-batch-claim-mode`, commit `3a25143c`) and how it interacts with the finalized `15/N`–`23/N` Python SDK batch stack (`clients/python/agentic-sandbox-client/k8s_agent_sandbox/`).
 - What `25/N` **already solved** during its `24/N` rebase (which you MUST NOT duplicate or regress).
-- The **8 prioritized engineering items (`P0-1` through `P2-8`)** you own, including exact file/line targets, invariants, edge cases, and required unit tests.
+- The **9 prioritized engineering items (`P0-1` through `P2-9`)** you own, including exact file/line targets, invariants, edge cases, and required unit tests.
 
 ### 2. Workspace & Branch Setup
-1. Create an isolated git worktree/branch directly off `origin/feat/rl-batch-claim-mode` (do **not** touch any existing worktrees or uncommitted work):
+1. Create an isolated git worktree/branch off the latest `25/N` branch (`origin/feat/rl-batch-claim-mode` if already pushed with `P0-1`, otherwise local `restack/25n-p0-1` if more recent — check `git log -1` on both; do **not** touch any existing worktrees or uncommitted work):
    ```bash
-   git fetch origin upstream
-   git worktree add ../agent-sandbox-rl-ws-b -b feat/rl-batch-hardening origin/feat/rl-batch-claim-mode
+   git fetch origin
+   BASE=$(git merge-base --is-ancestor origin/feat/rl-batch-claim-mode restack/25n-p0-1 2>/dev/null && echo restack/25n-p0-1 || echo origin/feat/rl-batch-claim-mode)
+   git worktree add ../agent-sandbox-rl-ws-b -b feat/rl-batch-hardening "$BASE"
    ```
 2. Verify baseline tests pass in an isolated venv with the local Python SDK (`clients/python/agentic-sandbox-client`) installed editable (`pip install -e clients/python/agentic-sandbox-client[async,test] -e examples/agent-sandbox-rl[dev]`):
    ```bash
@@ -44,11 +45,12 @@ Implement the items from Part 3 of `examples/agent-sandbox-rl/docs/batch_rl_inte
 1. **`P0-1` *(check first — already folded into `25/N` if branched from `51c9f541`+)*:** Check `agent_sandbox_rl/batch_claims.py:BatchClaim.release`. If it already catches `BatchError` and calls `self.cluster.resources.delete_claim(self.member.claim_name)` (with `FakeBatch._check_healthy()` in `tests/test_batch_claims.py`), skip `P0-1` and start at `P0-2`; otherwise apply `P0-1` first.
 2. **`P0-2`:** Switch REST `read_namespaced_pod_status` in `handles.py` (`record_pod_identity()` and `is_alive()`) from `exec_core_api()` to shared `cluster.core_api` (keeping `exec_core_api()` strictly for `stream()` websocket exec/sessions).
 3. **`P0-3`:** Add per-batch `BatchWatchdog` (`fail_fast` parity for `claim_mode="batch"` cold starts, `0` `GET`s before `initial_delay_s`).
-4. **`P0-4`:** Sweep and verify batch `coordination.k8s.io/v1` `Lease` objects in `reaper.py` and `SandboxFleet.verify_teardown()` (with non-empty `label_selector` guard).
-5. **`P1-5`:** Parallelize `SandboxFleet.release_all()` and `SandboxFleet.acquire_batch()` over bounded `ThreadPoolExecutor`s (preserving input order and partial-failure rollback).
-6. **`P1-6`:** Auto-size `Cluster` `connection_pool_maxsize` so `17/N`'s `check_pool_size` never raises `ValueError` at high `max_in_flight` / `max_concurrent`, and skip redundant `_ensure_pool` K8s RPCs when `(cluster.name, task.image)` is already in `self._ondemand`.
-7. **`P2-7`:** Raise `AsyncSandboxFleet._thread_pool()` ceiling (`min(4096, max(mc + 64, ...))`) so `max_concurrent >= 1000` never self-throttles in Python's executor queue.
-8. **`P2-8`:** Surface an actionable `work_budget` message on `SandboxLostError` when `claim_expires_at` has elapsed, and add `claim_expires_at` parity to `FakeFleet` / `FakeHandle` in `testing.py`.
+4. **`P0-4`:** Sweep and verify batch `coordination.k8s.io/v1` `Lease` objects in `reaper.py` and `SandboxFleet.verify_teardown()` (with non-empty `label_selector` + `BATCH_ID_LABEL` guard).
+5. **`P0-5`:** Clean up `PodSnapshotManualTrigger` CRs (`delete_manual_triggers()`) in `SandboxHandle.release()` when `claim_mode="batch"` + `ClusterConfig(snapshots=True)`, bound fallback `delete_claim` timeout (`request_timeout=30`), and use `SandboxNotReadyError` in `test_failure_after_acquire_releases_the_member`.
+6. **`P1-6`:** Parallelize `SandboxFleet.release_all()` and `SandboxFleet.acquire_batch()` over bounded `ThreadPoolExecutor`s (preserving input order and partial-failure rollback).
+7. **`P1-7`:** Auto-size `Cluster` `connection_pool_maxsize` so `17/N`'s `check_pool_size` never raises `ValueError` at high `max_in_flight` / `max_concurrent`, and skip redundant `_ensure_pool` K8s RPCs when `(cluster.name, task.image)` is already in `self._ondemand`.
+8. **`P2-8`:** Raise `AsyncSandboxFleet._thread_pool()` ceiling (`min(4096, max(mc + 64, ...))`) so `max_concurrent >= 1000` never self-throttles in Python's executor queue.
+9. **`P2-9`:** Surface an actionable `work_budget` message on `SandboxLostError` when `claim_expires_at` has elapsed, and add `claim_expires_at` parity to `FakeFleet` / `FakeHandle` in `testing.py`.
 
 Run the full `pytest examples/agent-sandbox-rl/tests` suite after each commit and ensure 100% pass rate with zero regressions. Follow repository style (`2`-space indentation in `agent-sandbox-rl`, Apache-2.0 headers on any new files, no internal URLs or project IDs).
 ````
@@ -78,7 +80,7 @@ Run the full `pytest examples/agent-sandbox-rl/tests` suite after each commit an
 
 ---
 
-## Part 3: Detailed Specification of Workstream B Items (`P0-1` – `P2-8`)
+## Part 3: Detailed Specification of Workstream B Items (`P0-1` – `P2-9`)
 
 ### `P0-1`: Fix Stopped / Released `SandboxBatch` Crash in `BatchClaim.release()` & Fix `FakeBatch.release_member`
 
@@ -201,7 +203,30 @@ Currently:
 
 ---
 
-### `P1-5`: Parallelize `SandboxFleet.release_all()` and `SandboxFleet.acquire_batch()`
+### `P0-5`: Clean Up `PodSnapshotManualTrigger` CRs in Batch `SandboxHandle.release()`, Bound Fallback `delete_claim` Timeout, & Tighten `connect()` Failure Test
+
+#### Problems Caught by Independent Adversarial Audit of `25/N`
+1. **`PodSnapshotManualTrigger` leak on `SandboxHandle.release()` (`handles.py:614-620`):**
+   - With `ClusterConfig(snapshots=True)` + `FleetConfig(claim_mode="batch")`, `claim.batch.connect(claim.member)` constructs a `SandboxWithSnapshotSupport` instance. When `fleet.snapshot(handle)` or `fleet.suspend(handle, snapshot=True)` runs, `SnapshotEngine.create()` creates a `PodSnapshotManualTrigger` CR in Kubernetes **with no `ownerReferences`** and records it in `handle.sandbox.snapshots.created_manual_triggers`.
+   - In `per_claim` mode (`handles.py:619-620`), `self.sandbox.terminate()` calls `self._snapshots.delete_manual_triggers()` and sets `self._snapshots = None`.
+   - In `batch` mode (`handles.py:614-618`), `handle.release()` calls `self._batch_claim.release()` (`SandboxBatch.release_member` -> `sandbox.close_connection()`) and returns early without calling `delete_manual_triggers()` — leaking every `PodSnapshotManualTrigger` CR in the namespace!
+2. **Unbounded `request_timeout` on `BatchClaim.release()` fallback (`batch_claims.py:87`):**
+   - When `BatchClaim.release()` catches `BatchError` (e.g., `BatchLeaseExpiredError` during an apiserver stall) and falls back to `self.cluster.resources.delete_claim(self.member.claim_name)`, `delete_claim` defaults to `request_timeout=None` (unlike `SandboxBatch._delete_claim`, which bounds deletes to `BATCH_REQUEST_TIMEOUT_SECONDS = 30`).
+3. **Impossible mock state in `test_failure_after_acquire_releases_the_member` (`tests/test_batch_claims.py:349-361`):**
+   - The test mocks `b.connect` raising `BatchError("stopped")` while `b.error` is `None`. On a real `SandboxBatch`, `connect()` only raises `BatchError` when `_check_healthy()` fails (in which case `release_member()` *also* raises `BatchError`); on a healthy batch where the member left `READY` in the micro-window after `acquire()`, `connect()` raises `SandboxNotReadyError`.
+
+#### Required Fix
+1. **`agent_sandbox_rl/handles.py` (`SandboxHandle.release()`):**
+   - After `self._batch_claim.release()` succeeds, if `self.sandbox is not None`, check `snapshots = getattr(self.sandbox, "_snapshots", None) or getattr(self.sandbox, "snapshots", None)`: if `hasattr(snapshots, "delete_manual_triggers")`, call `snapshots.delete_manual_triggers()` (best-effort, matching `SandboxWithSnapshotSupport.terminate()`) and set `self.sandbox._snapshots = None` if `hasattr(self.sandbox, "_snapshots")`.
+2. **`agent_sandbox_rl/batch_claims.py` (`BatchClaim.release()`):**
+   - Pass `request_timeout=30` (or `BATCH_REQUEST_TIMEOUT_SECONDS` from `k8s_agent_sandbox.batch_utils`) to `self.cluster.resources.delete_claim(self.member.claim_name, request_timeout=...)`.
+3. **`tests/test_batch_claims.py`:**
+   - Add a unit test verifying `SandboxHandle.release()` in `claim_mode="batch"` invokes `delete_manual_triggers()` on a snapshot-capable `sandbox` after releasing the batch member (and does **not** invoke it if `self._batch_claim.release()` raises, preserving retry state).
+   - Update `test_failure_after_acquire_releases_the_member` to raise `SandboxNotReadyError` on `b.connect` (matching real `SandboxBatch.connect()` on a healthy batch) and verify `b.released_members` records the rollback.
+
+---
+
+### `P1-6`: Parallelize `SandboxFleet.release_all()` and `SandboxFleet.acquire_batch()`
 
 #### Problem
 1. **`SandboxFleet.release_all()` (`fleet.py:1975-1982`):** Loops **serially** (`for h in list(self._handles): self.release(h)`). At `N = 1,000` handles with ~`50–75ms` `DELETE` RTT, serial `release_all()` takes **50–75 seconds** even though `SandboxBatch.release_member` (`_in_flight` semaphore) and Kubernetes API handle concurrent deletes cleanly.
@@ -222,7 +247,7 @@ Currently:
 
 ---
 
-### `P1-6`: Auto-Size `Cluster` `connection_pool_maxsize` & Skip Redundant On-Demand `_ensure_pool` RPCs
+### `P1-7`: Auto-Size `Cluster` `connection_pool_maxsize` & Skip Redundant On-Demand `_ensure_pool` RPCs
 
 #### Problem A: `17/N` `check_pool_size` + High-Concurrency `urllib3` Pool Sizing
 - In `cluster.py`, `Cluster` constructs `api_client` with a hardcoded or default `connection_pool_maxsize` (check `_build_api_client` in `cluster.py` — currently `1000` or config-driven).
@@ -255,7 +280,7 @@ Every single dynamic `acquire()` for an image **already** in `self._ondemand` st
 
 ---
 
-### `P2-7`: Raise `AsyncSandboxFleet._thread_pool()` Ceiling for `1k–2k` Scale
+### `P2-8`: Raise `AsyncSandboxFleet._thread_pool()` Ceiling for `1k–2k` Scale
 
 #### Problem
 In `agent_sandbox_rl/async_fleet.py:73`:
@@ -270,7 +295,7 @@ At `max_concurrent=1000` (or `2000` in our 2k burst / pipelined SWE-bench runs),
 
 ---
 
-### `P2-8`: Actionable `work_budget` Hint on `SandboxLostError` + `FakeFleet` `claim_expires_at` Parity
+### `P2-9`: Actionable `work_budget` Hint on `SandboxLostError` + `FakeFleet` `claim_expires_at` Parity
 
 #### Problem
 1. **`SandboxLostError` diagnostics (`handles.py` / `exceptions.py`):**
@@ -292,7 +317,7 @@ At `max_concurrent=1000` (or `2000` in our 2k burst / pipelined SWE-bench runs),
 
 ## Part 4: Verification Checklist Before Reporting Done
 
-- [ ] `pytest examples/agent-sandbox-rl/tests` passes 100% (all existing tests + new unit tests for `P0-1` through `P2-8`).
+- [ ] `pytest examples/agent-sandbox-rl/tests` passes 100% (all existing tests + new unit tests for `P0-1` through `P2-9`).
 - [ ] `git diff origin/feat/rl-batch-claim-mode --stat` touches **only** files under `examples/agent-sandbox-rl/`.
 - [ ] `test_batch_acquire_skips_pod_get_and_is_alive_checks_the_batch_watch` still asserts `read_pod.call_count == 0 and h.pod_uid is None` on batch `acquire()`.
 - [ ] `testing.py` still imports nothing outside `agent_sandbox_rl` and stdlib (`test_testing.py` import check passes).
