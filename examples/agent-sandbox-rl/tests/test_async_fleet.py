@@ -64,6 +64,20 @@ def test_async_thread_pool_scales_with_concurrency(make_cluster):
     f.close()
 
 
+def test_async_thread_pool_ceiling_supports_1k_to_2k_concurrency(make_cluster):
+  from agent_sandbox_rl import ClusterRegistry
+  f = _fleet(ClusterRegistry([make_cluster("solo")]), max_concurrent=1500, window_size=1)
+  try:
+    assert f._thread_pool()._max_workers >= 1564
+  finally:
+    f.close()
+  f2 = _fleet(ClusterRegistry([make_cluster("solo2")]), max_concurrent=5000)
+  try:
+    assert f2._thread_pool()._max_workers == 4096
+  finally:
+    f2.close()
+
+
 def test_close_blocks_and_cancels_by_default(make_cluster):
   # Explicit close() must block (wait=True) and cancel queued work so no non-daemon
   # worker thread outlives it; __del__'s close(wait=False) must stay non-blocking.
