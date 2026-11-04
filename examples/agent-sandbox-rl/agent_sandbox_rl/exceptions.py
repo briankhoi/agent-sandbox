@@ -103,10 +103,18 @@ class SandboxLostError(FleetError):
   error so an RL loop can release the handle and re-acquire at once instead of
   spending its step timeout on a dead pod. ``cause`` is the underlying error."""
 
-  def __init__(self, pod_name: str, claim_name: str, cause: BaseException | None = None):
+  def __init__(self, pod_name: str, claim_name: str,
+               cause: BaseException | None = None, *, expired: bool = False):
+    hint = (
+        " (batch claim reached its shutdownTime; increase "
+        "FleetConfig.batch_claims.work_budget or rotate handles before "
+        "handle.claim_expires_at)"
+        if expired else ""
+    )
     super().__init__(
-        f"sandbox pod '{pod_name}' (claim '{claim_name}') is gone"
+        f"sandbox pod '{pod_name}' (claim '{claim_name}') is gone{hint}"
         + (f": {type(cause).__name__}: {cause}" if cause is not None else ""))
     self.pod_name = pod_name
     self.claim_name = claim_name
     self.cause = cause
+    self.expired = expired
