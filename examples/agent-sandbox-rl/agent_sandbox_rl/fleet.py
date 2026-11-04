@@ -177,11 +177,18 @@ class SandboxFleet:
     # fall back when no registry was given at all.
     self.registry = (registry if registry is not None
                      else self._default_registry(self.config))
+    needed_pool = self._desired_pool_maxsize(self.config)
     # A caller-supplied registry was built before the run-id was stamped above, so
     # its clusters' Resources.labels lack it — the pods it creates would then carry
     # no run-id and be invisible to the breaker/reaper. Ensure every cluster
     # (default or supplied) carries this run's labels. Idempotent for the default.
     for _c in self.registry:
+      try:
+        ensure_pool = getattr(_c, "ensure_pool_maxsize", None)
+        if callable(ensure_pool):
+          ensure_pool(needed_pool)
+      except Exception:  # noqa: BLE001 — best-effort for custom test doubles
+        pass
       try:
         _c.resources.labels.update(self.config.labels)
       except Exception:  # noqa: BLE001 — a non-standard registry may differ; best-effort
@@ -211,6 +218,7 @@ class SandboxFleet:
     self._claims_reserved = 0
     self._warmed: dict[str, int] = {}        # image -> replicas currently warmed
     self._ondemand: set[tuple[str, str]] = set()   # (cluster, image) pools made via acquire()
+    self._ondemand_locks: dict[tuple[str, str], threading.Lock] = {}
     # (cluster, name) of pools/templates adopted under `adopt_existing`. Someone
     # else owns these; teardown must not sweep them even if they happen to carry
     # our management label (e.g. left behind by an earlier run of this SDK).
@@ -427,11 +435,27 @@ class SandboxFleet:
       self._prev_handlers.clear()
 
   @staticmethod
+  def _desired_pool_maxsize(config: FleetConfig) -> int:
+    return max(
+        1000,
+        int(config.max_concurrent) + 32,
+        int(config.batch_claims.max_in_flight or 20) + 16,
+    )
+
+  @staticmethod
   def _default_registry(config: FleetConfig) -> ClusterRegistry:
+    pool_maxsize = SandboxFleet._desired_pool_maxsize(config)
     if config.clusters:
-      return ClusterRegistry.from_configs(config.clusters, labels=config.labels)
+      return ClusterRegistry.from_configs(
+          config.clusters, labels=config.labels, pool_maxsize=pool_maxsize)
     # Single cluster from the ambient kube context.
-    return ClusterRegistry([Cluster(ClusterConfig(), labels=config.labels)])
+    return ClusterRegistry([
+        Cluster(ClusterConfig(), labels=config.labels, pool_maxsize=pool_maxsize)
+    ])
+
+  def _ondemand_lock(self, key: tuple[str, str]) -> threading.Lock:
+    with self._lock:
+      return self._ondemand_locks.setdefault(key, threading.Lock())
 
   # --- inputs ------------------------------------------------------------ #
   def load_tasks(self, source, *, image_rewrite=None, image_field=None,
@@ -1501,27 +1525,37 @@ class SandboxFleet:
           f"that serves it.")
     if on_demand:
       cluster = self.placement.select(task.image, self.registry)
-      pool = self._ensure_pool(cluster, task.image, 1)
-      # Reserve the size-1 pool's replica only the first time we create it for
-      # this (cluster, image); repeated acquire()s reuse it (no unbounded growth).
       key = (cluster.name, task.image)
       with self._lock:
-        created_pool = key not in self._ondemand
-        if created_pool:
-          self._ondemand.add(key)
-      if created_pool:
-        # Once per (cluster, image), not per claim. This path used to be silent,
-        # which is the failure the warning is for: a harness pointed at a cluster
-        # whose warm pools are named differently finds none of them, provisions
-        # its own one replica at a time, and reports a healthy — but far slower —
-        # run over the top of a warm fleet it never touched.
-        logger.warning(
-            "image %s is not in the plan; creating an on-demand size-1 pool "
-            "'%s' on cluster %s. If this image IS already warm here, the pool is "
-            "named something other than %r — set pool_name_format to match, or "
-            "adopt_existing=True to fail instead of provisioning in parallel.",
-            task.image, pool, cluster.name, self.config.pool_name_format)
-        cluster.reserve_replicas(1)
+        already_ensured = key in self._ondemand
+      if already_ensured:
+        pool = self.config.pool_name(task.image)
+      else:
+        with self._ondemand_lock(key):
+          with self._lock:
+            already_ensured = key in self._ondemand
+          if already_ensured:
+            pool = self.config.pool_name(task.image)
+          else:
+            pool = self._ensure_pool(cluster, task.image, 1)
+            # Reserve the size-1 pool's replica only the first time we create it
+            # for this (cluster, image); repeated acquire()s reuse it in O(1)
+            # memory without re-hitting ensure_template / create_warmpool.
+            with self._lock:
+              self._ondemand.add(key)
+            created_pool = True
+            # Once per (cluster, image), not per claim. This path used to be silent,
+            # which is the failure the warning is for: a harness pointed at a cluster
+            # whose warm pools are named differently finds none of them, provisions
+            # its own one replica at a time, and reports a healthy — but far slower —
+            # run over the top of a warm fleet it never touched.
+            logger.warning(
+                "image %s is not in the plan; creating an on-demand size-1 pool "
+                "'%s' on cluster %s. If this image IS already warm here, the pool is "
+                "named something other than %r — set pool_name_format to match, or "
+                "adopt_existing=True to fail instead of provisioning in parallel.",
+                task.image, pool, cluster.name, self.config.pool_name_format)
+            cluster.reserve_replicas(1)
 
     fam = repo_family(task)
     batch_claims = self._batch_claims
@@ -2197,6 +2231,7 @@ class SandboxFleet:
       with self._lock:
         self._warmed.clear()
         self._ondemand.clear()
+        self._ondemand_locks.clear()
       self._adopted_pools.clear()
       self._adopted_templates.clear()
       self.plan_ = None

@@ -385,7 +385,8 @@ def test_on_demand_fallthrough_warns_once_per_image(make_cluster, caplog):
   hits = [r for r in caplog.records if "on-demand size-1 pool" in r.getMessage()]
   assert len(hits) == 1
   assert "pool_name_format" in hits[0].getMessage()
-  assert c.resources.create_warmpool.call_count == 2   # behaviour unchanged
+  assert c.resources.create_warmpool.call_count == 1
+  assert c.sandbox_client.create_sandbox.call_count == 2
 
 
 def test_adopt_end_to_end_run(make_cluster):
