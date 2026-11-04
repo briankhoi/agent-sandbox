@@ -175,6 +175,12 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **Fix:** raise `BatchTimeoutError` under `_lock` whenever `max(now, _next_create_at) >= deadline` before allocating an ordinal or reserving a slot, and repeat the check in `_check_retry_deadline` before retry backoffs and retry slots (16/N, `810d3773`).
 - **Takeaway:** when callers carry deadlines in front of a shared rate limiter, verify that the earliest available slot precedes the deadline before mutating state or reserving capacity, so doomed requests shed load instead of amplifying queue delay and server churn.
 
+### 3.13 Domain `TimeoutError` subclasses match `asyncio.TimeoutError` on Python 3.11+
+- **What happened:** `BatchTimeoutError(BatchError, TimeoutError)` subclasses built-in `TimeoutError` so `except TimeoutError:` catches SDK timeouts alongside `except BatchError:`, while `async_sandbox_batch._is_transport_error` checks `isinstance(error, asyncio.TimeoutError)`.
+- **Issue:** on Python 3.11+, `asyncio.TimeoutError` aliases built-in `TimeoutError`. When `_send_create` raised `BatchTimeoutError` inside `_create_one` after `deadline` expired waiting for `max_in_flight`, `_is_transport_error` matched it as a retryable socket blip, and a broad `except Exception:` create-failure wrapper in `acquire()` would miswrap it as `TerminalMemberError(CreateFailed)` unless `BatchError` was re-raised first.
+- **Fix:** exclude `BatchError` up front in `async_sandbox_batch._is_transport_error` and re-raise `except BatchError: raise` before generic create-failure wrapping in `acquire()` (19/N).
+- **Takeaway:** whenever a domain exception inherits from built-in `TimeoutError` or `OSError` for caller convenience, exclude the domain base class explicitly in every internal transport-retry predicate and broad `except Exception:` wrapper along its call chain.
+
 ---
 
 ## 4. Thread safety and registries
@@ -228,6 +234,8 @@ Nearly every edge case on this board comes from one of four recurring design que
 - **One owning test per contract at the strongest boundary.** When a later PR reroutes a path (sync cleanup becoming release-based), re-check that each contract still has an owning test there.
 - **Lint "changed lines only" can miss errors.** pycodestyle `--diff` reports E303 on the unchanged line after an added blank line, so it slipped through. Also run the check on the whole changed file for blank-line rules.
 - **Measure before trusting results after an environment incident.** After a disk-full reboot we reran every check instead of reusing outputs that might be partial.
+- **Do not collapse asynchronous watch delivery into synchronous RPC mocks when testing races.** Pushing Attempt 1's watch event synchronously inside the mocked Attempt 1 `POST` prevented Attempt 2 from reaching the `in_flight` race once `can_send()` checked `get_member(claim_name) is None`, which briefly led us to drop a valid production guard instead of fixing the mock's causal ordering (19/N).
+- **Lease-expiry e2e suites need both `SIGKILL` (expired) and `SIGSTOP` (paused within duration).** Killing one holder past `leaseDurationSeconds + skew_margin` proves stale batches are reaped, while pausing a holder with `SIGSTOP` for less than `leaseDurationSeconds`, running the reaper, resuming with `SIGCONT`, and asserting `batch.err() is None` proves a quiet or stalled holder is never reaped early (18/N, `73a16a7a`).
 
 ---
 
@@ -310,3 +318,8 @@ Nearly every edge case on this board comes from one of four recurring design que
 ### 7.3 Commit messages that name a PR show up on that PR
 - **What happened:** notes-branch commits such as "paste-ready replies for #1824 and #1988" appeared on those upstream PRs as "briankhoi added a commit that referenced this pull request".
 - **Takeaway:** never put `#<number>` in a commit message on any branch of the fork. Refer to stack positions (13/N) instead, and grep new commit messages for `#[0-9]` before pushing.
+
+### 7.4 Audit non-conflicting lifecycle hooks when `upstream/main` advances under a merge branch
+- **What happened:** `24/N` (`merge/main-into-batch-claim-2`) originally merged `upstream/main` at `355803af`, and `upstream/main` later merged static `functools.partial` `atexit` hooks (`ae6bb389`), `_on_terminated` callbacks (`7b1a9fbc`), and client-shared `_DefaultSSLContext` (`9f7999b3`) touching `SandboxClient` and `AsyncSandboxClient`.
+- **Issue:** git only flags textual overlaps; a new client hook such as `_attach_handle` setting `connector._default_ssl_context` produces zero conflict in `AsyncSandboxBatch.connect()`, and merging static `atexit` hooks alongside instance-bound `_release_batches` breaks the zero-client-retention invariant unless batch containers are passed statically too.
+- **Takeaway:** whenever `upstream/main` moves beneath a feature branch or merge PR, diff `old_main..new_main` across shared SDK modules and audit every new lifecycle hook, destructor registration, and handle factory site even in files with zero git merge conflicts.
