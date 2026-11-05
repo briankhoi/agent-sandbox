@@ -53,7 +53,9 @@ A `Batch` has six core properties:
 
 Creation of claims is paced in two ways:
 - `create_rps`: A cap to how many creates start per second, to help avoid overwhelming the Kubernetes API server
-- `max_in_flight`: A cap to bound how many creates are in flight at once, so a slow server response doesn't exhaust connections or stall the client
+- `max_in_flight`: A cap to bound how many creates, `Acquire` pool reads, and member deletes are in flight at once, so a slow server response doesn't exhaust connections or stall the client
+
+Claims that a warm pool's Ready sandboxes cover skip `create_rps` pacing because adopting a Ready sandbox starts no pod; `max_in_flight` still bounds them. `ClaimBatch` seeds each pool's warm credit from `status.readyReplicas` during its pool precheck, and once callers spend that credit and `create_rps` would delay the next create, `Acquire` re-reads the pool's `status.readyReplicas` at most once per second per pool. Because `status.readyReplicas` is a point-in-time snapshot that lags under concurrent drivers sharing a pool, the batch closes the loop with its claim watch: when the watch (or a `410` re-list) observes a pre-Ready claim start cold (`SandboxCreatePending`, `SandboxNotReady`, or `DependenciesNotReady`), it zeroes that pool's remaining credit, defers its next refresh, and ignores any pool read already in flight, bounding shared-pool overshoot to claims already sent before the first cold status arrives. A `429` create response pauses warm credit across the batch for `Retry-After` (at least 5 seconds) while deducting paced creates from remaining credit, so an active burst backs off to `create_rps` and recovers warm speed once the apiserver clears.
 
 Claims are created in the order that reaches quorum soonest. Each group's first `MinReady` claims go first, one group after another in the caller's group order, and the rest follow in the same order. For groups A and B, that is A's first `MinReady` claims, then B's, then the rest of A, then the rest of B. Ordinals still come from one batch-wide counter, and each group keeps a contiguous block of them; only the create order differs.
 
