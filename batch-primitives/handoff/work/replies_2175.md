@@ -1,0 +1,7 @@
+# Paste-ready replies for 20/N (#2175) (drafts, not posted)
+
+## CodeRabbit thread 1 (`4475659649`, `clients/python/agentic-sandbox-client/k8s_agent_sandbox/constants.py:73-77`, `DependenciesNotReady` in `COLD_CLAIM_READY_REASONS`)
+
+> Owning PR: `19/N` (#2166, merged into `feature/batch-claim` as `5e379f8a`), so `constants.py` is no longer in `#2175` now that the branch is rebased onto `5e379f8a`.
+>
+> Keeping `DependenciesNotReady` in `COLD_CLAIM_READY_REASONS` is also intentional. `WarmCredit` counts **Ready** warm sandboxes (`status.readyReplicas` in `batch_utils.py:564-579`), not unready warm sandboxes. In `SandboxClaimReconciler.getCandidate` (`extensions/controllers/sandboxclaim_controller.go:1280-1375`), the controller checks every candidate in `WarmSandboxQueue` and returns immediately on any `isSandboxReady(adopted)` sandbox (`lines 1360-1363`), re-queuing any parked fallback (`lines 1222-1224`); it adopts an unready `fallbackSandbox` only after draining the queue without finding a single Ready sandbox (`!ok` at `lines 1282-1286`). When a new claim reports `DependenciesNotReady` from an unready fallback, the pool already has zero Ready sandboxes left, so zeroing stale `readyReplicas` credit prevents later creates from bursting unpaced into cold starts (while `BatchState._pending_launch` in `batch_state.py:318-326` ignores later readiness flaps on already-Ready members, and `acquire()` refreshes `status.readyReplicas` after `1s` once Ready sandboxes replenish).
