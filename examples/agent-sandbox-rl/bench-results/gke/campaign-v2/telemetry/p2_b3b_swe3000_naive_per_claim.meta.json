@@ -1,0 +1,14 @@
+{
+  "run_name": "p2_b3b_swe3000_naive_per_claim",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-p2-b3b-swe3000-naive-per-claim",
+  "driver_image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/asrl-driver:c2-25n-wsb",
+  "driver_cmd": "python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file images/swebench500.txt --problems 500 --rollouts 6 --concurrency 500 --cpu 125m --memory 1Gi --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 1000 --overcommit-factor 6.0 --probe true --strategies naive --claim-mode per_claim",
+  "start_utc": "2026-11-05T14:36:22Z",
+  "end_utc": "2026-11-05T14:38:53Z",
+  "job_elapsed_s": 151,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

@@ -1,0 +1,8 @@
+{
+  "images_file": "images/r2e_subset_500.txt",
+  "images_count": 500,
+  "images_per_pod": 10,
+  "max_parallel": 10,
+  "ok": false,
+  "wall_s": 3001.37
+}

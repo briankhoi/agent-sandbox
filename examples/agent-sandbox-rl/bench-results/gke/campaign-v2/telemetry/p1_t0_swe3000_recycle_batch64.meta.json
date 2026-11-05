@@ -1,0 +1,14 @@
+{
+  "run_name": "p1_t0_swe3000_recycle_batch64",
+  "mode": "gcp_iam_global_default_stock_apf",
+  "job_name": "asrl-p1-t0-swe3000-recycle-batch64",
+  "driver_image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/asrl-driver:c2-25n-wsb",
+  "driver_cmd": "python run_recycle_bench.py --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file images/swebench500.txt --problems 500 --rollouts 6 --concurrency 500 --cpu 125m --memory 1Gi --overcommit-factor 3.5 --termination-grace-seconds 0 --probe true --strategies naive --recycle-only --max-reuses 6 --reset-timeout 30 --claim-mode batch --batch-max-in-flight 64 --batch-create-rps 200",
+  "start_utc": "2026-11-05T07:44:45Z",
+  "end_utc": "2026-11-05T07:52:05Z",
+  "job_elapsed_s": 440,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

@@ -1,0 +1,14 @@
+{
+  "run_name": "p2_b1a_r2e_batch64",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-p2-b1a-r2e-batch64",
+  "driver_image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/asrl-driver:c2-25n-wsb",
+  "driver_cmd": "python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file images/r2e_subset_500.txt --problems 500 --rollouts 2 --steps 8 --concurrency 500 --warm-per-task --max-warmpool-size 2 --warm-create-budget 500 --overcommit-factor 3.5 --strategies naive --cpu 125m --memory 1Gi --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --probe \"cd /testbed && git status >/dev/null && git log --oneline -5 >/dev/null && sleep 5\" --claim-mode batch --batch-max-in-flight 64 --batch-create-rps 200",
+  "start_utc": "2026-11-05T12:26:57Z",
+  "end_utc": "2026-11-05T12:33:39Z",
+  "job_elapsed_s": 402,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

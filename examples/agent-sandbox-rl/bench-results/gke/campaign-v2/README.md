@@ -6,6 +6,8 @@
 > - **Phase III (`T1` Secondary Boot Disk Ceiling — `10 × n2-standard-32` + 600 GB Preloaded `CONTAINER_IMAGE_CACHE`):** **Complete** (`18,000 / 18,000` tasks succeeded, `0` errors).
 >
 > **Code Under Test:** Python SDK `SandboxBatch` (`k8s_agent_sandbox`) + `agent-sandbox-rl` `claim_mode="batch"`, compared head-to-head against `claim_mode="per_claim"` on identical cluster state, prior `sandbox-rl-performance` `T0` / `T1` GKE baselines (`RESULTS.md` rows `#1`, `#10–#12`, `#15–#16`), and the published Agent Sandbox Blog Post `1,000`-pod warm-pool burst table.
+>
+> **Companion Artifacts in `campaign-v2/`:** [`EXECUTIVE_SUMMARY.md`](./EXECUTIVE_SUMMARY.md) · [`PREFLIGHT_VERIFICATION.md`](./PREFLIGHT_VERIFICATION.md) · [`raw/`](./raw/) (`36` JSONs) · [`telemetry/`](./telemetry/) (APF & metadata) · [`manifests/`](./manifests/) · [`harness/`](./harness/)
 
 ---
 

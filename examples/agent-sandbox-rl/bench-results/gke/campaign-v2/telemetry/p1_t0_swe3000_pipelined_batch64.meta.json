@@ -1,0 +1,14 @@
+{
+  "run_name": "p1_t0_swe3000_pipelined_batch64",
+  "mode": "gcp_iam_global_default_stock_apf",
+  "job_name": "asrl-p1-t0-swe3000-pipelined-batch64",
+  "driver_image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/asrl-driver:c2-25n-wsb",
+  "driver_cmd": "python run_basic_swebench_3000.py --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file images/swebench500.txt --problems 500 --rollouts 6 --concurrency 500 --cpu 125m --memory 1Gi --overcommit-factor 3.5 --termination-grace-seconds 0 --probe true --strategies pipelined --claim-mode batch --batch-max-in-flight 64 --batch-create-rps 200",
+  "start_utc": "2026-11-05T07:41:30Z",
+  "end_utc": "2026-11-05T07:43:32Z",
+  "job_elapsed_s": 122,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

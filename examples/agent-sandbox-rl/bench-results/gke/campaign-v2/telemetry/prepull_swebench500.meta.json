@@ -1,0 +1,14 @@
+{
+  "run_name": "prepull_swebench500",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-prepull-swebench500",
+  "driver_image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/asrl-driver:c2-25n-wsb",
+  "driver_cmd": "python run_daemonset_prepull.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file images/swebench500.txt --problems 500 --images-per-pod 25 --max-parallel 5 --timeout 2400",
+  "start_utc": "2026-11-05T06:16:39Z",
+  "end_utc": "2026-11-05T06:16:58Z",
+  "job_elapsed_s": 19,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

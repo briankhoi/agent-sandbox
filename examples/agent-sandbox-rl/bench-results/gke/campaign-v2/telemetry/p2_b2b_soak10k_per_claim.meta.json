@@ -1,0 +1,14 @@
+{
+  "run_name": "p2_b2b_soak10k_per_claim",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-p2-b2b-soak10k-per-claim",
+  "driver_image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/asrl-driver:c2-25n-wsb",
+  "driver_cmd": "python run_claim_soak_bench.py --mode soak --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file images/r2e_subset_500.txt --problems 200 --replicas-per-image 4 --total-claims 10000 --wave-size 200 --min-ready-fraction 1.0 --post-warm-settle-s 2.0 --warm-create-budget 500 --overcommit-factor 4.5 --cpu 125m --memory 512Mi --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --claim-mode per_claim",
+  "start_utc": "2026-11-05T12:49:46Z",
+  "end_utc": "2026-11-05T13:00:54Z",
+  "job_elapsed_s": 668,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

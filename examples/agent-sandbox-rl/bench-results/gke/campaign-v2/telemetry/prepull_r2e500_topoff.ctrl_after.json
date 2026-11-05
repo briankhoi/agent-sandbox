@@ -1,0 +1,579 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "creationTimestamp": "2026-11-05T10:26:54Z",
+                "generateName": "agent-sandbox-controller-5dbdf68868-",
+                "generation": 1,
+                "labels": {
+                    "app": "agent-sandbox-controller",
+                    "control-plane": "controller-manager",
+                    "pod-template-hash": "5dbdf68868",
+                    "topology.kubernetes.io/region": "us-central1",
+                    "topology.kubernetes.io/zone": "us-central1-a"
+                },
+                "name": "agent-sandbox-controller-5dbdf68868-78dp9",
+                "namespace": "agent-sandbox-system",
+                "ownerReferences": [
+                    {
+                        "apiVersion": "apps/v1",
+                        "blockOwnerDeletion": true,
+                        "controller": true,
+                        "kind": "ReplicaSet",
+                        "name": "agent-sandbox-controller-5dbdf68868",
+                        "uid": "e5a0640d-ef1a-465b-ad53-8f9a7826317b"
+                    }
+                ],
+                "resourceVersion": "1793874501680287007",
+                "uid": "8342ec57-59cf-4112-b6b9-4aed17a7077a"
+            },
+            "spec": {
+                "containers": [
+                    {
+                        "args": [
+                            "--leader-elect=true",
+                            "--extensions",
+                            "--sandbox-concurrent-workers=500",
+                            "--sandbox-claim-concurrent-workers=250",
+                            "--sandbox-warm-pool-concurrent-workers=50",
+                            "--sandbox-template-concurrent-workers=50",
+                            "--sandbox-warm-pool-max-batch-size=300",
+                            "--sandbox-warm-pool-max-refill-rate=100",
+                            "--sandbox-warm-pool-readiness-grace-period=30m",
+                            "--kube-api-qps=-1",
+                            "--api-connections=4",
+                            "--separate-watch-connection=true",
+                            "--cache-label-selectors=true",
+                            "--disable-claim-events=true",
+                            "--disable-sandbox-events=true",
+                            "--disable-claim-observability-annotations=true"
+                        ],
+                        "env": [
+                            {
+                                "name": "GOMEMLIMIT",
+                                "value": "26GiB"
+                            }
+                        ],
+                        "image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/agent-sandbox-controller:ws-b-4018f0dd",
+                        "imagePullPolicy": "IfNotPresent",
+                        "name": "manager",
+                        "ports": [
+                            {
+                                "containerPort": 8080,
+                                "name": "metrics",
+                                "protocol": "TCP"
+                            },
+                            {
+                                "containerPort": 8081,
+                                "name": "healthz",
+                                "protocol": "TCP"
+                            }
+                        ],
+                        "resources": {
+                            "limits": {
+                                "cpu": "28",
+                                "memory": "32Gi"
+                            },
+                            "requests": {
+                                "cpu": "14",
+                                "memory": "28Gi"
+                            }
+                        },
+                        "terminationMessagePath": "/dev/termination-log",
+                        "terminationMessagePolicy": "File",
+                        "volumeMounts": [
+                            {
+                                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                "name": "kube-api-access-b9v26",
+                                "readOnly": true
+                            }
+                        ]
+                    }
+                ],
+                "dnsPolicy": "ClusterFirst",
+                "enableServiceLinks": true,
+                "nodeName": "gke-asrl-bench-c2-ctrl-pool-23ddbf59-8h50",
+                "nodeSelector": {
+                    "dedicated": "ctrl"
+                },
+                "preemptionPolicy": "PreemptLowerPriority",
+                "priority": 0,
+                "restartPolicy": "Always",
+                "schedulerName": "default-scheduler",
+                "securityContext": {},
+                "serviceAccount": "agent-sandbox-controller",
+                "serviceAccountName": "agent-sandbox-controller",
+                "terminationGracePeriodSeconds": 30,
+                "tolerations": [
+                    {
+                        "effect": "NoSchedule",
+                        "key": "dedicated",
+                        "operator": "Equal",
+                        "value": "ctrl"
+                    },
+                    {
+                        "effect": "NoExecute",
+                        "key": "node.kubernetes.io/not-ready",
+                        "operator": "Exists",
+                        "tolerationSeconds": 300
+                    },
+                    {
+                        "effect": "NoExecute",
+                        "key": "node.kubernetes.io/unreachable",
+                        "operator": "Exists",
+                        "tolerationSeconds": 300
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "kube-api-access-b9v26",
+                        "projected": {
+                            "defaultMode": 420,
+                            "sources": [
+                                {
+                                    "serviceAccountToken": {
+                                        "expirationSeconds": 3607,
+                                        "path": "token"
+                                    }
+                                },
+                                {
+                                    "configMap": {
+                                        "items": [
+                                            {
+                                                "key": "ca.crt",
+                                                "path": "ca.crt"
+                                            }
+                                        ],
+                                        "name": "kube-root-ca.crt"
+                                    }
+                                },
+                                {
+                                    "downwardAPI": {
+                                        "items": [
+                                            {
+                                                "fieldRef": {
+                                                    "apiVersion": "v1",
+                                                    "fieldPath": "metadata.namespace"
+                                                },
+                                                "path": "namespace"
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "status": {
+                "allocatedResources": {
+                    "cpu": "14",
+                    "memory": "28Gi"
+                },
+                "conditions": [
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "PodReadyToStartContainers"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "Initialized"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "Ready"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "ContainersReady"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "PodScheduled"
+                    }
+                ],
+                "containerStatuses": [
+                    {
+                        "allocatedResources": {
+                            "cpu": "14",
+                            "memory": "28Gi"
+                        },
+                        "containerID": "containerd://5ebeb42c560e205c3ac7ff9c730bd665be1a6063f419cb1d3008c77398cc5dab",
+                        "image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/agent-sandbox-controller:ws-b-4018f0dd",
+                        "imageID": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/agent-sandbox-controller@sha256:b0b3c550ad8eed1571c9494e3dc40b710aff724796cf4671fb1b7a5b959a3716",
+                        "lastState": {},
+                        "name": "manager",
+                        "ready": true,
+                        "resources": {
+                            "limits": {
+                                "cpu": "28",
+                                "memory": "32Gi"
+                            },
+                            "requests": {
+                                "cpu": "14",
+                                "memory": "28Gi"
+                            }
+                        },
+                        "restartCount": 0,
+                        "started": true,
+                        "state": {
+                            "running": {
+                                "startedAt": "2026-11-05T10:26:54Z"
+                            }
+                        },
+                        "user": {
+                            "linux": {
+                                "gid": 65532,
+                                "supplementalGroups": [
+                                    65532
+                                ],
+                                "uid": 65532
+                            }
+                        },
+                        "volumeMounts": [
+                            {
+                                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                "name": "kube-api-access-b9v26",
+                                "readOnly": true,
+                                "recursiveReadOnly": "Disabled"
+                            }
+                        ]
+                    }
+                ],
+                "hostIP": "10.128.15.199",
+                "hostIPs": [
+                    {
+                        "ip": "10.128.15.199"
+                    }
+                ],
+                "observedGeneration": 1,
+                "phase": "Running",
+                "podIP": "10.20.3.5",
+                "podIPs": [
+                    {
+                        "ip": "10.20.3.5"
+                    }
+                ],
+                "qosClass": "Burstable",
+                "resources": {
+                    "limits": {
+                        "cpu": "28",
+                        "memory": "32Gi"
+                    },
+                    "requests": {
+                        "cpu": "13981m",
+                        "memory": "28Gi"
+                    }
+                },
+                "startTime": "2026-11-05T10:26:54Z"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "creationTimestamp": "2026-11-05T10:26:54Z",
+                "generateName": "agent-sandbox-controller-5dbdf68868-",
+                "generation": 1,
+                "labels": {
+                    "app": "agent-sandbox-controller",
+                    "control-plane": "controller-manager",
+                    "pod-template-hash": "5dbdf68868",
+                    "topology.kubernetes.io/region": "us-central1",
+                    "topology.kubernetes.io/zone": "us-central1-b"
+                },
+                "name": "agent-sandbox-controller-5dbdf68868-tw92q",
+                "namespace": "agent-sandbox-system",
+                "ownerReferences": [
+                    {
+                        "apiVersion": "apps/v1",
+                        "blockOwnerDeletion": true,
+                        "controller": true,
+                        "kind": "ReplicaSet",
+                        "name": "agent-sandbox-controller-5dbdf68868",
+                        "uid": "e5a0640d-ef1a-465b-ad53-8f9a7826317b"
+                    }
+                ],
+                "resourceVersion": "1793874484295007001",
+                "uid": "c46b7791-d1af-496d-85a5-5caffe6d3076"
+            },
+            "spec": {
+                "containers": [
+                    {
+                        "args": [
+                            "--leader-elect=true",
+                            "--extensions",
+                            "--sandbox-concurrent-workers=500",
+                            "--sandbox-claim-concurrent-workers=250",
+                            "--sandbox-warm-pool-concurrent-workers=50",
+                            "--sandbox-template-concurrent-workers=50",
+                            "--sandbox-warm-pool-max-batch-size=300",
+                            "--sandbox-warm-pool-max-refill-rate=100",
+                            "--sandbox-warm-pool-readiness-grace-period=30m",
+                            "--kube-api-qps=-1",
+                            "--api-connections=4",
+                            "--separate-watch-connection=true",
+                            "--cache-label-selectors=true",
+                            "--disable-claim-events=true",
+                            "--disable-sandbox-events=true",
+                            "--disable-claim-observability-annotations=true"
+                        ],
+                        "env": [
+                            {
+                                "name": "GOMEMLIMIT",
+                                "value": "26GiB"
+                            }
+                        ],
+                        "image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/agent-sandbox-controller:ws-b-4018f0dd",
+                        "imagePullPolicy": "IfNotPresent",
+                        "name": "manager",
+                        "ports": [
+                            {
+                                "containerPort": 8080,
+                                "name": "metrics",
+                                "protocol": "TCP"
+                            },
+                            {
+                                "containerPort": 8081,
+                                "name": "healthz",
+                                "protocol": "TCP"
+                            }
+                        ],
+                        "resources": {
+                            "limits": {
+                                "cpu": "28",
+                                "memory": "32Gi"
+                            },
+                            "requests": {
+                                "cpu": "14",
+                                "memory": "28Gi"
+                            }
+                        },
+                        "terminationMessagePath": "/dev/termination-log",
+                        "terminationMessagePolicy": "File",
+                        "volumeMounts": [
+                            {
+                                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                "name": "kube-api-access-lpwbr",
+                                "readOnly": true
+                            }
+                        ]
+                    }
+                ],
+                "dnsPolicy": "ClusterFirst",
+                "enableServiceLinks": true,
+                "nodeName": "gke-asrl-bench-c2-ctrl-pool-5051aad2-v6br",
+                "nodeSelector": {
+                    "dedicated": "ctrl"
+                },
+                "preemptionPolicy": "PreemptLowerPriority",
+                "priority": 0,
+                "restartPolicy": "Always",
+                "schedulerName": "default-scheduler",
+                "securityContext": {},
+                "serviceAccount": "agent-sandbox-controller",
+                "serviceAccountName": "agent-sandbox-controller",
+                "terminationGracePeriodSeconds": 30,
+                "tolerations": [
+                    {
+                        "effect": "NoSchedule",
+                        "key": "dedicated",
+                        "operator": "Equal",
+                        "value": "ctrl"
+                    },
+                    {
+                        "effect": "NoExecute",
+                        "key": "node.kubernetes.io/not-ready",
+                        "operator": "Exists",
+                        "tolerationSeconds": 300
+                    },
+                    {
+                        "effect": "NoExecute",
+                        "key": "node.kubernetes.io/unreachable",
+                        "operator": "Exists",
+                        "tolerationSeconds": 300
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "kube-api-access-lpwbr",
+                        "projected": {
+                            "defaultMode": 420,
+                            "sources": [
+                                {
+                                    "serviceAccountToken": {
+                                        "expirationSeconds": 3607,
+                                        "path": "token"
+                                    }
+                                },
+                                {
+                                    "configMap": {
+                                        "items": [
+                                            {
+                                                "key": "ca.crt",
+                                                "path": "ca.crt"
+                                            }
+                                        ],
+                                        "name": "kube-root-ca.crt"
+                                    }
+                                },
+                                {
+                                    "downwardAPI": {
+                                        "items": [
+                                            {
+                                                "fieldRef": {
+                                                    "apiVersion": "v1",
+                                                    "fieldPath": "metadata.namespace"
+                                                },
+                                                "path": "namespace"
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "status": {
+                "allocatedResources": {
+                    "cpu": "14",
+                    "memory": "28Gi"
+                },
+                "conditions": [
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "PodReadyToStartContainers"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "Initialized"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "Ready"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "ContainersReady"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-11-05T10:26:54Z",
+                        "observedGeneration": 1,
+                        "status": "True",
+                        "type": "PodScheduled"
+                    }
+                ],
+                "containerStatuses": [
+                    {
+                        "allocatedResources": {
+                            "cpu": "14",
+                            "memory": "28Gi"
+                        },
+                        "containerID": "containerd://8f2f77623840efedeb3df0437f120942b4188a85a97a7fb639c406f2844c345f",
+                        "image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/agent-sandbox-controller:ws-b-4018f0dd",
+                        "imageID": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/agent-sandbox-controller@sha256:b0b3c550ad8eed1571c9494e3dc40b710aff724796cf4671fb1b7a5b959a3716",
+                        "lastState": {},
+                        "name": "manager",
+                        "ready": true,
+                        "resources": {
+                            "limits": {
+                                "cpu": "28",
+                                "memory": "32Gi"
+                            },
+                            "requests": {
+                                "cpu": "14",
+                                "memory": "28Gi"
+                            }
+                        },
+                        "restartCount": 0,
+                        "started": true,
+                        "state": {
+                            "running": {
+                                "startedAt": "2026-11-05T10:26:54Z"
+                            }
+                        },
+                        "user": {
+                            "linux": {
+                                "gid": 65532,
+                                "supplementalGroups": [
+                                    65532
+                                ],
+                                "uid": 65532
+                            }
+                        },
+                        "volumeMounts": [
+                            {
+                                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                "name": "kube-api-access-lpwbr",
+                                "readOnly": true,
+                                "recursiveReadOnly": "Disabled"
+                            }
+                        ]
+                    }
+                ],
+                "hostIP": "10.128.15.198",
+                "hostIPs": [
+                    {
+                        "ip": "10.128.15.198"
+                    }
+                ],
+                "observedGeneration": 1,
+                "phase": "Running",
+                "podIP": "10.20.2.5",
+                "podIPs": [
+                    {
+                        "ip": "10.20.2.5"
+                    }
+                ],
+                "qosClass": "Burstable",
+                "resources": {
+                    "limits": {
+                        "cpu": "28",
+                        "memory": "32Gi"
+                    },
+                    "requests": {
+                        "cpu": "13981m",
+                        "memory": "28Gi"
+                    }
+                },
+                "startTime": "2026-11-05T10:26:54Z"
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

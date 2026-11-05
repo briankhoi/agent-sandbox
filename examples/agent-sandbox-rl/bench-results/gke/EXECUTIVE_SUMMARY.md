@@ -1,5 +1,8 @@
 # 🚀 Executive Summary: `SandboxBatch` vs Legacy `per_claim` on GKE (`T0` Scale Campaign)
 
+> [!NOTE]
+> **Superseded by Campaign 2 (`campaign-v2/`):** For the latest **3-Phase Parity & Peak Raw Performance Rerun (`148,544` claims & rollouts, `0` errors across `36` runs, including Phase III `T1` Secondary Boot Disk)**, see **[`campaign-v2/EXECUTIVE_SUMMARY.md`](./campaign-v2/EXECUTIVE_SUMMARY.md)** and **[`campaign-v2/README.md`](./campaign-v2/README.md)**.
+
 > [!IMPORTANT]
 > **One-Sentence Verdict:** Across **all 6 production RL & SWE-bench workloads** (`37,092` sandbox acquisitions in the `batch mif=64` arm on a 10-node gVisor GKE cluster), **`SandboxBatch` (`claim_mode="batch"`) completed `100.0%` of tasks (`37,092 / 37,092`) with `0` HTTP 429 crashes**, delivered **up to `2.76×` faster end-to-end wall time**, **up to `3.57×` faster fleet delivery (`env_ready`)**, **up to `5.45×`–`13.7×` lower tail/release latency**, and **up to `35.2×` fewer client sockets** — while **beating every single `T0` (stock GKE, no pre-baked disk) record** in the prior `sandbox-rl-performance` `RESULTS.md` table.
 

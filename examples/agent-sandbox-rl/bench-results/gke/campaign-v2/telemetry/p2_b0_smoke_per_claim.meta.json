@@ -1,0 +1,14 @@
+{
+  "run_name": "p2_b0_smoke_per_claim",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-p2-b0-smoke-per-claim",
+  "driver_image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/asrl-driver:c2-25n-wsb",
+  "driver_cmd": "python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file images/r2e_smoke20.txt --problems 20 --rollouts 2 --steps 2 --concurrency 40 --warm-per-task --max-warmpool-size 2 --warm-create-budget 40 --overcommit-factor 3.5 --strategies naive --cpu 125m --memory 512Mi --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --probe \"cd /testbed && git status >/dev/null\" --claim-mode per_claim",
+  "start_utc": "2026-11-05T13:12:27Z",
+  "end_utc": "2026-11-05T13:13:02Z",
+  "job_elapsed_s": 35,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

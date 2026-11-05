@@ -1,0 +1,2 @@
+kubeletConfig:
+  maxParallelImagePulls: 5

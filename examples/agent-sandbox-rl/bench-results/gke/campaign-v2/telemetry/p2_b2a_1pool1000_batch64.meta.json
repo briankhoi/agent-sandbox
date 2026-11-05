@@ -1,0 +1,14 @@
+{
+  "run_name": "p2_b2a_1pool1000_batch64",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-p2-b2a-1pool1000-batch64",
+  "driver_image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/asrl-driver:c2-25n-wsb",
+  "driver_cmd": "python run_claim_soak_bench.py --mode burst --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file images/r2e_subset_500.txt --problems 1 --replicas-per-image 1000 --concurrencies 100,200,500,1000 --repeats 3 --min-ready-fraction 1.0 --post-warm-settle-s 5.0 --warm-create-budget 1000 --overcommit-factor 3.5 --cpu 125m --memory 512Mi --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --claim-mode batch --batch-max-in-flight 64 --batch-create-rps 200",
+  "start_utc": "2026-11-05T10:51:34Z",
+  "end_utc": "2026-11-05T10:56:36Z",
+  "job_elapsed_s": 302,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

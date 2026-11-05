@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-sandbox-rl
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: asrl-driver
+  namespace: agent-sandbox-rl
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: asrl-driver
+  namespace: agent-sandbox-rl
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/status", "pods/log", "services", "events", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "daemonsets/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes", "sandboxes/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims", "sandboxclaims/status", "sandboxtemplates", "sandboxtemplates/status", "sandboxwarmpools", "sandboxwarmpools/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: asrl-driver
+  namespace: agent-sandbox-rl
+subjects:
+  - kind: ServiceAccount
+    name: asrl-driver
+    namespace: agent-sandbox-rl
+  - kind: User
+    name: asrl-vm-driver@<gcp-project>.iam.gserviceaccount.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: <gcp-project-number>-compute@developer.gserviceaccount.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: "<gcp-sa-unique-id>"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: asrl-driver
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: asrl-driver-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: asrl-driver-readonly
+subjects:
+  - kind: ServiceAccount
+    name: asrl-driver
+    namespace: agent-sandbox-rl
+  - kind: User
+    name: asrl-vm-driver@<gcp-project>.iam.gserviceaccount.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: <gcp-project-number>-compute@developer.gserviceaccount.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: "<gcp-sa-unique-id>"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: asrl-driver-readonly

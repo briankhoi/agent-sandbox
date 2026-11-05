@@ -1,0 +1,14 @@
+{
+  "run_name": "prepull_r2e500_1500g",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-prepull-r2e500-1500g",
+  "driver_image": "us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/asrl-driver:c2-25n-wsb",
+  "driver_cmd": "python run_daemonset_prepull.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file images/r2e_subset_500.txt --problems 500 --images-per-pod 10 --max-parallel 10 --timeout 3000",
+  "start_utc": "2026-11-05T09:06:18Z",
+  "end_utc": "2026-11-05T09:56:30Z",
+  "job_elapsed_s": 3012,
+  "job_succeeded": 0,
+  "job_failed": 1,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

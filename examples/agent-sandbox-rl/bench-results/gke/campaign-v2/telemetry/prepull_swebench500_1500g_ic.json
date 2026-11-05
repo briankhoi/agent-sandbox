@@ -1,0 +1,8 @@
+{
+  "images_file": "images/swebench500.txt",
+  "images_count": 500,
+  "images_per_pod": 25,
+  "max_parallel": 5,
+  "ok": false,
+  "wall_s": 2401.21
+}
