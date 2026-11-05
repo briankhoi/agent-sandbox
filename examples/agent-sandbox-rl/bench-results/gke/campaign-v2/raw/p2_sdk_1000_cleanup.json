@@ -1,0 +1,46 @@
+{
+  "runs": [
+    {
+      "mode": "batch_release_deletecollection",
+      "rep": 0,
+      "n": 1000,
+      "acquire_s": 6.0504,
+      "cleanup_s": 1.1049
+    },
+    {
+      "mode": "batch_release_deletecollection",
+      "rep": 1,
+      "n": 1000,
+      "acquire_s": 5.5269,
+      "cleanup_s": 1.8204
+    },
+    {
+      "mode": "batch_release_deletecollection",
+      "rep": 2,
+      "n": 1000,
+      "acquire_s": 5.325,
+      "cleanup_s": 1.4049
+    },
+    {
+      "mode": "per_claim_concurrent_terminate",
+      "rep": 0,
+      "n": 1000,
+      "acquire_s": 5.9242,
+      "cleanup_s": 1.6778
+    },
+    {
+      "mode": "per_claim_concurrent_terminate",
+      "rep": 1,
+      "n": 1000,
+      "acquire_s": 5.6422,
+      "cleanup_s": 1.502
+    },
+    {
+      "mode": "per_claim_sdk_delete_all",
+      "rep": 0,
+      "n": 1000,
+      "acquire_s": 6.1694,
+      "cleanup_s": 35.928
+    }
+  ]
+}
