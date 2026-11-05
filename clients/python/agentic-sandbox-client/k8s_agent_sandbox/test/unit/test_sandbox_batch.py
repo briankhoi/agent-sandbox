@@ -1567,6 +1567,39 @@ class TestClaimBatchCreation(BaseClaimBatchTest):
         self.assertGreaterEqual(started["b1-4"], 0.249)
         self.assertGreaterEqual(started["b1-5"], 0.499)
 
+        # When an earlier cold group reserves future pacing slots and the final planned claim
+        # belongs to a warm-covered group, _fill_deadline counts from the latest fill slot rather
+        # than now, and _drop_planned_creates ignores later slots that acquire() reserved.
+        ready["pool-a"] = 5
+        ready["pool-b"] = 0
+        start = time.monotonic()
+        mixed = self.claim(
+            [BatchGroup(warmpool="pool-b", size=3, min_ready=1), BatchGroup(warmpool="pool-a", size=2, min_ready=1)],
+            batch_id="b2",
+            max_in_flight=5,
+            create_rps=0.5,
+            quorum_timeout=10,
+        )
+        _wait_until(lambda: mixed._fill_deadline is not None)
+        mixed._stop_background_threads()
+        self.assertGreaterEqual(mixed._last_fill_slot - start, 3.9)
+        self.assertEqual(mixed._fill_deadline, mixed._last_fill_slot + 10)
+
+        with patch.object(SandboxBatch, "_create_worker", lambda self: None):
+            dropped = self.claim(
+                [BatchGroup(warmpool="pool-b", size=2, min_ready=1)],
+                batch_id="b3",
+                max_in_flight=1,
+                create_rps=0.5,
+                quorum_timeout=10,
+            )
+        with dropped._lock:
+            now = time.monotonic()
+            dropped._last_fill_slot = now + 2.0
+            dropped._next_create_at = now + 20.0
+            dropped._drop_planned_creates("pool-b")
+        self.assertEqual(dropped._fill_deadline, dropped._last_fill_slot + 10)
+
     @patch("k8s_agent_sandbox.batch_utils.retry_delay", return_value=0)
     def test_first_429_paces_creates_during_cooldown_and_recovers(self, _):
         helper = self.cluster.helper
@@ -3529,6 +3562,84 @@ class TestAcquire(BaseClaimBatchTest):
         self.assertEqual(helper.create_sandbox_claim.call_count, 3)
         self.assertEqual([c.args[0] for c in helper.delete_sandbox_claim.call_args_list], ["b1-2"])
 
+    def test_release_group_during_warm_credit_refresh_stops_acquire(self):
+        helper = self.cluster.helper
+        read_started = threading.Event()
+        read_gate: threading.Event | None = None
+        ready = {"pool-a": 0, "pool-unseen": 2, "pool-refresh": 2}
+
+        def get_warmpool(name, *args, **kwargs):
+            gate = read_gate
+            if gate is not None and name in ("pool-unseen", "pool-refresh"):
+                read_started.set()
+                gate.wait(5)
+            return {"spec": {"sandboxTemplateRef": {"name": "tmpl"}}, "status": {"readyReplicas": ready[name]}}
+
+        helper.get_sandbox_warmpool.side_effect = get_warmpool
+        offset = [0.0]
+        fake_time = SimpleNamespace(monotonic=lambda: time.monotonic() + offset[0])
+        with patch.object(batch_utils, "time", fake_time):
+            batch = self.claim([BatchGroup(warmpool="pool-a", size=0)])
+
+            # Releasing an unseen pool during its first-use check stops the in-flight acquire
+            # without raising ValueError or burning an ordinal.
+            helper.create_sandbox_claim.reset_mock()
+            helper.delete_sandbox_claim.reset_mock()
+            read_gate = threading.Event()
+            self.addCleanup(read_gate.set)
+            with ThreadPoolExecutor(1) as pool:
+                checking = pool.submit(batch.acquire, "pool-unseen", timeout=5)
+                self.assertTrue(read_started.wait(5))
+                batch.release_group("pool-unseen")
+                read_gate.set()
+                with self.assertRaisesRegex(BatchError, "was released while acquiring"):
+                    checking.result(timeout=5)
+            read_gate = None
+            read_started.clear()
+            helper.create_sandbox_claim.assert_not_called()
+            helper.delete_sandbox_claim.assert_not_called()
+            self.assertEqual(batch._state.next_ordinal, 0)
+            self.assertEqual(batch._state._checking_acquires, {})
+            self.assertEqual(batch._state._released, set())
+
+            # Timing out with no create slot after a warm-credit refresh finds 0 Ready replicas
+            # neither advances next_ordinal nor records a released claim.
+            offset[0] += 1.0
+            batch._next_create_at = time.monotonic() + 10.0
+            with self.assertRaisesRegex(BatchTimeoutError, "no create slot for warm pool 'pool-a'"):
+                batch.acquire("pool-a", timeout=0.2)
+            self.assertEqual(batch._state.next_ordinal, 0)
+            self.assertEqual(batch._state._checking_acquires, {})
+            self.assertEqual(batch._state._released, set())
+
+            batch._next_create_at = 0.0
+            first = batch.acquire("pool-refresh")
+            second = batch.acquire("pool-refresh")
+            batch.release_member(first)
+            batch.release_member(second)
+            self.assertFalse(batch._state.has_pool("pool-refresh"))
+
+            offset[0] += 1.0
+            batch._next_create_at = time.monotonic() + 0.3
+            helper.create_sandbox_claim.reset_mock()
+            helper.delete_sandbox_claim.reset_mock()
+            read_gate = threading.Event()
+            self.addCleanup(read_gate.set)
+            with ThreadPoolExecutor(1) as pool:
+                acquiring = pool.submit(batch.acquire, "pool-refresh", timeout=5)
+                self.assertTrue(read_started.wait(5))
+                batch.release_group("pool-refresh")
+                read_gate.set()
+                with self.assertRaisesRegex(BatchError, "was released while acquiring"):
+                    acquiring.result(timeout=5)
+            helper.create_sandbox_claim.assert_not_called()
+            helper.delete_sandbox_claim.assert_not_called()
+            self.assertEqual(batch._state.next_ordinal, 2)
+            self.assertEqual(batch._state._checking_acquires, {})
+            self.assertEqual(batch._state._acquiring, {})
+            self.assertEqual(batch._state._released, {"b1-0", "b1-1"})
+            self.assertEqual(batch._acquire_waiters, {})
+
     def test_acquires_the_warm_pool_covers_skip_pacing_and_reread_its_count_once_a_second(self):
         helper = self.cluster.helper
         ready = {"pool-a": 2}
@@ -3765,11 +3876,36 @@ class TestAcquire(BaseClaimBatchTest):
 
                     # First-use pool checks share max_in_flight too, and a short-deadline leader
                     # that times out waiting for a slot hands the check to a longer-deadline follower.
-                    with ThreadPoolExecutor(2) as pool:
-                        short_check = pool.submit(batch.acquire, "pool-b", timeout=0.25)
-                        _wait_until(lambda: "pool-b" in batch._prechecks)
+                    leader_waiting = threading.Event()
+                    follower_waiting = threading.Event()
+                    self.addCleanup(follower_waiting.set)
+
+                    class _WaitedFuture(Future):
+                        def result(self, timeout=None):
+                            follower_waiting.set()
+                            return super().result(timeout)
+
+                    orig_in_flight_acquire = batch._in_flight.acquire
+                    leader_calls = 0
+
+                    def leader_times_out_after_follower_waits(*args, **kwargs):
+                        nonlocal leader_calls
+                        leader_calls += 1
+                        if leader_calls == 1:
+                            leader_waiting.set()
+                            self.assertTrue(follower_waiting.wait(5))
+                            return orig_in_flight_acquire(timeout=0.01)
+                        return orig_in_flight_acquire(*args, **kwargs)
+
+                    with (
+                        ThreadPoolExecutor(2) as pool,
+                        patch.object(sandbox_batch, "Future", _WaitedFuture),
+                        patch.object(batch._in_flight, "acquire", side_effect=leader_times_out_after_follower_waits),
+                    ):
+                        short_check = pool.submit(batch.acquire, "pool-b", timeout=5)
+                        self.assertTrue(leader_waiting.wait(5))
                         follower = pool.submit(batch.acquire, "pool-b", timeout=5)
-                        time.sleep(0.01)
+                        self.assertTrue(follower_waiting.wait(5))
                         with self.assertRaisesRegex(BatchTimeoutError, "warm pool 'pool-b' wasn't checked"):
                             short_check.result(timeout=5)
                         self.assertEqual(helper.get_sandbox_warmpool.call_count, 1)
@@ -3780,11 +3916,59 @@ class TestAcquire(BaseClaimBatchTest):
                     fill_member = next(m for m in batch.members() if m.claim_name == "b1-0")
                     self.assertEqual(batch.acquire("pool-a").claim_name, "b1-3")
                     batch._next_create_at = 0.0
-                    with patch.object(batch._stop_creating, "wait", lambda _t: time.sleep(0.03) or False):
+                    offset = [0.0]
+                    fake_time = SimpleNamespace(monotonic=lambda: time.monotonic() + offset[0], sleep=time.sleep)
+
+                    def expire_during_pacing(_timeout):
+                        offset[0] += 10.0
+                        return False
+
+                    with (
+                        patch.object(sandbox_batch, "time", fake_time),
+                        patch.object(batch._stop_creating, "wait", side_effect=expire_during_pacing),
+                    ):
                         with self.assertRaisesRegex(BatchTimeoutError, "no create in flight slot"):
-                            batch.acquire("pool-a", timeout=0.01)
+                            batch.acquire("pool-a", timeout=5)
                     self.assertEqual(helper.create_sandbox_claim.call_count, 3)
                     helper.delete_sandbox_claim.assert_not_called()
+
+                    # Expiring while waiting on _lock after _in_flight.acquire succeeds skips
+                    # on_send and create_sandbox_claim and releases the _in_flight slot.
+                    in_flight_taken = threading.Event()
+                    lock_held = threading.Event()
+                    self.addCleanup(lock_held.set)
+                    orig_lock = batch._lock
+                    signaling_lock = _SignalingLock(orig_lock)
+
+                    def take_slot_then_wait_for_lock(*args, **kwargs):
+                        res = orig_in_flight_acquire(*args, **kwargs)
+                        self.assertTrue(res)
+                        in_flight_taken.set()
+                        self.assertTrue(lock_held.wait(5))
+                        return res
+
+                    batch._next_create_at = 0.0
+                    with (
+                        patch.object(sandbox_batch, "time", fake_time),
+                        patch.object(batch._in_flight, "acquire", side_effect=take_slot_then_wait_for_lock),
+                        ThreadPoolExecutor(1) as pool,
+                    ):
+                        acquiring = pool.submit(batch.acquire, "pool-a", timeout=5)
+                        self.assertTrue(in_flight_taken.wait(5))
+                        batch._lock = signaling_lock  # type: ignore[assignment]
+                        try:
+                            with signaling_lock:
+                                lock_held.set()
+                                self.assertTrue(signaling_lock._blocked_or_done.wait(5))
+                                offset[0] += 10.0
+                            with self.assertRaisesRegex(BatchTimeoutError, "no create in flight slot"):
+                                acquiring.result(timeout=5)
+                        finally:
+                            batch._lock = orig_lock
+                    self.assertEqual(helper.create_sandbox_claim.call_count, 3)
+                    helper.delete_sandbox_claim.assert_not_called()
+                    self.assertTrue(batch._in_flight.acquire(blocking=False))
+                    batch._in_flight.release()
 
                     # Warm-credit refreshes share max_in_flight with member deletes as well.
                     delete_gate = threading.Event()
@@ -3809,18 +3993,28 @@ class TestAcquire(BaseClaimBatchTest):
                     batch._stop_background_threads()
                     continue
                 target_pool = "pool-b" if outcome == "release_group" else "pool-a"
-                with ThreadPoolExecutor(1) as pool:
-                    future = pool.submit(batch.acquire, target_pool, timeout=0.25)
-                    _wait_until(lambda: len(batch._acquire_waiters) == 1)
-                    time.sleep(0.02)
+                entered_in_flight = threading.Event()
+                orig_in_flight_acquire = batch._in_flight.acquire
+
+                def record_acquire_waiting(*args, **kwargs):
+                    if threading.current_thread() not in batch._creators:
+                        entered_in_flight.set()
+                    return orig_in_flight_acquire(*args, **kwargs)
+
+                with (
+                    patch.object(batch._in_flight, "acquire", side_effect=record_acquire_waiting),
+                    ThreadPoolExecutor(1) as pool,
+                ):
+                    future = pool.submit(batch.acquire, target_pool, timeout=5)
+                    self.assertTrue(entered_in_flight.wait(5))
                     if outcome == "release_group":
                         batch.release_group("pool-b")
                     else:
                         watch_err = k8s_client.ApiException(status=403)
                         helper.watch_sandbox_claims.side_effect = watch_err
                         _wait_until(lambda: batch.err() is watch_err)
+                    gate.set()
                     raised = future.exception(timeout=5)
-                gate.set()
                 _wait_until(lambda: not any(c.is_alive() for c in batch._creators))
                 self.assertIsInstance(raised, BatchError)
                 self.assertNotIsInstance(raised, BatchTimeoutError)
