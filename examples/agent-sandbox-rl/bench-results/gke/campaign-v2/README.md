@@ -2,8 +2,8 @@
 
 > **Status:**
 > - **Phase I (`T0` 3,000-Task SWE-bench Verified Parity Sweep):** **Complete** (`24,000 / 24,000` tasks succeeded, `0` errors).
-> - **Phase II (In-Cluster R2E-Gym RL Rollouts, Standing-Warm Burst Curve vs Blog Table 1, 1,000-Sandbox SDK Teardown):** `Bench 1A`, `Bench 2A` (`1×1000` & `200×5`), and `SDK 1k Cleanup` **Complete** (`0` errors across all `29,600+` claims); `Bench 1B` (Tunix GRPO), `Bench 2B` (10k Soak), `Bench 0`, and `Bench 3A/3B` **Running**.
-> - **Phase III (`T1` Secondary Boot Disk Ceiling):** **Queued next**.
+> - **Phase II (In-Cluster R2E-Gym RL Rollouts, Tunix GRPO, Standing-Warm Burst Curve vs Blog Table 1, 10k Soak, 1k SDK Cleanup, In-Cluster SWE-bench `500×1` & `500×6`):** **Complete** (`100%` task success, `0` errors across `85,000+` claims).
+> - **Phase III (`T1` Secondary Boot Disk Ceiling):** **Running**.
 >
 > **Code Under Test:** `SandboxBatch` (`25/N`) + `agent-sandbox-rl` `claim_mode="batch"` (`Workstream B`), compared head-to-head against `claim_mode="per_claim"` on identical cluster state, published `T0` GKE baselines (`RESULTS.md` rows `#10–#12`, `#15–#16`), and the published Agent Sandbox Blog Post `1,000`-pod warm-pool burst table.
 
@@ -177,6 +177,27 @@ Wide `G = 16` GRPO rollout shape (`1,024` simultaneous gVisor sandboxes per sync
 
 ---
 
+### 7. `Bench 3A` & `Bench 3B` — In-Cluster SWE-bench Strategy Sweeps under `Config H` (`100 pods/s` Refill Cap)
+
+With `Config H` APF insulation (`--sandbox-warm-pool-max-refill-rate=100`, `wp-workers=50`) eliminating `per_claim` APF starvation, single-pass `500×1` (`Bench 3A`) isolates pure client/exec efficiency while `500×6 = 3,000` (`Bench 3B`) hits the deterministic `100 pods/s` warm-pool refill floor (`~118s`) on both arms — with `SandboxBatch` slashing open sockets up to **`5.96×`** (`572 → 96`), cutting driver RSS **`-25%`**, and pushing `1st Ready` below **`100 ms` (`97 ms`)**:
+
+| Suite & Strategy | Mode | Wall (s) | Goodput (`/s`) | Tasks `ok / err` | **1st Ready (`min`)** | `claim` `avg` / `p99` / `max` (s) | **Per-Sandbox TTFC `avg` (s)** | Open Sockets | Driver RSS |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **`Bench 3A` (`500×1`) `naive`** | `per_claim` | `31.55` | `15.85` | `500 / 0` | `0.204s` | `1.94` / `3.54` / `3.65` | `8.05` | `345` | `311.9 MB` |
+| **`Bench 3A` (`500×1`) `naive`** | **`batch64`** | **`23.56` (`1.34×`)** | **`21.22`** | **`500 / 0`** | `0.252s` | `2.47` / `4.86` / `4.98` | **`5.35` (`1.50×`)** | **`214` (`1.61×` fewer)** | **`288.9 MB`** |
+| **`Bench 3A` (`500×1`) `sliding`** | `per_claim` | `33.08` | `15.11` | `500 / 0` | `0.187s` | `1.15` / `2.17` / `2.32` | `5.71` | `212` | `316.3 MB` |
+| **`Bench 3A` (`500×1`) `sliding`** | **`batch64`** | **`26.69` (`1.24×`)** | **`18.73`** | **`500 / 0`** | `0.271s` | `2.43` / `4.18` / `4.40` | **`5.25` (`1.09×`)** | **`113` (`1.88×` fewer)** | **`290.5 MB`** |
+| **`Bench 3A` (`500×1`) `pipelined`** | `per_claim` | `35.47` | `14.10` | `500 / 0` | `0.243s` | `1.04` / `2.02` / `2.28` | `3.24` | `595` | `321.4 MB` |
+| **`Bench 3A` (`500×1`) `pipelined`** | **`batch64`** | `53.14` | `9.41` | **`500 / 0`** | **`0.165s`** | `1.06` / `2.02` / `2.30` | `4.05` | **`275` (`2.16×` fewer)** | **`292.9 MB`** |
+| **`Bench 3B` (`500×6`) `naive`** | `per_claim` | `127.18` | `23.59` | `3000 / 0` | `0.122s` | `13.68` / `42.03` / `53.92` | `15.71` | `549` | `439.4 MB` |
+| **`Bench 3B` (`500×6`) `naive`** | **`batch64`** | **`121.67` (`1.05×`)** | **`24.66`** | **`3000 / 0`** | **`0.097s` (`97 ms`)** | **`12.47` / `40.76` / `49.78`** | **`14.76`** | **`123` (`4.46×` fewer)** | **`346.8 MB` (`-21%`)** |
+| **`Bench 3B` (`500×6`) `sliding`** | `per_claim` | `127.11` | `23.60` | `3000 / 0` | `0.123s` | `13.02` / `46.66` / `63.56` | `15.18` | `572` | `444.8 MB` |
+| **`Bench 3B` (`500×6`) `sliding`** | **`batch64`** | `128.73` | `23.30` | **`3000 / 0`** | **`0.101s` (`101 ms`)** | **`12.56` / `43.03` / `61.93`** | **`14.46`** | **`96` (`5.96×` fewer)** | **`342.3 MB` (`-23%`)** |
+| **`Bench 3B` (`500×6`) `pipelined`** | `per_claim` | `119.77` | `25.05` | `3000 / 0` | `0.122s` | `11.29` / `27.69` / `34.57` | `13.09` | `610` | `449.9 MB` |
+| **`Bench 3B` (`500×6`) `pipelined`** | **`batch64`** | **`117.69` (`1.02×`)** | **`25.49`** | **`3000 / 0`** | **`0.108s` (`108 ms`)** | `11.54` / `30.87` / `36.45` | `13.35` | **`276` (`2.21×` fewer)** | **`335.7 MB` (`-25%`)** |
+
+---
+
 ## Forensic Calibration Verification: Why `HEAD per_claim` Beats July `RESULTS.md` While Preserving Exact Physics
 
 Before running any `batch` arms, `per_claim` was calibrated against the published July `RESULTS.md` `RunReport`s (`#10–#12`, `#15–#16`):
@@ -201,7 +222,7 @@ Before running any `batch` arms, `per_claim` was calibrated against the publishe
 - [`raw/p1_t0_swe3000_recycle_per_claim.json`](raw/p1_t0_swe3000_recycle_per_claim.json)
 - [`raw/p1_t0_swe3000_recycle_batch64.json`](raw/p1_t0_swe3000_recycle_batch64.json)
 
-### Phase II (Completed So Far)
+### Phase II (Complete)
 - [`raw/p2_b0_smoke_per_claim.json`](raw/p2_b0_smoke_per_claim.json)
 - [`raw/p2_b0_smoke_batch20.json`](raw/p2_b0_smoke_batch20.json)
 - [`raw/p2_b1a_r2e_per_claim.json`](raw/p2_b1a_r2e_per_claim.json)
@@ -215,11 +236,18 @@ Before running any `batch` arms, `per_claim` was calibrated against the publishe
 - [`raw/p2_b2a_burst_batch64.json`](raw/p2_b2a_burst_batch64.json)
 - [`raw/p2_b2b_soak10k_per_claim.json`](raw/p2_b2b_soak10k_per_claim.json)
 - [`raw/p2_b2b_soak10k_batch64.json`](raw/p2_b2b_soak10k_batch64.json)
+- [`raw/p2_b3a_swe500_per_claim.json`](raw/p2_b3a_swe500_per_claim.json)
+- [`raw/p2_b3a_swe500_batch64.json`](raw/p2_b3a_swe500_batch64.json)
+- [`raw/p2_b3b_swe3000_naive_per_claim.json`](raw/p2_b3b_swe3000_naive_per_claim.json)
+- [`raw/p2_b3b_swe3000_naive_batch64.json`](raw/p2_b3b_swe3000_naive_batch64.json)
+- [`raw/p2_b3b_swe3000_sliding_per_claim.json`](raw/p2_b3b_swe3000_sliding_per_claim.json)
+- [`raw/p2_b3b_swe3000_sliding_batch64.json`](raw/p2_b3b_swe3000_sliding_batch64.json)
+- [`raw/p2_b3b_swe3000_pipelined_per_claim.json`](raw/p2_b3b_swe3000_pipelined_per_claim.json)
+- [`raw/p2_b3b_swe3000_pipelined_batch64.json`](raw/p2_b3b_swe3000_pipelined_batch64.json)
 - [`raw/p2_sdk_1000_cleanup.json`](raw/p2_sdk_1000_cleanup.json)
 
 ---
 
 ## Remaining Sequential Runs in Flight
 
-- `Bench 3A` & `3B`: In-cluster SWE-bench `500 × 1` and `500 × 6 = 3,000` strategy sweeps (`Running`)
-- `Phase III` (`T1` Secondary Boot Disk Ceiling): `n2-standard-32` `gvisor-sbd-pool` with preloaded 600 GB SWE-bench `CONTAINER_IMAGE_CACHE` (`#17` infra-floor + `#1` 30s real-work ceiling)
+- `Phase III` (`T1` Secondary Boot Disk Ceiling): `10 × n2-standard-32` `gvisor-sbd-pool` with preloaded 600 GB SWE-bench `CONTAINER_IMAGE_CACHE` (`naive` + `pipelined` infra-floor + `#1` 30s real-work record, `Running`)
