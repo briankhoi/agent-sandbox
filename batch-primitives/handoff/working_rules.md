@@ -90,6 +90,11 @@ After a fix round took about an hour (full checks re-run in every round, and the
 - Restack the upper branches only after Brian approves the diff. Run the pre-sync check (`mypy` and affected tests at `HEAD` only, regenerated docs check, author/trailer check, `merge-tree`) once, right before syncing.
 - Keep a fresh verifier for behavior and lifecycle changes, scoped to the rule and the paths that touch it. It doesn't re-run the builder's mechanical checks except as spot checks.
 - Skip the verifier for comment-only changes and mechanical restacks.
+- **2026-11-05 additions (Brian: "you can add all rules aside from #1. you should restack on any upper branch to avoid massive pain of rebasing later"):**
+  - Always keep every upper branch restacked on each sync so conflicts never pile up into a large rebase later.
+  - Right-size builder and verifier overhead to risk: apply trivial comment/docstring edits, 2-line type-cast fixes, and small surgical follow-ups directly without spawning a full builder + verifier subagent loop, running `mypy`, affected `pytest` with mutation checks, and doc regen (~2 min). Reserve full adversarial subagent verification for non-trivial runtime or protocol logic changes.
+  - When verifying non-trivial logic changes, have the verifier audit the full owning PR diff (`base..branch`) in pass 1 rather than only the newest commit, so cross-commit interactions are caught upfront instead of coming back via CodeRabbit as an extra round.
+  - Reuse warm subagents (`send_message` to the active builder and verifier) within a session instead of cold-spawning new subagents that spend ~10 minutes re-reading 8,000+ lines of batch code and tests from scratch.
 
 ## No PR references in commit messages (Brian, 2026-10-28)
 Brian: "stop linking PRs to commit mesaages, it keeps showing this in the PR and that's not what i want at all". GitHub turns `#1234` or `owner/repo#1234` in any commit message pushed to the fork, including notes-branch commits, into a "referenced this pull request" event on that PR.

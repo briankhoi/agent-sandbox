@@ -2,7 +2,7 @@
 
 The reaper is a stateless process that cleans up batches whose driver is gone. It relies on the Lease contract the SDKs already implement, plus the driver-side changes under "Driver Side" below. It reads the Lease's `renewTime`, `leaseDurationSeconds` (below, *D*) and resourceVersion. It never writes a Lease, only deletes one, and never touches claims or the batch annotations. Until a reaper is deployed, each claim's `shutdownTime` is the only crash cleanup.
 
-Decided on 2026-10-08: delete-first rather than a fence, a confirmation step implemented as a resourceVersion precondition, and the driver expiry fix in PR 1. Decided on 2026-10-19: every claim carries an `ownerReference` to its batch Lease, so the garbage collector deletes claims whose Lease is gone and the reaper no longer sweeps unleased claims; the reaper PR sits on top of the linear stack. Brian: "for the independent ownerref review, since it found no rebuttal, i approve the decision" (2026-10-19 12:32). Decided later on 2026-10-19, after an independent review (option B): the reaper deletes only the stale Lease and leaves the claims to the garbage collector, with no claim permissions and no claim deletes of its own; `Release` keeps its `deletecollection`. Brian: "sure i approve B" (2026-10-19 18:10).
+Decided on 2026-10-08: delete-first rather than a fence, a confirmation step implemented as a resourceVersion precondition, and the driver expiry fix in PR 1. Decided on 2026-10-19: every claim carries an `ownerReference` to its batch Lease, so the garbage collector deletes claims whose Lease is gone and the reaper no longer sweeps unleased claims; the reaper PR sits on top of the linear stack. Brian: "for the independent ownerref review, since it found no rebuttal, i approve the decision" (2026-10-19 12:32). Decided later on 2026-10-19, after an independent review (option B): the reaper deletes only the stale Lease and leaves the claims to the garbage collector, with no claim permissions and no claim deletes of its own; `Release` keeps its `deletecollection`. Brian: "sure i approve B" (2026-10-19 18:10). Updated on 2026-11-05 (`22/N`, after TLA+ model checking): every batch claim also carries `agents.x-k8s.io/batch-lease-uid` so post-Lease `Release`/`ReleaseGroup`/watch selectors never touch a newer batch reusing the id, the driver checks `_lease_expires_at` across in-flight waits and bounds per-claim request timeouts by the remaining Lease budget, and the reaper waits a full `leaseDurationSeconds` (*D*) in its confirmation step instead of one `RenewInterval` (Brian approved Issue 1 and independent-review Option A on 2026-11-05).
 
 #### Claim Ownership
 
@@ -48,14 +48,14 @@ The reaper's safety argument needs the driver to have given up before the reaper
 
 The reaper considers a Lease stale when `now > renewTime + D + REAPER_SKEW_MARGIN`, with `now` taken from the reaper's own clock. The margin absorbs clock skew between the driver and the reaper. It is configurable, 30–60 s by default, and never below `CLOCK_SKEW_MARGIN`. The margin only ever adds waiting, because reaping early destroys running work while waiting only holds idle quota.
 
-A stale Lease is deleted only if its resourceVersion is unchanged since the reaper read it at least one `RenewInterval` earlier (see Execution). This is the same idea as client-go leader election's `observedTime`. It is the only protection against a healthy driver whose clock runs behind by more than the margin, since that driver writes a `renewTime` that already looks stale but keeps changing the resourceVersion every `RenewInterval`.
+A stale Lease is deleted only if its resourceVersion is unchanged since the reaper read it at least one full `leaseDurationSeconds` (*D*) earlier (see Execution). This is the same idea as client-go leader election's `observedTime`. Waiting *D* aligns the confirmation wait with the driver's own `sent_at + D` self-fencing invariant, guaranteeing that a connected driver whose clock runs behind either renews (failing the delete precondition with `409`) or stops locally before the delete runs.
 
 This puts three thresholds in a deliberate order:
 1. `GetBatch` stops adopting a Lease at `renewTime + D − CLOCK_SKEW_MARGIN`.
-2. A driver that can't renew declares itself expired (`BatchLeaseExpiredError`) and stops renewing *D* after it sent its last successful renewal, measured on its own monotonic clock.
-3. The reaper deletes only after `renewTime + D + REAPER_SKEW_MARGIN`, and only if the Lease hasn't changed for one `RenewInterval`.
+2. A driver that can't renew declares itself expired (`BatchLeaseExpiredError`) and stops renewing, creating, and deleting *D* after it sent its last successful renewal, measured on its own monotonic clock.
+3. The reaper deletes only after `renewTime + D + REAPER_SKEW_MARGIN`, and only if the Lease hasn't changed for one full *D*.
 
-As long as real skew stays below the margin, the driver has given up before the reaper deletes anything. A detached batch needs no special handling: `Detach(grace)` writes `renewTime = now` and `leaseDurationSeconds = grace`, so the reaper waits `grace` plus the margin. Worst-case crash cleanup is `D + margin + RenewInterval + CronJob period`, plus the garbage collector's time, which grows with batch size (see "Why the Reaper Leaves Claims to the Collector").
+As long as real skew stays within `REAPER_SKEW_MARGIN + D` (minus any in-flight request latency), a stalled driver has given up before the reaper deletes anything. A detached batch needs no special handling: `Detach(grace)` writes `renewTime = now` and `leaseDurationSeconds = grace`, so the reaper waits `grace` plus the margin and confirms over `grace`. Worst-case crash cleanup is `2D + margin + CronJob period`, plus the garbage collector's time, which grows with batch size (see "Why the Reaper Leaves Claims to the Collector").
 
 #### Execution
 
@@ -63,7 +63,7 @@ Each run, per namespace:
 
 1. **Discover.** List the batch Leases (see "Cost per Run" for how). The reaper doesn't list claims to find work, because claims without a Lease are the garbage collector's (see "Claims Without a Lease").
 2. **Pick candidates.** A Lease is a candidate when it is stale by the test above. Record the resourceVersion read in step 1.
-3. **Confirm.** Wait until at least one `RenewInterval` (from that Lease's *D*) has passed since step 1. All candidates in a run share one wait, the longest one needed, so a run lasts about as long whatever the number of namespaces.
+3. **Confirm.** Wait until each candidate Lease's `leaseDurationSeconds` (*D*) has passed since step 1, sorted ascending so shorter-*D* batches do not wait behind longer-*D* batches while sharing one timeline across the run.
 4. **Delete the Lease first**, with a resourceVersion precondition set to the value from step 1. A 409 means someone wrote the Lease in the meantime (a renewal, `Detach`, or a takeover), so the batch is skipped for this run. A 404 means someone else (`Release`, another reaper) deleted it. Either way the reaper is done with the batch: the garbage collector deletes its claims, then their Sandboxes and Pods.
 
 Once the Lease is gone, everyone else sees the right error:
@@ -116,7 +116,7 @@ The SDK README documents the ClusterRole and how to run the reaper. The examples
 - the CronJob, ServiceAccount, ClusterRole and a RoleBinding template;
 - a README.
 
-The CronJob runs every 1–2 minutes with `concurrencyPolicy: Forbid`. A run lasts at least the longest `RenewInterval` among its candidates (the confirmation wait), plus the Lease deletes, so `activeDeadlineSeconds` must cover that. A run that is cut short is harmless, since every step is a delete and the next run starts over. The reaper takes `--namespaces`, `--skew-margin` and `--dry-run`. It logs one line per reaped batch and exits non-zero on errors, so failed runs show up as failed Jobs.
+The CronJob runs every 1–2 minutes with `concurrencyPolicy: Forbid`. A run lasts at least the longest `leaseDurationSeconds` (*D*) among its candidates (the confirmation wait), plus the Lease deletes, so `activeDeadlineSeconds` must cover that (for example `>= 600` seconds when running 300-second RL Leases). A run that is cut short is harmless, since every step is a delete and the next run starts over. The reaper takes `--namespaces`, `--skew-margin` and `--dry-run`. It logs one line per reaped batch and exits non-zero on errors, so failed runs show up as failed Jobs.
 
 The reaper PR sits on top of the linear stack (after PR 6 and the transport PR), because it adds the owner reference to claim creation in both `ClaimBatch` (PR 2) and `Acquire` (PR 6), in both shells. That keeps the open PRs below it unchanged. It can land whenever upstream agrees on its location. The driver-side changes above are not part of it; they are in PR 1.
 
