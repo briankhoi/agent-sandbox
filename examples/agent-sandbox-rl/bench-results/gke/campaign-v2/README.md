@@ -138,6 +138,45 @@ Direct benchmark of the Python SDK (`AsyncSandboxClient`) acquiring `1,000` warm
 
 ---
 
+### 4. `Bench 2B` — `10,000`-Claim Sustained Wave Soak (`50` Waves × `200` Claims, `200 × 4 = 800` Standing Fleet)
+
+Sustained 50-wave churn test (`10,000` total claims per arm, waiting for `100%` warm-pool refill between waves) verifying zero socket leaks, zero memory leaks, and sub-second latency across `10,000` sequential/concurrent lifecycles:
+
+| Metric | `per_claim` (`HEAD`) | **`batch` (`mif=64, rps=200`)** | Improvement |
+|---|---:|---:|---:|
+| **Claims `ok / err`** | `10,000 / 0` (`100%`) | **`10,000 / 0` (`100%`)** | Zero errors across 20,000 claims |
+| **Total 50-Wave Soak Wall (`soak_wall_s`)** | `610.37s` (`16.38/s`) | **`573.28s` (`17.44/s`)** | **`1.06×` faster** (refill-bounded) |
+| **Mean Wave Acquire Wall (`200` claims)** | `1.981s` (`102.2/s`, peak `131.6/s`) | **`1.748s` (`117.0/s`, peak `162.8/s`)** | **`+23.7%` peak burst rate** |
+| **1st Sandbox Ready (`min` across `10,000`)** | `0.184s` | **`0.104s`** | **`1.77×` faster (`104 ms`)** |
+| **Aggregate Latency (`avg` / `p50` / `p99` / `max`, `n = 10,000`)** | `1.032s` / `0.990s` / `1.927s` / `2.337s` | **`0.895s` / `0.888s` / `1.919s` / `2.282s`** | **`1.15×` faster `avg`** |
+| **End-of-Soak Driver RSS (`vm_rss_mb` / `vm_hwm_mb`)** | `511.97 MB` / `569.08 MB` | **`320.92 MB` / `380.37 MB`** | **`-37.3%` RSS (`1.60×` lower)** |
+| **End-of-Soak Driver Threads & Open Sockets** | `3,017` threads / `202` sockets (`19 CLOSE_WAIT`) | **`1,857` threads / `125` sockets (`8 CLOSE_WAIT`)** | **`-38.4%` threads, `1.62×` fewer sockets** |
+
+---
+
+### 5. `Bench 1B` — Tunix GRPO Wide RL Rollout Shape (`64` Pools × `16` Rollouts × `8` Steps = `8,192` Tasks, `c = 1,024`)
+
+Wide `G = 16` GRPO rollout shape (`1,024` simultaneous gVisor sandboxes per synchronous RL step across `64` R2E-Gym repository images, `125m / 512Mi`, `--enable-cow`, `git status + git log + sleep 5`):
+
+| Metric | `per_claim` (`HEAD`) | **`batch` (`mif=64, rps=200`)** | Notes |
+|---|---:|---:|---|
+| **Tasks `ok / err`** | `8,192 / 0` (`100%`) | **`8,192 / 0` (`100%`)** | `100%` reliability at `c = 1,024` |
+| **Step 0 Fresh-Pool Wall / `env_ready_all_s`** | `51.83s` / `31.43s` | **`43.18s` (`1.20×` faster) / `30.19s`** | `batch` wins fresh `1,024`-pod step |
+| **8-Step Total Wall (`variant_wall_s`)** | `315.45s` (`25.97/s`) | `358.46s` (`22.85/s`) | Bounded by `100 pods/s` controller refill rate (`1,024 / 100 ≈ 10.2s` between steps); `per_claim` streams individual `DELETE`s during straggler `exec`s (`10.1s` avg `process`), whereas `batch` finishes `exec` faster (`7.0s` avg `process`) and bulk-deletes per template batch |
+| **1st Sandbox Ready (`claim min` across steps)** | `0.163s` | **`0.105s`** | **`1.55×` faster (`105 ms`)** |
+| **Max Single-Claim Latency (`claim max` across `8,192`)** | `11.49s` | **`8.74s`** | **`1.31×` lower max spike** |
+| **Container `process` Exec Mean** | `9.95s` | **`6.99s`** | **`1.42×` faster exec** (reduced client thread/socket contention) |
+| **Post-Run Open Sockets & Peak RSS** | `516` sockets (`794` peak) / `899.95 MB` HWM | **`133` sockets (`3.88×` fewer) / `809.14 MB` HWM** | **`-74.2%` post-run sockets** |
+
+---
+
+### 6. `Bench 0` — Smoke Verification (`20` Images × `2` Rollouts × `2` Steps = `80` Tasks, `c = 40`)
+
+- `per_claim`: `11.68s` (`80 / 80` OK, `1st Ready = 0.136s`, `claim avg = 0.42s`, `44` sockets).
+- `batch` (`mif=20`): `12.26s` (`80 / 80` OK, `1st Ready = 0.200s`, `claim avg = 0.38s`, `process avg = 0.72s` vs `0.85s`).
+
+---
+
 ## Forensic Calibration Verification: Why `HEAD per_claim` Beats July `RESULTS.md` While Preserving Exact Physics
 
 Before running any `batch` arms, `per_claim` was calibrated against the published July `RESULTS.md` `RunReport`s (`#10–#12`, `#15–#16`):
@@ -163,21 +202,24 @@ Before running any `batch` arms, `per_claim` was calibrated against the publishe
 - [`raw/p1_t0_swe3000_recycle_batch64.json`](raw/p1_t0_swe3000_recycle_batch64.json)
 
 ### Phase II (Completed So Far)
+- [`raw/p2_b0_smoke_per_claim.json`](raw/p2_b0_smoke_per_claim.json)
+- [`raw/p2_b0_smoke_batch20.json`](raw/p2_b0_smoke_batch20.json)
 - [`raw/p2_b1a_r2e_per_claim.json`](raw/p2_b1a_r2e_per_claim.json)
 - [`raw/p2_b1a_r2e_batch64.json`](raw/p2_b1a_r2e_batch64.json)
+- [`raw/p2_b1b_grpo_per_claim.json`](raw/p2_b1b_grpo_per_claim.json)
+- [`raw/p2_b1b_grpo_batch64.json`](raw/p2_b1b_grpo_batch64.json)
 - [`raw/p2_b2a_1pool1000_per_claim.json`](raw/p2_b2a_1pool1000_per_claim.json)
 - [`raw/p2_b2a_1pool1000_batch64.json`](raw/p2_b2a_1pool1000_batch64.json)
 - [`raw/p2_b2a_burst_per_claim.json`](raw/p2_b2a_burst_per_claim.json)
 - [`raw/p2_b2a_burst_batch20.json`](raw/p2_b2a_burst_batch20.json)
 - [`raw/p2_b2a_burst_batch64.json`](raw/p2_b2a_burst_batch64.json)
+- [`raw/p2_b2b_soak10k_per_claim.json`](raw/p2_b2b_soak10k_per_claim.json)
+- [`raw/p2_b2b_soak10k_batch64.json`](raw/p2_b2b_soak10k_batch64.json)
 - [`raw/p2_sdk_1000_cleanup.json`](raw/p2_sdk_1000_cleanup.json)
 
 ---
 
 ## Remaining Sequential Runs in Flight
 
-- `Bench 1B`: Tunix GRPO wide RL rollout shape (`64 × 16 × 8 = 8,192` trajectories, `c = 1024`, `--enable-cow`)
-- `Bench 2B`: `10,000`-claim sustained `50 × 200` wave soak (`per_claim` vs `batch`)
-- `Bench 0`: `20 × 2 × 2` smoke check (`per_claim` vs `batch`)
-- `Bench 3A` & `3B`: In-cluster SWE-bench `500 × 1` and `500 × 6 = 3,000` strategy sweeps
+- `Bench 3A` & `3B`: In-cluster SWE-bench `500 × 1` and `500 × 6 = 3,000` strategy sweeps (`Running`)
 - `Phase III` (`T1` Secondary Boot Disk Ceiling): `n2-standard-32` `gvisor-sbd-pool` with preloaded 600 GB SWE-bench `CONTAINER_IMAGE_CACHE` (`#17` infra-floor + `#1` 30s real-work ceiling)
