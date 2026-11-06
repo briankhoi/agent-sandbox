@@ -52,9 +52,10 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
-# Keep connection retries on shared batch collection, watch, and pool-read calls while surfacing
-# read errors and Retry-After responses after one attempt so batch callers enforce their own
-# deadlines, Retry-After caps, and Lease renewals. Per-claim batch writes use retries=False instead.
+# Keep connection retries on shared batch collection, watch, and pre-Lease pool-read calls while
+# surfacing read errors and Retry-After responses after one attempt so batch callers enforce their
+# own deadlines, Retry-After caps, and Lease renewals. Lease-bounded per-claim writes and acquire()
+# pool reads use retries=False instead.
 _BATCH_CUSTOM_OBJECTS_RETRIES = urllib3.Retry(3, read=False, respect_retry_after_header=False)
 
 
@@ -885,16 +886,46 @@ class K8sHelper:
             response.release_conn()
 
     def get_sandbox_warmpool(
-        self, name: str, namespace: str, _request_timeout: float | tuple[float, float] | None = None
+        self,
+        name: str,
+        namespace: str,
+        _request_timeout: float | tuple[float, float] | None = None,
+        *,
+        retry_connect: bool = True,
     ) -> dict[str, Any] | None:
-        """Gets a SandboxWarmPool custom resource (or ``None`` if it doesn't exist)."""
-        return self._get_extensions_object(WARMPOOL_PLURAL_NAME, name, namespace, _request_timeout)
+        """Gets a SandboxWarmPool custom resource (or ``None`` if it doesn't exist).
+
+        Args:
+            _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
+                pair) forwarded to the underlying urllib3 request.
+            retry_connect: If ``False``, route the request through the unretried
+                custom-object client so connection errors surface after one attempt
+                instead of retrying past a deadline or Lease budget.
+        """
+        return self._get_extensions_object(
+            WARMPOOL_PLURAL_NAME, name, namespace, _request_timeout, retry_connect=retry_connect
+        )
 
     def get_sandbox_template(
-        self, name: str, namespace: str, _request_timeout: float | tuple[float, float] | None = None
+        self,
+        name: str,
+        namespace: str,
+        _request_timeout: float | tuple[float, float] | None = None,
+        *,
+        retry_connect: bool = True,
     ) -> dict[str, Any] | None:
-        """Gets a SandboxTemplate custom resource (or ``None`` if it doesn't exist)."""
-        return self._get_extensions_object(TEMPLATE_PLURAL_NAME, name, namespace, _request_timeout)
+        """Gets a SandboxTemplate custom resource (or ``None`` if it doesn't exist).
+
+        Args:
+            _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
+                pair) forwarded to the underlying urllib3 request.
+            retry_connect: If ``False``, route the request through the unretried
+                custom-object client so connection errors surface after one attempt
+                instead of retrying past a deadline or Lease budget.
+        """
+        return self._get_extensions_object(
+            TEMPLATE_PLURAL_NAME, name, namespace, _request_timeout, retry_connect=retry_connect
+        )
 
     def _get_extensions_object(
         self,
@@ -902,10 +933,13 @@ class K8sHelper:
         name: str,
         namespace: str,
         _request_timeout: float | tuple[float, float] | None,
+        *,
+        retry_connect: bool = True,
     ) -> dict[str, Any] | None:
         """Gets an object in the extensions API group, or ``None`` if it doesn't exist."""
+        api = self._batch_custom_objects_api if retry_connect else self._unretried_custom_objects_api
         try:
-            return cast(dict[str, Any], self._batch_custom_objects_api.get_namespaced_custom_object(
+            return cast(dict[str, Any], api.get_namespaced_custom_object(
                 group=CLAIM_API_GROUP,
                 version=CLAIM_API_VERSION,
                 namespace=namespace,

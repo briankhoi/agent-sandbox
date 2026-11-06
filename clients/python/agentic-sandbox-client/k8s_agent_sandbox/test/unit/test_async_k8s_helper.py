@@ -1387,11 +1387,11 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
              {"group": "extensions.agents.x-k8s.io", "plural": "sandboxclaims",
               "label_selector": selector}),
             ("get_sandbox_warmpool", lambda: helper.get_sandbox_warmpool(
-                "pool-a", "default", _request_timeout=30),
+                "pool-a", "default", _request_timeout=30, retry_connect=False),
              api.get_namespaced_custom_object,
              {"group": "extensions.agents.x-k8s.io", "plural": "sandboxwarmpools", "name": "pool-a"}),
             ("get_sandbox_template", lambda: helper.get_sandbox_template(
-                "tmpl", "default", _request_timeout=30),
+                "tmpl", "default", _request_timeout=30, retry_connect=False),
              api.get_namespaced_custom_object,
              {"group": "extensions.agents.x-k8s.io", "plural": "sandboxtemplates", "name": "tmpl"}),
             ("create_batch_lease", lambda: helper.create_batch_lease(

@@ -83,8 +83,8 @@ _TRANSPORT_ERRORS = (
     urllib3.exceptions.ProtocolError,
     urllib3.exceptions.ReadTimeoutError,
     urllib3.exceptions.MaxRetryError,
-    # urllib3 doesn't retry Lease or per-claim batch writes, so a refused or timed-out connect raises
-    # this error instead of a MaxRetryError. NewConnectionError subclasses it.
+    # urllib3 doesn't retry Lease or Lease-bounded batch requests, so a refused or timed-out connect
+    # raises this error instead of a MaxRetryError. NewConnectionError subclasses it.
     urllib3.exceptions.ConnectTimeoutError,
     ConnectionError,
     # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
@@ -951,7 +951,11 @@ class SandboxBatch:
                 if not acquired:
                     raise BatchTimeoutError(f"warm pool '{warmpool}' wasn't checked within {wait:g}s")
                 ready = _precheck_pools(
-                    self._client.k8s_helper, [warmpool], self.namespace, timeout=request_timeout
+                    self._client.k8s_helper,
+                    [warmpool],
+                    self.namespace,
+                    timeout=request_timeout,
+                    retry_connect=False,
                 )
                 with self._lock:
                     self._warm_credit.record(warmpool, ready[warmpool])
@@ -1006,7 +1010,10 @@ class SandboxBatch:
                 request_timeout = min(float(batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS), remaining)
                 try:
                     obj = self._client.k8s_helper.get_sandbox_warmpool(
-                        warmpool, self.namespace, _request_timeout=request_timeout
+                        warmpool,
+                        self.namespace,
+                        _request_timeout=request_timeout,
+                        retry_connect=False,
                     )
                     ready = 0 if obj is None else batch_utils.warmpool_ready_replicas(obj)
                 except Exception as e:
@@ -1964,6 +1971,8 @@ def _precheck_pools(
     warmpools: Iterable[str],
     namespace: str,
     timeout: int | float = batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+    *,
+    retry_connect: bool = True,
 ) -> dict[str, int]:
     """Checks that each warm pool and the SandboxTemplate it references exist, and returns each
     pool's Ready replica count.
@@ -1975,7 +1984,9 @@ def _precheck_pools(
     checked_templates: set[str] = set()
     ready: dict[str, int] = {}
     for name in warmpools:
-        warmpool = helper.get_sandbox_warmpool(name, namespace, _request_timeout=timeout)
+        warmpool = helper.get_sandbox_warmpool(
+            name, namespace, _request_timeout=timeout, retry_connect=retry_connect
+        )
         if warmpool is None:
             raise SandboxWarmPoolNotFoundError(
                 f"SandboxWarmPool '{name}' not found in namespace '{namespace}'"
@@ -1988,7 +1999,12 @@ def _precheck_pools(
             )
         if template in checked_templates:
             continue
-        if helper.get_sandbox_template(template, namespace, _request_timeout=timeout) is None:
+        if (
+            helper.get_sandbox_template(
+                template, namespace, _request_timeout=timeout, retry_connect=retry_connect
+            )
+            is None
+        ):
             raise SandboxTemplateNotFoundError(
                 f"SandboxTemplate '{template}' not found in namespace '{namespace}'"
             )

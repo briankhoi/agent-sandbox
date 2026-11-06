@@ -857,17 +857,39 @@ class AsyncK8sHelper:
             response.release()
 
     async def get_sandbox_warmpool(
-        self, name: str, namespace: str, _request_timeout: float | None = None
+        self,
+        name: str,
+        namespace: str,
+        _request_timeout: float | None = None,
+        *,
+        retry_connect: bool = True,
     ) -> dict[str, Any] | None:
-        """Gets a SandboxWarmPool custom resource (or ``None`` if it doesn't exist)."""
+        """Gets a SandboxWarmPool custom resource (or ``None`` if it doesn't exist).
+
+        Args:
+            _request_timeout: Optional total timeout in seconds, forwarded to kubernetes_asyncio.
+            retry_connect: Accepted for parity with ``K8sHelper.get_sandbox_warmpool``;
+                ``aiohttp`` does not retry requests.
+        """
         return await self._get_extensions_object(
             WARMPOOL_PLURAL_NAME, name, namespace, _request_timeout
         )
 
     async def get_sandbox_template(
-        self, name: str, namespace: str, _request_timeout: float | None = None
+        self,
+        name: str,
+        namespace: str,
+        _request_timeout: float | None = None,
+        *,
+        retry_connect: bool = True,
     ) -> dict[str, Any] | None:
-        """Gets a SandboxTemplate custom resource (or ``None`` if it doesn't exist)."""
+        """Gets a SandboxTemplate custom resource (or ``None`` if it doesn't exist).
+
+        Args:
+            _request_timeout: Optional total timeout in seconds, forwarded to kubernetes_asyncio.
+            retry_connect: Accepted for parity with ``K8sHelper.get_sandbox_template``;
+                ``aiohttp`` does not retry requests.
+        """
         return await self._get_extensions_object(
             TEMPLATE_PLURAL_NAME, name, namespace, _request_timeout
         )

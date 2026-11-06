@@ -1113,9 +1113,20 @@ class TestRenewal(BaseAsyncBatchClientTest):
         self.mock_k8s_helper.delete_sandbox_claim = AsyncMock()
         member = await handle.acquire("pool-unseen", timeout=60)
         pool_timeout = self.mock_k8s_helper.get_sandbox_warmpool.call_args.kwargs["_request_timeout"]
+        template_timeout = self.mock_k8s_helper.get_sandbox_template.call_args.kwargs[
+            "_request_timeout"
+        ]
         create_timeout = self.mock_k8s_helper.create_sandbox_claim.call_args.kwargs["_request_timeout"]
+        self.assertIs(
+            self.mock_k8s_helper.get_sandbox_warmpool.call_args.kwargs["retry_connect"], False
+        )
+        self.assertIs(
+            self.mock_k8s_helper.get_sandbox_template.call_args.kwargs["retry_connect"], False
+        )
         self.assertGreater(pool_timeout, 0)
         self.assertLessEqual(pool_timeout, 4.0)
+        self.assertGreater(template_timeout, 0)
+        self.assertLessEqual(template_timeout, 4.0)
         self.assertGreater(create_timeout, 0)
         self.assertLessEqual(create_timeout, 4.0)
 
@@ -1794,6 +1805,13 @@ class TestClaimBatchSetup(BaseClaimBatchTest):
             [c.args[0] for c in helper.get_sandbox_warmpool.call_args_list], ["pool-a", "pool-b"]
         )
         helper.get_sandbox_template.assert_called_once()  # Both pools share one template.
+        self.assertTrue(
+            all(
+                c.kwargs.get("retry_connect", True)
+                for c in helper.get_sandbox_warmpool.call_args_list
+            )
+        )
+        self.assertTrue(helper.get_sandbox_template.call_args.kwargs.get("retry_connect", True))
         self.assertEqual(self.cluster.calls, ["precheck", "precheck", "lease", "list", "create", "create"])
         self.assertEqual(helper.watch_sandbox_claims.call_args_list[0].args[2], "7")
 
@@ -3972,6 +3990,8 @@ class TestAcquire(BaseClaimBatchTest):
             # One read covers all three, which would otherwise wait for pacing slots.
             self.assertLess(max(t - start for _, t in self.cluster.created), 0.2)
             self.assertEqual(helper.get_sandbox_warmpool.call_count, 2)
+            self.assertTrue(helper.get_sandbox_warmpool.call_args_list[0].kwargs.get("retry_connect", True))
+            self.assertIs(helper.get_sandbox_warmpool.call_args_list[1].kwargs["retry_connect"], False)
 
             # When the next pacing slot is already free, acquire() starts at once without paying a
             # pool GET, while advancing _next_create_at for concurrent callers behind it.

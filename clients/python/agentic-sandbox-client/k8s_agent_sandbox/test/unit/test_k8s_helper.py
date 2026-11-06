@@ -1226,10 +1226,12 @@ class TestLeaseApiClient(unittest.TestCase):
                 self.assertIs(retries.respect_retry_after_header, False)
 
             selector = "agents.x-k8s.io/batch-id=b1"
-            # Before listen(), connect is refused: shared batch and non-batch clients retry and wrap in
-            # MaxRetryError, while Lease-bounded per-claim batch writes fail once with NewConnectionError.
+            # Before listen(), connect is refused: shared batch, pre-Lease pool-read, and non-batch
+            # clients retry and wrap in MaxRetryError, while Lease-bounded calls fail once.
             for retried_call in (
                 lambda: helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 0.02)),
+                lambda: helper.get_sandbox_warmpool("pool-a", "default", _request_timeout=(0.05, 0.05)),
+                lambda: helper.get_sandbox_template("tmpl", "default", _request_timeout=(0.05, 0.05)),
                 lambda: helper.delete_sandbox_claim("single-0", "default", _request_timeout=(0.05, 0.05)),
                 lambda: helper.create_sandbox_claim("single-0", "pool-a", "default", _request_timeout=(0.05, 0.05)),
             ):
@@ -1239,6 +1241,12 @@ class TestLeaseApiClient(unittest.TestCase):
                 lambda: helper.delete_sandbox_claim("b1-0", "default", _request_timeout=(0.05, 0.05), batch=True),
                 lambda: helper.create_sandbox_claim(
                     "b1-0", "pool-a", "default", _request_timeout=(0.05, 0.05), batch=True
+                ),
+                lambda: helper.get_sandbox_warmpool(
+                    "pool-a", "default", _request_timeout=(0.05, 0.05), retry_connect=False
+                ),
+                lambda: helper.get_sandbox_template(
+                    "tmpl", "default", _request_timeout=(0.05, 0.05), retry_connect=False
                 ),
             ):
                 with self.assertRaises(urllib3.exceptions.NewConnectionError):
@@ -1255,7 +1263,9 @@ class TestLeaseApiClient(unittest.TestCase):
                 lambda: helper.delete_sandbox_claim("b1-0", "default", _request_timeout=0.05, batch=True),
                 lambda: helper.create_sandbox_claim("b1-0", "pool-a", "default", _request_timeout=0.05, batch=True),
                 lambda: helper.get_sandbox_warmpool("pool-a", "default", _request_timeout=0.05),
+                lambda: helper.get_sandbox_warmpool("pool-a", "default", _request_timeout=0.05, retry_connect=False),
                 lambda: helper.get_sandbox_template("tmpl", "default", _request_timeout=0.05),
+                lambda: helper.get_sandbox_template("tmpl", "default", _request_timeout=0.05, retry_connect=False),
             ):
                 with self.assertRaises(urllib3.exceptions.ReadTimeoutError):
                     call_fn()
