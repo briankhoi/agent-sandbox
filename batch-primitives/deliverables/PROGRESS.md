@@ -38,3 +38,8 @@
 
 ## Phase 4. Independent Verifier Subagent Audit and Sign-Off
 - Status: Complete (Independent `inherit` verifier `dee13212-f21f-4f77-b414-3fd79ce49ee3` audited all 5 deliverables; all 7 findings and 4 polish items resolved; 5/5 categories PASS with 0 blocking issues)
+
+## Phase 5. Version B Design-Purity & Readability Pass
+- Status: Complete (2026-11-06)
+- Kept original `batch_claim_proposal.md` and Version A (`batch_claim_proposal_same_structure.md`) untouched.
+- Audited and rewrote `deliverables/batch_claim_proposal_restructured.md` (Version B) to strip all downstream RL integration/campaign benchmark dumps, validation regexes, HTTP pool/retry/paging plumbing (`pool_size`, `urllib3`, `QPS=-1`, `500`-item pages), and wall-of-text density, focusing strictly on clean, scannable SDK batch-claim design.
