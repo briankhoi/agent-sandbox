@@ -156,6 +156,21 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 </details>
 
+<a id="proc-12"></a>
+
+### PROC-12 Audit changelogs and release notes clause by clause against the PR's own diff
+
+**Takeaway:** Update package changelogs (such as `examples/agent-sandbox-rl/CHANGELOG.md`) in the PR that ships the behavior, and verify every clause against that PR's own diff rather than upper branches or unconditional summaries. Qualify conditional paths that still make an extra RPC or bypass a fast path.
+
+<details>
+<summary>The full story (25/N)</summary>
+
+- **What goes wrong:** Upstream PR #2114 had to revert a changelog claim in `agent-sandbox-rl` for an SDK change that never landed. On 25/N (`claim_mode="batch"`), the first draft of the `CHANGELOG.md` entry omitted two qualifiers present in the code: `snapshot_uid` still reads the `Pod` to check `PodRestored` even though normal batch `acquire()` makes no per-claim `Sandbox` or `Pod` `GET`s, and `handle.is_alive()` checks the batch watch only until `record_pod_identity()` or `refresh()` runs.
+- **What we do:** Have an independent verifier audit every sentence of `CHANGELOG.md` against `base..HEAD` of the owning PR, checking both conditional feature paths (`snapshot_uid`, `refresh()`, `fail_fast`) and upper branches (`feat/rl-batch-hardening`) so unshipped behavior never leaks into release notes.
+- **Related:** [PROC-5](#proc-5), [WATCH-10](field-guide/watch.md#watch-10).
+
+</details>
+
 <a id="sec-git"></a>
 
 ## Stacked PRs and git
