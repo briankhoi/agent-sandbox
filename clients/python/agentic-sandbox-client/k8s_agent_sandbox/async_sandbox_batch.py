@@ -291,21 +291,44 @@ class AsyncSandboxBatch:
                     f"batch '{args.batch_id}' already exists in namespace '{namespace}'"
                 ) from e
             raise
+        created_meta, _ = batch_utils.lease_parts(created)
+        created_rv = created_meta.resource_version
+        if not created_rv:
+            raise BatchError(
+                f"batch '{args.batch_id}' Lease in namespace '{namespace}' has no resourceVersion"
+            )
+        lease_expires_at = renewed_at + args.lease_duration
         try:
+            batch_utils.lease_owner_reference(created)
             # The list's resourceVersion is where the watch starts, so no create is missed.
             claim_items, list_rv = await helper.list_sandbox_claim_objects(
-                namespace, label_selector, _request_timeout=timeout
+                namespace, label_selector, _request_timeout=timeout, deadline=lease_expires_at
             )
             if claim_items:
                 raise BatchExistsError(
                     f"claims with batch id '{args.batch_id}' already exist in namespace '{namespace}'"
                 )
-        except BaseException:
+            if time.monotonic() >= lease_expires_at:
+                raise BatchLeaseExpiredError(
+                    f"batch '{args.batch_id}' Lease expired before setup finished in namespace '{namespace}'"
+                )
+        except BaseException as exc:
             # BaseException too, so a cancel or Ctrl-C during the list doesn't leave the Lease behind.
+            # Fence the rollback delete by created_rv so a slow list never deletes a replacement Lease.
             try:
-                await helper.delete_batch_lease(lease_name, namespace, _request_timeout=timeout)
+                await helper.delete_batch_lease(
+                    lease_name, namespace, _request_timeout=timeout, resource_version=created_rv
+                )
             except Exception as e:
                 logger.warning(f"Batch '{args.batch_id}' failed to delete its Lease: {e}")
+            if (
+                not isinstance(exc, BatchError)
+                and (isinstance(exc, TimeoutError) or _is_transport_error(exc))
+                and time.monotonic() >= lease_expires_at
+            ):
+                raise BatchLeaseExpiredError(
+                    f"batch '{args.batch_id}' Lease expired before setup finished in namespace '{namespace}'"
+                ) from exc
             raise
 
         handle = cls(
@@ -967,11 +990,7 @@ class AsyncSandboxBatch:
                 if not acquired:
                     raise BatchTimeoutError(f"warm pool '{warmpool}' wasn't checked within {wait:g}s")
                 ready = await _precheck_pools(
-                    self._client.k8s_helper,
-                    [warmpool],
-                    self.namespace,
-                    timeout=request_timeout,
-                    retry_connect=False,
+                    self._client.k8s_helper, [warmpool], self.namespace, timeout=request_timeout
                 )
                 async with self._lock:
                     self._warm_credit.record(warmpool, ready[warmpool])
@@ -1037,10 +1056,7 @@ class AsyncSandboxBatch:
             try:
                 async with asyncio.timeout(request_timeout):
                     obj = await self._client.k8s_helper.get_sandbox_warmpool(
-                        warmpool,
-                        self.namespace,
-                        _request_timeout=request_timeout,
-                        retry_connect=False,
+                        warmpool, self.namespace, _request_timeout=request_timeout
                     )
                 ready = 0 if obj is None else batch_utils.warmpool_ready_replicas(obj)
             except asyncio.CancelledError:
@@ -1969,8 +1985,6 @@ async def _precheck_pools(
     warmpools: Iterable[str],
     namespace: str,
     timeout: int | float = batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
-    *,
-    retry_connect: bool = True,
 ) -> dict[str, int]:
     """Checks that each warm pool and the SandboxTemplate it references exist, and returns each
     pool's Ready replica count.
@@ -1982,9 +1996,7 @@ async def _precheck_pools(
     checked_templates: set[str] = set()
     ready: dict[str, int] = {}
     for name in warmpools:
-        warmpool = await helper.get_sandbox_warmpool(
-            name, namespace, _request_timeout=timeout, retry_connect=retry_connect
-        )
+        warmpool = await helper.get_sandbox_warmpool(name, namespace, _request_timeout=timeout)
         if warmpool is None:
             raise SandboxWarmPoolNotFoundError(
                 f"SandboxWarmPool '{name}' not found in namespace '{namespace}'"
@@ -1997,12 +2009,7 @@ async def _precheck_pools(
             )
         if template in checked_templates:
             continue
-        if (
-            await helper.get_sandbox_template(
-                template, namespace, _request_timeout=timeout, retry_connect=retry_connect
-            )
-            is None
-        ):
+        if await helper.get_sandbox_template(template, namespace, _request_timeout=timeout) is None:
             raise SandboxTemplateNotFoundError(
                 f"SandboxTemplate '{template}' not found in namespace '{namespace}'"
             )
@@ -2067,6 +2074,10 @@ async def _take_batch_lease(
             retried = True
             continue
         written_meta, _ = batch_utils.lease_parts(written)
+        if not written_meta.resource_version:
+            raise BatchError(
+                f"batch '{batch_id}' Lease in namespace '{namespace}' has no resourceVersion"
+            )
         return str(written_meta.resource_version)
 
 

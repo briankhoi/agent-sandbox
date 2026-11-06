@@ -1059,12 +1059,6 @@ class TestRenewal(BaseBatchClientTest):
             "_request_timeout"
         ]
         create_timeout = self.mock_k8s_helper.create_sandbox_claim.call_args.kwargs["_request_timeout"]
-        self.assertIs(
-            self.mock_k8s_helper.get_sandbox_warmpool.call_args.kwargs["retry_connect"], False
-        )
-        self.assertIs(
-            self.mock_k8s_helper.get_sandbox_template.call_args.kwargs["retry_connect"], False
-        )
         self.assertGreater(pool_timeout, 0)
         self.assertLessEqual(pool_timeout, 4.0)
         self.assertGreater(template_timeout, 0)
@@ -1570,13 +1564,6 @@ class TestClaimBatchSetup(BaseClaimBatchTest):
             [c.args[0] for c in helper.get_sandbox_warmpool.call_args_list], ["pool-a", "pool-b"]
         )
         helper.get_sandbox_template.assert_called_once()  # Both pools share one template.
-        self.assertTrue(
-            all(
-                c.kwargs.get("retry_connect", True)
-                for c in helper.get_sandbox_warmpool.call_args_list
-            )
-        )
-        self.assertTrue(helper.get_sandbox_template.call_args.kwargs.get("retry_connect", True))
         self.assertEqual(self.cluster.calls, ["precheck", "precheck", "lease", "list", "create", "create"])
         self.assertEqual(helper.watch_sandbox_claims.call_args_list[0].args[2], "7")
 
@@ -1699,6 +1686,7 @@ class TestClaimBatchSetup(BaseClaimBatchTest):
         ):
             with self.subTest(name):
                 helper.delete_batch_lease.reset_mock()
+                helper.create_batch_lease.return_value = _lease(resource_version="77")
                 if isinstance(list_result, BaseException):
                     helper.list_sandbox_claim_objects.side_effect = list_result
                 else:
@@ -1707,7 +1695,92 @@ class TestClaimBatchSetup(BaseClaimBatchTest):
                 with self.assertRaises(error):
                     self.claim()
                 self.assertEqual(helper.delete_batch_lease.call_args.args[:2], ("batch-b1", "default"))
+                self.assertEqual(helper.delete_batch_lease.call_args.kwargs["resource_version"], "77")
         self.assertEqual(self.cluster.created, [])
+
+    def test_setup_list_deadline_and_fenced_rollback_against_replacement_lease(self):
+        from k8s_agent_sandbox.k8s_helper import K8sHelper
+
+        helper = self.cluster.helper
+        helper.create_batch_lease.return_value = _lease(resource_version="77")
+
+        real_helper = K8sHelper.__new__(K8sHelper)
+        real_helper.coordination_v1_api = MagicMock()
+        real_helper.coordination_v1_api.delete_namespaced_lease.side_effect = k8s_client.ApiException(
+            status=409
+        )
+        helper.delete_batch_lease.side_effect = real_helper.delete_batch_lease
+
+        read_timeout = urllib3.exceptions.ReadTimeoutError(None, "/", "read timed out")
+        for label, exc, ticks, expected_error in (
+            ("timeout before lease expiry", TimeoutError("page timed out"), [100.0, 120.0], TimeoutError),
+            ("transport error before lease expiry", read_timeout, [100.0, 120.0], urllib3.exceptions.ReadTimeoutError),
+            (
+                "deadline timeout at lease expiry",
+                TimeoutError("SandboxClaim list exceeded its deadline"),
+                [100.0, 145.0],
+                BatchLeaseExpiredError,
+            ),
+            ("read timeout at lease expiry", read_timeout, [100.0, 145.0], BatchLeaseExpiredError),
+        ):
+            with self.subTest(label):
+                real_helper.coordination_v1_api.delete_namespaced_lease.reset_mock()
+                helper.list_sandbox_claim_objects.side_effect = exc
+                with patch("k8s_agent_sandbox.sandbox_batch.time.monotonic", side_effect=ticks):
+                    with self.assertRaises(expected_error) as raised:
+                        self.claim(lease_duration=45)
+                if expected_error is BatchLeaseExpiredError:
+                    self.assertIs(raised.exception.__cause__, exc)
+                self.assertEqual(helper.list_sandbox_claim_objects.call_args.kwargs["deadline"], 145.0)
+                delete_call = real_helper.coordination_v1_api.delete_namespaced_lease.call_args
+                self.assertEqual(delete_call.args[:2], ("batch-b1", "default"))
+                self.assertEqual(delete_call.kwargs["body"].preconditions.resource_version, "77")
+                self.assertEqual(self.client._active_batches, {})
+                helper.watch_sandbox_claims.assert_not_called()
+                helper.replace_batch_lease.assert_not_called()
+                helper.create_sandbox_claim.assert_not_called()
+
+    def test_setup_lease_expiry_after_list_rolls_back_and_aborts(self):
+        helper = self.cluster.helper
+        helper.create_batch_lease.return_value = _lease(resource_version="77")
+        helper.list_sandbox_claim_objects.side_effect = None
+        helper.list_sandbox_claim_objects.return_value = ([], "7")
+
+        with patch("k8s_agent_sandbox.sandbox_batch.time.monotonic", side_effect=[100.0, 145.0]):
+            with self.assertRaises(BatchLeaseExpiredError):
+                self.claim(lease_duration=45)
+
+        self.assertEqual(helper.list_sandbox_claim_objects.call_args.kwargs["deadline"], 145.0)
+        helper.delete_batch_lease.assert_called_once()
+        self.assertEqual(helper.delete_batch_lease.call_args.args[:2], ("batch-b1", "default"))
+        self.assertEqual(helper.delete_batch_lease.call_args.kwargs["resource_version"], "77")
+        self.assertEqual(self.client._active_batches, {})
+        helper.watch_sandbox_claims.assert_not_called()
+        helper.replace_batch_lease.assert_not_called()
+        helper.create_sandbox_claim.assert_not_called()
+
+    def test_setup_validates_created_lease_resource_version_and_uid(self):
+        helper = self.cluster.helper
+        for rv in (None, ""):
+            with self.subTest(missing_rv=rv):
+                helper.delete_batch_lease.reset_mock()
+                helper.list_sandbox_claim_objects.reset_mock()
+                helper.create_batch_lease.return_value = _lease(resource_version=rv)
+                with self.assertRaisesRegex(BatchError, "no resourceVersion"):
+                    self.claim()
+                helper.delete_batch_lease.assert_not_called()
+                helper.list_sandbox_claim_objects.assert_not_called()
+
+        for uid in (None, ""):
+            with self.subTest(missing_uid=uid):
+                helper.delete_batch_lease.reset_mock()
+                helper.list_sandbox_claim_objects.reset_mock()
+                helper.create_batch_lease.return_value = _lease(resource_version="77", uid=uid)
+                with self.assertRaisesRegex(BatchError, "no name or UID"):
+                    self.claim()
+                helper.list_sandbox_claim_objects.assert_not_called()
+                helper.delete_batch_lease.assert_called_once()
+                self.assertEqual(helper.delete_batch_lease.call_args.kwargs["resource_version"], "77")
 
 
 class TestClaimBatchCreation(BaseClaimBatchTest):
@@ -2699,6 +2772,19 @@ class TestRelease(BaseClaimBatchTest):
             )
             handle.release_group("pool-a")
             self.assertEqual(set(store), {"b1-1", "b1-new-0"})
+
+        for rv in (None, ""):
+            with self.subTest(missing_written_rv=rv):
+                helper.reset_mock(return_value=True, side_effect=True)
+                helper.read_batch_lease.return_value = _lease(holder_identity="host_1234_abcd1234", uid="uid-1")
+                helper.replace_batch_lease.return_value = _lease(
+                    holder_identity="host_1234_abcd1234", uid="uid-1", resource_version=rv
+                )
+                handle = _make_handle(self.client, lease_uid="uid-1")
+                with self.assertRaisesRegex(BatchError, "no resourceVersion"):
+                    handle.release()
+                helper.delete_sandbox_claims_by_label.assert_not_called()
+                helper.delete_batch_lease.assert_not_called()
 
 
 class TestReleaseMembers(BaseClaimBatchTest):
@@ -3845,7 +3931,11 @@ class TestAcquire(BaseClaimBatchTest):
             helper.delete_sandbox_claims_by_label.call_args.args,
             (
                 "default",
-                f"{BATCH_ID_LABEL}=b1,{BATCH_GROUP_LABEL}={batch_utils.group_label_value('pool-b')},{BATCH_LEASE_UID_LABEL}=lease-uid",
+                (
+                    f"{BATCH_ID_LABEL}=b1,"
+                    f"{BATCH_GROUP_LABEL}={batch_utils.group_label_value('pool-b')},"
+                    f"{BATCH_LEASE_UID_LABEL}=lease-uid"
+                ),
             ),
         )
         # Its create may have landed after the label delete, so it is also deleted by name.
@@ -3982,8 +4072,6 @@ class TestAcquire(BaseClaimBatchTest):
             # One read covers all three, which would otherwise wait for pacing slots.
             self.assertLess(max(t - start for _, t in self.cluster.created), 0.2)
             self.assertEqual(helper.get_sandbox_warmpool.call_count, 2)
-            self.assertTrue(helper.get_sandbox_warmpool.call_args_list[0].kwargs.get("retry_connect", True))
-            self.assertIs(helper.get_sandbox_warmpool.call_args_list[1].kwargs["retry_connect"], False)
 
             # When the next pacing slot is already free, acquire() starts at once without paying a
             # pool GET, while advancing _next_create_at for concurrent callers behind it.

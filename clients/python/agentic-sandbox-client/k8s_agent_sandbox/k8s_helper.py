@@ -52,17 +52,10 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
-# Keep connection retries on shared batch collection, watch, and pre-Lease pool-read calls while
-# surfacing read errors and Retry-After responses after one attempt so batch callers enforce their
-# own deadlines, Retry-After caps, and Lease renewals. Lease-bounded per-claim writes and acquire()
-# pool reads use retries=False instead.
-_BATCH_CUSTOM_OBJECTS_RETRIES = urllib3.Retry(3, read=False, respect_retry_after_header=False)
-
-
-class _ConfiguredRetriesApiClient(client.ApiClient):
-    """Wraps ``source`` with its own ``rest_client`` where ``configuration.retries`` is ``retries``,
-    so batch Lease and custom-object callers apply their own retry policies without mutating
-    ``source``.
+class _UnretriedApiClient(client.ApiClient):
+    """Wraps ``source`` with its own ``rest_client`` where ``configuration.retries`` is ``False``,
+    so batch Lease and custom-object callers run their own deadline- and conflict-aware retry logic
+    without disabling retries on ``source``.
 
     ``ApiClient.__init__`` builds ``rest_client`` from ``configuration.retries`` at construction
     time, so those callers need a separate ``ApiClient`` rather than mutating ``source``. Copying
@@ -71,15 +64,15 @@ class _ConfiguredRetriesApiClient(client.ApiClient):
     request.
     """
 
-    def __init__(self, source: client.ApiClient, retries: urllib3.Retry | bool) -> None:
+    def __init__(self, source: client.ApiClient) -> None:
         # ApiClient.__init__ assigns default_headers and cookie before __init__ sets _source.
         self._source: client.ApiClient | None = None
         self._default_headers: dict[Any, Any] = {}
         self._cookie: Any = None
         # A shallow copy shares the credential dicts, so a token the caller rotates in place on the
-        # injected configuration also reaches the copy's requests, while only the copy sets retries.
+        # injected configuration also reaches batch requests, while only the copy disables retries.
         configuration = copy.copy(source.configuration)
-        configuration.retries = retries
+        configuration.retries = False
         super().__init__(configuration=configuration)
         self._source = source
 
@@ -100,13 +93,10 @@ class _ConfiguredRetriesApiClient(client.ApiClient):
         self._cookie = value
 
 
-def _api_client_with_retries(
-    api_client: client.ApiClient | None,
-    retries: urllib3.Retry | bool,
-) -> client.ApiClient:
-    """Returns an ``ApiClient`` like ``api_client`` (or the default one) with ``retries`` set on its
-    copy, so batch Lease and custom-object callers run their own deadline- and conflict-aware
-    retry logic.
+def _api_client_without_retries(api_client: client.ApiClient | None) -> client.ApiClient:
+    """Returns an ``ApiClient`` like ``api_client`` (or the default one) whose requests urllib3
+    doesn't retry, so batch Lease and custom-object callers run their own deadline- and
+    conflict-aware retry logic.
 
     urllib3 retries a timed-out request with a fresh timeout and sleeps on Retry-After headers by
     default, which would stretch a Lease renewal or batch custom-object request past its deadline or
@@ -114,9 +104,9 @@ def _api_client_with_retries(
     as a conflict. The async helper needs no counterpart, since aiohttp doesn't retry requests.
     """
     if api_client is not None:
-        return _ConfiguredRetriesApiClient(api_client, retries)
+        return _UnretriedApiClient(api_client)
     configuration = client.Configuration.get_default_copy()
-    configuration.retries = retries
+    configuration.retries = False
     return client.ApiClient(configuration=configuration)
 
 
@@ -125,6 +115,8 @@ def _claim_list_pages(
     namespace: str,
     label_selector: str,
     _request_timeout: float | tuple[float, float] | None,
+    *,
+    deadline: float | None = None,
 ) -> Iterator[tuple[dict[str, Any], bool]]:
     """Yields ``(page, first)`` pairs for one paginated ``SandboxClaim`` list.
 
@@ -141,6 +133,17 @@ def _claim_list_pages(
     continue_token: str | None = None
     restarted = False
     while True:
+        page_timeout = _request_timeout
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("SandboxClaim list exceeded its deadline")
+            if page_timeout is None:
+                page_timeout = remaining
+            elif isinstance(page_timeout, (int, float)):
+                page_timeout = min(float(page_timeout), remaining)
+            else:
+                page_timeout = (min(page_timeout[0], remaining), min(page_timeout[1], remaining))
         try:
             page = cast(dict[str, Any], list_page(
                 group=CLAIM_API_GROUP,
@@ -150,7 +153,7 @@ def _claim_list_pages(
                 label_selector=label_selector,
                 limit=CLAIM_LIST_PAGE_SIZE,
                 _continue=continue_token,
-                _request_timeout=_request_timeout,
+                _request_timeout=page_timeout,
             ))
         except client.ApiException as e:
             # A continue token expires after a few minutes, and a 410 isn't transient. Restarting the
@@ -201,11 +204,8 @@ class K8sHelper:
                 configuration.connection_pool_maxsize = pool_size
                 api_client = client.ApiClient(configuration=configuration)
         self.custom_objects_api = client.CustomObjectsApi(api_client)
-        self._batch_custom_objects_api = client.CustomObjectsApi(
-            _api_client_with_retries(api_client, _BATCH_CUSTOM_OBJECTS_RETRIES)
-        )
-        unretried_api_client = _api_client_with_retries(api_client, retries=False)
-        self._unretried_custom_objects_api = client.CustomObjectsApi(unretried_api_client)
+        unretried_api_client = _api_client_without_retries(api_client)
+        self._batch_custom_objects_api = client.CustomObjectsApi(unretried_api_client)
         self.core_v1_api = client.CoreV1Api(api_client)
         self.coordination_v1_api = client.CoordinationV1Api(unretried_api_client)
 
@@ -248,9 +248,9 @@ class K8sHelper:
             log_level: Log level for the logger during this function call.
             _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
                 pair) forwarded to the underlying urllib3 request.
-            batch: If ``True``, route the request through the unretried custom-object
-                client so connection errors surface after one attempt instead of
-                retrying past a batch Lease deadline.
+            batch: If ``True``, route the request through the unretried batch
+                custom-object client so connection errors, read errors, and
+                ``Retry-After`` responses surface after one attempt.
         """
         updated_annotations = dict(annotations) if annotations else {}
         if CLIENT_REQUEST_TIME_ANNOTATION not in updated_annotations:
@@ -293,9 +293,9 @@ class K8sHelper:
             "metadata": metadata,
             "spec": spec,
         }
-        # Per-claim batch creates bound _request_timeout by the remaining Lease budget inside
-        # SandboxBatch._create_one's retry loop, so disable urllib3 connection retries on batch=True.
-        api = self._unretried_custom_objects_api if batch else self.custom_objects_api
+        # Route per-claim batch creates through _batch_custom_objects_api so urllib3 does not
+        # retry past SandboxBatch._create_one's deadline or Lease budget.
+        api = self._batch_custom_objects_api if batch else self.custom_objects_api
         logger.log(log_level, f"Creating SandboxClaim '{name}' in namespace '{namespace}' using warm pool '{warmpool}'...")
         return cast(dict[str, Any], api.create_namespaced_custom_object(
             group=CLAIM_API_GROUP,
@@ -539,19 +539,19 @@ class K8sHelper:
                 pair) forwarded to the underlying urllib3-based request.
             expected_uid: If provided, delete only the Claim with this UID.
             log_level: Log level for the logger during this function call.
-            batch: If ``True``, route the request through the unretried custom-object
-                client so connection errors, read errors, and ``Retry-After`` responses
-                surface after one attempt.
+            batch: If ``True``, route the request through the unretried batch
+                custom-object client so connection errors, read errors, and
+                ``Retry-After`` responses surface after one attempt.
         """
         delete_kwargs: dict[str, Any] = {}
         if expected_uid is not None:
             delete_kwargs["body"] = client.V1DeleteOptions(
                 preconditions=client.V1Preconditions(uid=expected_uid)
             )
-        # Route per-claim batch deletes through _unretried_custom_objects_api so connection timeouts
-        # cannot retry past a batch Lease deadline while non-batch callers (including timeout-bounded
-        # atexit cleanup) keep default urllib3 retries and shared batch callers keep connection retries.
-        api = self._unretried_custom_objects_api if batch else self.custom_objects_api
+        # Route per-claim batch deletes through _batch_custom_objects_api so urllib3 does not
+        # retry past a batch Lease deadline while non-batch callers (including timeout-bounded
+        # atexit cleanup) keep default urllib3 retries.
+        api = self._batch_custom_objects_api if batch else self.custom_objects_api
         try:
             api.delete_namespaced_custom_object(
                 group=CLAIM_API_GROUP,
@@ -686,6 +686,8 @@ class K8sHelper:
         namespace: str,
         label_selector: str,
         _request_timeout: float | tuple[float, float] | None = None,
+        *,
+        deadline: float | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         """Lists full SandboxClaim objects matching a label selector. Also returns the list's
         resourceVersion, so a subsequent watch does not miss any events.
@@ -693,11 +695,18 @@ class K8sHelper:
         Args:
             _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
                 pair) forwarded to the underlying urllib3 request of each page.
+            deadline: Optional ``time.monotonic()`` deadline across the whole paginated list;
+                caps each page's ``_request_timeout`` to the remaining budget and raises
+                ``TimeoutError`` once the deadline passes.
         """
         items: list[dict[str, Any]] = []
         resource_version = "0"
         for page, first in _claim_list_pages(
-            self._batch_custom_objects_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
+            self._batch_custom_objects_api.list_namespaced_custom_object,
+            namespace,
+            label_selector,
+            _request_timeout,
+            deadline=deadline,
         ):
             if first:
                 items = []
@@ -833,7 +842,12 @@ class K8sHelper:
                 pair) forwarded to the underlying urllib3 request.
             resource_version: If provided, delete the Lease only at this resourceVersion. A Lease
                 someone has written since is left in place and also treated as deleted.
+
+        Raises:
+            ValueError: If ``resource_version`` is an empty string.
         """
+        if resource_version is not None and not resource_version:
+            raise ValueError("resource_version must not be empty")
         delete_kwargs: dict[str, Any] = {}
         if resource_version is not None:
             delete_kwargs["body"] = client.V1DeleteOptions(
@@ -886,46 +900,16 @@ class K8sHelper:
             response.release_conn()
 
     def get_sandbox_warmpool(
-        self,
-        name: str,
-        namespace: str,
-        _request_timeout: float | tuple[float, float] | None = None,
-        *,
-        retry_connect: bool = True,
+        self, name: str, namespace: str, _request_timeout: float | tuple[float, float] | None = None
     ) -> dict[str, Any] | None:
-        """Gets a SandboxWarmPool custom resource (or ``None`` if it doesn't exist).
-
-        Args:
-            _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
-                pair) forwarded to the underlying urllib3 request.
-            retry_connect: If ``False``, route the request through the unretried
-                custom-object client so connection errors surface after one attempt
-                instead of retrying past a deadline or Lease budget.
-        """
-        return self._get_extensions_object(
-            WARMPOOL_PLURAL_NAME, name, namespace, _request_timeout, retry_connect=retry_connect
-        )
+        """Gets a SandboxWarmPool custom resource (or ``None`` if it doesn't exist)."""
+        return self._get_extensions_object(WARMPOOL_PLURAL_NAME, name, namespace, _request_timeout)
 
     def get_sandbox_template(
-        self,
-        name: str,
-        namespace: str,
-        _request_timeout: float | tuple[float, float] | None = None,
-        *,
-        retry_connect: bool = True,
+        self, name: str, namespace: str, _request_timeout: float | tuple[float, float] | None = None
     ) -> dict[str, Any] | None:
-        """Gets a SandboxTemplate custom resource (or ``None`` if it doesn't exist).
-
-        Args:
-            _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
-                pair) forwarded to the underlying urllib3 request.
-            retry_connect: If ``False``, route the request through the unretried
-                custom-object client so connection errors surface after one attempt
-                instead of retrying past a deadline or Lease budget.
-        """
-        return self._get_extensions_object(
-            TEMPLATE_PLURAL_NAME, name, namespace, _request_timeout, retry_connect=retry_connect
-        )
+        """Gets a SandboxTemplate custom resource (or ``None`` if it doesn't exist)."""
+        return self._get_extensions_object(TEMPLATE_PLURAL_NAME, name, namespace, _request_timeout)
 
     def _get_extensions_object(
         self,
@@ -933,13 +917,10 @@ class K8sHelper:
         name: str,
         namespace: str,
         _request_timeout: float | tuple[float, float] | None,
-        *,
-        retry_connect: bool = True,
     ) -> dict[str, Any] | None:
         """Gets an object in the extensions API group, or ``None`` if it doesn't exist."""
-        api = self._batch_custom_objects_api if retry_connect else self._unretried_custom_objects_api
         try:
-            return cast(dict[str, Any], api.get_namespaced_custom_object(
+            return cast(dict[str, Any], self._batch_custom_objects_api.get_namespaced_custom_object(
                 group=CLAIM_API_GROUP,
                 version=CLAIM_API_VERSION,
                 namespace=namespace,
