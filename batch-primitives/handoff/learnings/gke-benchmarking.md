@@ -243,6 +243,70 @@
 
 </details>
 
+<a id="gke-13"></a>
+
+## GKE-13 Use `501–1,000` node bucket (`go/kcp-resize`) and `pd-standard` OS disks to preserve regional `SSD_TOTAL_GB` quota for Secondary Boot Disks
+
+**Takeaway:** GKE regional master VM sizing (`go/kcp-resize`) scales in discrete node buckets. Creating an initial temporary Spot pool of `510` nodes sizes regional KCP to `n1-standard-32` (`gomaxprocs = 16`, `1,449` nominal APF seats). Using `--disk-type=pd-standard` for OS boot disks counts against `DISKS_TOTAL_GB` (`102,400 GB`) and `0 GB` of `SSD_TOTAL_GB`, reserving the regional `40,960 GB` SSD quota exclusively for `50 × 600 GB = 30,000 GB` Secondary Boot Disks.
+
+<details>
+<summary>The full story (Campaign 3 Multi-Cluster Fleet, CAMPAIGN_3_MASTER_TRACKER.md §3 GKE-1)</summary>
+
+- **Situation:** Multi-cluster testing across `5` regional GKE clusters (`asrl-c3-1..5`) required `50 × n2-standard-32` nodes with `600 GB` `swebench-500-preload-600g` Secondary Boot Disks (`30,000 GB` total `pd-ssd`).
+- **What goes wrong:** If temporary master-warmup Spot pools or OS boot disks use `pd-balanced`, GCP charges them against regional `SSD_TOTAL_GB` (`40,960 GB` quota limit in `us-central1`), causing node pool creation to fail with `Quota SSD_TOTAL_GB exceeded`.
+- **What we do:** In `provision_multicluster_c3.sh`, the temporary Spot warmup pool used `--num-nodes=170 --node-locations=us-central1-a,b,c` (`510` nodes) with `--disk-type=pd-standard --disk-size=30`, sizing `kube-apiserver` to `16` cores (`gomaxprocs = 16`) immediately on birth while consuming `0 GB` of `SSD_TOTAL_GB`.
+- **Related:** [GKE-1](#gke-1).
+
+</details>
+
+<a id="gke-14"></a>
+
+## GKE-14 GCE Secondary Boot Disk images hydrate blocks lazily from GCS on first read
+
+**Takeaway:** When attaching a custom GCE disk image as a `CONTAINER_IMAGE_CACHE` Secondary Boot Disk, first-boot container startups pay lazy GCS block-hydration page faults. Once hydrated, subsequent runs hit local NVMe speeds. Always note whether a T1 benchmark ran on cold first-boot blocks or hydrated blocks.
+
+<details>
+<summary>The full story (Campaign 3 C3-1a Anchor, RESULTS.md #39 vs #42)</summary>
+
+- **Situation:** `C3-1a` ran `500 × 6 = 3,000` SWE-bench tasks on a freshly provisioned `10 × n2-standard-32` node pool with `swebench-500-preload-600g` SBD.
+- **What goes wrong:** On the first run right after node creation, reading the `600 GB` image cache pulls blocks on demand from Google Cloud Storage (`wait_pool_ready avg = 68.05s`, `claim p50 = 59.78s` on `per_claim`; `12.72s` and `9.37s` on `batch64`).
+- **What we do:** After the first wave touches the disk blocks, the SBD is fully resident in local SSD cache (`wait_pool_ready avg = 3.68s–4.11s`, wall `124.73s` `per_claim` vs `146.22s` `batch64`), reproducing Campaign 2's `139.10s` within `5.1%`. Always distinguish cold-block first boot from hydrated SBD parity in benchmark reports.
+- **Related:** [GKE-4](#gke-4).
+
+</details>
+
+<a id="gke-15"></a>
+
+## GKE-15 Do not set `resources.requests["ephemeral-storage"]` when primary boot disks are 50 GB and SBD hosts images
+
+**Takeaway:** Specifying `resources.requests["ephemeral-storage"]: 4Gi` on guest sandboxes when primary OS boot disks are `50 GB` limits K8s node capacity to `~10` pods/node (`100` pods/cluster). Keep `emptyDir.sizeLimit: 4Gi` in `volumes` but omit `requests["ephemeral-storage"]` so high-density packing (`240` pods/node) schedules cleanly.
+
+<details>
+<summary>The full story (Campaign 3 C3-3d scheduling bug fix)</summary>
+
+- **Situation:** In `C3-3d`, `mc5-sdk-swebench-wp` requested `ephemeral-storage: 4Gi` to match the `4Gi` `/tmp` disk size limit.
+- **What goes wrong:** Kubelet reserves primary boot disk space based on `ephemeral-storage` requests. With `50 GB` primary boot disks, K8s refused to schedule more than `10` pods per node, capping each 10-node cluster at `100` pods instead of `1,000`.
+- **What we do:** Set `emptyDir: {"sizeLimit": "4Gi"}` on the volume mount without requesting `ephemeral-storage` in container resources, allowing `1,000` warm pods per cluster to boot in `13.76s`.
+- **Related:** [GKE-5](#gke-5).
+
+</details>
+
+<a id="gke-16"></a>
+
+## GKE-16 Tune `aiohttp` `keepalive_timeout` and pace initial connection handshakes across Cloud NAT in multi-cluster drivers
+
+**Takeaway:** `aiohttp.TCPConnector` defaults to `keepalive_timeout = 15.0s`. When multi-cluster warm-pool refills take `>15s`, all idle client TLS sockets close, putting hundreds of outbound sockets into kernel `TIME_WAIT` on the single Cloud NAT external IP. When the next burst opens hundreds of new connections simultaneously, GKE L4 load balancers drop excess SYN packets (`tcp_syn_retries` 31s timeout). Set `_keepalive_timeout = 900.0` and pace initial connection establishment on pool misses.
+
+<details>
+<summary>The full story (Campaign 3 C3-3d driver hardening)</summary>
+
+- **Situation:** `C3-3d` drove `5` regional GKE clusters simultaneously from 1 Python `asyncio` process via `AsyncSandboxClient` (which uses `kubernetes_asyncio` over `aiohttp`).
+- **What goes wrong:** After refilling `1,000` pods per cluster (`~30s`), `aiohttp`'s default `15s` keepalive timer had closed all `320` pooled sockets. Launching `5` concurrent `claim_batch` requests blasted `320` simultaneous new SYN packets from the single Cloud NAT external IP, hitting GKE's external L4 load balancer SYN rate limit and raising `TimeoutError` in `aiohappyeyeballs`.
+- **What we do:** In `run_mc5_sdk_batch_bench.py`, set `ac.rest_client.pool_manager._connector._keepalive_timeout = 900.0` so sockets never close during refills, and space `_create_direct_connection` calls by `6ms` on pool misses to prevent NAT SYN storms.
+- **Related:** [GKE-11](#gke-11).
+
+</details>
+
 ---
 
 ## Benchmark harness and measurement engineering
