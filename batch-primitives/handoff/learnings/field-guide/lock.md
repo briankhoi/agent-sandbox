@@ -470,6 +470,32 @@ A few terms used throughout: a **lock** (mutex) lets one thread in at a time. A 
 
 </details>
 
+<a id="lock-21"></a>
+
+## LOCK-21 In single-flight coalescing with heterogeneous caller deadlines, bound every wait and RPC by both `deadline` and Lease expiry and cancel on `BatchError`
+
+**Takeaway:** When concurrent callers with different `timeout` budgets coalesce onto one shared check (`Future`), clamp every slot wait, follower wait, and sequential RPC to `min(step_cap, deadline - now, _lease_expires_at - now)`, re-check shared handle, Lease, and pool health before classifying a timeout, and `cancel()` the shared `Future` on any `BatchError` instead of calling `set_exception(e)` so waiting callers either take over or surface their own batch state.
+
+<details>
+<summary>The full story (23/N)</summary>
+
+- **Situation:** The first time `acquire(warmpool, timeout=...)` uses a pool outside `_checked_pools`, `_check_pool` coalesces concurrent callers through `self._prechecks[warmpool]` (`Future`) while one leader acquires a `max_in_flight` slot and calls `_precheck_pools` (`get_sandbox_warmpool` followed by `get_sandbox_template`).
+- **What goes wrong:** Three bugs meet when callers bring different `timeout` values alongside a live Lease and `release_group()`:
+  1. Snapshotting `lease_remaining` once before `_precheck_pools` or failing to clamp by `deadline - now` and `_lease_expires_at - now` across the `_in_flight` wait and both GETs lets `get_sandbox_warmpool` or `get_sandbox_template` stall up to 30 s past `acquire(timeout=0.12)` or run past `_lease_expires_at` when the first GET consumes the remaining Lease budget or all `max_in_flight` slots are busy.
+  2. Publishing `BatchError` (such as `BatchTimeoutError`) via `check.set_exception(e)` poisons concurrent followers waiting on `check`: a leader with `timeout=0.12` fails a concurrent follower that passed `timeout=5.0`.
+  3. Having a follower wait `deadline - now` without clamping to `_lease_expires_at - now`, or raising `BatchTimeoutError` directly in `except TimeoutError` without re-acquiring `self._lock` to run `_check_healthy(now)` and `_check_acquire_pool_active(warmpool, acquire_seq)`, blocks followers past Lease expiry or misreports `release_group()` and Lease expiry as `BatchTimeoutError`.
+- **What we do:** In `_check_pool` (`sandbox_batch.py`, `async_sandbox_batch.py`), followers compute `wait_timeout = min(deadline, self._lease_expires_at) - now` under `self._lock` after `_check_healthy(now)` and `_check_acquire_pool_active(warmpool, acquire_seq)`, and on `TimeoutError` re-raise a completed check's exception or `continue` back into `self._lock` so health and `release_group()` run before `now >= deadline`. The leader defines `next_timeout()`, which under `self._lock` runs `_check_healthy(now)` and `_check_acquire_pool_active(warmpool, acquire_seq)`, raises `BatchTimeoutError` once `now >= deadline`, and returns `min(BATCH_REQUEST_TIMEOUT_SECONDS, deadline - now, self._lease_expires_at - now)`. Both the `while not acquired:` `_in_flight` wait loop and `_precheck_pools(..., request_timeout=next_timeout)` call `next_timeout` before each step (`_in_flight` acquire, `get_sandbox_warmpool`, and `get_sandbox_template`). In `except BaseException`, `_check_pool` excludes `isinstance(e, BatchError)` from `check.set_exception(e)` and calls `check.cancel()` instead so followers re-evaluate under their own budgets (23/N, `sandbox_batch.py: SandboxBatch._check_pool`, `_precheck_pools`). Pinned against a real loopback TCP socket in `test_pool_check_bounds_reads_by_deadline_and_hands_off_on_timeout` (both sync and async).
+- **Example:**
+  ```text
+  leader (timeout=0.12)   -> GET warmpool (_request_timeout=0.12) -> times out at 0.12s
+                          -> check.cancel(), raises BatchTimeoutError
+  follower (timeout=5.0)  -> wakes on CancelledError, becomes leader
+                          -> GET warmpool + GET template succeed at 0.18s -> returns Member
+  ```
+- **Related:** [LOCK-15](#lock-15), [LOCK-16](#lock-16); [LIB-9](lib.md#lib-9); [RETRY-18](retry.md#retry-18).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

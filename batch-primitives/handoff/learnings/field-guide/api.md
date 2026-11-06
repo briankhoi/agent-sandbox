@@ -596,6 +596,33 @@ This section is about the public surface of the batch SDK: the types, method sig
 
 </details>
 
+<a id="api-30"></a>
+
+## API-30 Root domain failures under one `BatchError(SandboxError)` hierarchy and pass Kubernetes API and transport errors through unwrapped
+
+**Takeaway:** Group every batch-domain state, quorum, timeout, and member failure under `BatchError(SandboxError)` so `except BatchError:` handles batch outcomes in one clause while leaf subclasses support targeted recovery, and let `ApiException` and network errors propagate unchanged to match single-sandbox SDK methods.
+
+<details>
+<summary>The full story (22/N, 23/N, 25/N)</summary>
+
+- **Situation:** Callers of `SandboxBatch` face four distinct error classes: batch lifecycle and member outcomes (`BatchTimeoutError`, `QuorumUnreachableError`, `TerminalMemberError`, `BatchExistsError`, `BatchNotFoundError`, `BatchInUseError`, `BatchLeaseExpiredError`, and base `BatchError`), missing extension resources (`SandboxWarmPoolNotFoundError`, `SandboxTemplateNotFoundError`) or unready `connect()` (`SandboxNotReadyError`), caller bug (`ValueError`), and direct Kubernetes `ApiException` or transport errors during setup, teardown, or first-use pool checks.
+- **What goes wrong:** Wrapping `ApiException` or socket errors in `BatchError` looks convenient in a docstring ("`except BatchError` catches every runtime failure") but breaks real callers in two ways. First, Kubernetes Python callers already branch on `ApiException.status` (`401`/`403` RBAC vs `429`/`503` overload) across `SandboxClient`. Second, callers like `BatchClaim.release()` in `25/N` (`examples/agent-sandbox-rl`) catch `BatchError` specifically to detect "this batch handle stopped or lost its Lease, fall back to direct claim delete" ([LEASE-31](lease.md#lease-31)); if `release_member()` wrapped a transient `503` or `403` in `BatchError`, that handler would misread an apiserver error on a live batch as a dead handle and fire an unguarded duplicate delete. Conversely, typing `GroupOutcome.error` as `Exception | None` forced callers inspecting partial quorum failures to narrow away non-batch exceptions that `group_outcomes()` never stores.
+- **What we do:** Every batch-specific exception subclasses `BatchError`, which subclasses `SandboxError` (`exceptions.py`), `models.py` types `GroupOutcome.error` as `BatchError | None`, and `README.md` plus the `acquire()` docstrings (`sandbox_batch.py`, `async_sandbox_batch.py`) spell out the exact catch boundaries (`except BatchError` for batch lifecycle, quorum, timeout, and member failures; `except SandboxError` to also include missing pool or template and `SandboxNotReadyError`; `ValueError` for bad arguments; unwrapped `ApiException` and transport errors on direct K8s I/O) (23/N).
+- **Example:**
+  ```python
+  try:
+      member = batch.acquire("pool-b", timeout=30)
+  except BatchTimeoutError:
+      ...  # retry or shed load
+  except BatchError:
+      ...  # terminal member or stopped/expired batch handle
+  except SandboxError:
+      ...  # pool-b or its SandboxTemplate does not exist
+  ```
+- **Related:** [API-1](#api-1), [API-8](#api-8), [LEASE-31](lease.md#lease-31).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

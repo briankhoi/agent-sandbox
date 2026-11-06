@@ -120,7 +120,7 @@ The batch SDK talks to Kubernetes through four libraries: `urllib3` (the HTTP po
 
 - **Situation:** A Lease is a small Kubernetes object the batch renews to prove it is alive. Renewal is an optimistic-concurrency write: a PUT that carries the `resourceVersion` (the object's version number) it last saw, which the apiserver rejects with 409 Conflict if someone else wrote in between. `sandbox_batch.py: SandboxBatch._renew_request_timeout` bounds each renewal request by `min(renew interval, time left before expiry)`. urllib3's default `Retry` retries timed-out requests with a fresh timeout.
 - **What goes wrong:** A renewal bounded to `min(interval, left)` could stretch to about four times that bound, past Lease expiry (3/N commit). Worse, if the first PUT landed but its response was lost, the retry hits a `resourceVersion` conflict on the SDK's own write, and the renewal logic reads that 409 as "someone else wrote the Lease."
-- **What we do:** `k8s_helper.py: _api_client_with_retries(api_client, retries=False)` builds the sync Lease client (`coordination_v1_api`) in `K8sHelper.__init__`, so each Lease request goes out exactly once and the renewal loop owns retry, backoff, and the conflict re-read. The docstring says it directly: "a retried Lease write that already landed comes back as a conflict." aiohttp does not retry, so the async shell uses the shared client and needs no counterpart. The exception-surface follow-up is [LIB-3](#lib-3) (13/N). 22/N later generalized the wrapper into `_ConfiguredRetriesApiClient` ([LIB-12](#lib-12)). Test: `test_lease_requests_are_not_retried_and_keep_the_injected_client_settings`.
+- **What we do:** `k8s_helper.py: _api_client_without_retries(api_client)` builds one unretried `ApiClient` (`_UnretriedApiClient` when wrapping an injected client) in `K8sHelper.__init__` and shares it across `coordination_v1_api` and `_batch_custom_objects_api` (22/N), so each Lease and batch request goes out once and `SandboxBatch` owns retry, backoff, and conflict re-reads. The docstring says it directly: "a retried Lease write that already landed comes back as a conflict." aiohttp does not retry, so the async shell uses the shared client and needs no counterpart. The exception-surface follow-up is [LIB-3](#lib-3) (13/N). Test: `test_lease_requests_are_not_retried_and_keep_the_injected_client_settings`.
 - **Example:**
   ```
   renewal timeout=10s, urllib3 Retry(3): 10+10+10+10 = 40s, past the time left on the Lease
@@ -129,7 +129,7 @@ The batch SDK talks to Kubernetes through four libraries: `urllib3` (the HTTP po
   t1  urllib3 retries PUT rv=41 -> 409 Conflict
   t2  renewal sees 409 and concludes another holder wrote
   ```
-- **Related:** [LIB-3](#lib-3), [LIB-4](#lib-4) (exception changes this caused), [LIB-7](#lib-7), [LIB-8](#lib-8); [BP-23](../best-practices.md#bp-23) (the Lease client sends every request once); [LEASE-2](lease.md#lease-2) (Lease writes use PUT).
+- **Related:** [LIB-3](#lib-3), [LIB-4](#lib-4) (exception changes this caused), [LIB-7](#lib-7), [LIB-8](#lib-8), [LIB-21](#lib-21); [BP-23](../best-practices.md#bp-23) (unretried Lease and batch client); [LEASE-2](lease.md#lease-2) (Lease writes use PUT).
 
 </details>
 
@@ -137,42 +137,42 @@ The batch SDK talks to Kubernetes through four libraries: `urllib3` (the HTTP po
 
 ## LIB-7 `urllib3.Retry` sleeps on `Retry-After` even when `status_forcelist` is unset
 
-**Takeaway:** Turning off status or read retries in `urllib3.Retry` does not stop it from sleeping and retrying on a `Retry-After` header for 413/429/503. Pass `respect_retry_after_header=False` whenever your own code owns deadlines, Lease renewal, or `Retry-After` capping.
+**Takeaway:** Turning off status or read retries in `urllib3.Retry` does not stop it from sleeping and retrying on a `Retry-After` header for 413/429/503. Disable `urllib3` retries (`retries=False`) or pass `respect_retry_after_header=False` whenever your own code owns deadlines, Lease renewal, or `Retry-After` capping.
 
 <details>
-<summary>The full story (22/N 05b7420c)</summary>
+<summary>The full story (22/N)</summary>
 
-- **Situation:** `K8sHelper` configured the claim collection calls with `urllib3.Retry(3, read=False)`, so urllib3 would keep connection retries without repeating timed-out GET or DELETE reads inside one SDK call. `list_sandbox_claim_objects` at first stayed on `custom_objects_api` with the default `Retry(3)`.
+- **Situation:** An early 22/N draft configured claim collection calls with `urllib3.Retry(3, read=False)` so urllib3 would not repeat timed-out GET or DELETE reads inside one SDK call.
 - **What goes wrong:** `urllib3.Retry` defaults to `respect_retry_after_header=True` (`RETRY_AFTER_STATUS_CODES = {413, 429, 503}`, `DEFAULT_RETRY_AFTER_MAX = 21600s`), and `Retry.is_retry()` checks that branch independently of `status_forcelist`. On a 429 or 503 carrying `Retry-After`, urllib3 sleeps without interruption for up to 6 hours and retries 3 times inside one SDK call. That happens before `_delete_claims_in_rounds` can check `guard()`, cap backoff at 30s, or renew the 60s batch Lease. Leaving `list_sandbox_claim_objects` on `Retry(3)` also retried read timeouts 3 times (`4 * 30s = 120s`) in `_claim` after Lease creation and before `_renew_loop` started, which outlasts a 60s Lease.
-- **What we do:** `k8s_helper.py: _CLAIM_COLLECTION_RETRIES = urllib3.Retry(3, read=False, respect_retry_after_header=False)`, and all three claim collection methods (`list_sandbox_claim_objects`, `count_live_sandbox_claims`, `delete_sandbox_claims_by_label`) go through `_claim_collection_api` (22/N).
+- **What we do:** `k8s_helper.py: _api_client_without_retries` sets `configuration.retries = False` on the shared batch `ApiClient` (`_batch_custom_objects_api` and `coordination_v1_api`), so `Retry-After` responses, read timeouts, and connect timeouts all surface after one attempt (22/N; see [LIB-21](#lib-21)).
 - **Example:**
   ```
-  Retry(3, read=False)  + 503 Retry-After: 600 -> urllib3 sleeps 600s, retries, x3
-  ... respect_retry_after_header=False         -> ApiException(503) after 1 attempt
+  Retry(3, read=False) + 503 Retry-After: 3600 -> urllib3 sleeps 3600s, retries, x3
+  retries=False        + 503 Retry-After: 3600 -> ApiException(503) after 1 attempt
   ```
-- **Related:** [LIB-8](#lib-8), [LIB-9](#lib-9), [LIB-17](#lib-17) (the SDK's own capped Retry-After parsing).
+- **Related:** [LIB-8](#lib-8), [LIB-9](#lib-9), [LIB-17](#lib-17) (the SDK's own capped Retry-After parsing), [LIB-21](#lib-21).
 
 </details>
 
 <a id="lib-8"></a>
 
-## LIB-8 Tune transport retries per call class: keep connect retries, disable only the retries your code owns
+## LIB-8 Split clients at the retry-ownership boundary: default retries for one-shot callers, `retries=False` where the SDK owns retries
 
-**Takeaway:** Don't flip retries off globally. Keep the cheap connect-phase retries that keep your exception surface predictable, keep defaults on idempotent single-object calls that heal stale keep-alive sockets, and disable only the retry kinds (read, `Retry-After`) that higher-level deadline logic owns.
+**Takeaway:** Separate transport clients by whether the caller above has its own retry and deadline loop, not verb by verb. Keep `urllib3` defaults on standalone one-shot methods that rely on library retries, and route every batch operation through one shared `retries=False` client.
 
 <details>
-<summary>The full story (22/N 05b7420c)</summary>
+<summary>The full story (22/N)</summary>
 
-- **Situation:** `deletecollection` (delete every object matching a label selector) and the live-claim count go through a separate `CustomObjectsApi` with `Retry(3, read=False, respect_retry_after_header=False)` ([LIB-7](#lib-7)). urllib3's default `Retry(3)` repeats read timeouts on GET/DELETE with a fresh timeout and honors `Retry-After`, all inside one SDK call.
-- **What goes wrong:** Two simpler options were worse. `retries=False` (as on the Lease client) would turn connect failures into raw `ConnectTimeoutError` / `NewConnectionError` outside the transport tuple (the [LIB-3](#lib-3) surface change). Moving *every* call to the new client would stop urllib3 from retrying a `ProtocolError` on a stale reused keep-alive socket (a pooled connection the server already closed), and single-object calls depend on that retry.
-- **What we do:** The override applies only to the three collection calls in `k8s_helper.py: K8sHelper._claim_collection_api`. Connect failures still retry 3 times and wrap in `MaxRetryError`, which `_TRANSPORT_ERRORS` already treats as transient. Read timeouts and `Retry-After` responses surface after one attempt. Single-resource calls (`delete_sandbox_claim`, gets) stay on `custom_objects_api` with default retries. Measured on urllib3 2.8.0: `Retry(3, read=False)` makes 1 attempt on `ReadTimeoutError` and 4 on `NewConnectionError`. aiohttp does not retry, so the async helper needs no counterpart. But the async client's atexit cleanup runs the sync `_delete_batch_objects` on a sync `K8sHelper`, so this sync config also reaches async users. Test: `test_claim_collection_requests_do_not_retry_reads_or_retry_after_and_keep_injected_settings`.
+- **Situation:** `K8sHelper` serves both standalone single-sandbox `SandboxClient` calls (`create_sandbox`, `delete_sandbox`) and `SandboxBatch` calls (`claim_batch`, `acquire`, `release`, `_watch_loop`, `_renew_loop`).
+- **What goes wrong:** Disabling retries on `K8sHelper.custom_objects_api` would strip default connection and `Retry-After` retries from existing single-sandbox callers that have no outer retry loop. Conversely, leaving any batch custom-object call on `Retry(...)` lets `urllib3` multiply `_request_timeout` across hidden retries or sleep on `Retry-After` past Lease expiry ([LIB-7](#lib-7), [LIB-21](#lib-21)).
+- **What we do:** `K8sHelper` keeps two client tiers (22/N, `k8s_helper.py: K8sHelper.__init__`): `custom_objects_api` and `core_v1_api` use the caller's or default `ApiClient` for single-sandbox operations, while `_batch_custom_objects_api` and `coordination_v1_api` share one `unretried_api_client` (`retries=False`). Batch-only methods (`list_sandbox_claim_objects`, `count_live_sandbox_claims`, `delete_sandbox_claims_by_label`, `watch_sandbox_claims`, `get_sandbox_warmpool`, `get_sandbox_template`) always use `_batch_custom_objects_api`, and shared methods (`create_sandbox_claim`, `delete_sandbox_claim`) take `batch: bool = False` so `SandboxBatch` routes through `_batch_custom_objects_api` while `SandboxClient` stays on `custom_objects_api`. `sandbox_batch._TRANSPORT_ERRORS` includes raw `ConnectTimeoutError` and `NewConnectionError` ([LIB-3](#lib-3)). Test: `test_batch_custom_object_requests_do_not_retry_and_keep_injected_settings`.
 - **Example:**
   ```
-  connect refused          -> MaxRetryError after 3 retries (transient)
-  read timeout             -> ReadTimeoutError after 1 attempt
-  429 Retry-After: 0       -> ApiException after 1 attempt
+  create_sandbox_claim(..., batch=False) + connect refused -> MaxRetryError (3 retries)
+  create_sandbox_claim(..., batch=True)  + connect refused -> NewConnectionError (1 attempt)
+  batch call + 503 Retry-After: 3600                       -> ApiException(503) (1 attempt)
   ```
-- **Related:** [LIB-3](#lib-3), [LIB-6](#lib-6), [LIB-7](#lib-7), [LIB-9](#lib-9), [LIB-12](#lib-12).
+- **Related:** [LIB-3](#lib-3), [LIB-6](#lib-6), [LIB-7](#lib-7), [LIB-9](#lib-9), [LIB-12](#lib-12), [LIB-21](#lib-21).
 
 </details>
 
@@ -180,21 +180,21 @@ The batch SDK talks to Kubernetes through four libraries: `urllib3` (the HTTP po
 
 ## LIB-9 A urllib3 request timeout bounds each attempt, not the whole call
 
-**Takeaway:** `_request_timeout` in urllib3 caps one attempt. If a caller deadline matters, either disable library retries on that client or enforce a total timeout around the call, and give the sync and async versions the same total bound.
+**Takeaway:** `_request_timeout` in urllib3 caps one attempt. If a caller or Lease deadline matters, disable library retries on that client and recompute each sequential call's `_request_timeout` against both the remaining caller deadline and the remaining Lease budget so sync and async enforce the same total bound.
 
 <details>
-<summary>The full story (19/N 2ecdf384, 22/N 05b7420c)</summary>
+<summary>The full story (19/N 2ecdf384, 22/N, 23/N)</summary>
 
-- **Situation:** Warm credit lets creates skip pacing based on a warm pool's ready count. The sync `sandbox_batch.py: SandboxBatch._refresh_warm_credit` passes `_request_timeout=min(30, remaining)` to `get_sandbox_warmpool`. That GET (and the template GET in the pool precheck) goes through `k8s_helper.py: K8sHelper._get_extensions_object` on `custom_objects_api`, which 22/N left on the default urllib3 `Retry(3)`. Only the claim-collection client got `read=False, respect_retry_after_header=False`.
-- **What goes wrong:** urllib3 retries the GET on read timeout with a fresh timeout and sleeps on `Retry-After` for 413/429/503 ([LIB-7](#lib-7)). So a "deadline-capped" refresh, or the first-use pool check that holds a `max_in_flight` slot, can block for several times `remaining`, plus any server-chosen `Retry-After`. The async shell, `AsyncSandboxBatch._refresh_warm_credit`, wraps the GET in `async with asyncio.timeout(request_timeout)` (the same `min(30, remaining)`), a hard total bound that also covers client init and connector waits. So the two shells behave differently.
-- **What we do:** Nothing yet in sync; this is an open gap. Async is already total-bounded. Fix options: route these GETs through a no-read-retry, no-`Retry-After` client, or bound the whole call.
+- **Situation:** Warm credit lets creates skip pacing based on a warm pool's ready count, and first-use pool checks in `acquire()` fetch both the `SandboxWarmPool` and its `SandboxTemplate` while holding a `max_in_flight` slot.
+- **What goes wrong:** On default `urllib3` `Retry(3)`, `_request_timeout=min(30, remaining)` bounds one attempt rather than the call: urllib3 retries read and connect timeouts with a fresh timeout and sleeps on `Retry-After` ([LIB-7](#lib-7)). Even with `retries=False`, passing a fixed 30s step cap or snapshotting `lease_remaining` once up front lets two sequential GETs (`get_sandbox_warmpool` and `get_sandbox_template`) stall up to 30s each past a short `acquire(timeout=...)` or overrun `_lease_expires_at`.
+- **What we do:** `22/N` routes `K8sHelper._get_extensions_object` (`get_sandbox_warmpool` and `get_sandbox_template`) through `_batch_custom_objects_api` (`retries=False`), so one `_request_timeout` bounds the entire sync HTTP attempt just like `aiohttp`'s `ClientTimeout(total=...)` in async. `23/N` (`sandbox_batch.py: SandboxBatch._check_pool`, `_precheck_pools`) passes a `request_timeout` callback (`next_timeout`) into `_precheck_pools` so both GETs recompute `min(BATCH_REQUEST_TIMEOUT_SECONDS, deadline - now, _lease_expires_at - now)` under `_lock` after checking handle and pool health, failing immediately once `deadline` or `_lease_expires_at` passes.
 - **Example:**
   ```
-  sync refresh, remaining=2s
-  t0  GET warmpool -> 503 Retry-After: 5
-  t5  urllib3 retries GET    # _refresh_warm_credit regains control only after this
+  acquire("pool-b", timeout=0.16)
+  t0.00  GET warmpool (_request_timeout=0.16) -> returns at t0.08
+  t0.08  GET template (_request_timeout=0.08) -> times out at t0.16 -> BatchTimeoutError
   ```
-- **Related:** [LIB-7](#lib-7), [LIB-8](#lib-8); [RETRY-18](retry.md#retry-18) (refresh capped by the leader's deadline).
+- **Related:** [LIB-7](#lib-7), [LIB-8](#lib-8), [LIB-21](#lib-21); [LOCK-21](lock.md#lock-21); [RETRY-18](retry.md#retry-18) (refresh capped by the leader's deadline).
 
 </details>
 
@@ -252,11 +252,11 @@ The batch SDK talks to Kubernetes through four libraries: `urllib3` (the HTTP po
 **Takeaway:** When you build a client from one the caller injected, share mutable credential state by reference (shallow copy, delegating properties) and override only the setting you need. A deep copy silently forks credentials that callers rotate in place.
 
 <details>
-<summary>The full story (7/N d07e8941, 15/N 113fae28, 22/N 05b7420c)</summary>
+<summary>The full story (7/N d07e8941, 15/N 113fae28, 22/N)</summary>
 
 - **Situation:** `ApiClient.__init__` builds `rest_client` (the urllib3 PoolManager) from `configuration.retries` at construction. So a different retry policy ([LIB-6](#lib-6), [LIB-8](#lib-8)) needs a separate `ApiClient`, built without mutating the caller's injected client.
 - **What goes wrong:** A deep copy of the configuration duplicated the `api_key` / `api_key_prefix` dicts. A caller that rotated its bearer token in place updated the claim and Sandbox APIs but not the Lease API. Renewals failed with 401, and the handle reported the Lease expired while its watch stayed healthy (7/N). Copying `default_headers` and `cookie` once would also miss later `set_default_header` or cookie updates.
-- **What we do:** `k8s_helper.py: _ConfiguredRetriesApiClient` uses `copy.copy(source.configuration)`, which shares the credential dicts, and overrides only `retries`. It exposes `default_headers` and `cookie` as properties that read `self._source` on every request (15/N). It sets `_source=None` and placeholder fields *before* `super().__init__`, because `ApiClient.__init__` assigns `default_headers` and `cookie` through those setters before `_source` exists. `_api_client_with_retries` returns this wrapper for an injected client (22/N generalized the 7/N Lease-only version). Test: `TestLeaseApiClient._assert_delegates_to_injected`.
+- **What we do:** `k8s_helper.py: _UnretriedApiClient` uses `copy.copy(source.configuration)`, which shares the credential dicts, and sets `configuration.retries = False`. It exposes `default_headers` and `cookie` as properties that read `self._source` on every request (15/N). It sets `_source=None` and placeholder fields *before* `super().__init__`, because `ApiClient.__init__` assigns `default_headers` and `cookie` through those setters before `_source` exists. `_api_client_without_retries` returns one `_UnretriedApiClient` shared by `coordination_v1_api` and `_batch_custom_objects_api` (22/N). Test: `TestLeaseApiClient._assert_delegates_to_injected`.
 - **Example:**
   ```python
   injected.configuration.api_key['authorization'] = 'rotated'  # Lease client sees it
@@ -434,6 +434,30 @@ The batch SDK talks to Kubernetes through four libraries: `urllib3` (the HTTP po
 - **What goes wrong:** `handles.py: SandboxHandle.record_pod_identity()` and `SandboxHandle.is_alive()` called `self.cluster.exec_core_api().read_namespaced_pod_status(...)` for plain HTTP REST `GET`s. Across hundreds of `ThreadPoolExecutor` threads, every REST status read allocated a separate `ApiClient` and `urllib3.PoolManager`, multiplying idle TLS sockets and bypassing the shared connection pool.
 - **What we do:** Route `read_namespaced_pod_status()` through the shared, thread-safe `self.cluster.core_api` (`53caa99e`), reserving `exec_core_api()` strictly for one-shot and persistent WebSocket `stream()` calls. Pinned in `test_fail_fast.py`.
 - **Related:** [LIB-12](#lib-12), [PERF-16](perf.md#perf-16).
+
+</details>
+
+<a id="lib-21"></a>
+
+## LIB-21 Pass `retries=False` rather than disabling `urllib3.Retry` axes piecemeal
+
+**Takeaway:** When an application layer owns retries, backoff, and Lease deadlines, set `retries=False` on one shared transport client instead of tuning `urllib3.Retry(3, read=False, respect_retry_after_header=False)`. Partial retry configs still leave `connect=3` multiplying `_request_timeout` up to fourfold on connect timeouts and allocate an extra connection pool.
+
+<details>
+<summary>The full story (22/N)</summary>
+
+- **Situation:** An intermediate 22/N draft disabled read retries and `Retry-After` sleeps on claim collection calls via `urllib3.Retry(3, read=False, respect_retry_after_header=False)` ([LIB-7](#lib-7)) while keeping `coordination_v1_api` on `retries=False` and single-resource batch calls on `Retry(3)`.
+- **What goes wrong:** `urllib3.Retry(3, read=False, ...)` keeps `total=3` and `connect=None`, so `ConnectTimeoutError` and `NewConnectionError` still run four attempts inside one SDK call (`4 * _request_timeout`), stretching a Lease-clamped request past `_lease_expires_at` ([TLA-2](../tla.md#tla-2), `neg_retryPastExpiry`). Leaving per-claim batch creates, deletes, watches, and warm-pool GETs on `custom_objects_api` left them exposed to read retries and 6-hour `Retry-After` sleeps as well, and a third `Retry` policy meant a third `urllib3.PoolManager` and socket pool per `K8sHelper`.
+- **What we do:** `k8s_helper.py: _UnretriedApiClient` and `_api_client_without_retries` construct one `retries=False` `ApiClient` shared by `coordination_v1_api` and `_batch_custom_objects_api`, and `create_sandbox_claim` / `delete_sandbox_claim` accept `batch=True` so every `SandboxBatch` RPC fails once within `_request_timeout` (22/N). `sandbox_batch._TRANSPORT_ERRORS` already includes `ConnectTimeoutError` and `NewConnectionError` ([LIB-3](#lib-3)), so `SandboxBatch`'s own deadline- and Lease-bounded loops retry transient connection blips cleanly. Pinned in `test_k8s_helper.py: TestLeaseApiClient.test_batch_custom_object_requests_do_not_retry_and_keep_injected_settings`.
+- **Example:**
+  ```
+  Retry(3, read=False, respect_retry_after_header=False) + dead VIP (connect timeout 5s):
+    4 * 5s = 20s inside one call, past remaining Lease budget
+
+  retries=False + dead VIP (connect timeout 5s):
+    1 * 5s = 5s -> ConnectTimeoutError -> SandboxBatch checks _lease_expires_at first
+  ```
+- **Related:** [LIB-3](#lib-3), [LIB-6](#lib-6), [LIB-7](#lib-7), [LIB-8](#lib-8), [LIB-9](#lib-9), [LIB-12](#lib-12); [BP-23](../best-practices.md#bp-23).
 
 </details>
 

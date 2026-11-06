@@ -41,13 +41,13 @@ A link marked *(unconfirmed)* goes to a real page, but we did not confirm the sp
 | [BP-14](#bp-14) | Write MicroTime with exactly six fractional digits | `batch_utils.py: lease_now` (1/N) | Removes a one-in-a-million random failure | apimachinery `micro_time.go`; Python datetime |
 | [BP-15](#bp-15) | Close an unfinished streamed response before returning its connection | `k8s_helper.py: delete_sandbox_claims_by_label` (20/N) | Unread 5,000-object responses cost no memory | urllib3, aiohttp docs |
 | [BP-16](#bp-16) | Order staleness thresholds so destructive actors act last | `batch_utils.py: is_lease_stale`, `batch_reaper.py: is_lease_reapable` (1/N, 18/N) | Tolerates clock skew without coordination | client-go leaderelection; K8s Leases |
-| [BP-17](#bp-17) | Prove death by observing no change: wait one renew interval, then delete with a resourceVersion precondition | `batch_reaper.py: reap`, `_delete_lease_if_unchanged` (18/N) | One sleep per run, not per Lease; stateless | client-go leaderelection (clock-skew note); DeleteOptions |
+| [BP-17](#bp-17) | Prove death by observing no change: wait `leaseDurationSeconds`, then delete with a resourceVersion precondition | `batch_reaper.py: reap`, `_delete_lease_if_unchanged` (18/N, 22/N) | One sleep per run, not per Lease; stateless | client-go leaderelection (clock-skew note); DeleteOptions |
 | [BP-18](#bp-18) | Before each destructive round, check the Lease's UID and leaseTransitions (fencing-like) | `sandbox_batch.py: _take_batch_lease` (12/N) | One conditional write per round | Kleppmann: fencing tokens |
-| [BP-19](#bp-19) | Layer cleanup: release(), then reaper + GC, then shutdownTime | `SandboxBatch._claim`, `release`, `batch_reaper.reap` (12/N, 16/N, 18/N) | No single crash leaks sandboxes forever | K8s garbage collection |
+| [BP-19](#bp-19) | Layer cleanup: release(), then reaper + GC, then shutdownTime | `SandboxBatch._claim`, `release`, `batch_reaper.reap` (12/N, 16/N, 18/N, 22/N) | No single crash leaks sandboxes forever | K8s garbage collection |
 | [BP-20](#bp-20) | Put an explicit timeout on every request, and two timeouts on watches | `batch_utils.py: BATCH_REQUEST_TIMEOUT_SECONDS` etc. (1/N, 2/N, 3/N, 12/N) | No thread hangs forever on a dead socket | kube-apiserver `--request-timeout`; AWS Builders' Library |
 | [BP-21](#bp-21) | Retry only known-transient errors; surface everything else through err() | `batch_utils.py: is_retryable_status`, `sandbox_batch.py: _is_transport_error` (1/N, 2/N, 8/N, 13/N) | Config errors fail fast instead of retrying forever | K8s API conventions: status codes; AWS Builders' Library |
 | [BP-22](#bp-22) | Exponential backoff with equal jitter | `batch_utils.py: backoff_delay` (1/N) | Spreads many retrying clients apart | Brooker, "Exponential Backoff And Jitter" |
-| [BP-23](#bp-23) | One retry owner per layer: turn off hidden library retries where the SDK owns deadlines | `k8s_helper.py: _api_client_with_retries`, `_CLAIM_COLLECTION_RETRIES` (3/N, 22/N) | Avoids 3 x 3 = 9 requests per logical call | urllib3 Retry; Google SRE book |
+| [BP-23](#bp-23) | One retry owner per layer: turn off hidden library retries where the SDK owns deadlines | `k8s_helper.py: _api_client_without_retries`, `_UnretriedApiClient` (3/N, 22/N) | Every batch request runs once within `_request_timeout` | urllib3 Retry; Google SRE book |
 | [BP-24](#bp-24) | Scope backoff by cause: Retry-After moves the shared cursor, a blip delays one request | `sandbox_batch.py: SandboxBatch._create_one` (13/N) | One worker's blip never stalls the other workers | client-go `with_retry.go`; K8s APF |
 | [BP-25](#bp-25) | Pace with one shared reservation cursor, and count retries against it | `sandbox_batch.py: SandboxBatch._reserve_create_slot` (12/N, 19/N) | N workers together never exceed create_rps | client-go flowcontrol; GCRA |
 | [BP-26](#bp-26) | Propagate the caller's deadline and shed hopeless work before reserving capacity | `sandbox_batch.py: SandboxBatch.acquire`, `_check_retry_deadline` (16/N, 19/N) | Queues stay short under overload | Google SRE book; gRPC deadlines; AWS load shedding |
@@ -370,23 +370,23 @@ A link marked *(unconfirmed)* goes to a real page, but we did not confirm the sp
 
 <a id="bp-17"></a>
 
-### BP-17 Prove death by observing no change: wait one renew interval, then delete with a resourceVersion precondition
+### BP-17 Prove death by observing no change: wait `leaseDurationSeconds`, then delete with a resourceVersion precondition
 
-- **Why it is a best practice:** judging staleness by `renewTime` compares the driver's clock with the reaper's. If the driver's clock runs 90 s behind, a live batch looks stale. A live driver always changes the Lease within one renew interval, though. So a conditional delete made after that wait can only succeed on a dead driver's Lease. client-go's leader election uses the same idea: it trusts that the record changed, not the timestamps inside it.
+- **Why it is a best practice:** judging staleness by `renewTime` compares the driver's clock with the reaper's. If the driver's clock runs 90 s behind, a live batch looks stale. Within a full `leaseDurationSeconds`, a connected driver either lands a fresh renewal or crosses its own `sent_at + leaseDurationSeconds` local self-fencing deadline ([TLA-2](tla.md#tla-2)). So a conditional delete made after that wait only succeeds once the holder has already stopped. client-go's leader election uses the same idea: it trusts that the record changed, not the timestamps inside it.
 
-  It scales because the run sleeps once for the longest renew interval, not once per Lease or per namespace. The reaper keeps no state, and every action is a delete, so a run that stops partway is harmless.
-- **Where we apply it:** `batch_reaper.py: reap` takes one `listed_at` reading after all lists return, sorts Leases by `renew_interval` (shortest first), and sleeps until `listed_at + renew_interval` (18/N). `_delete_lease_if_unchanged` deletes with `V1Preconditions(resource_version=...)`. A 409 means the Lease changed, so skip. A 404 means it is already gone (18/N). `find_stale_leases` skips Leases with no `resourceVersion`, since their delete would have no precondition (18/N).
+  It scales because the run sleeps once for the longest candidate `leaseDurationSeconds`, not once per Lease or per namespace. The reaper keeps no state, and every action is a delete, so a run that stops partway is harmless.
+- **Where we apply it:** `batch_reaper.py: reap` takes one `listed_at` reading after all lists return, sorts candidate Leases by `lease_duration` (shortest first), and sleeps until `listed_at + lease_duration` (18/N, lengthened from `renew_interval` to `lease_duration` in 22/N). `_delete_lease_if_unchanged` deletes with `V1Preconditions(resource_version=...)`. A 409 means the Lease changed, so skip. A 404 means it is already gone (18/N). `find_stale_leases` skips Leases with no `resourceVersion`, since their delete would have no precondition (18/N).
 
   Gotcha: count the wait from after the lists return, so it covers every read.
 - **Source:** [client-go `leaderelection.go`](https://github.com/kubernetes/client-go/blob/master/tools/leaderelection/leaderelection.go) (package doc: it uses only the change in the record, so it tolerates arbitrary clock skew). [DeleteOptions](https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/delete-options/) (`preconditions`).
 - **Example:**
   ```text
-  list:   lease rv=812, renew_interval=20
-  sleep 20 s
+  list:   lease rv=812, lease_duration=60
+  sleep 60 s
   DELETE precondition rv=812 -> 409 (driver renewed) => skip
                              -> 200 => reaped
   ```
-- **Field guide:** [LEASE-8](field-guide/lease.md#lease-8), [LEASE-9](field-guide/lease.md#lease-9), [CLEAN-23](field-guide/clean.md#clean-23), [PAT-34](patterns.md#pat-34).
+- **Field guide:** [LEASE-8](field-guide/lease.md#lease-8), [LEASE-9](field-guide/lease.md#lease-9), [CLEAN-23](field-guide/clean.md#clean-23), [PAT-34](patterns.md#pat-34), [TLA-2](tla.md#tla-2).
 
 <a id="bp-18"></a>
 
@@ -412,7 +412,7 @@ A link marked *(unconfirmed)* goes to a real page, but we did not confirm the sp
 - **Why it is a best practice:** a client process can die without running any code. Each cleanup layer should cover the failure of the layer above, so no single crash leaks expensive resources forever. Every layer here is idempotent: deleting a deleted object is a 404 that counts as success.
 - **Where we apply it:**
   1. A healthy driver calls `release()` (`_delete_batch_objects`, 12/N). This takes seconds.
-  2. A driver killed with SIGKILL stops renewing. The reaper deletes the stale Lease, and the GC deletes the claims (18/N). This takes about D + margin + D/3.
+  2. A driver killed with SIGKILL stops renewing. The reaper deletes the stale Lease, and the GC deletes the claims (18/N, 22/N). This takes about D + margin + D.
   3. With no reaper deployed, every claim still has a `shutdownTime`. `SandboxBatch._claim` sets `ceil(N/create_rps) + quorum_timeout + work_budget + BATCH_SHUTDOWN_MARGIN_SECONDS (600)` for the fill (12/N). `acquire()` sets `quorum_timeout + work_budget + 600` (16/N).
 
   The fill's `shutdownTime` includes the pacing time, so a large, slowly paced fill doesn't eat into `work_budget`.
@@ -480,13 +480,13 @@ A link marked *(unconfirmed)* goes to a real page, but we did not confirm the sp
 ### BP-23 One retry owner per layer: turn off hidden library retries where the SDK owns deadlines
 
 - **Why it is a best practice:** retries stacked at several layers multiply. Three urllib3 tries times three SDK tries is nine requests per logical call. They also break the outer layer's timing and conditional writes. The Google SRE book names multi-layer retries as a classic amplifier of cascading failures.
-- **Where we apply it:** the sync Lease client sends each request once (urllib3 retries off). It first appeared as `_api_client_without_retries` (3/N) and is now `k8s_helper.py: _api_client_with_retries` (22/N). Claim collection calls use `_CLAIM_COLLECTION_RETRIES = urllib3.Retry(3, read=False, respect_retry_after_header=False)`: connect retries stay, read retries and Retry-After sleeps go (22/N). `_ConfiguredRetriesApiClient` shallow-copies the configuration and reads `default_headers` and the cookie live from the source client (22/N; credential sharing from 7/N). aiohttp never retries on its own.
+- **Where we apply it:** the sync Lease and batch custom-object clients share one unretried `ApiClient` (`retries=False`) via `k8s_helper.py: _api_client_without_retries` (introduced for Leases in 3/N and extended to `_batch_custom_objects_api` in 22/N). Single-sandbox `SandboxClient` calls stay on `custom_objects_api` with default retries. `_UnretriedApiClient` shallow-copies the caller's configuration and reads `default_headers` and `cookie` live from the source client (7/N, 15/N, 22/N). aiohttp never retries on its own.
 
-  Why these settings: urllib3 retried a timed-out read with a fresh timeout, which once stretched a renewal to about 4x its bound. A retried Lease write that already landed comes back 409, which looks like a takeover. And urllib3 sleeps on `Retry-After` even when status retries are off.
+  Why these settings: urllib3 retried timed-out connects and reads with a fresh timeout, stretching Lease- or deadline-bounded requests up to 4x their bound. A retried Lease write that already landed comes back 409, which looks like a takeover. And urllib3 sleeps up to 6 hours on `Retry-After` even when status retries are off.
 
-  Gotcha: changing retry config changes which exceptions escape. With retries off, urllib3 2.x raises a raw `ConnectTimeoutError` instead of `MaxRetryError`. Re-audit your transient-error list after any retry change.
-- **Source:** [urllib3 `Retry`](https://urllib3.readthedocs.io/en/stable/reference/urllib3.util.html) (`read`, `respect_retry_after_header`). [Google SRE book, "Addressing Cascading Failures"](https://sre.google/sre-book/addressing-cascading-failures/) (retries at multiple layers). [aiohttp client reference](https://docs.aiohttp.org/en/stable/client_reference.html).
-- **Field guide:** [LIB-3](field-guide/lib.md#lib-3), [LIB-6](field-guide/lib.md#lib-6), [LIB-7](field-guide/lib.md#lib-7), [LIB-8](field-guide/lib.md#lib-8), [LIB-12](field-guide/lib.md#lib-12).
+  Gotcha: changing retry config changes which exceptions escape. With `retries=False`, urllib3 2.x raises raw `ConnectTimeoutError` and `NewConnectionError` instead of `MaxRetryError`. Re-audit your transient-error list after any retry change.
+- **Source:** [urllib3 `Retry`](https://urllib3.readthedocs.io/en/stable/reference/urllib3.util.html) (`retries=False`, `respect_retry_after_header`). [Google SRE book, "Addressing Cascading Failures"](https://sre.google/sre-book/addressing-cascading-failures/) (retries at multiple layers). [aiohttp client reference](https://docs.aiohttp.org/en/stable/client_reference.html).
+- **Field guide:** [LIB-3](field-guide/lib.md#lib-3), [LIB-6](field-guide/lib.md#lib-6), [LIB-7](field-guide/lib.md#lib-7), [LIB-8](field-guide/lib.md#lib-8), [LIB-12](field-guide/lib.md#lib-12), [LIB-21](field-guide/lib.md#lib-21).
 
 <a id="bp-24"></a>
 

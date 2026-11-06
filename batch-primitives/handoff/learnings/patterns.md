@@ -492,17 +492,17 @@ for page, first in _claim_list_pages(list_fn, ns, sel, timeout):
 
 ### PAT-22 A wrapper subclass whose properties read the original live
 
-- **The idea:** `_ConfiguredRetriesApiClient` builds its own urllib3 client with custom retries from a shallow copy of the caller's configuration, while `default_headers` and `cookie` are properties that read from the source client on every request.
-- **Where:** `k8s_helper.py: _ConfiguredRetriesApiClient`, `_api_client_with_retries`, `_CLAIM_COLLECTION_RETRIES` (22/N `05b7420c`; the shallow config copy idea first appeared in 7/N `d07e8941`).
+- **The idea:** `_UnretriedApiClient` builds its own urllib3 client with `retries=False` from a shallow copy of the caller's configuration, while `default_headers` and `cookie` are properties that read from the source client on every request.
+- **Where:** `k8s_helper.py: _UnretriedApiClient`, `_api_client_without_retries` (22/N; the shallow config copy idea first appeared in 7/N `d07e8941` and live header properties in 15/N `113fae28`).
 - **Why it works here:** `ApiClient` fixes its retry policy at construction, so the batch code needs a separate client that must not drift from the caller's. `copy.copy(configuration)` shares the credential dicts, so a token rotated in place reaches both. The properties make later `set_default_header` or cookie changes on the source visible too.
 
 ```python
 class Wrapped(client.ApiClient):
-    def __init__(self, source, retries):
+    def __init__(self, source):
         self._source = None                  # set BEFORE super().__init__
         self._default_headers = {}
         cfg = copy.copy(source.configuration)
-        cfg.retries = retries
+        cfg.retries = False
         super().__init__(configuration=cfg)
         self._source = source
     @property
@@ -510,7 +510,7 @@ class Wrapped(client.ApiClient):
         return self._source.default_headers if self._source else self._default_headers
 ```
 
-**Use it when:** you need a variant of an injected dependency with one setting changed, and everything else must stay linked to the original. **Watch out:** `ApiClient.__init__` assigns `default_headers` and `cookie` before `_source` exists, so initialize the backing fields first and give the properties setters. See [LIB-12](field-guide/lib.md#lib-12), [LIB-8](field-guide/lib.md#lib-8), [TEST-21](testing.md#test-21).
+**Use it when:** you need a variant of an injected dependency with one setting changed, and everything else must stay linked to the original. **Watch out:** `ApiClient.__init__` assigns `default_headers` and `cookie` before `_source` exists, so initialize the backing fields first and give the properties setters. See [LIB-12](field-guide/lib.md#lib-12), [LIB-21](field-guide/lib.md#lib-21), [TEST-21](testing.md#test-21).
 
 ## Errors and types
 

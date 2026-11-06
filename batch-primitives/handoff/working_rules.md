@@ -95,6 +95,8 @@ After a fix round took about an hour (full checks re-run in every round, and the
   - Right-size builder and verifier overhead to risk: apply trivial comment/docstring edits, 2-line type-cast fixes, and small surgical follow-ups directly without spawning a full builder + verifier subagent loop, running `mypy`, affected `pytest` with mutation checks, and doc regen (~2 min). Reserve full adversarial subagent verification for non-trivial runtime or protocol logic changes.
   - When verifying non-trivial logic changes, have the verifier audit the full owning PR diff (`base..branch`) in pass 1 rather than only the newest commit, so cross-commit interactions are caught upfront instead of coming back via CodeRabbit as an extra round.
   - Reuse warm subagents (`send_message` to the active builder and verifier) within a session instead of cold-spawning new subagents that spend ~10 minutes re-reading 8,000+ lines of batch code and tests from scratch.
+- **2026-11-06 addition (Brian: "from now on ,please keep updating learnings.md if it's not already in there (like the issues that would be good for that doc) after each cycle"):**
+  - After every fix or review cycle, check `learnings.md` (and its indexed `learnings/` subfiles) and add any reusable lessons, edge cases, or verification findings that are not already documented there, updating any existing entries whose cited implementation changed.
 
 ## No PR references in commit messages (Brian, 2026-10-28)
 Brian: "stop linking PRs to commit mesaages, it keeps showing this in the PR and that's not what i want at all". GitHub turns `#1234` or `owner/repo#1234` in any commit message pushed to the fork, including notes-branch commits, into a "referenced this pull request" event on that PR.

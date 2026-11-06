@@ -215,6 +215,15 @@ Our real checker adds one more pass after the BFS: build reverse edges, BFS back
   - **P:** state machines that communicate by events, with a model checker; also used at AWS.
 - **Watch out:** Each tool still checks a model or a harness you wrote. [VER-1](#ver-1) to [VER-6](#ver-6) apply unchanged.
 
+<a id="ver-12"></a>
+
+### VER-12 Know what your formal model abstracts away, and audit that boundary separately
+
+- **Principle:** List the operations and failure modes your formal spec omits, and pair the model with a mechanical code audit for those omitted axes.
+- **Why it works:** A passed TLC run gives strong confidence inside its abstraction and zero coverage outside it. Naming the boundary stops "TLC passed 31 configs" from masking bugs in unmodeled calls.
+- **How we applied it:** `BatchLease.tla` ([tla.md](tla.md)) proved cross-process ownership and fencing invariants (`BelieverKeepsClaims`, `ClaimSetupFencing`, `ReaperSafety`) across 31 positive and negative configs in `22/N`, catching unscoped `deletecollection`, premature reaper confirmation waits, and unpreconditioned setup rollback. Because the TLA+ spec intentionally abstracted away read-only warm-pool and template `GET`s and caller-local latency budgets (`acquire(timeout=...)`), `23/N`'s `_check_pool` still let `get_sandbox_warmpool`, `get_sandbox_template`, and single-flight waits overrun `acquire(timeout=...)` or `_lease_expires_at` and shared caller-local `BatchError`s across coalesced waiters ([LOCK-21](field-guide/lock.md#lock-21)). Auditing every wait and network call on user-bounded paths (`sandbox_batch.py: SandboxBatch._check_pool`, `_precheck_pools`) and testing against stalled loopback sockets ([TEST-20](testing.md#test-20)) caught what the protocol model omitted (22/N, 23/N).
+- **Watch out:** Whenever you add a timeout or Lease fence to write paths because a model flagged them, grep every read and helper call on the same caller path too; hanging a caller past its deadline is a liveness bug even when it violates no ownership safety invariant.
+
 ## When to reach for it
 
 Reach for a model checker when **two or more** of these meet in one design:

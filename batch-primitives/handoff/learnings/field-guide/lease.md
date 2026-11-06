@@ -580,7 +580,7 @@ This section covers the batch's Lease: a small `coordination.k8s.io/v1` object n
 
 - **Situation:** In `claim_batch`, `SandboxBatch._claim` takes `renewed_at` and creates the Lease before it lists claims ([LEASE-1](#lease-1)), and the renew thread starts only afterwards, in `_start`. In `get_batch`, `_attach` lists claims before it writes the Lease.
 - **What goes wrong:** A list that takes longer than D before renewal starts lets the new Lease expire at birth. Old 3.17 notes that urllib3 read retries on this list could reach 4 x 30 s = 120 s, more than a 60 s Lease.
-- **What we do:** `_claim`'s post-create list uses `BATCH_REQUEST_TIMEOUT_SECONDS` (30 s) with no read retries (22/N). `_attach` lists before writing the Lease and takes `renewed_at` after the list ([LEASE-14](#lease-14)), so it can afford `BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS` (90 s). The timeout choice follows from whether the Lease clock is already running (inferred from the code; no source states the rationale directly).
+- **What we do:** `_claim`'s post-create list passes `_request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS` (`30`) and `deadline=lease_expires_at`, and `_claim_list_pages` (`k8s_helper.py`, `async_k8s_helper.py`) clamps each page's `_request_timeout` to `min(page_timeout, deadline - time.monotonic())` with no transport retries (22/N; see [LEASE-33](#lease-33)). `_attach` lists before writing the Lease and takes `renewed_at` after the list ([LEASE-14](#lease-14)), so it can afford `BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS` (90 s). The timeout choice follows from whether the Lease clock is already running.
 - **Example:**
   ```text
   claim_batch: POST lease (clock starts) -> LIST claims, 30s timeout -> start renewal
@@ -653,6 +653,29 @@ This section covers the batch's Lease: a small `coordination.k8s.io/v1` object n
   expires_at = started + self._ready_timeout + self._settings.work_budget + BATCH_SHUTDOWN_MARGIN_SECONDS
   ```
 - **Related:** [LEASE-27](#lease-27).
+
+</details>
+
+<a id="lease-33"></a>
+
+## LEASE-33 Bound multi-page setup across pages before renewal starts, and fail closed on missing rollback preconditions
+
+**Takeaway:** A per-request `_request_timeout` bounds only one page of a `continue`-token list, so pass an overall Lease `deadline` across pages whenever listing runs after creating a Lease and before its renewal loop starts. When rolling back that Lease on setup failure, require a non-empty `resourceVersion` rather than downgrading `None` to an unpreconditioned delete.
+
+<details>
+<summary>The full story (22/N)</summary>
+
+- **Situation:** During `claim_batch`, `SandboxBatch._claim` creates the batch Lease first so existing or concurrently created claims cannot slip past the pre-create check ([LEASE-1](#lease-1)), then calls `list_sandbox_claim_objects` (which pages in `CLAIM_LIST_PAGE_SIZE = 500` chunks via `k8s_helper.py: _claim_list_pages`) before `_start` launches `_renew_loop`. If setup fails (for example, pre-existing claims exist or listing times out), `_claim` rolls back the Lease with `delete_batch_lease`.
+- **What goes wrong:** Passing `_request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS` (`30`) alone bounds each page individually, so a short `lease_duration` (`< 30 s`), a multi-page list (`N` pages taking up to 30 s each), or a process pause right after the list returns can run past `renewed_at + lease_duration` while the reaper deletes the unrenewed Lease and another `claim_batch` creates a replacement Lease under the same `batch_id` (`BatchLease.tla`: `neg_claimNoExpiryCheck`, 10 states). Worse, `delete_batch_lease(..., resource_version=None)` means an unpreconditioned delete; if `create_batch_lease` returned an empty or missing `metadata.resource_version` and `_claim` passed `created_rv or None`, rollback would delete the successor's replacement Lease unconditionally (`neg_unconditionalRollbackDelete`, 23 states).
+- **What we do:** `SandboxBatch._claim` passes `_request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS` (`30`) and `deadline=lease_expires_at` (`renewed_at + lease_duration`), and `_claim_list_pages` (`k8s_helper.py`, `async_k8s_helper.py`) recomputes `remaining = deadline - time.monotonic()` before every page, clamps each page's `_request_timeout` to `min(page_timeout, remaining)`, and raises `TimeoutError` once `remaining <= 0`. After the list returns, `_claim` re-checks `time.monotonic() >= lease_expires_at`, converts deadline-expired timeouts and transport errors into `BatchLeaseExpiredError`, validates a non-empty `created_rv` and `lease_uid` up front (raising `BatchError` before any unpreconditioned rollback can run), and passes `resource_version=created_rv` to rollback `delete_batch_lease` (22/N, `sandbox_batch.py: SandboxBatch._claim`, `k8s_helper.py: _claim_list_pages`; verified by `ClaimSetupFencing` in `BatchLease.tla`).
+- **Example:**
+  ```text
+  POST Lease (uid=1, rv=10, expires at t0+60)
+  LIST page 1 (25s) -> LIST page 2 clamped to 35s -> stalls to t0+60 -> TimeoutError
+  rollback DELETE Lease precondition rv=10 -> 409 if reaper+h2 replaced it (h2 safe)
+                                           -> BatchLeaseExpiredError raised to h1
+  ```
+- **Related:** [LEASE-1](#lease-1), [LEASE-29](#lease-29); [TLA-3](../tla.md#tla-3).
 
 </details>
 

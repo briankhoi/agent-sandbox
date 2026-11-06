@@ -352,7 +352,7 @@ API Priority and Fairness (APF) queues requests by priority level. When a level 
 
 **How the batch uses it:** `batch_utils.py: is_retryable_status` (1/N) treats 429 and 5xx as transient. `retry_after_seconds` (13/N) caps the hint at 30s, and one `Retry-After` moves the shared create cursor for every worker ([RETRY-6](field-guide/retry.md#retry-6)). `WarmCredit` pauses warm credit during a cooldown (19/N; [RETRY-16](field-guide/retry.md#retry-16)).
 
-**Gotcha:** `urllib3.Retry` honours `Retry-After` on 413, 429, and 503 even without `status_forcelist`, and can sleep up to 6 hours inside one SDK call (the default cap in urllib3 2.8.0), far past a 60s Lease. 22/N sets `respect_retry_after_header=False` on `k8s_helper.py: _CLAIM_COLLECTION_RETRIES` ([LIB-7](field-guide/lib.md#lib-7), [LIB-8](field-guide/lib.md#lib-8)). Parse the header as ASCII digits only, since `isdigit()` accepts `"²"` ([LIB-17](field-guide/lib.md#lib-17)).
+**Gotcha:** `urllib3.Retry` honours `Retry-After` on 413, 429, and 503 even without `status_forcelist`, and can sleep up to 6 hours inside one SDK call (the default cap in urllib3 2.8.0), far past a 60s Lease. 22/N sets `retries=False` on `k8s_helper.py: _batch_custom_objects_api` via `_api_client_without_retries` ([LIB-7](field-guide/lib.md#lib-7), [LIB-8](field-guide/lib.md#lib-8), [LIB-21](field-guide/lib.md#lib-21)). Parse the header as ASCII digits only, since `isdigit()` accepts `"²"` ([LIB-17](field-guide/lib.md#lib-17)).
 
 **Try it:**
 ```text

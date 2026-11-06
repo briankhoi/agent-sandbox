@@ -426,22 +426,22 @@ This section covers how we tested code that runs on several threads or asyncio t
 **Takeaway:** Mocks cannot show what a transport library's retry logic really does. Test it against a local socket whose state you control (bound, listening, scripted reply), count server-side accepts or requests, and assert the setting on the object the library actually reads, not only where you set it.
 
 <details>
-<summary>The full story (22/N, 05b7420c)</summary>
+<summary>The full story (22/N)</summary>
 
-- **Situation:** The claim-collection client uses `urllib3.Retry(3, read=False, respect_retry_after_header=False)`: retry connects, never retry reads, never sleep on `Retry-After`. urllib3 is the HTTP library under the sync Kubernetes client.
-- **What goes wrong:** A config that looks right (for example, one that forgets `respect_retry_after_header`) passes every mock-based test. Checking only `configuration.retries` misses whether the pool manager actually got the `Retry` object.
-- **What we do:** `test_k8s_helper.py: TestLeaseApiClient.test_claim_collection_requests_do_not_retry_reads_or_retry_after_and_keep_injected_settings`:
-  - A socket bound but not listening refuses connects. The test expects `MaxRetryError`, which proves connect retries are wrapped.
-  - After `listen()` with no reply, each call raises `ReadTimeoutError`. The test `accept()`s exactly one pending connection and asserts a second `accept()` raises `BlockingIOError`, which proves one attempt and no read retry.
-  - A tiny threaded server answers `429` with `Retry-After: 0`. The test asserts `throttled_attempts == 1` and an `ApiException(429)`.
-  - It checks both `configuration.retries` and `rest_client.pool_manager.connection_pool_kw['retries']`.
+- **Situation:** `K8sHelper._batch_custom_objects_api` shares an unretried `ApiClient` (`retries=False`) so batch custom-object calls never retry connects, never retry reads, and never sleep on `Retry-After`, while non-batch `custom_objects_api` calls keep default `urllib3` retries.
+- **What goes wrong:** A config that looks right (for example, `Retry(3, read=False)` without `respect_retry_after_header=False` or still retrying connects) passes every mock-based test. Checking only `configuration.retries` misses whether the pool manager actually got `Retry(total=False)`.
+- **What we do:** `test_k8s_helper.py: TestLeaseApiClient.test_batch_custom_object_requests_do_not_retry_and_keep_injected_settings`:
+  - A socket bound but not listening refuses connects. All eight batch calls raise raw `NewConnectionError` (not `MaxRetryError`, proving one attempt), while non-batch calls wrap retries in `MaxRetryError`.
+  - After `listen()` with no reply, each batch call raises `ReadTimeoutError`. The test drains `accept()` and asserts `attempts == 1`, proving no read retry.
+  - A tiny threaded server answers `503` with `Retry-After: 3600`. Each batch call raises `ApiException(503)` in under 1 s with `throttled_attempts` advancing by 1, while non-batch `delete_sandbox_claim` retries `503 Retry-After: 0` onto `200 OK` (`2` attempts).
+  - It checks both `configuration.retries is False` and `rest_client.pool_manager.connection_pool_kw['retries'].total is False`.
 - **Example:**
   ```text
-  bind only        -> connect refused -> MaxRetryError (connect retries ran)
-  listen, no reply -> ReadTimeoutError; accept() once ok, accept() again -> BlockingIOError (1 attempt)
-  429 Retry-After:0 server -> attempts == 1
+  bind only        -> connect refused -> NewConnectionError on batch (1 attempt), MaxRetryError on non-batch
+  listen, no reply -> ReadTimeoutError; accept() count == 1
+  503 Retry-After:3600 server -> ApiException(503) in <1s, attempts == 1
   ```
-- **Related:** [TEST-21](#test-21), [LIB-7](field-guide/lib.md#lib-7), [LIB-8](field-guide/lib.md#lib-8).
+- **Related:** [TEST-21](#test-21), [LIB-7](field-guide/lib.md#lib-7), [LIB-8](field-guide/lib.md#lib-8), [LIB-21](field-guide/lib.md#lib-21).
 
 </details>
 
@@ -452,11 +452,11 @@ This section covers how we tested code that runs on several threads or asyncio t
 **Takeaway:** When you derive a client with different transport settings from a caller's client, test credential propagation by changing the original after construction. That catches accidental snapshots of auth state.
 
 <details>
-<summary>The full story (7/N shallow-copied config; 22/N claim-collection client)</summary>
+<summary>The full story (7/N shallow-copied config; 22/N shared unretried batch client)</summary>
 
-- **Situation:** The Lease client and the claim-collection client are shallow copies of a caller-injected `ApiClient`, with different retry settings.
-- **What goes wrong:** A deep copy, or a snapshot of headers or cookies, would freeze credentials. Rotated tokens or exec-plugin refreshes (kubeconfig plugins that fetch fresh tokens) would then stop working on those clients only.
-- **What we do:** `_assert_delegates_to_injected` and `test_lease_requests_are_not_retried_and_keep_the_injected_client_settings` build the helper, then change the injected configuration's `api_key`, `api_key_prefix`, default headers (including replacing the dict), and cookie. They assert the derived client and its serialized request headers reflect each change, while retries stay overridden (`False` or the `Retry` object) and the injected config's own retries stay `None`.
+- **Situation:** The shared unretried Lease and batch custom-object client (`_UnretriedApiClient`) wraps a caller-injected `ApiClient` via a shallow configuration copy with `retries=False`.
+- **What goes wrong:** A deep copy, or a snapshot of headers or cookies, would freeze credentials. Rotated tokens or exec-plugin refreshes (kubeconfig plugins that fetch fresh tokens) would then stop working on Lease and batch calls only.
+- **What we do:** `_assert_delegates_to_injected` and `test_lease_requests_are_not_retried_and_keep_the_injected_client_settings` build the helper, then change the injected configuration's `api_key`, `api_key_prefix`, default headers (including replacing the dict), and cookie. They assert the derived client and its serialized request headers reflect each change, while `retries` stays `False` and the injected config's own `retries` stays `None`.
 - **Related:** [TEST-20](#test-20), [LIB-12](field-guide/lib.md#lib-12), [PAT-22](patterns.md#pat-22).
 
 </details>
