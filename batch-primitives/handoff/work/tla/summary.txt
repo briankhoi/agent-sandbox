@@ -1,21 +1,31 @@
-main_core | No error has been found | 5342061 states generated, 2517908 distinct states found | depth 60 | trace 0 | 20s
-main_release | No error has been found | 24549537 states generated, 11091843 distinct states found | depth 72 | trace 0 | 84s
-main_fence | No error has been found | 55991793 states generated, 19655559 distinct states found | depth 60 | trace 0 | 151s
-finding_23n | Invariant BelieverKeepsClaims is violated | 9903 states generated, 7844 distinct states found | depth 21 | trace 19 | 2s
-fix_skipOnNone | Invariant BelieverKeepsClaims is violated | 207653 states generated, 110056 distinct states found | depth 21 | trace 18 | 4s
-skew5_connected | No error has been found | 1517 states generated, 1165 distinct states found | depth 27 | trace 0 | 1s
-skew6_connected | Invariant ReaperSafety is violated | 2926 states generated, 2046 distinct states found | depth 23 | trace 16 | 2s
-skew6_connected_waitLonger | No error has been found | 3036 states generated, 2339 distinct states found | depth 28 | trace 0 | 2s
-skew12_connected_waitLonger | No error has been found | 14626 states generated, 8846 distinct states found | depth 29 | trace 0 | 2s
-skew5_flaky | No error has been found | 102926 states generated, 50756 distinct states found | depth 49 | trace 0 | 3s
-skew6_flaky | Invariant ReaperSafety is violated | 1775 states generated, 1272 distinct states found | depth 15 | trace 11 | 1s
-neg_reaperSubtracts | Invariant ReaperSafety is violated | 1417 states generated, 1020 distinct states found | depth 14 | trace 10 | 2s
-neg_reaperNoPrecond | Invariant ReaperSafety is violated | 31049 states generated, 23876 distinct states found | depth 24 | trace 23 | 2s
-neg_reaperNoWait_skew | Invariant ReaperSafety is violated | 648 states generated, 534 distinct states found | depth 21 | trace 13 | 1s
-neg_reaperNoWait | No error has been found | 33547 states generated, 17781 distinct states found | depth 49 | trace 0 | 2s
-neg_expiryFromResp | No error has been found | 31265 states generated, 16684 distinct states found | depth 49 | trace 0 | 3s
-neg_expiryFromResp_noWait | Invariant ReaperSafety is violated | 14863 states generated, 8461 distinct states found | depth 21 | trace 18 | 2s
-neg_holderOnlyFence | Invariant ReleaseFencing is violated | 350201 states generated, 178160 distinct states found | depth 19 | trace 17 | 4s
-neg_getBatchAdds | No error has been found | 4499843 states generated, 2131339 distinct states found | depth 60 | trace 0 | 18s
-neg_reaperNoPrecond_hand | Invariant ReaperSafety is violated | 381865 states generated, 201536 distinct states found | depth 21 | trace 20 | 4s
-neg_unconditionalRenew | Invariant BelieverIsHolder is violated | 27056 states generated, 15359 distinct states found | depth 15 | trace 13 | 2s
+main_core | No error has been found | 11250597 states generated, 5366897 distinct states found, 0 states left on queue | depth 60 | trace 0 | 42s
+main_release | No error has been found | 52180660 states generated, 24233858 distinct states found, 0 states left on queue | depth 72 | trace 0 | 179s
+main_fence | No error has been found | 55991793 states generated, 19655559 distinct states found, 0 states left on queue | depth 60 | trace 0 | 155s
+main_claim_setup | No error has been found | 1221646 states generated, 663265 distinct states found, 0 states left on queue | depth 71 | trace 0 | 6s
+main_member_ops | No error has been found | 1327699 states generated, 486124 distinct states found, 0 states left on queue | depth 72 | trace 0 | 6s
+skew6_connected | No error has been found | 14968 states generated, 10447 distinct states found, 0 states left on queue | depth 38 | trace 0 | 2s
+skew12_connected | No error has been found | 57021 states generated, 32965 distinct states found, 0 states left on queue | depth 39 | trace 0 | 4s
+skew8_flaky | No error has been found | 2833046 states generated, 1233135 distinct states found, 0 states left on queue | depth 68 | trace 0 | 12s
+skew9_flaky | No error has been found | 3743449 states generated, 1589514 distinct states found, 0 states left on queue | depth 68 | trace 0 | 12s
+skew10_flaky | No error has been found | 3743449 states generated, 1589514 distinct states found, 0 states left on queue | depth 68 | trace 0 | 11s
+skew8_member_flaky | No error has been found | 3179957 states generated, 908037 distinct states found, 0 states left on queue | depth 56 | trace 0 | 11s
+skew9_member_flaky | Invariant BelieverKeepsClaims is violated | 132776 states generated, 65463 distinct states found, 24466 states left on queue | depth 19 | trace 15 | 3s
+neg_unscopedReleaseDelete | Invariant BelieverKeepsClaims is violated | 30450 states generated, 24052 distinct states found, 7042 states left on queue | depth 22 | trace 22 | 3s
+neg_unscopedReleaseDelete_skipNone | Invariant BelieverKeepsClaims is violated | 338537 states generated, 183522 distinct states found, 61465 states left on queue | depth 21 | trace 18 | 4s
+neg_reaperWaitInterval_skew6 | Invariant ReaperSafety is violated | 2855 states generated, 2016 distinct states found, 270 states left on queue | depth 22 | trace 16 | 2s
+neg_reaperWaitInterval_flaky_skew6 | Invariant ReaperSafety is violated | 1738 states generated, 1243 distinct states found, 569 states left on queue | depth 14 | trace 10 | 1s
+neg_unconditionalRollbackDelete | Invariant BelieverIsHolder is violated | 123662 states generated, 76851 distinct states found, 15857 states left on queue | depth 25 | trace 23 | 3s
+neg_claimNoExpiryCheck | Invariant ClaimSetupFencing is violated | 2662 states generated, 1589 distinct states found, 600 states left on queue | depth 13 | trace 10 | 2s
+neg_retryPastExpiry | Invariant BelieverKeepsClaims is violated | 904270 states generated, 351147 distinct states found, 119004 states left on queue | depth 22 | trace 21 | 5s
+neg_reaperSubtracts | No error has been found | 1215677 states generated, 577904 distinct states found, 0 states left on queue | depth 68 | trace 0 | 6s
+neg_reaperSubtracts_interval | Invariant ReaperSafety is violated | 1645 states generated, 1188 distinct states found, 547 states left on queue | depth 14 | trace 11 | 2s
+neg_reaperNoPrecond | Invariant ReaperSafety is violated | 177201 states generated, 139022 distinct states found, 36397 states left on queue | depth 30 | trace 26 | 4s
+neg_reaperNoPrecond_hand | Invariant BelieverIsHolder is violated | 2006450 states generated, 1090523 distinct states found, 346646 states left on queue | depth 24 | trace 23 | 10s
+neg_reaperNoWait_skew | Invariant ReaperSafety is violated | 751 states generated, 600 distinct states found, 83 states left on queue | depth 21 | trace 14 | 1s
+neg_reaperNoWait | No error has been found | 33391 states generated, 17781 distinct states found, 0 states left on queue | depth 49 | trace 0 | 2s
+neg_expiryFromResp | No error has been found | 152518 states generated, 93072 distinct states found, 0 states left on queue | depth 66 | trace 0 | 3s
+neg_expiryFromResp_skew9 | Invariant ReaperSafety is violated | 69180 states generated, 43848 distinct states found, 15979 states left on queue | depth 20 | trace 16 | 3s
+neg_expiryFromResp_noWait | Invariant ReaperSafety is violated | 11379 states generated, 6726 distinct states found, 1377 states left on queue | depth 20 | trace 17 | 2s
+neg_holderOnlyFence | Invariant ReleaseFencing is violated | 328012 states generated, 168070 distinct states found, 67965 states left on queue | depth 19 | trace 16 | 3s
+neg_getBatchAdds | No error has been found | 4436261 states generated, 2106673 distinct states found, 0 states left on queue | depth 60 | trace 0 | 18s
+neg_unconditionalRenew | Invariant BelieverIsHolder is violated | 25445 states generated, 14416 distinct states found, 6387 states left on queue | depth 15 | trace 13 | 2s
