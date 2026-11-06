@@ -2317,7 +2317,8 @@ class TestRelease(BaseClaimBatchTest):
         _wait_until(lambda: len(self.cluster.created) == 1)
         batch.release()
         helper = self.cluster.helper
-        self.assertEqual(helper.create_sandbox_claim.call_args.kwargs["_request_timeout"], 30)
+        create_kwargs = helper.create_sandbox_claim.call_args.kwargs
+        self.assertEqual((create_kwargs["_request_timeout"], create_kwargs["batch"]), (30, True))
         self.assertEqual(helper.delete_sandbox_claims_by_label.call_args.kwargs["_request_timeout"], 90)
         self.assertEqual(helper.count_live_sandbox_claims.call_args.kwargs["_request_timeout"], 90)
         self.assertEqual(helper.delete_batch_lease.call_args.kwargs["_request_timeout"], 30)

@@ -83,8 +83,8 @@ _TRANSPORT_ERRORS = (
     urllib3.exceptions.ProtocolError,
     urllib3.exceptions.ReadTimeoutError,
     urllib3.exceptions.MaxRetryError,
-    # urllib3 doesn't retry Lease requests, so a refused or timed-out connect raises this error instead
-    # of a MaxRetryError. NewConnectionError subclasses it.
+    # urllib3 doesn't retry Lease or per-claim batch writes, so a refused or timed-out connect raises
+    # this error instead of a MaxRetryError. NewConnectionError subclasses it.
     urllib3.exceptions.ConnectTimeoutError,
     ConnectionError,
     # A peer that closes the TLS connection early (e.g. a load balancer during a control-plane upgrade)
@@ -1879,6 +1879,7 @@ class SandboxBatch:
                 labels=labels,
                 lifecycle=lifecycle,
                 owner_references=self._owner_references,
+                batch=True,
                 log_level=logging.DEBUG,
                 _request_timeout=request_timeout,
             )

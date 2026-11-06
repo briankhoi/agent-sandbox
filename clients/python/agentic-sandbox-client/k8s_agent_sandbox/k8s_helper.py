@@ -52,8 +52,9 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
-# Keep connection retries while surfacing read errors and Retry-After responses after one attempt
-# so batch callers enforce their own deadlines, Retry-After caps, and Lease renewals.
+# Keep connection retries on shared batch collection, watch, and pool-read calls while surfacing
+# read errors and Retry-After responses after one attempt so batch callers enforce their own
+# deadlines, Retry-After caps, and Lease renewals. Per-claim batch writes use retries=False instead.
 _BATCH_CUSTOM_OBJECTS_RETRIES = urllib3.Retry(3, read=False, respect_retry_after_header=False)
 
 
@@ -202,8 +203,10 @@ class K8sHelper:
         self._batch_custom_objects_api = client.CustomObjectsApi(
             _api_client_with_retries(api_client, _BATCH_CUSTOM_OBJECTS_RETRIES)
         )
+        unretried_api_client = _api_client_with_retries(api_client, retries=False)
+        self._unretried_custom_objects_api = client.CustomObjectsApi(unretried_api_client)
         self.core_v1_api = client.CoreV1Api(api_client)
-        self.coordination_v1_api = client.CoordinationV1Api(_api_client_with_retries(api_client, retries=False))
+        self.coordination_v1_api = client.CoordinationV1Api(unretried_api_client)
 
     def api_pool_size(self) -> int | None:
         """Returns the size of the Kubernetes API connection pool that creates and the watch use, or
@@ -229,6 +232,7 @@ class K8sHelper:
         *,
         log_level: int = logging.INFO,
         _request_timeout: float | tuple[float, float] | None = None,
+        batch: bool = False,
     ) -> dict[str, Any]:
         """Creates a SandboxClaim custom resource.
 
@@ -243,6 +247,9 @@ class K8sHelper:
             log_level: Log level for the logger during this function call.
             _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
                 pair) forwarded to the underlying urllib3 request.
+            batch: If ``True``, route the request through the unretried custom-object
+                client so connection errors surface after one attempt instead of
+                retrying past a batch Lease deadline.
         """
         updated_annotations = dict(annotations) if annotations else {}
         if CLIENT_REQUEST_TIME_ANNOTATION not in updated_annotations:
@@ -285,8 +292,11 @@ class K8sHelper:
             "metadata": metadata,
             "spec": spec,
         }
+        # Per-claim batch creates bound _request_timeout by the remaining Lease budget inside
+        # SandboxBatch._create_one's retry loop, so disable urllib3 connection retries on batch=True.
+        api = self._unretried_custom_objects_api if batch else self.custom_objects_api
         logger.log(log_level, f"Creating SandboxClaim '{name}' in namespace '{namespace}' using warm pool '{warmpool}'...")
-        return cast(dict[str, Any], self.custom_objects_api.create_namespaced_custom_object(
+        return cast(dict[str, Any], api.create_namespaced_custom_object(
             group=CLAIM_API_GROUP,
             version=CLAIM_API_VERSION,
             namespace=namespace,
@@ -528,19 +538,19 @@ class K8sHelper:
                 pair) forwarded to the underlying urllib3-based request.
             expected_uid: If provided, delete only the Claim with this UID.
             log_level: Log level for the logger during this function call.
-            batch: If ``True``, route the request through the batch custom-object
-                client so read errors and ``Retry-After`` responses surface after
-                one attempt.
+            batch: If ``True``, route the request through the unretried custom-object
+                client so connection errors, read errors, and ``Retry-After`` responses
+                surface after one attempt.
         """
         delete_kwargs: dict[str, Any] = {}
         if expected_uid is not None:
             delete_kwargs["body"] = client.V1DeleteOptions(
                 preconditions=client.V1Preconditions(uid=expected_uid)
             )
-        # Route batch deletes through _batch_custom_objects_api so batch callers enforce their own
-        # deadlines, Retry-After caps, and Lease checks while non-batch callers (including
-        # timeout-bounded atexit cleanup) keep default urllib3 retries.
-        api = self._batch_custom_objects_api if batch else self.custom_objects_api
+        # Route per-claim batch deletes through _unretried_custom_objects_api so connection timeouts
+        # cannot retry past a batch Lease deadline while non-batch callers (including timeout-bounded
+        # atexit cleanup) keep default urllib3 retries and shared batch callers keep connection retries.
+        api = self._unretried_custom_objects_api if batch else self.custom_objects_api
         try:
             api.delete_namespaced_custom_object(
                 group=CLAIM_API_GROUP,

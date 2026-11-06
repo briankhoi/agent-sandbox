@@ -1875,6 +1875,7 @@ class AsyncSandboxBatch:
                 labels=labels,
                 lifecycle=lifecycle,
                 owner_references=self._owner_references,
+                batch=True,
                 log_level=logging.DEBUG,
                 _request_timeout=request_timeout,
             )

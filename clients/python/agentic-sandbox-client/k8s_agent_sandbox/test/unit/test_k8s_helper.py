@@ -221,6 +221,26 @@ class TestK8sHelperCreateSandboxClaim(unittest.TestCase):
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
         self.assertNotIn("additionalPodMetadata", body["spec"])
 
+    def test_create_routes_batch_to_unretried_client(self, mock_config, mock_api_cls, mock_core_cls):
+        default_api = MagicMock()
+        batch_api = MagicMock()
+        unretried_api = MagicMock()
+        mock_api_cls.side_effect = [default_api, batch_api, unretried_api]
+
+        helper = K8sHelper()
+        helper.create_sandbox_claim("single-0", "pool-a", "default", _request_timeout=30)
+
+        self.assertEqual(default_api.create_namespaced_custom_object.call_args.kwargs["_request_timeout"], 30)
+        batch_api.create_namespaced_custom_object.assert_not_called()
+        unretried_api.create_namespaced_custom_object.assert_not_called()
+
+        default_api.reset_mock()
+        helper.create_sandbox_claim("b1-0", "pool-a", "default", _request_timeout=30, batch=True)
+
+        self.assertEqual(unretried_api.create_namespaced_custom_object.call_args.kwargs["_request_timeout"], 30)
+        default_api.create_namespaced_custom_object.assert_not_called()
+        batch_api.create_namespaced_custom_object.assert_not_called()
+
 
 @patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api")
 @patch("k8s_agent_sandbox.k8s_helper.client.CustomObjectsApi")
@@ -469,30 +489,35 @@ class TestK8sHelperDeleteSandboxClaim(unittest.TestCase):
     def test_delete_defaults_to_no_request_timeout(self, mock_config, mock_api_cls, mock_core_cls):
         default_api = MagicMock()
         batch_api = MagicMock()
-        mock_api_cls.side_effect = [default_api, batch_api]
+        unretried_api = MagicMock()
+        mock_api_cls.side_effect = [default_api, batch_api, unretried_api]
 
         helper = K8sHelper()
         helper.delete_sandbox_claim("claim", "default")
 
         self.assertIsNone(default_api.delete_namespaced_custom_object.call_args.kwargs["_request_timeout"])
         batch_api.delete_namespaced_custom_object.assert_not_called()
+        unretried_api.delete_namespaced_custom_object.assert_not_called()
 
     def test_delete_forwards_request_timeout(self, mock_config, mock_api_cls, mock_core_cls):
         default_api = MagicMock()
         batch_api = MagicMock()
-        mock_api_cls.side_effect = [default_api, batch_api]
+        unretried_api = MagicMock()
+        mock_api_cls.side_effect = [default_api, batch_api, unretried_api]
 
         helper = K8sHelper()
         helper.delete_sandbox_claim("claim", "default", _request_timeout=30)
 
         self.assertEqual(default_api.delete_namespaced_custom_object.call_args.kwargs["_request_timeout"], 30)
         batch_api.delete_namespaced_custom_object.assert_not_called()
+        unretried_api.delete_namespaced_custom_object.assert_not_called()
 
         default_api.reset_mock()
         helper.delete_sandbox_claim("claim", "default", _request_timeout=30, batch=True)
 
-        self.assertEqual(batch_api.delete_namespaced_custom_object.call_args.kwargs["_request_timeout"], 30)
+        self.assertEqual(unretried_api.delete_namespaced_custom_object.call_args.kwargs["_request_timeout"], 30)
         default_api.delete_namespaced_custom_object.assert_not_called()
+        batch_api.delete_namespaced_custom_object.assert_not_called()
 
 
 @patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api")
@@ -1033,10 +1058,13 @@ class TestK8sHelperApiClientInjection(unittest.TestCase):
     ):
         sentinel = MagicMock(name="ApiClient")
         batch_custom_client = MagicMock(name="BatchCustomObjectsApiClient")
-        lease_client = MagicMock(name="LeaseApiClient")
-        mock_with_retries.side_effect = [batch_custom_client, lease_client]
+        unretried_client = MagicMock(name="UnretriedApiClient")
+        mock_with_retries.side_effect = [batch_custom_client, unretried_client]
         K8sHelper(api_client=sentinel)
-        self.assertEqual(mock_custom_cls.call_args_list, [call(sentinel), call(batch_custom_client)])
+        self.assertEqual(
+            mock_custom_cls.call_args_list,
+            [call(sentinel), call(batch_custom_client), call(unretried_client)],
+        )
         self.assertEqual(
             mock_with_retries.call_args_list,
             [call(sentinel, _BATCH_CUSTOM_OBJECTS_RETRIES), call(sentinel, retries=False)],
@@ -1168,6 +1196,7 @@ class TestLeaseApiClient(unittest.TestCase):
         self.addCleanup(helper._batch_custom_objects_api.api_client.close)
         self.addCleanup(helper.coordination_v1_api.api_client.close)
         self.assertIs(helper.coordination_v1_api.api_client.configuration.retries, False)
+        self.assertIs(helper._unretried_custom_objects_api.api_client, helper.coordination_v1_api.api_client)
         self.assertIs(
             helper._batch_custom_objects_api.api_client.configuration.retries,
             _BATCH_CUSTOM_OBJECTS_RETRIES,
@@ -1197,9 +1226,23 @@ class TestLeaseApiClient(unittest.TestCase):
                 self.assertIs(retries.respect_retry_after_header, False)
 
             selector = "agents.x-k8s.io/batch-id=b1"
-            # Before listen(), connect is refused, proving connection retries wrap in MaxRetryError.
-            with self.assertRaises(urllib3.exceptions.MaxRetryError):
-                helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 0.02))
+            # Before listen(), connect is refused: shared batch and non-batch clients retry and wrap in
+            # MaxRetryError, while Lease-bounded per-claim batch writes fail once with NewConnectionError.
+            for retried_call in (
+                lambda: helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 0.02)),
+                lambda: helper.delete_sandbox_claim("single-0", "default", _request_timeout=(0.05, 0.05)),
+                lambda: helper.create_sandbox_claim("single-0", "pool-a", "default", _request_timeout=(0.05, 0.05)),
+            ):
+                with self.assertRaises(urllib3.exceptions.MaxRetryError):
+                    retried_call()
+            for unretried_call in (
+                lambda: helper.delete_sandbox_claim("b1-0", "default", _request_timeout=(0.05, 0.05), batch=True),
+                lambda: helper.create_sandbox_claim(
+                    "b1-0", "pool-a", "default", _request_timeout=(0.05, 0.05), batch=True
+                ),
+            ):
+                with self.assertRaises(urllib3.exceptions.NewConnectionError):
+                    unretried_call()
 
             # Once listening without replying, a read timeout surfaces after one attempt without retrying.
             sock.listen(8)
@@ -1210,6 +1253,7 @@ class TestLeaseApiClient(unittest.TestCase):
                 lambda: helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 0.02)),
                 lambda: list(helper.watch_sandbox_claims("default", selector, "5", 1, _request_timeout=(5.0, 0.02))),
                 lambda: helper.delete_sandbox_claim("b1-0", "default", _request_timeout=0.05, batch=True),
+                lambda: helper.create_sandbox_claim("b1-0", "pool-a", "default", _request_timeout=0.05, batch=True),
                 lambda: helper.get_sandbox_warmpool("pool-a", "default", _request_timeout=0.05),
                 lambda: helper.get_sandbox_template("tmpl", "default", _request_timeout=0.05),
             ):
@@ -1253,6 +1297,9 @@ class TestLeaseApiClient(unittest.TestCase):
                     (
                         lambda: helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 1.0)),
                         lambda: helper.delete_sandbox_claim("b1-0", "default", _request_timeout=(5.0, 1.0), batch=True),
+                        lambda: helper.create_sandbox_claim(
+                            "b1-0", "pool-a", "default", _request_timeout=(5.0, 1.0), batch=True
+                        ),
                         lambda: helper.get_sandbox_warmpool("pool-a", "default", _request_timeout=(5.0, 1.0)),
                     ),
                     start=1,
@@ -1273,7 +1320,7 @@ class TestLeaseApiClient(unittest.TestCase):
                     b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
                 ])
                 helper.delete_sandbox_claim("single-0", "default", _request_timeout=(5.0, 1.0))
-                self.assertEqual(throttled_attempts, 5)
+                self.assertEqual(throttled_attempts, 6)
             finally:
                 sock.close()
                 server.join(timeout=1.0)
