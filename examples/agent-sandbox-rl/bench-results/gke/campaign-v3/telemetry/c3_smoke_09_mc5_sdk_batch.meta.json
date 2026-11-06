@@ -1,0 +1,15 @@
+{
+  "run_name": "c3_smoke_09_mc5_sdk_batch",
+  "mode": "5_cluster_driver_job",
+  "clusters": ["asrl-c3-1", "asrl-c3-2", "asrl-c3-3", "asrl-c3-4", "asrl-c3-5"],
+  "job_name": "asrl-c3-smoke-09-mc5-sdk-batch",
+  "driver_image": "us-central1-docker.pkg.dev/brianknguyen-gke-dev/rl-gke-bench/asrl-driver@sha256:fae92f288fddc49cbe46851438f6a1398ee0b5d44aed8207e1ce72ff2cd9487a",
+  "driver_cmd": "python run_smoke_gate.py --contexts c1,c2,c3,c4,c5 --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --unmanaged-network-policy --termination-grace-seconds 0 --per-cluster-claims 10",
+  "start_utc": "2026-11-06T18:12:42Z",
+  "end_utc": "2026-11-06T18:13:17Z",
+  "job_elapsed_s": 35,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_5c_before": 0,
+  "controller_restarts_5c_after": 0
+}

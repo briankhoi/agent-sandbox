@@ -1,0 +1,70 @@
+# Guardrail-Safe 3-Lane APF Manifest (Phase II In-Cluster Runs ONLY)
+# Respects GKE 1.37 flowcontrol-guardrails 275-share cap (uses exact 30 unallocated shares
+# for dedicated asrl-driver-plc, isolates controller leader-election into workload-high,
+# and keeps agent-sandbox-controller in workload-low with 588 regional seats!).
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: PriorityLevelConfiguration
+metadata:
+  name: asrl-driver-plc
+spec:
+  type: Limited
+  limited:
+    nominalConcurrencyShares: 30
+    lendablePercent: 50
+    limitResponse:
+      type: Queue
+      queuing:
+        queues: 64
+        handSize: 6
+        queueLengthLimit: 200
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: agent-sandbox-leader-election
+spec:
+  matchingPrecedence: 400
+  priorityLevelConfiguration:
+    name: global-default
+  distinguisherMethod:
+    type: ByUser
+  rules:
+    - subjects:
+        - kind: ServiceAccount
+          serviceAccount:
+            name: agent-sandbox-controller
+            namespace: agent-sandbox-system
+      resourceRules:
+        - apiGroups: ["coordination.k8s.io"]
+          resources: ["leases"]
+          namespaces: ["agent-sandbox-system"]
+          verbs: ["*"]
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: asrl-driver-main
+spec:
+  matchingPrecedence: 850
+  priorityLevelConfiguration:
+    name: asrl-driver-plc
+  distinguisherMethod:
+    type: ByUser
+  rules:
+    - subjects:
+        - kind: ServiceAccount
+          serviceAccount:
+            name: asrl-driver
+            namespace: agent-sandbox-rl
+        - kind: ServiceAccount
+          serviceAccount:
+            name: asrl-driver
+            namespace: default
+      resourceRules:
+        - apiGroups: ["*"]
+          resources: ["*"]
+          namespaces: ["*"]
+          verbs: ["*"]
+      nonResourceRules:
+        - nonResourceURLs: ["*"]
+          verbs: ["*"]

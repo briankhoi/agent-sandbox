@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+  labels:
+    app: agent-sandbox-controller
+    control-plane: controller-manager
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: agent-sandbox-controller
+  template:
+    metadata:
+      labels:
+        app: agent-sandbox-controller
+        control-plane: controller-manager
+    spec:
+      serviceAccountName: agent-sandbox-controller
+      nodeSelector:
+        dedicated: ctrl
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: ctrl
+          effect: NoSchedule
+      containers:
+        - name: manager
+          image: us-central1-docker.pkg.dev/<gcp-project>/rl-gke-bench/agent-sandbox-controller@sha256:b0b3c550ad8eed1571c9494e3dc40b710aff724796cf4671fb1b7a5b959a3716
+          env:
+            - name: GOMEMLIMIT
+              value: "26GiB"
+          args:
+            - --leader-elect=true
+            - --extensions
+            - --sandbox-concurrent-workers=1000
+            - --sandbox-claim-concurrent-workers=500
+            - --sandbox-warm-pool-concurrent-workers=500
+            - --sandbox-template-concurrent-workers=100
+            - --sandbox-warm-pool-max-batch-size=500
+            - --sandbox-warm-pool-max-refill-rate=500
+            - --sandbox-warm-pool-readiness-grace-period=30m
+            - --kube-api-qps=-1
+            - --api-connections=4
+            - --separate-watch-connection=true
+            - --cache-label-selectors=true
+            - --disable-claim-events=true
+            - --disable-sandbox-events=true
+            - --disable-claim-observability-annotations=true
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: healthz
+              containerPort: 8081
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "14"
+              memory: "28Gi"
+            limits:
+              cpu: "28"
+              memory: "32Gi"
