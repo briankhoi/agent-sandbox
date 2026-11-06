@@ -485,6 +485,12 @@ class TestK8sHelperDeleteSandboxClaim(unittest.TestCase):
         helper = K8sHelper()
         helper.delete_sandbox_claim("claim", "default", _request_timeout=30)
 
+        self.assertEqual(default_api.delete_namespaced_custom_object.call_args.kwargs["_request_timeout"], 30)
+        batch_api.delete_namespaced_custom_object.assert_not_called()
+
+        default_api.reset_mock()
+        helper.delete_sandbox_claim("claim", "default", _request_timeout=30, batch=True)
+
         self.assertEqual(batch_api.delete_namespaced_custom_object.call_args.kwargs["_request_timeout"], 30)
         default_api.delete_namespaced_custom_object.assert_not_called()
 
@@ -1203,7 +1209,7 @@ class TestLeaseApiClient(unittest.TestCase):
                 lambda: helper.count_live_sandbox_claims("default", selector, _request_timeout=(5.0, 0.02)),
                 lambda: helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 0.02)),
                 lambda: list(helper.watch_sandbox_claims("default", selector, "5", 1, _request_timeout=(5.0, 0.02))),
-                lambda: helper.delete_sandbox_claim("b1-0", "default", _request_timeout=0.05),
+                lambda: helper.delete_sandbox_claim("b1-0", "default", _request_timeout=0.05, batch=True),
                 lambda: helper.get_sandbox_warmpool("pool-a", "default", _request_timeout=0.05),
                 lambda: helper.get_sandbox_template("tmpl", "default", _request_timeout=0.05),
             ):
@@ -1214,9 +1220,11 @@ class TestLeaseApiClient(unittest.TestCase):
                 with self.assertRaises(BlockingIOError):
                     sock.accept()
 
-            # A 503 with Retry-After surfaces as ApiException after one attempt instead of sleeping in urllib3.
+            # A 503 with Retry-After surfaces as ApiException after one attempt on batch calls, while
+            # timeout-bounded non-batch deletes still honor Retry-After on custom_objects_api.
             sock.settimeout(1.0)
             throttled_attempts = 0
+            queued_replies: list[bytes] = []
 
             def reply_throttled():
                 nonlocal throttled_attempts
@@ -1228,12 +1236,15 @@ class TestLeaseApiClient(unittest.TestCase):
                     with conn:
                         conn.recv(4096)
                         throttled_attempts += 1
-                        conn.sendall(
-                            b"HTTP/1.1 503 Service Unavailable\r\n"
-                            b"Retry-After: 3600\r\n"
-                            b"Content-Length: 2\r\n"
-                            b"Connection: close\r\n\r\n{}"
-                        )
+                        if queued_replies:
+                            conn.sendall(queued_replies.pop(0))
+                        else:
+                            conn.sendall(
+                                b"HTTP/1.1 503 Service Unavailable\r\n"
+                                b"Retry-After: 3600\r\n"
+                                b"Content-Length: 2\r\n"
+                                b"Connection: close\r\n\r\n{}"
+                            )
 
             server = threading.Thread(target=reply_throttled, daemon=True)
             server.start()
@@ -1241,8 +1252,8 @@ class TestLeaseApiClient(unittest.TestCase):
                 for expected, call_fn in enumerate(
                     (
                         lambda: helper.delete_sandbox_claims_by_label("default", selector, _request_timeout=(5.0, 1.0)),
-                        lambda: helper.delete_sandbox_claim("b1-0", "default", _request_timeout=0.05),
-                        lambda: helper.get_sandbox_warmpool("pool-a", "default", _request_timeout=0.05),
+                        lambda: helper.delete_sandbox_claim("b1-0", "default", _request_timeout=(5.0, 1.0), batch=True),
+                        lambda: helper.get_sandbox_warmpool("pool-a", "default", _request_timeout=(5.0, 1.0)),
                     ),
                     start=1,
                 ):
@@ -1251,6 +1262,18 @@ class TestLeaseApiClient(unittest.TestCase):
                     self.assertEqual(raised.exception.status, 503)
                     self.assertEqual(raised.exception.headers["Retry-After"], "3600")
                     self.assertEqual(throttled_attempts, expected)
+
+                queued_replies.extend([
+                    (
+                        b"HTTP/1.1 503 Service Unavailable\r\n"
+                        b"Retry-After: 0\r\n"
+                        b"Content-Length: 2\r\n"
+                        b"Connection: close\r\n\r\n{}"
+                    ),
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                ])
+                helper.delete_sandbox_claim("single-0", "default", _request_timeout=(5.0, 1.0))
+                self.assertEqual(throttled_attempts, 5)
             finally:
                 sock.close()
                 server.join(timeout=1.0)

@@ -519,7 +519,7 @@ class K8sHelper:
 
     def delete_sandbox_claim(
         self, name: str, namespace: str, _request_timeout: float | tuple[float, float] | None = None,
-        *, expected_uid: str | None = None, log_level: int = logging.INFO,
+        *, expected_uid: str | None = None, log_level: int = logging.INFO, batch: bool = False,
     ) -> None:
         """Deletes a SandboxClaim custom resource.
 
@@ -528,16 +528,19 @@ class K8sHelper:
                 pair) forwarded to the underlying urllib3-based request.
             expected_uid: If provided, delete only the Claim with this UID.
             log_level: Log level for the logger during this function call.
+            batch: If ``True``, route the request through the batch custom-object
+                client so read errors and ``Retry-After`` responses surface after
+                one attempt.
         """
         delete_kwargs: dict[str, Any] = {}
         if expected_uid is not None:
             delete_kwargs["body"] = client.V1DeleteOptions(
                 preconditions=client.V1Preconditions(uid=expected_uid)
             )
-        # Route timeout-bounded deletes through _batch_custom_objects_api so batch callers enforce
-        # their own deadlines, Retry-After caps, and Lease checks while single-sandbox callers keep
-        # default urllib3 retries.
-        api = self._batch_custom_objects_api if _request_timeout is not None else self.custom_objects_api
+        # Route batch deletes through _batch_custom_objects_api so batch callers enforce their own
+        # deadlines, Retry-After caps, and Lease checks while non-batch callers (including
+        # timeout-bounded atexit cleanup) keep default urllib3 retries.
+        api = self._batch_custom_objects_api if batch else self.custom_objects_api
         try:
             api.delete_namespaced_custom_object(
                 group=CLAIM_API_GROUP,

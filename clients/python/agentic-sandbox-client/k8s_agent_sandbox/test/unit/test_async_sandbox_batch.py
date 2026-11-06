@@ -2821,7 +2821,10 @@ class TestReleaseMembers(BaseClaimBatchTest):
                 sandbox.close_connection.assert_called_once()
                 self.assertEqual(helper.delete_sandbox_claim.call_count, attempts)
                 kwargs = helper.delete_sandbox_claim.call_args.kwargs
-                self.assertEqual((kwargs["_request_timeout"], kwargs["log_level"]), (30, logging.DEBUG))
+                self.assertEqual(
+                    (kwargs["_request_timeout"], kwargs["log_level"], kwargs["batch"]),
+                    (30, logging.DEBUG, True),
+                )
         with self.assertRaises(ValueError):
             await handle.release_member(MagicMock(claim_name="b1-9"))
 
