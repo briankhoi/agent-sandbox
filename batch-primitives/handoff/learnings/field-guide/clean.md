@@ -536,6 +536,25 @@ This section covers who owns each resource the batch SDK creates (cached connect
 
 </details>
 
+<a id="clean-25"></a>
+
+## CLEAN-25 Parallel fan-out rollback must drain in-flight acquires on `BaseException`, and never delete resources shared by a sibling
+
+**Takeaway:** When a bulk helper (`acquire_batch`) fans out concurrent creates, a partial failure or `CancelledError` must cancel pending futures, await in-flight workers so late successes cannot leak after you return, and release every succeeded handle. Conversely, rolling back a shared resource (`_ensure_pool`) must check whether a concurrent sibling already shares it before deleting.
+
+<details>
+<summary>The full story (WS-B: c9600379, fb28c6de, 4018f0dd)</summary>
+
+- **Situation:** In `examples/agent-sandbox-rl`, `SandboxFleet.acquire_batch` and `AsyncSandboxFleet.acquire_batch` fan `N` acquires out in parallel while preserving task order (`c9600379`), on-demand `acquire()` lazily provisions `(cluster, image)` warm pools (`6d773276`), and `SandboxHandle.release()` tears down batch handles when `ClusterConfig(snapshots=True)` (`fb28c6de`).
+- **What goes wrong:** Three subtle cleanup bugs surfaced under concurrency and snapshots:
+  - If task #487 of a `500`-wide `acquire_batch` fails or the caller gets `KeyboardInterrupt` / `asyncio.CancelledError` (`BaseException`), cancelling pending tasks without draining already-running tasks lets in-flight acquires finish *after* `acquire_batch` unwinds — permanently leaking those sandboxes.
+  - If two concurrent dynamic `acquire()` calls race to create `(cluster, image)` and one fails partway, blindly deleting the `SandboxWarmPool` and `SandboxTemplate` in its `except` block pulls the rug out from under the sibling `acquire()` that already adopted them.
+  - With `snapshots=True` and `claim_mode="batch"`, `SandboxHandle.release()` delegated straight to `BatchClaim.release()` and skipped deleting `PodSnapshotManualTrigger` CRs recorded on the snapshot engine, while stopped-batch fallback `delete_claim` lacked a request timeout.
+- **What we do:** Both `SandboxFleet.acquire_batch` (`fleet.py`) and `AsyncSandboxFleet.acquire_batch` (`async_fleet.py`) catch `BaseException`, cancel queued tasks, drain all started tasks to completion, release every succeeded `SandboxHandle`, and re-raise the original exception (`4018f0dd`). On-demand pool creation tracks active creators/sharers under the fleet lock so a failed creator only deletes the pool/template if no sibling shares `(cluster, image)` (`4018f0dd`). And `handles.py: SandboxHandle.release` deletes `PodSnapshotManualTrigger` CRs best-effort after `_batch_claim.release()` succeeds, while `BatchClaim.release` bounds fallback `delete_claim` to `BATCH_REQUEST_TIMEOUT_SECONDS` (`fb28c6de`). Tests: `test_batch_claims.py`, `test_async_fleet.py`.
+- **Related:** [CLEAN-4](#clean-4), [CLEAN-15](#clean-15), [BP-29](../best-practices.md#bp-29), [LEASE-31](lease.md#lease-31).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

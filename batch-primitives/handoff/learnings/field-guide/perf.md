@@ -465,6 +465,40 @@ This section covers how the batch handle stays fast and lean when a batch holds 
 
 </details>
 
+<a id="perf-22"></a>
+
+## PERF-22 Drive cold-start fail-fast watchdogs from in-memory batch state so warm adoptions cost zero GETs
+
+**Takeaway:** When a shared watch already tracks which batch members are `PENDING` vs. `READY`, inspect pods only for members still `PENDING` after `initial_delay_s`, and fence `release_member` so the watchdog never kills a member that became `READY` or was handed out while the pod `GET` was in flight.
+
+<details>
+<summary>The full story (WS-B: 05b0a63b, 4018f0dd)</summary>
+
+- **Situation:** In `per_claim` mode, `agent-sandbox-rl` spawned a `ClaimWatchdog` per claim to detect `ImagePullBackOff` or broken startup states early instead of waiting out the full claim timeout. In `claim_mode="batch"`, `SandboxBatch.acquire()` allocates claim names internally, so `ClaimWatchdog` could not wrap individual claims.
+- **What goes wrong:** Polling every batch claim's pod on creation would re-introduce `N` Pod `GET`s on the warm-pool fast path (where claims become `READY` in `~100-400 ms`), while releasing a member from a background watchdog thread without re-checking its live state can kill a sandbox that turned `READY` and was handed to a rollout thread while `_check_member()`'s Pod `GET` was in flight!
+- **What we do:** `failfast.py: BatchWatchdog` (`05b0a63b`) runs one daemon thread per `SandboxBatch` scanning `batch.members()` in memory: warm adoptions that turn `READY` before `initial_delay_s` incur **zero Kubernetes `GET`s**. Only members still `PENDING` past `initial_delay_s` get a `classify_pod()` check; if terminal (`StartVerdict`), `BatchWatchdog` re-verifies the member has neither transitioned to `READY` nor been handed out before calling `release_member` (`4018f0dd`), waking `acquire()` immediately with `SandboxStartError` (and matching stopped-batch errors via `extract_batch_claim_name`). Tests: `test_batch_claims.py`, `test_fail_fast.py`.
+- **Related:** [WATCH-7](watch.md#watch-7), [WATCH-10](watch.md#watch-10), [RACE-1](race.md#race-1).
+
+</details>
+
+<a id="perf-23"></a>
+
+## PERF-23 Memoize on-demand pool setup per `(cluster, image)` and size both HTTP and executor pools above `max_concurrent`
+
+**Takeaway:** Once an on-demand `(cluster, image)` warm pool is created, skip `ensure_template` and `create_warmpool` RPCs on later acquires for the same pair. Size both `urllib3` `connection_pool_maxsize` and `AsyncSandboxFleet`'s worker thread ceiling above `max_concurrent` (plus prefetch headroom) so Python never queues `1,000`-sandbox bursts before they reach `SandboxBatch`.
+
+<details>
+<summary>The full story (WS-B: 6d773276, e7ed074b, 63637038)</summary>
+
+- **Situation:** At `max_concurrent >= 1,000` (such as `Bench 2A` `c=1,000` warm bursts and `Bench 1B` `c=1,024` Tunix GRPO), three client-side ceilings inside `agent-sandbox-rl` sat directly in front of `SandboxBatch`:
+  1. Dynamic on-demand `acquire()` called `_ensure_pool()` (`ensure_template` + `create_warmpool` = `2` K8s RPCs) on *every* acquire even when `(cluster, image)` was already present in `self._ondemand`.
+  2. `Cluster` defaulted to `connection_pool_maxsize = 1000`, which failed `SandboxBatch.claim_batch()`'s `pool_size >= max_in_flight + 2` check ([PERF-16](#perf-16)) whenever `max_in_flight >= 999`.
+  3. `AsyncSandboxFleet._thread_pool()` capped its `ThreadPoolExecutor` at `1024` workers, queuing blocking `acquire`, `exec`, and `release` calls inside Python whenever `max_concurrent >= 1000` with pipelined prefetch windows (`mc + 2 * win`).
+- **What we do:** Guard initial on-demand pool creation per `(cluster, image)` so subsequent acquires reuse the cached pool name in memory with **zero** extra RPCs (`6d773276`); auto-size `Cluster` `connection_pool_maxsize` (including caller-supplied `Cluster` objects) to `max(1000, max_concurrent + 32, (max_in_flight or 20) + 16)` (`6d773276`); and raise `AsyncSandboxFleet._thread_pool()`'s ceiling to `min(4096, max(64, mc + 64, mc + 2 * win + 16))` (`e7ed074b`). In addition, `SandboxHandle._raise_if_lost()` checks `handle.claim_expires_at` (`63637038`) so rollouts exceeding `BatchClaimConfig.work_budget` surface an actionable `work_budget` hint instead of a generic pod-lost error.
+- **Related:** [PERF-10](#perf-10), [PERF-16](#perf-16), [PERF-20](#perf-20), [LEASE-32](lease.md#lease-32).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

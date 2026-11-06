@@ -9,9 +9,10 @@
 > [!NOTE]
 > **About the numbers.**
 > - **Bench tip:** the kind benchmark on `origin/bench/batch-claim` (`test/benchmarks/batch-claim/bench-report.md`). It ran the pre-merge stack at `44fb487f` (`results/PROVENANCE.md`), so it predates warm credit (19/N), the memory work (20/N), and the min_ready-first create order. Its create plan was round-robin, which is why [OPT-7](#opt-7)'s before number comes from it.
-> - **RL evidence:** from the RL library (`examples/agent-sandbox-rl`, 25/N). It only shows that an SDK optimization has an effect; its harness differs from the SDK bench.
+> - **GKE Campaign 2:** the `148,544`-rollout production GKE benchmark (`origin/bench/rl-gke`, `examples/agent-sandbox-rl/bench-results/gke/campaign-v2/`, and `ai-on-gke/sandbox-rl-performance` PR #5), running 25/N + Workstream B (`feat/rl-batch-hardening`, `4018f0dd`). See [Benchmarking and GKE at 1,000-sandbox scale](gke-benchmarking.md).
+> - **RL evidence:** earlier RL smoke checks (`examples/agent-sandbox-rl`, 25/N).
 > - **Analytical:** derived from the code, not measured.
-> - **k/N:** the PR in the batch-claim stack that shipped the change.
+> - **k/N:** the PR in the batch-claim stack that shipped the change (`WS-B` for `feat/rl-batch-hardening`).
 
 **The whole-batch bill** (bench tip, #47 table, batch vs per-claim baseline):
 
@@ -80,8 +81,12 @@ Code. Per-claim: `K8sHelper.create_sandbox_claim` (via `SandboxClient.create_san
 | OPT-22 | Lazy READY tombstone (15/N) | O(queue) removal → O(1) | Not measured | [PERF-3](field-guide/perf.md#perf-3) |
 | OPT-23 | Reaper: one start, sorted waits (18/N) | Sum of waits → longest | Not measured | [PERF-15](field-guide/perf.md#perf-15) |
 | OPT-24 | Per-claim logs at DEBUG (12/N, 15/N) | N INFO lines → aggregate only | Not measured | [PERF-9](field-guide/perf.md#perf-9), [BP-34](best-practices.md#bp-34) |
+| OPT-25 | Shared `CoreV1Api` for REST pod status reads (WS-B, 53caa99e) | 1 `PoolManager`/thread → 1 shared pool | Part of `11.1x` socket drop on GKE (`488 → 44`) | [LIB-20](field-guide/lib.md#lib-20) |
+| OPT-26 | In-memory `BatchWatchdog` on warm path (WS-B, 05b0a63b) | Pod GETs on warm claims → 0 GETs | `0` watchdog GETs across warm GKE bursts | [PERF-22](field-guide/perf.md#perf-22) |
+| OPT-27 | Parallel `acquire_batch` / `release_all` + rollback (WS-B, c9600379) | N serial RTTs → bounded parallel fan-out | `3.82x` 8k R2E-Gym RL wall (`1,495 → 391 s`) | [CLEAN-25](field-guide/clean.md#clean-25) |
+| OPT-28 | Memoize on-demand pools + auto-size HTTP/thread pools (WS-B, 6d773276, e7ed074b) | 2 RPCs/acquire & 1,024-thread cap → 0 repeat RPCs, 4,096 cap | `c=1,000-1,024` GKE runs (`0` errors) | [PERF-23](field-guide/perf.md#perf-23) |
 
-OPT-16 to OPT-24 have no card; follow their deep-dive ids. OPT-18 reuses three reads: the precheck GET feeds warm credit, the template GET is deduped, and `_checked_pools` is seeded. OPT-21 keeps a connection while the member's sandbox and pod IP hold.
+OPT-16 to OPT-28 have no card; follow their deep-dive ids. OPT-18 reuses three reads: the precheck GET feeds warm credit, the template GET is deduped, and `_checked_pools` is seeded. OPT-21 keeps a connection while the member's sandbox and pod IP hold.
 
 ## Fewer requests
 
@@ -94,7 +99,7 @@ Ask once per batch, not once per claim.
 - **Limit protects:** each caller learns when its claim is Ready; the per-claim path opens one watch per claim.
 - **Why we may skip it:** every claim carries `agents.x-k8s.io/batch-id=<id>`, so one label-scoped watch sees all N.
 - **Guard:** list, then watch from the list's resourceVersion. On a 410 (history expired), re-list and diff against the cache so no event slips through ([WATCH-1](field-guide/watch.md#watch-1), [WATCH-3](field-guide/watch.md#watch-3)).
-- **Result:** watch peak 3 vs 302 for 300 cold claims, 3 vs 17 warm (bench tip, #47); cold used 60x fewer connections (bench tip summary).
+- **Result:** watch peak 3 vs 302 for 300 cold claims, 3 vs 17 warm (bench tip, #47); cold used 60x fewer connections (bench tip summary). On GKE Campaign 2 (`1,000`-sandbox `200x5` warm burst), client sockets stayed flat at `44` vs `488` (`11.1x` fewer), and `3,000`-task SWE-bench `naive` `claim p99` dropped `7.24x` (`139.66 s → 19.30 s`, [GKE-10](gke-benchmarking.md#gke-10)).
 - **Code:** `SandboxBatch._watch_loop`, `K8sHelper.watch_sandbox_claims`. **Deep dive:** [WATCH-1](field-guide/watch.md#watch-1), [WATCH-3](field-guide/watch.md#watch-3), [PAT-32](patterns.md#pat-32), [BP-7](best-practices.md#bp-7)
 
 <a id="opt-2"></a>
@@ -104,7 +109,7 @@ Ask once per batch, not once per claim.
 - **Limit protects:** release() must remove every claim; N DELETEs cost N requests.
 - **Why we may skip it:** the batch label selects every claim, so one deletecollection removes them all.
 - **Guard:** a selector delete is a point-in-time snapshot and can time out while the server keeps deleting. Each round quiesces in-flight creates, re-takes the Lease, and re-counts live claims with a consistent read; it gives up after 3 rounds in a row without progress (`BATCH_RELEASE_MAX_IDLE_ROUNDS`).
-- **Result:** 1 request, 1 round for 10,000 claims (bench tip, scenario 2, "driver requests: deletecollection"), vs 10,000 DELETEs per-claim (analytical).
+- **Result:** 1 request, 1 round for 10,000 claims (bench tip, scenario 2, "driver requests: deletecollection"), vs 10,000 DELETEs per-claim (analytical). On GKE Campaign 2 (`p2_sdk_1000_cleanup`), `batch.release()` tore down `1,000` live claims in `1.10 s` best / `1.44 s` mean (`4` API calls) vs `35.93 s` for `AsyncSandboxClient.delete_all()` (`32.5x` peak / `24.9x` mean faster, and `13.7x` faster than `1,000` concurrent `terminate()` calls under stock GKE APF).
 - **Code:** `_delete_claims_in_rounds`. **Deep dive:** [K8S-8](field-guide/k8s.md#k8s-8), [RETRY-11](field-guide/retry.md#retry-11), [RACE-8](field-guide/race.md#race-8), [LEASE-18](field-guide/lease.md#lease-18), [BP-11](best-practices.md#bp-11)
 
 <a id="opt-8"></a>
@@ -159,7 +164,7 @@ Pace only the work that loads what the pacer protects.
   - Before: 160 warm claims took 3.24 s at 50/s vs 1.46 s per-claim (99a4a93d); rolling p99 749 ms vs 560 ms (2ecdf384).
   - RL evidence (25/N, includes warm credit): 1.27 s vs 1.37 s per 160-sandbox step for the fixed per-claim path, from two separate sessions (`pr_board.md` 25/N, RL notes).
   - On GKE (`BENCHMARK_TABLES.md`, commit 8f9ef46d), 640 warm sandboxes (`160 x 4`) reached all-Ready in 8.73 s (`p99` 8.50 s, zero 429s) vs 19.54 s (`p99` 19.30 s) for `per_claim`, a 2.24x speedup (`603 ms` vs `3,120 ms` to first Ready).
-  - The first, latching version stuck at paced speed on GKE after one early 429 burst: 1,280 claims in 24.59 s vs 25.6 s at 50/s (notes commit 88792f54). The cooldown fixes this; after the fix, not measured.
+  - The first, latching version stuck at paced speed on GKE after one early 429 burst: 1,280 claims in 24.59 s vs 25.6 s at 50/s (notes commit 88792f54). After the non-latching cooldown fix, GKE Campaign 2 (`Bench 2A` `1x1,000` standing warm pool) hit `183.5 claims/s` peak and `0.39 / 0.66 / 1.98 / 3.17 s` mean latency at `c = 100 / 200 / 500 / 1,000` (`2.2x-2.8x` faster than the published Blog baseline `1.1 / 1.8 / 4.3 / 8.8 s`, `0` 429s across `5,400` claims).
 - **Code:** `batch_utils.WarmCredit`, `SandboxBatch._create_worker`, `acquire`. **Deep dive:** [RETRY-15](field-guide/retry.md#retry-15), [RETRY-16](field-guide/retry.md#retry-16), [PERF-13](field-guide/perf.md#perf-13), [PERF-10](field-guide/perf.md#perf-10), [PERF-21](field-guide/perf.md#perf-21)
 
 <a id="opt-7"></a>

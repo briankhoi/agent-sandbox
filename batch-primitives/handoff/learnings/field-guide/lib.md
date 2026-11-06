@@ -421,6 +421,22 @@ The batch SDK talks to Kubernetes through four libraries: `urllib3` (the HTTP po
 
 </details>
 
+<a id="lib-20"></a>
+
+## LIB-20 Isolate `kubernetes.stream` WebSocket clients per thread, and share one `CoreV1Api` pool for REST calls
+
+**Takeaway:** `kubernetes.stream.stream()` mutates `ApiClient` transport state in place to perform WebSocket upgrades, so `exec` needs a dedicated per-thread `ApiClient`. Never route ordinary REST `GET`s through that per-thread `exec` client: doing so allocates a brand-new `urllib3.PoolManager` and TLS socket pool on every worker thread.
+
+<details>
+<summary>The full story (WS-B: 53caa99e)</summary>
+
+- **Situation:** `agent_sandbox_rl/cluster.py: Cluster.exec_core_api()` lazily constructs a thread-local `ApiClient` + `CoreV1Api` per OS worker thread so concurrent `kubernetes.stream.stream(...)` WebSocket `exec` sessions cannot race on `ApiClient.request` monkey-patching.
+- **What goes wrong:** `handles.py: SandboxHandle.record_pod_identity()` and `SandboxHandle.is_alive()` called `self.cluster.exec_core_api().read_namespaced_pod_status(...)` for plain HTTP REST `GET`s. Across hundreds of `ThreadPoolExecutor` threads, every REST status read allocated a separate `ApiClient` and `urllib3.PoolManager`, multiplying idle TLS sockets and bypassing the shared connection pool.
+- **What we do:** Route `read_namespaced_pod_status()` through the shared, thread-safe `self.cluster.core_api` (`53caa99e`), reserving `exec_core_api()` strictly for one-shot and persistent WebSocket `stream()` calls. Pinned in `test_fail_fast.py`.
+- **Related:** [LIB-12](#lib-12), [PERF-16](perf.md#perf-16).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

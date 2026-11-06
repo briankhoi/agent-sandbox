@@ -1,6 +1,6 @@
 # Learnings: batch claiming in the agent-sandbox Python SDK
 
-This doc collects what we learned building batch claiming (PRs 1/N to 25/N) so we can reuse it on similar problems. It covers distributed-systems edge cases, concurrency, Kubernetes semantics, HTTP library quirks, performance, API design, testing, and how the work itself went. Every entry is grounded in code we shipped or a measurement we took, and cites the PR (k/N) that owns it.
+This doc collects what we learned building batch claiming (PRs 1/N to 25/N, RL batch hardening, and 1,000-sandbox GKE scale benchmarking) so we can reuse it on similar problems. It covers distributed-systems edge cases, concurrency, Kubernetes and GKE semantics, HTTP library quirks, performance, benchmark engineering, API design, testing, and how the work itself went. Every entry is grounded in code we shipped or a measurement we took, and cites the PR or campaign that owns it.
 
 You don't need to read it front to back. Use it like a textbook with an index.
 
@@ -14,13 +14,14 @@ You don't need to read it front to back. Use it like a textbook with an index.
 | Borrow elegant code structures | [Patterns and code structure](learnings/patterns.md) |
 | Know which industry practice a choice follows, and why it scales | [Best practices](learnings/best-practices.md) |
 | See the performance wins side by side, with measured results | [Optimization showcase](learnings/optimizations.md) |
+| Scale on GKE (500–1,024 sandboxes) or build clean cloud benchmarks | [Benchmarking and GKE at 1,000-sandbox scale](learnings/gke-benchmarking.md) |
 | Look up a specific race, edge case, or optimization | [Field guide](#sec-field-guide) |
 | Improve how you test concurrent code | [Testing techniques](learnings/testing.md) |
 | Check every interleaving, not just the ones you thought of | [Verification](learnings/verification.md) |
 | Model-check the cross-process Lease protocol | [TLA+ spec](learnings/tla.md) |
 | Avoid our process and git mistakes | [Process, git, and working with agents](learnings/process.md) |
 
-**Entry shape.** Field-guide entries have a stable id (`LEASE-4`, `RACE-3`, ...), a title, and a bold **Takeaway** you can read on its own. Click "The full story" to expand the situation, what goes wrong, what we do, and an example. Pattern cards are `PAT-n`, best practices are `BP-n`, optimizations are `OPT-n`, verification principles are `VER-n`, TLA+ lessons are `TLA-n`.
+**Entry shape.** Field-guide entries have a stable id (`LEASE-4`, `RACE-3`, ...), a title, and a bold **Takeaway** you can read on its own. Click "The full story" to expand the situation, what goes wrong, what we do, and an example. Pattern cards are `PAT-n`, best practices are `BP-n`, optimizations are `OPT-n`, GKE and benchmark lessons are `GKE-n` and `BENCH-n`, verification principles are `VER-n`, TLA+ lessons are `TLA-n`.
 
 **Adding an entry.** Pick the section whose big idea fits, take the next free id, use the same shape, cite the PR and the code (`file.py: Symbol`), and write in active voice. Base every claim on code or a measurement. If an old entry number (like "learnings 3.1") appears in older notes, the [old-to-new table](#appendix-a) maps it.
 
@@ -150,11 +151,11 @@ This is the deep part. Each section is its own page and groups entries around on
 | [Retries, backoff, pacing, and deadlines](learnings/field-guide/retry.md) | `RETRY-` | 19 |
 | [Concurrency inside one process: locks, waiters, and shared work](learnings/field-guide/lock.md) | `LOCK-` | 20 |
 | [Cancellation, interrupts, and sync/async parity](learnings/field-guide/cancel.md) | `CANCEL-` | 24 |
-| [Cleanup and resource ownership](learnings/field-guide/clean.md) | `CLEAN-` | 24 |
+| [Cleanup and resource ownership](learnings/field-guide/clean.md) | `CLEAN-` | 25 |
 | [Completion and accounting: when is the batch done?](learnings/field-guide/count.md) | `COUNT-` | 14 |
-| [Kubernetes API semantics that bit us (or could have)](learnings/field-guide/k8s.md) | `K8S-` | 20 |
-| [HTTP client and Python runtime quirks](learnings/field-guide/lib.md) | `LIB-` | 19 |
-| [Performance and memory at scale](learnings/field-guide/perf.md) | `PERF-` | 21 |
+| [Kubernetes API semantics that bit us (or could have)](learnings/field-guide/k8s.md) | `K8S-` | 21 |
+| [HTTP client and Python runtime quirks](learnings/field-guide/lib.md) | `LIB-` | 20 |
+| [Performance and memory at scale](learnings/field-guide/perf.md) | `PERF-` | 23 |
 | [API design: making the right thing easy and the wrong thing hard](learnings/field-guide/api.md) | `API-` | 29 |
 
 ## The other pages
@@ -165,6 +166,7 @@ This is the deep part. Each section is its own page and groups entries around on
 | [Patterns and code structure worth stealing](learnings/patterns.md) | Elegant code structures (`PAT-`) with small snippets and when to reach for them. |
 | [Best practices we followed, and where they come from](learnings/best-practices.md) | Industry practices (`BP-`) we followed, why they scale, and their sources. |
 | [Optimization showcase: how batch claim got fast and lean](learnings/optimizations.md) | The performance wins (`OPT-`) side by side: what each limit protects, why a shortcut may skip it, the guard that keeps it correct, and the measured result. |
+| [Benchmarking and GKE at 1,000-sandbox scale](learnings/gke-benchmarking.md) | Production GKE control-plane, APF, GCFS vs. Secondary Boot Disk, Kubelet ImageGC, and gVisor lessons (`GKE-1`..`GKE-12`) plus benchmark harness engineering (`BENCH-1`..`BENCH-9`) from `148,544` Campaign 2 rollouts. |
 | [Testing techniques for concurrent and distributed code](learnings/testing.md) | Techniques (`TEST-`) for making concurrent and distributed code testable. |
 | [Verification: checking every interleaving, not just the ones you thought of](learnings/verification.md) | Model checking (`VER-`): how a small BFS checker over every interleaving caught a deadlock tests missed, and principles to reuse. |
 | [Verifying the Lease protocol with TLA+](learnings/tla.md) | A TLC-checked spec (`TLA-`) of the Lease, reaper, takeover, and release fencing across processes, with negative controls and two findings about our protocol. |
@@ -297,3 +299,5 @@ Use this to find every lesson a PR taught. It lists the entries whose story or l
 | 23/N | [API-3](learnings/field-guide/api.md#api-3), [API-27](learnings/field-guide/api.md#api-27), [TEST-24](learnings/testing.md#test-24) |
 | 24/N | [CLEAN-9](learnings/field-guide/clean.md#clean-9), [CLEAN-12](learnings/field-guide/clean.md#clean-12), [PERF-19](learnings/field-guide/perf.md#perf-19), [GIT-12](learnings/process.md#git-12), [GIT-13](learnings/process.md#git-13) |
 | 25/N | [WATCH-10](learnings/field-guide/watch.md#watch-10), [LEASE-31](learnings/field-guide/lease.md#lease-31), [LEASE-32](learnings/field-guide/lease.md#lease-32), [CLEAN-24](learnings/field-guide/clean.md#clean-24), [PERF-20](learnings/field-guide/perf.md#perf-20), [PERF-21](learnings/field-guide/perf.md#perf-21), [TEST-17](learnings/testing.md#test-17) |
+| WS-B (`feat/rl-batch-hardening`) | [CLEAN-25](learnings/field-guide/clean.md#clean-25), [K8S-21](learnings/field-guide/k8s.md#k8s-21), [LIB-20](learnings/field-guide/lib.md#lib-20), [PERF-22](learnings/field-guide/perf.md#perf-22), [PERF-23](learnings/field-guide/perf.md#perf-23), [OPT-25..OPT-28](learnings/optimizations.md#sec-optimizations) |
+| GKE Campaign 2 (`bench/rl-gke`) | [GKE-1..GKE-12](learnings/gke-benchmarking.md#sec-gke-benchmarking), [BENCH-1..BENCH-9](learnings/gke-benchmarking.md#bench-1), [OPT-1](learnings/optimizations.md#opt-1), [OPT-2](learnings/optimizations.md#opt-2), [OPT-3](learnings/optimizations.md#opt-3) |

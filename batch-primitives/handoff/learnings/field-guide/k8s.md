@@ -406,6 +406,25 @@ This section covers how the apiserver, the garbage collector, and controllers ac
 
 </details>
 
+<a id="k8s-21"></a>
+
+## K8S-21 Require a domain label on every Lease helper, fail closed before deleting dependents if Lease listing fails, and degrade gracefully when Lease RBAC is absent
+
+**Takeaway:** Never expose an unlabelled `list_leases()` or unguarded `delete_lease()` helper in a shared cluster client: `coordination.k8s.io/v1` holds node heartbeats and controller leader-election Leases. Require your domain label (`agents.x-k8s.io/batch-id`) in code, fail closed before sweeping claims if a protected Lease read errors transiently, and skip Lease queries on non-batch paths or `403/404` RBAC setups.
+
+<details>
+<summary>The full story (WS-B: abefb63d, 4018f0dd)</summary>
+
+- **Situation:** `agent-sandbox-rl`'s `reaper.py` and `SandboxFleet.verify_teardown()` needed to sweep orphaned batch Leases and verify zero leaked Leases at run end (`abefb63d`), while keeping compatibility with `claim_mode="per_claim"` clusters whose Roles never granted `coordination.k8s.io` `leases` permissions (`4018f0dd`).
+- **What goes wrong:** Three failure modes interact around `Lease` objects:
+  - An empty label selector passed to `list_namespaced_lease` returns controller leader-election Leases (for example in shared namespaces) and node Leases; deleting one triggers a controller failover or node blip.
+  - In `reaper.py`, if listing active Leases fails with a transient `503` / timeout and the reaper proceeds to sweep `SandboxClaim`s anyway, it loses sight of which Leases are still live and protected.
+  - Conversely, querying `leases` unconditionally during `per_claim` teardown or failing `verify_teardown()` on `403 Forbidden` breaks existing minimal-RBAC deployments that don't use batch mode.
+- **What we do:** `resources.py: list_leases` and `delete_lease` reject empty selectors and strictly enforce the `agents.x-k8s.io/batch-id` label (`abefb63d`). `reaper.py` plans protected Lease sweeps from a single `_list_lease_objects` call that **fails closed** (aborts claim deletion on transient Lease list errors rather than guessing), while tolerating `403/404` missing Lease RBAC cleanly and skipping batch Lease queries entirely when `claim_mode == "per_claim"` (`4018f0dd`). Tests: `test_fail_fast.py`, `test_teardown_verify.py`.
+- **Related:** [K8S-3](#k8s-3), [K8S-20](#k8s-20), [CLEAN-23](clean.md#clean-23).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)
