@@ -15,24 +15,34 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
   `claim_timeout` (or `ready_timeout` when unset). Readiness comes from one shared watch
   per cluster, and `acquire()` builds `SandboxHandle` from the watched `Member` and
   `batch.connect(member)` without per-claim `Sandbox` or `Pod` `GET`s (`snapshot_uid`
-  still reads the `Pod` to check `PodRestored`). Failed or timed-out batch acquires raise
-  `BatchError` (`FleetConfig.fail_fast` applies only to `"per_claim"` mode), and the
-  driver needs `coordination.k8s.io` `leases` RBAC permissions from the SDK's batch RBAC.
-  `BatchClaimConfig` validates and configures `work_budget` (default `3600`),
-  `lease_duration` (default `300`, longer than the SDK's `60` because losing a `Lease`
-  stops the batch), `create_rps` (`None`), and `max_in_flight` (`None`).
-- **Batch handles track liveness, fallback release, and fleet teardown across batch restarts.**
-  Batch `acquire()` skips the initial `record_pod_identity()` pod status `GET`, and
-  `handle.is_alive()` checks a healthy batch's watch for claim loss and pod replacement
-  before reading pod status unless `handle.record_pod_identity()` (for in-place container
-  restart baselines) or `refresh()` has run. `release()` calls `batch.release_member`
-  and falls back to deleting the claim directly if `release_member` raises `BatchError`
-  after the batch stops or releases. Once `batch.err()` reports an error, the next
-  `acquire()` opens a fresh batch. `teardown()` releases every batch the fleet opened
-  (cleaning up remaining claims and batch `Lease`s even if a handle release fails), and
-  `setup()` reopens batch claiming. With the SDK's batch reaper deployed, the reaper
-  deletes a crashed driver's claims once its `Lease` expires (`reap(run_id=...)` deletes
-  a run's claims and leaves its batch `Lease`s behind).
+  still reads the `Pod` to check `PodRestored`). When `FleetConfig.fail_fast` is enabled,
+  one background `BatchWatchdog` per active batch inspects cold-start pending claims
+  with batched cluster-wide `LIST` calls and fails broken images or configs early via
+  `batch.release_member` with `FailFastError`; other failed or timed-out batch acquires
+  raise `BatchError`. The driver needs `coordination.k8s.io` `leases` RBAC permissions
+  from the SDK's batch RBAC. `BatchClaimConfig` validates and configures `work_budget`
+  (default `3600`), `lease_duration` (default `300`, longer than the SDK's `60` because
+  losing a `Lease` stops the batch), `create_rps` (`None`), and `max_in_flight` (`None`),
+  auto-sizing each cluster's `urllib3` connection pool for `max_concurrent` and
+  `max_in_flight` and raising `AsyncSandboxFleet`'s executor ceiling to `4096`.
+- **Batch handles track liveness, parallel batch acquire/release, fallback release, and fleet teardown across batch restarts.**
+  `acquire_batch()` and `release_all()` dispatch acquires, rollbacks, and releases in
+  parallel (`FakeFleet` mirrors parallel `acquire_batch` / `release_all` and
+  `claim_expires_at`). Batch `acquire()` skips the initial `record_pod_identity()` pod
+  status `GET`, skips repeat `ensure_template` / `ensure_warmpool` RPCs on cached
+  on-demand warm pools, and uses each cluster's shared `CoreV1Api` for REST pod status
+  reads (`handle.is_alive()` checks a healthy batch's watch for claim loss and pod
+  replacement first unless `handle.record_pod_identity()` or `refresh()` has run, and
+  surfaces a `work_budget` hint with `SandboxLostError(expired=True)` when a claim is
+  lost after `claim_expires_at`). `release()` deletes any snapshot triggers created on
+  the handle, calls `batch.release_member`, and falls back to a bounded direct claim
+  delete if `release_member` raises `BatchError` after the batch stops or releases. Once
+  `batch.err()` reports an error, the next `acquire()` opens a fresh batch. `teardown()`
+  releases every batch the fleet opened (cleaning up remaining claims and verifying batch
+  `Lease` cleanup even if a handle release fails), and `setup()` reopens batch claiming.
+  With the SDK's batch reaper deployed, the reaper deletes a crashed driver's claims once
+  its `Lease` expires; `reap(run_id=...)` sweeps both the run's claims and its batch
+  `Lease`s when `Lease` RBAC is present.
 - **`SandboxHandle.claim_expires_at` rotates recycled batch claims before `shutdownTime`.**
   Batch claims fix `shutdownTime` at creation (`FleetConfig.effective_claim_timeout() +
   work_budget + 600` seconds), and `SandboxHandle.claim_expires_at` records that

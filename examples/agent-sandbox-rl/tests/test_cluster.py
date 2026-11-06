@@ -168,6 +168,10 @@ def test_fleet_autosizes_connection_pool_maxsize_for_sdk_check_pool_size():
   api = client.ApiClient(cfg_obj)
   try:
     c = Cluster(ClusterConfig(name="solo"), api_client=api)
+    # Pre-instantiate k8s_helper before SandboxFleet so ensure_pool_maxsize
+    # exercises resizing the existing _UnretriedApiClient sub-clients too.
+    pre_helper = c.k8s_helper
+    assert pre_helper._batch_custom_objects_api.api_client.rest_client.pool_manager.connection_pool_kw["maxsize"] < 1532
     f = SandboxFleet(
         FleetConfig(
             claim_mode="batch",
@@ -181,6 +185,8 @@ def test_fleet_autosizes_connection_pool_maxsize_for_sdk_check_pool_size():
     assert pool_size is not None and pool_size >= 1532
     check_pool_size(pool_size, 1200, explicit=True)
     assert api.rest_client.pool_manager.connection_pool_kw["maxsize"] >= 1532
+    assert c.k8s_helper._batch_custom_objects_api.api_client.rest_client.pool_manager.connection_pool_kw["maxsize"] >= 1532
+    assert c.k8s_helper.coordination_v1_api.api_client.rest_client.pool_manager.connection_pool_kw["maxsize"] >= 1532
     assert f.registry.get("solo") is c
   finally:
     api.close()
