@@ -207,13 +207,62 @@ Additional negative controls (each breaks one rule on purpose; trace lengths mat
 - **How we applied it:** `SYMMETRY` over the two handles (they are interchangeable). The reaper's skew is fixed at `SkewMax`, because a reaper further ahead can act at every time a less-skewed one can. A crash only matters while holding (elsewhere it looks like a handle that stops). At most one handle is flaky. Message identity is the message record itself, not a global counter, so equivalent histories collapse. Each feature set runs separately (`Features`), keeping the largest run (`main_release`, `24.2M` distinct states) under 3 minutes on 24 workers.
 - **Watch out:** Every cut can hide a bug ([VER-1](verification.md#ver-1)'s "too small proves nothing"). Size `MaxTime` so `ReapList` plus the full `D = 6` confirmation wait can fire (`MaxTime >= 10` at `SkewMax = 5`, `MaxTime = 14` in dedicated skew and setup/member runs).
 
+<a id="tla-6"></a>
+
+## TLA-6 Decompose intra-process subsystems into small specs instead of inflating one cross-process model
+
+- **Principle:** Do not bolt intra-process state machines (watch relisting, consumer queues, create pacing, handle pooling) onto a cross-process clock-and-network spec. Prove the cross-process ownership boundary once (`BatchLease.tla`), then assume that boundary as an environment contract inside focused `4`-to-`7`-variable subsystem specs.
+- **Why it works:** State spaces multiply across independent axes. `BatchLease.tla` already visits `24.2M` states for two handles, a reaper, and clock skew; crossing that with multi-page watch relists, three consumer modes, and `max_in_flight` workers would exceed `10^9` states. Splitting into `5` subsystem specs (`BatchHandle`, `BatchWatch`, `BatchConsumer`, `BatchAcquireRelease`, `RLBatchLifecycle` in `handoff/work/tla/`) checked all `22` positive and negative configurations (`3,275,347` distinct states) in `56 s`.
+- **How to choose the seam:** Give each spec one contested boundary and abstract everything else to nondeterministic environment moves ([VER-5](verification.md#ver-5)):
+  - `BatchHandle.tla` (`3,280` states): watch loop vs. Lease renew loop vs. active sandboxes.
+  - `BatchWatch.tla` (`228,680` states): watch event stream, `410 Gone` multi-page relists, tombstones, and `_connected` cache eviction.
+  - `BatchConsumer.tla` (`1,884,448` states): `wait_for_quorum`, `group_outcomes`, `events`, dynamic ordinals, and popped pacing slots.
+  - `BatchAcquireRelease.tla` (`2,016` states): concurrent initial fill, caller-thread `acquire()`, `release_*`, and teardown drain barriers.
+  - `RLBatchLifecycle.tla` (`643` states): `BatchClaims._batch_for` races, `release_all` retry retention, and `_closed` transitions.
+- **Watch out:** Every seam is an assumption ([VER-12](verification.md#ver-12)). Write down what each subsystem spec assumes from its neighbors (for example, `BatchWatch` assumes Lease fencing from `BatchLease`) and check the glue in integration or fault-injection tests.
+
+<a id="tla-7"></a>
+
+## TLA-7 Model failure channels per authority domain so readiness errors cannot masquerade as ownership loss
+
+- **Principle:** Whenever a handle runs multiple background loops (such as a status watch loop and a Lease heartbeat loop), give each authority domain its own error variable in the spec and assert an explicit `AuthoritySeparation` invariant.
+- **What TLC found (`BatchHandle.tla`, `bh_neg_janet` & `bh_neg_janet_release`):** Modeling `watch_loop` writing fatal `403` errors into a single shared `stateError` read by `renew_loop` and `release_member` violated `ActiveWorkloadProtected` (`74` distinct states) and `CleanMemberReleaseAllowed` (`11` distinct states): a watch permission error stopped Lease heartbeats while sandboxes were actively executing user code, letting the reaper GC live pods (`F-01`, [CHAOS-5](chaos-verification-suite.md#chaos-5)).
+- **Reusable invariant pattern:**
+  ```tla
+  \* Observation failure must never halt ownership renewal while workloads run.
+  ActiveWorkloadProtected ==
+    (activeSandboxes > 0 /\ ~detached /\ ~leaseReleased /\ leaseError = "NONE")
+      => renewState /= "STOPPED"
+  ```
+
+<a id="tla-8"></a>
+
+## TLA-8 Mind TLC's three CLI sharp edges: inverted `-deadlock`, `-workers auto` trace jitter, and `0`-hit vacuity (`-coverage 1`)
+
+- **Principle:** Configure TLC differently for bounded-clock protocol specs, reactive subsystem specs, and negative controls, and always verify action coverage before trusting a green run.
+- **Three sharp edges that bit us:**
+  1. **`-deadlock` turns deadlock checking OFF:** TLC checks for deadlocks by default; passing `-deadlock` *disables* that check. Finite-clock specs (`BatchLease.tla`, where `Tick` stops at `MaxTime = 14`) need `-deadlock` so `now = MaxTime` is not flagged as a deadlock. Event-driven subsystem specs (`BatchHandle`, `BatchWatch`, `BatchConsumer`, `BatchAcquireRelease`, `RLBatchLifecycle`) must **omit `-deadlock`** and provide explicit clean-terminal stuttering (`Terminated == ... /\ UNCHANGED vars`) so genuine terminal hangs fail immediately.
+  2. **`-workers auto` makes negative-control state counts jitter:** Parallel BFS workers explore queues concurrently, so counterexample state counts and trace lengths can vary slightly across runs. Use `-workers auto` on positive safety sweeps for throughput and `-workers 1` on negative controls for deterministic state counts and shortest traces.
+  3. **Vacuous passes hide behind `0`-hit actions:** A typo in a Next-state guard leaves an invariant green because the buggy branch never executes. Run TLC with `-coverage 1` whenever adding or editing actions and confirm every action fires `> 0` times.
+
+<a id="tla-9"></a>
+
+## TLA-9 Small `2`-element domains catch almost every tombstone, pagination, and slot-accounting bug
+
+- **Principle:** Under Jackson's small-scope hypothesis, `2` claims, `2` warm pools, `2` list pages, and sequence numbers `0..2` suffice to trigger nearly every set-partition, tombstone-resurrection, and mid-relist race without blowing up state counts.
+- **What `2`-element domains caught (`handoff/work/tla/`):**
+  - **Late `ADDED` tombstoned with `needs_delete=False` (`bw_neg_late_added`, `20` states):** `1` claim created just before `release_not_ready()` arriving via watch `ADDED` afterward violated `NoOrphanedLiveReleasedClaim` (`F-03`).
+  - **Dropped page 1 on `410` relist & tombstone resurrection (`bw_neg_drop_page1` `412` states, `bw_neg_resurrect` `142` states):** `2` pages of `1` claim each caught premature `LOST` eviction when page 1 is discarded before page 2 finishes, and caught released claims coming back to life on relist.
+  - **Popped pacing-slot stall (`bc_neg_popped_slot`, `33` states) & `_waiting` leak (`bc_neg_waiting_leak`, `77` states):** `2` groups with `1` popped worker slot caught `release_group()` missing already-popped items (`F-25`) and group timeout clearing `_waiting` without updating `_resolved` (`F-12`).
+  - **Caller-thread `acquire()` vs. `release()` (`bar_neg_inflight_release`, `88` states):** `1` fill claim + `1` dynamic `acquire()` caught `release()` setting `_detached = True` while `acquire()`'s `POST` was in flight (`F-24`).
+
 ## Limits of the model
 
-- **Bounded instance.** Two handles, one reaper, at most two Lease incarnations, at most two release rounds, and 7 to 14 ticks (`MaxTime`). TLC proves the seven invariants within these bounds.
+- **Bounded instance (`BatchLease.tla`).** Two handles, one reaper, at most two Lease incarnations, at most two release rounds, and 7 to 14 ticks (`MaxTime`). TLC proves the seven cross-process invariants within these bounds.
 - **Coarse time.** One tick represents about 10 s and `Lat = 1`, so a single network leg can take a full tick. Ties within a tick resolve nondeterministically in either order.
-- **Abstractions.** When `"claimSetup"` is off, `Claim(p)` collapses Lease creation, claim listing, and initial fill into one step; `"claimSetup"` splits out `ClaimCreateLease`, deadline-bounded list + post-list expiry check (`ClaimFinish`), and `resource_version`-fenced rollback (`ClaimRollback`). When `"memberOps"` is on, `MemberDelete(p)` models Lease-bounded unretried by-name claim deletes (`_delete_claim`, `release_member`) and tests hidden `urllib3` retries via `neg_retryPastExpiry`. Reads and `ReapList`/`ReapDelete` execute as atomic snapshots, claims are tracked by owner Lease UID set, and handles share the reference clock while `rskew` puts the reaper ahead. `acquire()`, `release_group()`'s per-group selector (covered by the same UID-scoping invariant as `release()`), the watch loop, terminating claims in `count_live_sandbox_claims`, client `atexit` cleanup ([LEASE-22](field-guide/lease.md#lease-22)), and cleanup detach retries remain outside the TLA+ model and are covered by Python unit tests.
-- **No liveness.** The bounded clock stops at `MaxTime`, so we check safety invariants rather than temporal liveness (`<>`).
-- **The model is not the code.** Every TLA+ finding and negative control has a corresponding deterministic unit test in `test_k8s_helper.py`, `test_async_k8s_helper.py`, `test_sandbox_batch.py`, `test_async_sandbox_batch.py`, and `test_batch_reaper.py` ([VER-9](verification.md#ver-9)).
+- **Subsystem coverage (`runall_subsystems.sh`).** While `BatchLease.tla` abstracts intra-handle subsystems to keep cross-process state counts tractable, the `5` companion subsystem specs ([TLA-6](#tla-6)) model `_watch_loop` + `410` paged relisting (`BatchWatch.tla`), consumer modes + pacing slots (`BatchConsumer.tla`), dynamic `acquire()` + `release_*` drain barriers (`BatchAcquireRelease.tla`), watch/renew authority separation (`BatchHandle.tla`), and `BatchClaims` pooling (`RLBatchLifecycle.tla`). Client `atexit` hooks ([LEASE-22](field-guide/lease.md#lease-22)), HTTP library framing (`_preload_content=False`, [LIB-23](field-guide/lib.md#lib-23)), and OS socket behavior ([LIB-22](field-guide/lib.md#lib-22)) remain outside TLA+ and are covered by deterministic Python fault-injection and differential tests ([CHAOS-1](chaos-verification-suite.md#chaos-1)).
+- **No temporal liveness (`<>`) in bounded-clock runs.** `BatchLease.tla`'s bounded clock stops at `MaxTime`, so it checks safety invariants; the `5` subsystem specs run with deadlock checking enabled (`0` deadlocks).
+- **The model is not the code.** Every TLA+ finding and negative control has a corresponding deterministic Python test ([VER-9](verification.md#ver-9), [Automated batch verification and chaos suite](chaos-verification-suite.md)).
 
 ## How to rerun it
 

@@ -585,7 +585,77 @@ This section covers how we tested code that runs on several threads or asyncio t
 - **Situation:** Stage 7 (`test_batch_state_fuzz.py`) uses Hypothesis's `RuleBasedStateMachine` (`15` rules driving `BatchState` against `BatchInvariantOracle`) to hunt accounting and monotonicity violations (`F-12` and `F-03`).
 - **What goes wrong:** Once Hypothesis stumbles onto a 3-step failure (`create_claim -> release_not_ready -> late watch ADDED`, `F-03`) once during development, `.hypothesis/examples` replays that exact sequence in `<50 ms` on every subsequent run, making a `0.4%`-per-run rule combination look `100%` deterministic. Running in CI or a fresh clone with an empty cache dir then passes spuriously when `max_examples=200` does not sample that exact 3-rule permutation.
 - **What we do:** Test every Hypothesis suite with `pytest -o cache_dir="$(mktemp -d)"` across multiple seeds. Keep the broad `RuleBasedStateMachine` for general invariant exploration (`F-12` triggers reliably on cold cache) and add focused `@given(...)` property tests for narrow lifecycle sequences (`post-stop late watch delivery`, `F-03`) so cold-start detection is `100%` deterministic.
-- **Related:** [TEST-3](#test-3), [CHAOS-3](chaos-verification-suite.md#chaos-3).
+- **Related:** [TEST-3](#test-3), [TEST-29](#test-29), [CHAOS-3](chaos-verification-suite.md#chaos-3).
+
+</details>
+
+<a id="test-29"></a>
+
+## TEST-29 Drive Sans-I/O state cores with stateful Hypothesis fuzzers (`RuleBasedStateMachine`) backed by a structural invariant oracle
+
+**Takeaway:** Hand-written call-sequence tests ([TEST-3](#test-3)) check only the transitions you imagined. Wrap your pure state core in a Hypothesis `RuleBasedStateMachine` where `@rule` methods fire arbitrary API/watch/timeout transitions and `@invariant` asserts conservation laws (set partitions, monotonic ordinals/sequences, non-negative waiters, terminal irreversibility) after *every single step*.
+
+<details>
+<summary>The full story (test_batch_state_fuzz.py & batch_invariant_oracle.py, F-12 & F-03)</summary>
+
+- **Situation:** `BatchState` (`batch_state.py`) has over a dozen mutators (`upsert_claim`, `mark_lost`, `set_mode`, `release_member`, `release_group`, `release_not_ready`, `expire_fill`, `_time_out_undecided_groups`, `resync_from_list`). Existing unit tests checked return values on curated scenarios (`59` tests in `test_batch_state.py`), all passing.
+- **What goes wrong:** Two subtleties evade scenario tests:
+  1. **Silent internal invariant rot (`F-12`):** A method can return the right value *now* while corrupting internal accounting (`_time_out_undecided_groups` cleared `_waiting[pool]` without adding those claims to `_resolved`, breaking the partition `_members == _resolved | _waiting | ...` in `GROUP` mode). Without a per-step structural oracle, nothing fails unless a specific follow-up call happens to trip over the broken invariant.
+  2. **Rule-dilution in wide state machines:** When a `RuleBasedStateMachine` has `15+` rules, the probability of randomly sampling one narrow 3-step lifecycle sequence (`create_claim -> release_not_ready -> late watch ADDED`, `F-03`) within `max_examples=200` can drop below `5%` on a cold cache ([TEST-28](#test-28)).
+- **What we do:**
+  1. Factor all conservation and monotonicity laws into one standalone `BatchInvariantOracle` (`batch_invariant_oracle.py`) shared by fuzzers, differential tests ([TEST-30](#test-30)), and fault-injection suites.
+  2. Build two `RuleBasedStateMachine` classes (`TestHealthyCoreBatchStateFuzz` at `10,000` steps and `TestReattachedBatchStateFuzz` at `6,000` steps) with `@invariant()` calling `BatchInvariantOracle.check_core(self.state)` after every transition; Hypothesis automatically shrinks any violation down to the minimal `2`-to-`4`-call reproducer!
+  3. Add focused `@given(...)` property bridges for high-risk lifecycle boundaries (such as post-stop late watch events) so both broad exploration and narrow edge sequences fail `100%` deterministically on cold caches.
+- **Example:**
+  ```python
+  class BatchStateMachine(RuleBasedStateMachine):
+      @rule(pool=st.sampled_from(["p0", "p1"]), ready=st.booleans())
+      def watch_upsert(self, pool: str, ready: bool) -> None:
+          self.state.upsert_claim(...)
+
+      @invariant()
+      def check_structural_invariants(self) -> None:
+          BatchInvariantOracle.check_core(self.state)
+  ```
+- **Related:** [TEST-3](#test-3), [TEST-28](#test-28), [TEST-30](#test-30), [VER-8](verification.md#ver-8).
+
+</details>
+
+<a id="test-30"></a>
+
+## TEST-30 Run lockstep differential simulations across twin implementations (`sync` vs `async`, fake vs real)
+
+**Takeaway:** Whenever two implementations promise identical semantics (such as `SandboxBatch` vs. `AsyncSandboxBatch`, or `FakeFleet` vs. `SandboxFleet`), do not rely solely on parallel hand-written test files ([TEST-24](#test-24)). Feed generated symbolic `Step` scripts to both implementations in lockstep and diff their normalized state snapshots, return values, raised exception classes, and outbound RPC counts after *every* step.
+
+<details>
+<summary>The full story (test_batch_differential.py, F-08, F-09, F-12, F-19b)</summary>
+
+- **Situation:** `SandboxBatch` (threads + `RLock` + `urllib3`) and `AsyncSandboxBatch` (`asyncio.Task` + `asyncio.Lock` + `aiohttp`) expose the exact same batch lifecycle contract, while `agent_sandbox_rl/testing.py: FakeFleet` emulates `SandboxFleet` for downstream RL tests.
+- **What goes wrong:** Parallel unit suites (`test_sandbox_batch.py` and `test_async_sandbox_batch.py`) drift subtly whenever one side's setup or error path differs:
+  - `SandboxClient.__exit__` retained failed batches for `delete_all()` retry while `AsyncSandboxClient.__aexit__` unconditionally unregistered them (`F-08`).
+  - Sync `K8sHelper.watch_sandbox_claims` raised `ApiException` on HTTP `403`/`503` while `AsyncK8sHelper.watch_sandbox_claims` (`_preload_content=False`) silently yielded `0` events (`F-09`).
+  - `SandboxFleet(claim_mode="batch")` populated `handle.claim_expires_at` while `FakeFleet(claim_mode="batch")` left `claim_expires_at = None` (`F-19b`), hiding TTL rotation bugs in downstream RL tests!
+- **What we do:** `test_batch_differential.py` defines a small vocabulary of deterministic `Step` operations (watch events, `410` relists, `acquire`, `connect`, `release_member`, `release_group`, `release_not_ready`, timeouts, double-cancellation, client exit), executes each `Step` against both sync and async harnesses backed by deterministic fake transports, and asserts `(sync_snapshot, sync_result, sync_rpc_counts) == (async_snapshot, async_result, async_rpc_counts)` plus `BatchInvariantOracle` on both sides (`52` differential traces in `2.5 s`).
+- **Related:** [TEST-17](#test-17), [TEST-24](#test-24), [TEST-29](#test-29), [CHAOS-3](chaos-verification-suite.md#chaos-3).
+
+</details>
+
+<a id="test-31"></a>
+
+## TEST-31 Simulate hostile OS sockets, raw streaming HTTP frames, `410` pagination expiry, and `.999999s` clock boundaries in-process
+
+**Takeaway:** The nastiest production bugs live at serialization, transport, and kernel boundaries that high-level `MagicMock` tests skip completely. Build tiny, deterministic in-process simulations for four boundary classes instead of waiting for macOS CI or a 1,000-pod cluster to hit them by chance.
+
+<details>
+<summary>The full story (test_k8s_helper.py, test_batch_fault_injection.py, test_batch_fault_injection_rl.py)</summary>
+
+- **Situation:** Mocking `helper.watch_sandbox_claims` or `time.time()` with clean Python objects bypasses `urllib3` vs. `aiohttp` framing, Linux vs. BSD TCP state machines, Kubernetes list-continuation expiry, and RFC3339 timestamp formatting.
+- **Four reusable simulation patterns that caught real bugs in `<10 ms` each:**
+  1. **Simulating BSD/macOS `xnu` silent `SYN` drops on Linux (`F-02`, [LIB-22](field-guide/lib.md#lib-22)):** Linux sends `RST` (`NewConnectionError`) when connecting to a bound non-listening socket, whereas macOS/BSD silently drops `SYN` packets until `ConnectTimeoutError`. On Linux (without root or `iptables`), simulate silent `SYN` drop deterministically either by binding `sock.listen(1)` and exhausting its SYN/accept backlog with un-accepted client sockets, or by patching `urllib3.util.connection.create_connection` to raise `socket.timeout` after `_request_timeout`.
+  2. **Simulating raw streaming HTTP errors under `_preload_content=False` (`F-09`, [LIB-23](field-guide/lib.md#lib-23)):** Do not mock `Watch.stream` directly; mock the underlying `aiohttp` response with raw non-JSON `502`/`403` bytes and `429` JSON `Status` + `Retry-After` headers, implementing both `content.readline()` and `await resp.read()` *and* letting real `Watch.stream` run its `finally: await self.close()` (`self.resp = None`).
+  3. **Simulating Kubernetes `410 Gone` mid-pagination & malformed cluster objects (`F-18`):** Have page 1 return `metadata.continue = "tok-1"` and page 2 raise `ApiException(status=410)` (testing whether relist/reaper restarts cleanly without dropping page 1's state), and inject one `V1Lease` with a timezone-naive `renew_time` alongside valid Leases to verify bad-neighbor isolation.
+  4. **Simulating sub-second timestamp truncation boundaries (`F-19a`):** Freeze or pass timestamps at `.999999` microseconds (for example, `datetime(2026, 1, 1, 0, 0, 0, 999999, tzinfo=timezone.utc)`) whenever code compares float `monotonic`/`time()` (`now + ttl`) against second-precision `.strftime("%Y-%m-%dT%H:%M:%SZ")` strings; `.strftime` floors `.999999s` down to `.000000s`, inverting `client_expiry <= server_shutdownTime` by nearly a full second!
+- **Related:** [TEST-17](#test-17), [TEST-20](#test-20), [LIB-22](field-guide/lib.md#lib-22), [LIB-23](field-guide/lib.md#lib-23).
 
 </details>
 

@@ -230,10 +230,45 @@ Our real checker adds one more pass after the BFS: build reverse edges, BFS back
 
 - **Principle:** Combine formal specs (cross-process + subsystem TLA+ and in-process BFS), transitive AST checks, stateful Hypothesis fuzzers, and lockstep sync/async differential harnesses behind one deterministic runner script (`dev/tools/run_batch_verification.sh`), and validate both negative controls (unfixed code fails) and `/tmp` post-fix simulations (fixed code passes).
 - **Why it works:** Each layer catches what the others abstract away: TLA+ catches multi-step authority and fencing interleavings (`F-01`, `F-03`, `F-07`, `F-24`, `F-25`), transitive AST call-graph walks enforce model atomicity and lock assumptions across helper boundaries ([VER-10](#ver-10), `F-15`), Hypothesis shrinks `BatchState` partition drift (`F-12`), and lockstep sync/async differential and fault-injection suites catch shell-level divergences (`F-08`, `F-09`) that symmetric-looking unit suites miss.
-- **How we applied it:** On `e84e964c`, all `1,100` pre-existing unit tests were green, yet the 10-stage pipeline ([Automated batch verification and chaos suite](chaos-verification-suite.md)) uncovered `29` verified production bugs (`48` failing test reproductions, `21` static AST violations, `22` TLA+ runs over `3,275,347` distinct states). Extending `verify_delete_lifecycle_model.py` (`62,579` total reachable states across `15` models) also closed [VER-6](#ver-6)'s Variant E gap by promoting `close_during_http` from a printed counter to a failing invariant.
+- **How we applied it:** On `e84e964c`, all `1,100` pre-existing batch-focused SDK (`399`) and RL (`701`) unit tests were green (out of `1,990` total Python unit tests: `1,289` across all `23` SDK unit files + `701` across all `34` RL test files), yet the 10-stage pipeline ([Automated batch verification and chaos suite](chaos-verification-suite.md)) uncovered `29` verified production bugs (`48` failing test reproductions, `21` static AST violations, `22` TLA+ runs over `3,275,347` distinct states). Extending `verify_delete_lifecycle_model.py` (`62,579` total reachable states across `15` models) also closed [VER-6](#ver-6)'s Variant E gap by promoting `close_during_http` from a printed counter to a failing invariant.
 - **Watch out:** Never trust a verification harness solely because it turns red on unfixed code. Simulate the proposed fixes in `/tmp` ([CHAOS-1](chaos-verification-suite.md#chaos-1)) and run Hypothesis with a cold cache directory ([TEST-28](testing.md#test-28)) before treating the suite as an oracle.
 
-## When to reach for it
+<a id="ver-14"></a>
+
+### VER-14 Walk transitive call graphs in static AST checks, and type-check `py.typed` packages as an external `--strict` consumer
+
+- **Principle:** Upgrade one-off AST inspections ([VER-10](#ver-10)) into control-flow and transitive call-graph analyzers (`dev/tools/verify_batch_static.py`), never match `ast.unparse()` substrings or private helper names, and test public typing contracts from *outside* the package (`mypy --strict -c 'from pkg import ...'`).
+- **Why it works:** Single-function AST scans miss `await`s or blocking calls hidden one helper deeper, while substring checks break on harmless refactors. External `--strict` consumer checks enable `no_implicit_reexport` and generic-parameter checks that a library's internal `pyproject.toml` often leaves off.
+- **How we applied it:** `verify_batch_static.py` runs `7` structural checks in `1 s` with `0` false positives, catching `AsyncSandboxClient.close()` holding `self._lock` across `await sandbox.close_connection()` (`F-15`), `5` `except Exception:` rollback blocks in `fleet.py` skipping `KeyboardInterrupt` (`F-06`), shared watch/renew error channels (`F-01`), unclamped K8s timeouts (`F-14`, `F-27`), and missing `__all__` in `k8s_agent_sandbox/__init__.py` (`F-13`).
+- **Watch out:** Test every new AST rule against a `/tmp` tree with realistic fixes applied ([VER-15](#ver-15)) so refactoring a private helper never triggers a false positive.
+
+<a id="ver-15"></a>
+
+### VER-15 Prove every negative control from both sides: red before the fix, green in `/tmp` after the fix
+
+- **Principle:** A reproduction test or static check that fails on broken code proves only half its contract. Apply the proposed minimal fix in a throwaway `/tmp` copy and confirm the new check turns green *and* existing suites exit cleanly (`pytest -o addopts=""` so `atexit` hooks run too).
+- **Why it works:** Fault-injection setups often hide latent test bugs behind early crashes on unfixed code: mock `side_effect` lists shift once a retry path changes (`F-08`), mutable mock return values get modified in place on call 1 and poison call 2 (`F-29`, [TEST-27](testing.md#test-27)), un-patched `atexit` hooks hang on real cloud auth plugins (`F-08`), and prose fix recipes introduce lock-order self-deadlocks ([CHAOS-1](chaos-verification-suite.md#chaos-1)).
+- **Watch out:** Always run the `/tmp` simulation with the repo's default flags stripped if those flags skip `atexit` or narrow collection, and verify zero leftover background threads or subprocesses at exit.
+
+<a id="sec-strategy-menu"></a>
+
+## Choosing the right verification or testing strategy (the full menu)
+
+No single testing or formal method catches everything. Use this matrix to pick the cheapest combination that covers your failure modes:
+
+| Strategy | What it explores | Bug classes it catches best | Blind spots (what it misses) | Typical runtime |
+| :-- | :-- | :-- | :-- | --: |
+| **1. Sans-I/O call-sequence unit tests** ([TEST-3](testing.md#test-3)) | Hand-picked event orderings on pure state | Known state-machine flaps, quorum/outcome edges | Unexpected multi-step permutations; shell locking & I/O | `<0.1 s` |
+| **2. Event-gated concurrency tests** ([TEST-4](testing.md#test-4), [TEST-8](testing.md#test-8)) | Exact 2-thread / 2-task races at deterministic hooks | Specific RPC-vs-watch or cancel-at-`await` races | Schedules you didn't think to script | `0.1-2 s` |
+| **3. Stateful property-based fuzzing** (`Hypothesis`, [TEST-29](testing.md#test-29)) | Thousands of random call sequences + automatic shrinking | Partition/counter drift (`F-12`), forgotten tombstones (`F-03`) | Rare `k`-step needles unless bridged with focused `@given` rules; cold-cache dilution ([TEST-28](testing.md#test-28)) | `2-15 s` |
+| **4. Lockstep differential simulation** ([TEST-30](testing.md#test-30)) | Identical traces run side by side on two implementations (`sync` vs `async`, fake vs real) | Silent parity drift (`F-08`, `F-09`, `FakeFleet` `F-19b`) | Bugs duplicated identically in both implementations (`F-12` without an oracle) | `1-3 s` |
+| **5. Deterministic OS / wire / clock fault simulation** ([TEST-20](testing.md#test-20), [TEST-31](testing.md#test-31)) | Hostile sockets, raw HTTP frames, `410` paging, `.999999s` timestamps | BSD `SYN` drops (`F-02`), `_preload_content=False` status swallow (`F-09`), `.strftime` floor bugs (`F-19a`) | Real kernel/apiserver version changes (pair with targeted e2e, [TEST-23](testing.md#test-23)) | `1-7 s` |
+| **6. Contention & lock-hold stress** (`Stage 8`) | `50`+ threads/tasks hammering CAS loops + timed lock acquisition probes | Lock-held-across-I/O starvation (`F-15`), thread-unsafe dict mutation | Low-probability multi-actor deadlocks if scheduler gets lucky | `2-5 s` |
+| **7. Transitive static AST & call-graph checks** ([VER-14](#ver-14)) | Every code path's lock nesting, `BaseException` handlers, timeouts, PEP 561 exports | `await` under lock (`F-15`), `except Exception:` rollback gaps (`F-06`), missing `__all__` (`F-13`) | Dynamic dispatch and runtime data invariants | `<2 s` |
+| **8. In-process explicit-state BFS** ([VER-1](#ver-1)..[VER-9](#ver-9)) | **100%** of bounded lock, signal, and task-cancel interleavings | Same-thread signal-handler ABBA deadlocks (`15/N`), double-cancel slot leaks | Cross-process clocks/leases; model-to-code drift ([VER-7](#ver-7)) | `1-5 s` |
+| **9. Cross-process & subsystem TLA+ (`TLC`)** ([TLA-1](tla.md#tla-1)..[TLA-9](tla.md#tla-9)) | **100%** of bounded protocol, clock-skew, GC, watch-relist, and authority states | Stale `deletecollection` (`TLA-1`), watch-kills-renew (`F-01`), in-flight `acquire` vs `release` (`F-24`) | HTTP client quirks, serialization truncation, unmodeled helper calls ([VER-12](#ver-12)) | `20-90 s` |
+
+## When to reach for an explicit-state model checker
 
 Reach for a model checker when **two or more** of these meet in one design:
 
