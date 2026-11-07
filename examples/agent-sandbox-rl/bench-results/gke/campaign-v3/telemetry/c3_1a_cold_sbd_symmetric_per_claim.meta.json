@@ -1,0 +1,14 @@
+{
+  "run_name": "c3_1a_cold_sbd_symmetric_per_claim",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-c3-1a-cold-sbd-symmetric-per-claim",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:6d0b37df8c80b092186d5c8ee66d13e646283d48a686301d6ece6c3532f2a8c3",
+  "driver_cmd": "python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --unmanaged-network-policy --termination-grace-seconds 0 --enable-cow --problems 500 --rollouts 6 --concurrency 500 --cpu 125m --memory 1Gi --strategies naive --probe true --claim-mode per_claim",
+  "start_utc": "2026-11-07T15:16:40Z",
+  "end_utc": "2026-11-07T15:25:17Z",
+  "job_elapsed_s": 517,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

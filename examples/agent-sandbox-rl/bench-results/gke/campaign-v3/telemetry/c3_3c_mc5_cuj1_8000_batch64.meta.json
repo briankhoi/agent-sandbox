@@ -1,0 +1,15 @@
+{
+  "run_name": "c3_3c_mc5_cuj1_8000_batch64",
+  "mode": "5_cluster_driver_job",
+  "clusters": ["asrl-c3-1", "asrl-c3-2", "asrl-c3-3", "asrl-c3-4", "asrl-c3-5"],
+  "job_name": "asrl-c3-3c-mc5-cuj1-8000-batch64",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:6d0b37df8c80b092186d5c8ee66d13e646283d48a686301d6ece6c3532f2a8c3",
+  "driver_cmd": "python run_multicluster_bench.py --contexts c1,c2,c3,c4,c5 --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --unmanaged-network-policy --termination-grace-seconds 0 --suite warm-burst --replicas-per-image 16 --concurrencies 8000 --repeats 1 --verify-exec --claim-mode batch --batch-max-in-flight 64 --batch-create-rps 250",
+  "start_utc": "2026-11-06T18:02:38Z",
+  "end_utc": "2026-11-06T18:04:53Z",
+  "job_elapsed_s": 135,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_5c_before": 0,
+  "controller_restarts_5c_after": 0
+}

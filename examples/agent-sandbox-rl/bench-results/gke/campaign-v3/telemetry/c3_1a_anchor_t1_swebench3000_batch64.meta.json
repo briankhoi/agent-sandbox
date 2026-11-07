@@ -1,0 +1,14 @@
+{
+  "run_name": "c3_1a_anchor_t1_swebench3000_batch64",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-c3-1a-anchor-t1-swebench3000-batch64",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:6d0b37df8c80b092186d5c8ee66d13e646283d48a686301d6ece6c3532f2a8c3",
+  "driver_cmd": "python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --unmanaged-network-policy --problems 500 --rollouts 6 --concurrency 500 --cpu 125m --memory 1Gi --strategies naive --probe true --claim-mode batch --batch-max-in-flight 64 --batch-create-rps 200",
+  "start_utc": "2026-11-06T16:22:05Z",
+  "end_utc": "2026-11-06T16:27:41Z",
+  "job_elapsed_s": 336,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

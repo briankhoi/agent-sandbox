@@ -1,0 +1,16 @@
+{
+  "run_name": "c3_3d_mc5_sdk_5000_claim_and_cleanup",
+  "mode": "5_cluster_driver_job",
+  "clusters": ["asrl-c3-1", "asrl-c3-2", "asrl-c3-3", "asrl-c3-4", "asrl-c3-5"],
+  "job_name": "asrl-c3-3d-mc5-sdk-5000-claim-and-cleanup",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:6d0b37df8c80b092186d5c8ee66d13e646283d48a686301d6ece6c3532f2a8c3",
+  "driver_cmd": "python run_mc5_sdk_batch_bench.py --contexts c1,c2,c3,c4,c5 --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --unmanaged-network-policy --termination-grace-seconds 0 --per-cluster-warm 1000 --concurrencies 1000,2500,5000 --repeats 2 --batch-max-in-flight 64 --batch-create-rps 250 --per-claim-concurrency-per-cluster 64",
+  "settle_s": 30,
+  "start_utc": "2026-11-07T13:16:09Z",
+  "end_utc": "2026-11-07T13:27:17Z",
+  "job_elapsed_s": 668,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_5c_before": 0,
+  "controller_restarts_5c_after": 0
+}

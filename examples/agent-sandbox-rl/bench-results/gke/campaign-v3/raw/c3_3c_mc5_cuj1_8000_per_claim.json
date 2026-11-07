@@ -1,0 +1,251 @@
+{
+  "params": {
+    "context": null,
+    "contexts": "c1,c2,c3,c4,c5",
+    "in_cluster": false,
+    "namespace": "agent-sandbox-rl",
+    "node_selector": "cloud.google.com/gke-nodepool=gvisor-pool",
+    "images_file": "/app/drivers/images/swebench500.txt",
+    "problems": 500,
+    "rollouts": 6,
+    "concurrency": 500,
+    "claim_concurrency": 500,
+    "strategies": "naive,sliding,pipelined",
+    "recycle": false,
+    "recycle_only": false,
+    "max_reuses": 32,
+    "max_warmpool_size": 1,
+    "warm_per_task": false,
+    "colocate": false,
+    "enable_cow": false,
+    "tmp_disk_gi": 4,
+    "unmanaged_network_policy": true,
+    "placement": "round-robin",
+    "reset_timeout": 30.0,
+    "cpu": "125m",
+    "memory": "256Mi",
+    "runtime_class": "gvisor",
+    "testbed": "/testbed",
+    "probe": "python3 -c 'import os; assert os.path.isdir(\"/testbed\"); print(1)'",
+    "window_size": 0,
+    "avg_image_gb": 0.0,
+    "usable_disk_gb": 0.0,
+    "termination_grace_seconds": 0,
+    "overcommit_factor": 3.5,
+    "warm_create_budget": 2500,
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": 0,
+    "batch_create_rps": 0.0,
+    "batch_lease_duration": 300,
+    "batch_work_budget": 3600,
+    "out": "/out/result.json",
+    "suite": "warm-burst",
+    "replicas_per_image": 16,
+    "concurrencies": "8000",
+    "repeats": 1,
+    "post_warm_settle_s": 5.0,
+    "verify_exec": true,
+    "exec_concurrency": 1024,
+    "jobs": 8,
+    "job_problems": 128,
+    "job_rollouts": 4,
+    "job_stagger_s": 0.5
+  },
+  "result": {
+    "suite": "warm-burst",
+    "clusters": 5,
+    "claim_mode": "per_claim",
+    "standing_total": 8000,
+    "setup_s": 32.88,
+    "points": [
+      {
+        "concurrency": 8000,
+        "repeat": 0,
+        "clusters": 5,
+        "per_cluster_claims": {
+          "c1": 1600,
+          "c2": 1600,
+          "c3": 1600,
+          "c4": 1600,
+          "c5": 1600
+        },
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 8000,
+          "desired": 8000,
+          "min_ready_target": 8000,
+          "wait_s": 0.1,
+          "timed_out": false
+        },
+        "burst_wall_s": 65.735,
+        "burst_and_exec_wall_s": 88.434,
+        "claims_per_s": 121.7,
+        "release_wall_s": 8.144,
+        "release_sandboxes_per_s": 982.3,
+        "ok": 8000,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "wire_claim_s": {
+          "n": 8000,
+          "first": 4.3837,
+          "min": 4.3837,
+          "p50": 35.5505,
+          "avg": 35.0888,
+          "p90": 59.1292,
+          "p95": 60.0524,
+          "p99": 61.3612,
+          "max": 61.6536,
+          "straggler_skew": 1.734
+        },
+        "first_cmd_exec_s": {
+          "n": 8000,
+          "first": 0.3179,
+          "min": 0.3179,
+          "p50": 3.0873,
+          "avg": 2.7534,
+          "p90": 3.6964,
+          "p95": 3.8849,
+          "p99": 4.1774,
+          "max": 11.5543,
+          "straggler_skew": 3.743
+        },
+        "ttfi_s": {
+          "n": 8000,
+          "first": 26.5688,
+          "min": 26.5688,
+          "p50": 46.0667,
+          "avg": 46.2021,
+          "p90": 61.1961,
+          "p95": 62.9282,
+          "p99": 65.2367,
+          "max": 65.7785,
+          "straggler_skew": 1.428
+        },
+        "ttfi_inline_s": {
+          "n": 8000,
+          "first": 5.8767,
+          "min": 5.8767,
+          "p50": 38.8307,
+          "avg": 37.8422,
+          "p90": 61.0925,
+          "p95": 62.9131,
+          "p99": 65.2367,
+          "max": 65.6156,
+          "straggler_skew": 1.69
+        },
+        "proc_before": {
+          "open_fds": 12,
+          "open_sockets": 7,
+          "vm_rss_mb": 171.33,
+          "vm_hwm_mb": 174.15,
+          "threads": 2,
+          "tcp_states": {
+            "ESTABLISHED": 5
+          }
+        },
+        "proc_held": {
+          "open_fds": 3655,
+          "open_sockets": 3650,
+          "vm_rss_mb": 1071.96,
+          "vm_hwm_mb": 1071.96,
+          "threads": 4097,
+          "tcp_states": {
+            "ESTABLISHED": 111,
+            "CLOSE_WAIT": 715
+          }
+        },
+        "proc_after": {
+          "open_fds": 210,
+          "open_sockets": 205,
+          "vm_rss_mb": 1074.2,
+          "vm_hwm_mb": 1074.2,
+          "threads": 4097,
+          "tcp_states": {
+            "ESTABLISHED": 203
+          }
+        },
+        "errors_sample": []
+      }
+    ],
+    "verify_teardown": {
+      "c1": {
+        "claims": 0,
+        "leases": 0,
+        "warmpools": 0,
+        "sandboxes": 0,
+        "templates": 0,
+        "pods": 2293,
+        "remaining": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "pods": 0
+        }
+      },
+      "c2": {
+        "claims": 0,
+        "leases": 0,
+        "warmpools": 0,
+        "sandboxes": 0,
+        "templates": 0,
+        "pods": 230,
+        "remaining": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "pods": 0
+        }
+      },
+      "c3": {
+        "claims": 0,
+        "leases": 0,
+        "warmpools": 0,
+        "sandboxes": 0,
+        "templates": 0,
+        "pods": 0,
+        "remaining": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "pods": 0
+        }
+      },
+      "c4": {
+        "claims": 0,
+        "leases": 0,
+        "warmpools": 0,
+        "sandboxes": 0,
+        "templates": 0,
+        "pods": 0,
+        "remaining": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "pods": 0
+        }
+      },
+      "c5": {
+        "claims": 0,
+        "leases": 0,
+        "warmpools": 0,
+        "sandboxes": 0,
+        "templates": 0,
+        "pods": 0,
+        "remaining": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "pods": 0
+        }
+      }
+    }
+  }
+}

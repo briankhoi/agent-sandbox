@@ -1,0 +1,14 @@
+{
+  "run_name": "c3_smoke_02_cold_batch64",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-c3-smoke-02-cold-batch64",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:6d0b37df8c80b092186d5c8ee66d13e646283d48a686301d6ece6c3532f2a8c3",
+  "driver_cmd": "python run_smoke_gate.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --smoke-image us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:6d0b37df8c80b092186d5c8ee66d13e646283d48a686301d6ece6c3532f2a8c3 --per-cluster-claims 10 --unmanaged-network-policy",
+  "start_utc": "2026-11-06T15:52:14Z",
+  "end_utc": "2026-11-06T15:52:49Z",
+  "job_elapsed_s": 35,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

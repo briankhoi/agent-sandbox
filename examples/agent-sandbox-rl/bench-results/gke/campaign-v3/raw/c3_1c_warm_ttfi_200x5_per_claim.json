@@ -1,0 +1,1642 @@
+{
+  "params": {
+    "context": null,
+    "contexts": null,
+    "in_cluster": true,
+    "namespace": "agent-sandbox-rl",
+    "node_selector": "cloud.google.com/gke-nodepool=gvisor-pool",
+    "images_file": "/app/drivers/images/swebench500.txt",
+    "problems": 200,
+    "rollouts": 6,
+    "concurrency": 1000,
+    "claim_concurrency": 500,
+    "strategies": "naive,sliding,pipelined",
+    "recycle": false,
+    "recycle_only": false,
+    "max_reuses": 32,
+    "max_warmpool_size": 1,
+    "warm_per_task": false,
+    "colocate": false,
+    "enable_cow": false,
+    "tmp_disk_gi": 0,
+    "unmanaged_network_policy": true,
+    "placement": "image-affinity",
+    "reset_timeout": 30.0,
+    "cpu": "125m",
+    "memory": "512Mi",
+    "runtime_class": "gvisor",
+    "testbed": "/testbed",
+    "probe": "python3 -c 'print(1)'",
+    "window_size": 0,
+    "avg_image_gb": 0.0,
+    "usable_disk_gb": 0.0,
+    "termination_grace_seconds": -1,
+    "overcommit_factor": 3.5,
+    "warm_create_budget": 500,
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": 0,
+    "batch_create_rps": 0.0,
+    "batch_lease_duration": 300,
+    "batch_work_budget": 3600,
+    "out": "/out/result.json",
+    "mode": "burst",
+    "replicas_per_image": 5,
+    "concurrencies": "100,200,500,1000",
+    "repeats": 3,
+    "min_ready_fraction": 1.0,
+    "post_warm_settle_s": 5.0,
+    "verify_exec": true,
+    "exec_concurrency": 1024
+  },
+  "result": {
+    "mode": "burst",
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": null,
+    "verify_exec": true,
+    "probe": "python3 -c 'print(1)'",
+    "standing_pools": 200,
+    "replicas_per_image": 5,
+    "standing_total": 1000,
+    "min_ready_fraction": 1.0,
+    "post_warm_settle_s": 5.0,
+    "setup_s": 54.59,
+    "points": [
+      {
+        "concurrency": 100,
+        "repeat": 0,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 0.04,
+          "timed_out": false
+        },
+        "burst_wall_s": 1.047,
+        "burst_and_exec_wall_s": 1.741,
+        "claims_per_s": 95.54,
+        "ttfi_goodput_per_s": 57.45,
+        "release_wall_s": 0.107,
+        "release_sandboxes_per_s": 938.46,
+        "ok": 100,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 100,
+          "first": 0.4009,
+          "min": 0.4009,
+          "p50": 0.5594,
+          "avg": 0.5654,
+          "p90": 0.6536,
+          "p95": 0.6872,
+          "p99": 0.7574,
+          "max": 0.7887,
+          "straggler_skew": 1.41
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 100,
+          "first": 0.3991,
+          "min": 0.3991,
+          "p50": 0.6163,
+          "avg": 0.6271,
+          "p90": 0.765,
+          "p95": 0.8308,
+          "p99": 0.9479,
+          "max": 1.1649,
+          "straggler_skew": 1.89
+        },
+        "exec_sem_wait_s": {
+          "n": 100,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 100,
+          "first": 0.9453,
+          "min": 0.9453,
+          "p50": 1.2141,
+          "avg": 1.1925,
+          "p90": 1.3158,
+          "p95": 1.3845,
+          "p99": 1.4884,
+          "max": 1.6777,
+          "straggler_skew": 1.382
+        },
+        "ttfi_inline_s": {
+          "n": 100,
+          "first": 0.9453,
+          "min": 0.9453,
+          "p50": 1.2141,
+          "avg": 1.1925,
+          "p90": 1.3158,
+          "p95": 1.3845,
+          "p99": 1.4884,
+          "max": 1.6777,
+          "straggler_skew": 1.382
+        },
+        "proc_before": {
+          "open_fds": 8,
+          "open_sockets": 3,
+          "vm_rss_mb": 146.62,
+          "vm_hwm_mb": 148.45,
+          "threads": 2,
+          "tcp_states": {
+            "ESTABLISHED": 1
+          }
+        },
+        "proc_held": {
+          "open_fds": 182,
+          "open_sockets": 177,
+          "vm_rss_mb": 160.33,
+          "vm_hwm_mb": 160.33,
+          "threads": 128,
+          "tcp_states": {
+            "ESTABLISHED": 75,
+            "CLOSE_WAIT": 100
+          }
+        },
+        "proc_after": {
+          "open_fds": 153,
+          "open_sockets": 148,
+          "vm_rss_mb": 160.57,
+          "vm_hwm_mb": 160.57,
+          "threads": 131,
+          "tcp_states": {
+            "ESTABLISHED": 75,
+            "CLOSE_WAIT": 71
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 100,
+        "repeat": 1,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 7.7,
+          "timed_out": false
+        },
+        "burst_wall_s": 0.863,
+        "burst_and_exec_wall_s": 1.839,
+        "claims_per_s": 115.9,
+        "ttfi_goodput_per_s": 54.38,
+        "release_wall_s": 0.204,
+        "release_sandboxes_per_s": 489.82,
+        "ok": 100,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 100,
+          "first": 0.3373,
+          "min": 0.3373,
+          "p50": 0.5977,
+          "avg": 0.5701,
+          "p90": 0.7092,
+          "p95": 0.7316,
+          "p99": 0.7403,
+          "max": 0.7773,
+          "straggler_skew": 1.3
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 100,
+          "first": 0.3637,
+          "min": 0.3637,
+          "p50": 0.5185,
+          "avg": 0.5596,
+          "p90": 0.7625,
+          "p95": 0.861,
+          "p99": 1.0599,
+          "max": 1.1385,
+          "straggler_skew": 2.196
+        },
+        "exec_sem_wait_s": {
+          "n": 100,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 100,
+          "first": 0.862,
+          "min": 0.862,
+          "p50": 1.1279,
+          "avg": 1.1297,
+          "p90": 1.2748,
+          "p95": 1.3259,
+          "p99": 1.5154,
+          "max": 1.5889,
+          "straggler_skew": 1.409
+        },
+        "ttfi_inline_s": {
+          "n": 100,
+          "first": 0.862,
+          "min": 0.862,
+          "p50": 1.1279,
+          "avg": 1.1297,
+          "p90": 1.2748,
+          "p95": 1.3259,
+          "p99": 1.5154,
+          "max": 1.5889,
+          "straggler_skew": 1.409
+        },
+        "proc_before": {
+          "open_fds": 147,
+          "open_sockets": 142,
+          "vm_rss_mb": 164.7,
+          "vm_hwm_mb": 164.7,
+          "threads": 131,
+          "tcp_states": {
+            "ESTABLISHED": 75,
+            "CLOSE_WAIT": 65
+          }
+        },
+        "proc_held": {
+          "open_fds": 264,
+          "open_sockets": 259,
+          "vm_rss_mb": 178.51,
+          "vm_hwm_mb": 178.51,
+          "threads": 210,
+          "tcp_states": {
+            "CLOSE_WAIT": 165,
+            "ESTABLISHED": 92
+          }
+        },
+        "proc_after": {
+          "open_fds": 255,
+          "open_sockets": 250,
+          "vm_rss_mb": 178.55,
+          "vm_hwm_mb": 178.55,
+          "threads": 210,
+          "tcp_states": {
+            "CLOSE_WAIT": 156,
+            "ESTABLISHED": 92
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 100,
+        "repeat": 2,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 7.67,
+          "timed_out": false
+        },
+        "burst_wall_s": 0.932,
+        "burst_and_exec_wall_s": 1.486,
+        "claims_per_s": 107.25,
+        "ttfi_goodput_per_s": 67.28,
+        "release_wall_s": 0.102,
+        "release_sandboxes_per_s": 985.21,
+        "ok": 100,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 100,
+          "first": 0.3383,
+          "min": 0.3383,
+          "p50": 0.5581,
+          "avg": 0.545,
+          "p90": 0.6423,
+          "p95": 0.6839,
+          "p99": 0.7242,
+          "max": 0.7827,
+          "straggler_skew": 1.402
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 100,
+          "first": 0.3404,
+          "min": 0.3404,
+          "p50": 0.4963,
+          "avg": 0.5142,
+          "p90": 0.6266,
+          "p95": 0.6948,
+          "p99": 0.8469,
+          "max": 0.8599,
+          "straggler_skew": 1.733
+        },
+        "exec_sem_wait_s": {
+          "n": 100,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 100,
+          "first": 0.8424,
+          "min": 0.8424,
+          "p50": 1.0548,
+          "avg": 1.0592,
+          "p90": 1.1834,
+          "p95": 1.21,
+          "p99": 1.2992,
+          "max": 1.3308,
+          "straggler_skew": 1.262
+        },
+        "ttfi_inline_s": {
+          "n": 100,
+          "first": 0.8424,
+          "min": 0.8424,
+          "p50": 1.0548,
+          "avg": 1.0592,
+          "p90": 1.1834,
+          "p95": 1.21,
+          "p99": 1.2992,
+          "max": 1.3308,
+          "straggler_skew": 1.262
+        },
+        "proc_before": {
+          "open_fds": 226,
+          "open_sockets": 221,
+          "vm_rss_mb": 181.93,
+          "vm_hwm_mb": 181.93,
+          "threads": 210,
+          "tcp_states": {
+            "CLOSE_WAIT": 127,
+            "ESTABLISHED": 92
+          }
+        },
+        "proc_held": {
+          "open_fds": 326,
+          "open_sockets": 321,
+          "vm_rss_mb": 193.05,
+          "vm_hwm_mb": 193.05,
+          "threads": 285,
+          "tcp_states": {
+            "CLOSE_WAIT": 227,
+            "ESTABLISHED": 92
+          }
+        },
+        "proc_after": {
+          "open_fds": 302,
+          "open_sockets": 297,
+          "vm_rss_mb": 193.09,
+          "vm_hwm_mb": 193.09,
+          "threads": 285,
+          "tcp_states": {
+            "CLOSE_WAIT": 203,
+            "ESTABLISHED": 92
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 200,
+        "repeat": 0,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 6.15,
+          "timed_out": false
+        },
+        "burst_wall_s": 2.008,
+        "burst_and_exec_wall_s": 2.531,
+        "claims_per_s": 99.61,
+        "ttfi_goodput_per_s": 79.02,
+        "release_wall_s": 1.003,
+        "release_sandboxes_per_s": 199.44,
+        "ok": 200,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 200,
+          "first": 0.5245,
+          "min": 0.5245,
+          "p50": 0.9941,
+          "avg": 0.9517,
+          "p90": 1.1507,
+          "p95": 1.2217,
+          "p99": 1.3597,
+          "max": 1.7787,
+          "straggler_skew": 1.789
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 200,
+          "first": 0.3811,
+          "min": 0.3811,
+          "p50": 0.6032,
+          "avg": 0.6435,
+          "p90": 0.882,
+          "p95": 0.9408,
+          "p99": 1.0371,
+          "max": 1.0523,
+          "straggler_skew": 1.745
+        },
+        "exec_sem_wait_s": {
+          "n": 200,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 200,
+          "first": 1.1809,
+          "min": 1.1809,
+          "p50": 1.5785,
+          "avg": 1.5952,
+          "p90": 1.7856,
+          "p95": 1.8584,
+          "p99": 1.9504,
+          "max": 2.1891,
+          "straggler_skew": 1.387
+        },
+        "ttfi_inline_s": {
+          "n": 200,
+          "first": 1.1809,
+          "min": 1.1809,
+          "p50": 1.5785,
+          "avg": 1.5952,
+          "p90": 1.7856,
+          "p95": 1.8584,
+          "p99": 1.9504,
+          "max": 2.1891,
+          "straggler_skew": 1.387
+        },
+        "proc_before": {
+          "open_fds": 245,
+          "open_sockets": 240,
+          "vm_rss_mb": 195.06,
+          "vm_hwm_mb": 195.06,
+          "threads": 285,
+          "tcp_states": {
+            "CLOSE_WAIT": 146,
+            "ESTABLISHED": 92
+          }
+        },
+        "proc_held": {
+          "open_fds": 307,
+          "open_sockets": 302,
+          "vm_rss_mb": 213.33,
+          "vm_hwm_mb": 213.33,
+          "threads": 464,
+          "tcp_states": {
+            "CLOSE_WAIT": 200,
+            "ESTABLISHED": 100
+          }
+        },
+        "proc_after": {
+          "open_fds": 107,
+          "open_sockets": 102,
+          "vm_rss_mb": 213.91,
+          "vm_hwm_mb": 213.91,
+          "threads": 481,
+          "tcp_states": {
+            "ESTABLISHED": 100
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 200,
+        "repeat": 1,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 9.21,
+          "timed_out": false
+        },
+        "burst_wall_s": 1.806,
+        "burst_and_exec_wall_s": 2.67,
+        "claims_per_s": 110.72,
+        "ttfi_goodput_per_s": 74.9,
+        "release_wall_s": 0.207,
+        "release_sandboxes_per_s": 966.59,
+        "ok": 200,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 200,
+          "first": 0.5555,
+          "min": 0.5555,
+          "p50": 0.9357,
+          "avg": 0.9272,
+          "p90": 1.0992,
+          "p95": 1.2198,
+          "p99": 1.3647,
+          "max": 1.4727,
+          "straggler_skew": 1.574
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 200,
+          "first": 0.4315,
+          "min": 0.4315,
+          "p50": 0.599,
+          "avg": 0.6036,
+          "p90": 0.6888,
+          "p95": 0.7069,
+          "p99": 0.863,
+          "max": 0.9419,
+          "straggler_skew": 1.572
+        },
+        "exec_sem_wait_s": {
+          "n": 200,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 200,
+          "first": 1.0992,
+          "min": 1.0992,
+          "p50": 1.5473,
+          "avg": 1.5307,
+          "p90": 1.7537,
+          "p95": 1.8059,
+          "p99": 1.9384,
+          "max": 2.1084,
+          "straggler_skew": 1.363
+        },
+        "ttfi_inline_s": {
+          "n": 200,
+          "first": 1.0992,
+          "min": 1.0992,
+          "p50": 1.5473,
+          "avg": 1.5307,
+          "p90": 1.7537,
+          "p95": 1.8059,
+          "p99": 1.9384,
+          "max": 2.1084,
+          "straggler_skew": 1.363
+        },
+        "proc_before": {
+          "open_fds": 107,
+          "open_sockets": 102,
+          "vm_rss_mb": 217.61,
+          "vm_hwm_mb": 217.61,
+          "threads": 481,
+          "tcp_states": {
+            "ESTABLISHED": 100
+          }
+        },
+        "proc_held": {
+          "open_fds": 307,
+          "open_sockets": 302,
+          "vm_rss_mb": 231.69,
+          "vm_hwm_mb": 231.69,
+          "threads": 655,
+          "tcp_states": {
+            "ESTABLISHED": 100,
+            "CLOSE_WAIT": 200
+          }
+        },
+        "proc_after": {
+          "open_fds": 178,
+          "open_sockets": 173,
+          "vm_rss_mb": 232.73,
+          "vm_hwm_mb": 232.73,
+          "threads": 688,
+          "tcp_states": {
+            "ESTABLISHED": 100,
+            "CLOSE_WAIT": 71
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 200,
+        "repeat": 2,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 9.22,
+          "timed_out": false
+        },
+        "burst_wall_s": 1.902,
+        "burst_and_exec_wall_s": 2.631,
+        "claims_per_s": 105.13,
+        "ttfi_goodput_per_s": 76.01,
+        "release_wall_s": 0.226,
+        "release_sandboxes_per_s": 886.36,
+        "ok": 200,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 200,
+          "first": 0.635,
+          "min": 0.635,
+          "p50": 0.9943,
+          "avg": 1.0074,
+          "p90": 1.1789,
+          "p95": 1.2266,
+          "p99": 1.285,
+          "max": 1.6758,
+          "straggler_skew": 1.685
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 200,
+          "first": 0.4328,
+          "min": 0.4328,
+          "p50": 0.6291,
+          "avg": 0.6304,
+          "p90": 0.7499,
+          "p95": 0.7678,
+          "p99": 0.8381,
+          "max": 0.9084,
+          "straggler_skew": 1.444
+        },
+        "exec_sem_wait_s": {
+          "n": 200,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 200,
+          "first": 1.2425,
+          "min": 1.2425,
+          "p50": 1.6155,
+          "avg": 1.6377,
+          "p90": 1.8528,
+          "p95": 1.8795,
+          "p99": 1.9309,
+          "max": 2.3146,
+          "straggler_skew": 1.433
+        },
+        "ttfi_inline_s": {
+          "n": 200,
+          "first": 1.2425,
+          "min": 1.2425,
+          "p50": 1.6155,
+          "avg": 1.6377,
+          "p90": 1.8528,
+          "p95": 1.8795,
+          "p99": 1.9309,
+          "max": 2.3146,
+          "straggler_skew": 1.433
+        },
+        "proc_before": {
+          "open_fds": 178,
+          "open_sockets": 173,
+          "vm_rss_mb": 235.93,
+          "vm_hwm_mb": 235.93,
+          "threads": 688,
+          "tcp_states": {
+            "ESTABLISHED": 100,
+            "CLOSE_WAIT": 71
+          }
+        },
+        "proc_held": {
+          "open_fds": 307,
+          "open_sockets": 302,
+          "vm_rss_mb": 249.05,
+          "vm_hwm_mb": 249.05,
+          "threads": 873,
+          "tcp_states": {
+            "ESTABLISHED": 100,
+            "CLOSE_WAIT": 200
+          }
+        },
+        "proc_after": {
+          "open_fds": 188,
+          "open_sockets": 183,
+          "vm_rss_mb": 250.0,
+          "vm_hwm_mb": 250.0,
+          "threads": 901,
+          "tcp_states": {
+            "ESTABLISHED": 100,
+            "CLOSE_WAIT": 81
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 500,
+        "repeat": 0,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 12.7,
+          "timed_out": false
+        },
+        "burst_wall_s": 5.069,
+        "burst_and_exec_wall_s": 6.247,
+        "claims_per_s": 98.64,
+        "ttfi_goodput_per_s": 80.03,
+        "release_wall_s": 0.523,
+        "release_sandboxes_per_s": 955.64,
+        "ok": 500,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 500,
+          "first": 1.7087,
+          "min": 1.7087,
+          "p50": 2.9735,
+          "avg": 2.8138,
+          "p90": 3.3577,
+          "p95": 3.402,
+          "p99": 3.5084,
+          "max": 3.8786,
+          "straggler_skew": 1.304
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 500,
+          "first": 0.3459,
+          "min": 0.3459,
+          "p50": 0.9054,
+          "avg": 0.9792,
+          "p90": 1.5688,
+          "p95": 1.6449,
+          "p99": 1.7447,
+          "max": 1.7602,
+          "straggler_skew": 1.944
+        },
+        "exec_sem_wait_s": {
+          "n": 500,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 500,
+          "first": 2.198,
+          "min": 2.198,
+          "p50": 3.881,
+          "avg": 3.793,
+          "p90": 4.9283,
+          "p95": 4.9896,
+          "p99": 5.0312,
+          "max": 5.048,
+          "straggler_skew": 1.301
+        },
+        "ttfi_inline_s": {
+          "n": 500,
+          "first": 2.198,
+          "min": 2.198,
+          "p50": 3.881,
+          "avg": 3.793,
+          "p90": 4.9283,
+          "p95": 4.9896,
+          "p99": 5.0312,
+          "max": 5.048,
+          "straggler_skew": 1.301
+        },
+        "proc_before": {
+          "open_fds": 188,
+          "open_sockets": 183,
+          "vm_rss_mb": 255.19,
+          "vm_hwm_mb": 255.19,
+          "threads": 901,
+          "tcp_states": {
+            "ESTABLISHED": 100,
+            "CLOSE_WAIT": 81
+          }
+        },
+        "proc_held": {
+          "open_fds": 615,
+          "open_sockets": 610,
+          "vm_rss_mb": 302.31,
+          "vm_hwm_mb": 302.31,
+          "threads": 1349,
+          "tcp_states": {
+            "ESTABLISHED": 141,
+            "CLOSE_WAIT": 467
+          }
+        },
+        "proc_after": {
+          "open_fds": 424,
+          "open_sockets": 419,
+          "vm_rss_mb": 305.53,
+          "vm_hwm_mb": 305.53,
+          "threads": 1458,
+          "tcp_states": {
+            "ESTABLISHED": 141,
+            "CLOSE_WAIT": 276
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 500,
+        "repeat": 1,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 21.48,
+          "timed_out": false
+        },
+        "burst_wall_s": 4.984,
+        "burst_and_exec_wall_s": 6.017,
+        "claims_per_s": 100.33,
+        "ttfi_goodput_per_s": 83.09,
+        "release_wall_s": 0.51,
+        "release_sandboxes_per_s": 980.79,
+        "ok": 500,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 500,
+          "first": 1.7191,
+          "min": 1.7191,
+          "p50": 2.6211,
+          "avg": 2.6236,
+          "p90": 3.1752,
+          "p95": 3.2098,
+          "p99": 3.3302,
+          "max": 4.8302,
+          "straggler_skew": 1.843
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 500,
+          "first": 0.3985,
+          "min": 0.3985,
+          "p50": 0.9446,
+          "avg": 1.0465,
+          "p90": 1.6519,
+          "p95": 1.6957,
+          "p99": 1.7627,
+          "max": 1.8659,
+          "straggler_skew": 1.975
+        },
+        "exec_sem_wait_s": {
+          "n": 500,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 500,
+          "first": 2.3325,
+          "min": 2.3325,
+          "p50": 3.5776,
+          "avg": 3.6701,
+          "p90": 4.8087,
+          "p95": 4.8505,
+          "p99": 4.9402,
+          "max": 5.8344,
+          "straggler_skew": 1.631
+        },
+        "ttfi_inline_s": {
+          "n": 500,
+          "first": 2.3325,
+          "min": 2.3325,
+          "p50": 3.5776,
+          "avg": 3.6701,
+          "p90": 4.8087,
+          "p95": 4.8505,
+          "p99": 4.9402,
+          "max": 5.8344,
+          "straggler_skew": 1.631
+        },
+        "proc_before": {
+          "open_fds": 424,
+          "open_sockets": 419,
+          "vm_rss_mb": 313.01,
+          "vm_hwm_mb": 313.01,
+          "threads": 1458,
+          "tcp_states": {
+            "ESTABLISHED": 141,
+            "CLOSE_WAIT": 276
+          }
+        },
+        "proc_held": {
+          "open_fds": 515,
+          "open_sockets": 510,
+          "vm_rss_mb": 354.03,
+          "vm_hwm_mb": 354.03,
+          "threads": 1886,
+          "tcp_states": {
+            "ESTABLISHED": 141,
+            "CLOSE_WAIT": 367
+          }
+        },
+        "proc_after": {
+          "open_fds": 148,
+          "open_sockets": 143,
+          "vm_rss_mb": 356.47,
+          "vm_hwm_mb": 356.47,
+          "threads": 1971,
+          "tcp_states": {
+            "ESTABLISHED": 141
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 500,
+        "repeat": 2,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 21.47,
+          "timed_out": false
+        },
+        "burst_wall_s": 5.251,
+        "burst_and_exec_wall_s": 6.264,
+        "claims_per_s": 95.21,
+        "ttfi_goodput_per_s": 79.82,
+        "release_wall_s": 0.478,
+        "release_sandboxes_per_s": 1046.13,
+        "ok": 500,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 500,
+          "first": 1.7993,
+          "min": 1.7993,
+          "p50": 3.2635,
+          "avg": 3.0431,
+          "p90": 3.6749,
+          "p95": 3.7885,
+          "p99": 3.928,
+          "max": 4.0116,
+          "straggler_skew": 1.229
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 500,
+          "first": 0.3437,
+          "min": 0.3437,
+          "p50": 0.8659,
+          "avg": 0.9384,
+          "p90": 1.481,
+          "p95": 1.6413,
+          "p99": 1.7524,
+          "max": 2.1402,
+          "straggler_skew": 2.472
+        },
+        "exec_sem_wait_s": {
+          "n": 500,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 500,
+          "first": 2.2947,
+          "min": 2.2947,
+          "p50": 4.0928,
+          "avg": 3.9815,
+          "p90": 5.1752,
+          "p95": 5.2489,
+          "p99": 5.2494,
+          "max": 5.7478,
+          "straggler_skew": 1.404
+        },
+        "ttfi_inline_s": {
+          "n": 500,
+          "first": 2.2947,
+          "min": 2.2947,
+          "p50": 4.0927,
+          "avg": 3.9815,
+          "p90": 5.1752,
+          "p95": 5.2489,
+          "p99": 5.2494,
+          "max": 5.7478,
+          "straggler_skew": 1.404
+        },
+        "proc_before": {
+          "open_fds": 148,
+          "open_sockets": 143,
+          "vm_rss_mb": 362.8,
+          "vm_hwm_mb": 362.8,
+          "threads": 1971,
+          "tcp_states": {
+            "ESTABLISHED": 141
+          }
+        },
+        "proc_held": {
+          "open_fds": 636,
+          "open_sockets": 631,
+          "vm_rss_mb": 389.61,
+          "vm_hwm_mb": 389.61,
+          "threads": 2400,
+          "tcp_states": {
+            "ESTABLISHED": 141,
+            "CLOSE_WAIT": 488
+          }
+        },
+        "proc_after": {
+          "open_fds": 568,
+          "open_sockets": 563,
+          "vm_rss_mb": 392.65,
+          "vm_hwm_mb": 392.65,
+          "threads": 2485,
+          "tcp_states": {
+            "ESTABLISHED": 141,
+            "CLOSE_WAIT": 420
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 1000,
+        "repeat": 0,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 15.32,
+          "timed_out": false
+        },
+        "burst_wall_s": 8.636,
+        "burst_and_exec_wall_s": 12.302,
+        "claims_per_s": 115.8,
+        "ttfi_goodput_per_s": 81.29,
+        "release_wall_s": 0.912,
+        "release_sandboxes_per_s": 1095.95,
+        "ok": 1000,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 1000,
+          "first": 0.8948,
+          "min": 0.8948,
+          "p50": 4.8128,
+          "avg": 4.866,
+          "p90": 7.6462,
+          "p95": 7.7532,
+          "p99": 8.0494,
+          "max": 8.2546,
+          "straggler_skew": 1.715
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 1000,
+          "first": 0.4381,
+          "min": 0.4381,
+          "p50": 1.8287,
+          "avg": 1.8303,
+          "p90": 2.7884,
+          "p95": 3.0202,
+          "p99": 3.4366,
+          "max": 3.666,
+          "straggler_skew": 2.005
+        },
+        "exec_sem_wait_s": {
+          "n": 1000,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 1000,
+          "first": 3.584,
+          "min": 3.584,
+          "p50": 6.6318,
+          "avg": 6.6963,
+          "p90": 8.4845,
+          "p95": 8.6911,
+          "p99": 9.1009,
+          "max": 9.7177,
+          "straggler_skew": 1.465
+        },
+        "ttfi_inline_s": {
+          "n": 1000,
+          "first": 3.584,
+          "min": 3.584,
+          "p50": 6.6318,
+          "avg": 6.6963,
+          "p90": 8.4845,
+          "p95": 8.6911,
+          "p99": 9.1009,
+          "max": 9.7177,
+          "straggler_skew": 1.465
+        },
+        "proc_before": {
+          "open_fds": 568,
+          "open_sockets": 563,
+          "vm_rss_mb": 399.2,
+          "vm_hwm_mb": 399.2,
+          "threads": 2485,
+          "tcp_states": {
+            "CLOSE_WAIT": 427,
+            "ESTABLISHED": 134
+          }
+        },
+        "proc_held": {
+          "open_fds": 1127,
+          "open_sockets": 1122,
+          "vm_rss_mb": 476.59,
+          "vm_hwm_mb": 476.59,
+          "threads": 3017,
+          "tcp_states": {
+            "CLOSE_WAIT": 981,
+            "ESTABLISHED": 139
+          }
+        },
+        "proc_after": {
+          "open_fds": 714,
+          "open_sockets": 709,
+          "vm_rss_mb": 476.89,
+          "vm_hwm_mb": 476.89,
+          "threads": 3017,
+          "tcp_states": {
+            "CLOSE_WAIT": 568,
+            "ESTABLISHED": 139
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 1000,
+        "repeat": 1,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 35.47,
+          "timed_out": false
+        },
+        "burst_wall_s": 8.672,
+        "burst_and_exec_wall_s": 12.23,
+        "claims_per_s": 115.32,
+        "ttfi_goodput_per_s": 81.76,
+        "release_wall_s": 0.926,
+        "release_sandboxes_per_s": 1080.04,
+        "ok": 1000,
+        "err": 0,
+        "probe_err": 0,
+        "failure_rate_pct": 0.0,
+        "latency_s": {
+          "n": 1000,
+          "first": 0.2358,
+          "min": 0.2358,
+          "p50": 4.871,
+          "avg": 4.9477,
+          "p90": 8.0864,
+          "p95": 8.3487,
+          "p99": 8.6392,
+          "max": 8.6466,
+          "straggler_skew": 1.775
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 1000,
+          "first": 2.4868,
+          "min": 2.4868,
+          "p50": 5.3726,
+          "avg": 5.3072,
+          "p90": 7.4371,
+          "p95": 8.1981,
+          "p99": 8.5551,
+          "max": 8.7806,
+          "straggler_skew": 1.634
+        },
+        "exec_sem_wait_s": {
+          "n": 1000,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 1000,
+          "first": 8.6651,
+          "min": 8.6651,
+          "p50": 10.4635,
+          "avg": 10.255,
+          "p90": 11.2339,
+          "p95": 11.4964,
+          "p99": 11.9359,
+          "max": 12.2031,
+          "straggler_skew": 1.166
+        },
+        "ttfi_inline_s": {
+          "n": 1000,
+          "first": 8.6651,
+          "min": 8.6651,
+          "p50": 10.4635,
+          "avg": 10.255,
+          "p90": 11.2339,
+          "p95": 11.4964,
+          "p99": 11.9359,
+          "max": 12.2031,
+          "straggler_skew": 1.166
+        },
+        "proc_before": {
+          "open_fds": 148,
+          "open_sockets": 143,
+          "vm_rss_mb": 488.53,
+          "vm_hwm_mb": 488.53,
+          "threads": 3017,
+          "tcp_states": {
+            "CLOSE_WAIT": 2,
+            "ESTABLISHED": 139
+          }
+        },
+        "proc_held": {
+          "open_fds": 1267,
+          "open_sockets": 1262,
+          "vm_rss_mb": 523.7,
+          "vm_hwm_mb": 523.7,
+          "threads": 3017,
+          "tcp_states": {
+            "ESTABLISHED": 265,
+            "CLOSE_WAIT": 995
+          }
+        },
+        "proc_after": {
+          "open_fds": 635,
+          "open_sockets": 630,
+          "vm_rss_mb": 524.2,
+          "vm_hwm_mb": 524.2,
+          "threads": 3017,
+          "tcp_states": {
+            "ESTABLISHED": 265,
+            "CLOSE_WAIT": 363
+          }
+        },
+        "errors_sample": []
+      },
+      {
+        "concurrency": 1000,
+        "repeat": 2,
+        "claim_mode": "per_claim",
+        "batch_max_in_flight": null,
+        "verify_exec": true,
+        "warm_wait": {
+          "ready": 1000,
+          "desired": 1000,
+          "min_ready_target": 1000,
+          "wait_s": 30.92,
+          "timed_out": false
+        },
+        "burst_wall_s": 9.732,
+        "burst_and_exec_wall_s": 13.887,
+        "claims_per_s": 102.75,
+        "ttfi_goodput_per_s": 71.72,
+        "release_wall_s": 0.946,
+        "release_sandboxes_per_s": 1056.56,
+        "ok": 1000,
+        "err": 0,
+        "probe_err": 4,
+        "failure_rate_pct": 0.4,
+        "latency_s": {
+          "n": 1000,
+          "first": 0.221,
+          "min": 0.221,
+          "p50": 5.2327,
+          "avg": 5.4461,
+          "p90": 9.1353,
+          "p95": 9.2328,
+          "p99": 9.5812,
+          "max": 9.6977,
+          "straggler_skew": 1.853
+        },
+        "latency_err_s": {
+          "n": 0,
+          "first": null,
+          "min": null,
+          "p50": null,
+          "avg": null,
+          "p90": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "straggler_skew": null
+        },
+        "first_cmd_exec_s": {
+          "n": 996,
+          "first": 2.5738,
+          "min": 2.5738,
+          "p50": 6.089,
+          "avg": 5.9794,
+          "p90": 9.009,
+          "p95": 9.3416,
+          "p99": 9.7326,
+          "max": 11.0498,
+          "straggler_skew": 1.815
+        },
+        "exec_sem_wait_s": {
+          "n": 1000,
+          "first": 0.0,
+          "min": 0.0,
+          "p50": 0.0,
+          "avg": 0.0,
+          "p90": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.015,
+          "straggler_skew": null
+        },
+        "ttfi_s": {
+          "n": 996,
+          "first": 9.5246,
+          "min": 9.5246,
+          "p50": 11.5085,
+          "avg": 11.4256,
+          "p90": 12.6647,
+          "p95": 12.9345,
+          "p99": 13.307,
+          "max": 13.8218,
+          "straggler_skew": 1.201
+        },
+        "ttfi_inline_s": {
+          "n": 996,
+          "first": 9.5245,
+          "min": 9.5245,
+          "p50": 11.5085,
+          "avg": 11.4256,
+          "p90": 12.6647,
+          "p95": 12.9345,
+          "p99": 13.307,
+          "max": 13.8218,
+          "straggler_skew": 1.201
+        },
+        "proc_before": {
+          "open_fds": 272,
+          "open_sockets": 267,
+          "vm_rss_mb": 530.72,
+          "vm_hwm_mb": 530.72,
+          "threads": 3017,
+          "tcp_states": {
+            "ESTABLISHED": 265
+          }
+        },
+        "proc_held": {
+          "open_fds": 1272,
+          "open_sockets": 1267,
+          "vm_rss_mb": 549.41,
+          "vm_hwm_mb": 549.41,
+          "threads": 3017,
+          "tcp_states": {
+            "ESTABLISHED": 265,
+            "CLOSE_WAIT": 1000
+          }
+        },
+        "proc_after": {
+          "open_fds": 525,
+          "open_sockets": 520,
+          "vm_rss_mb": 549.81,
+          "vm_hwm_mb": 549.81,
+          "threads": 3017,
+          "tcp_states": {
+            "ESTABLISHED": 265,
+            "CLOSE_WAIT": 253
+          }
+        },
+        "errors_sample": [
+          "RuntimeError: probe non-zero exit: ''",
+          "RuntimeError: probe non-zero exit: ''",
+          "RuntimeError: probe non-zero exit: ''",
+          "RuntimeError: probe non-zero exit: ''"
+        ]
+      }
+    ],
+    "verify_teardown": {
+      "bench": {
+        "claims": 0,
+        "leases": 0,
+        "warmpools": 0,
+        "sandboxes": 0,
+        "templates": 0,
+        "pods": 2000,
+        "remaining": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "pods": 1071
+        }
+      }
+    }
+  }
+}
