@@ -461,6 +461,48 @@ The batch SDK talks to Kubernetes through four libraries: `urllib3` (the HTTP po
 
 </details>
 
+<a id="lib-22"></a>
+
+## LIB-22 Bound non-listening TCP sockets send `RST` on Linux (`NewConnectionError`) but drop `SYN` packets silently on BSD/macOS (`ConnectTimeoutError`)
+
+**Takeaway:** Never use a bound-but-non-`listen()`ing socket expecting `NewConnectionError` across platforms, or assert `NewConnectionError` without allowing `ConnectTimeoutError` (subclass of `MaxRetryError`, *not* `NewConnectionError` in `urllib3`!). On BSD/macOS (`xnu`), connecting to a bound, non-listening socket silently drops `SYN` packets until `connect` timeout expires (`F-02`, PR #2188 review).
+
+<details>
+<summary>The full story (22/N review & F-02, test_k8s_helper.py:820)</summary>
+
+- **Situation:** `test_k8s_helper.py: TestLeaseApiClient.test_lease_requests_do_not_retry_and_keep_injected_settings` (`line 820`) bound an ephemeral loopback socket (`sock.bind(("127.0.0.1", 0))`) *without* calling `sock.listen()`, then asserted `with self.assertRaises(urllib3.exceptions.NewConnectionError):` to verify `retries=False` failed in `1` attempt (`~0.2 s` instead of `4 * 0.2 s = 0.8 s`).
+- **What goes wrong:**
+  1. **OS kernel divergence:** Linux's TCP stack immediately replies `RST` to a `SYN` targeting a bound `TCP_CLOSE` port (`ECONNREFUSED` -> `urllib3.exceptions.NewConnectionError`). Darwin/`xnu` and BSD TCP stacks drop the `SYN` packet without sending `RST`, so `connect()` blocks until `_request_timeout` (`0.2 s`) and raises `urllib3.exceptions.ConnectTimeoutError`.
+  2. **`urllib3` exception hierarchy:** In `urllib3`, `ConnectTimeoutError` inherits from `(SocketTimeoutError, MaxRetryError)` (`TimeoutError -> HTTPError`), whereas `NewConnectionError` inherits from `(PoolError, HTTPError)`. `assertRaises(NewConnectionError)` fails hard on macOS!
+- **What we do:** Assert `(urllib3.exceptions.NewConnectionError, urllib3.exceptions.ConnectTimeoutError)` in transport no-retry tests. To reproduce BSD silent-`SYN`-drop deterministically on Linux without `iptables`/root, bind a socket with `sock.listen(1)` and exhaust its SYN/accept backlog from filler client sockets without calling `accept()`, or monkeypatch `urllib3.util.connection.create_connection` to raise `socket.timeout("timed out")` after the configured timeout (`test_k8s_helper.py` & `test_batch_fault_injection.py`).
+- **Example:**
+  ```text
+  Linux kernel (bound, no listen): SYN -> immediate RST -> ECONNREFUSED -> NewConnectionError
+  macOS/BSD xnu (bound, no listen): SYN -> silent drop  -> socket.timeout -> ConnectTimeoutError
+  ```
+- **Related:** [LIB-3](#lib-3), [LIB-21](#lib-21), [TEST-20](../testing.md#test-20), [CHAOS-1](../chaos-verification-suite.md#chaos-1).
+
+</details>
+
+<a id="lib-23"></a>
+
+## LIB-23 `kubernetes_asyncio` `_preload_content=False` skips HTTP status checks on `Watch.stream`, drops `429 Retry-After` headers, and clears `w.resp = None` in `Watch.close()`
+
+**Takeaway:** Unlike sync `urllib3`/`kubernetes.watch.Watch`, `kubernetes_asyncio`'s REST client returns the raw `aiohttp.ClientResponse` without raising `ApiException` when `_preload_content=False`. Inspect `resp.status` and `resp.headers` *before* streaming lines, never read `w.resp` *after* `Watch.stream` exits (`Watch.close()` sets `self.resp = None` in `finally:`), and preserve `headers=exc.headers` whenever re-wrapping `ApiException` (`F-09`, `F-17`, `F-26`).
+
+<details>
+<summary>The full story (F-09, F-17, F-26, async_k8s_helper.py & async_sandbox_batch.py)</summary>
+
+- **Situation:** `AsyncK8sHelper.watch_sandbox_claims` (`async_k8s_helper.py:345`) streams cluster events through `kubernetes_asyncio.watch.Watch().stream(...)`, which passes `_preload_content=False` to `aiohttp`.
+- **What goes wrong:** Three `kubernetes_asyncio` quirks compounded in the async watch and retry paths:
+  1. **Silent HTTP `401`/`403`/`429`/`500` swallow (`F-09`):** Because `RESTClientObject.request` skips `if not 200 <= r.status <= 299: raise ApiException(...)` whenever `_preload_content=False`, `Watch.stream` reads the JSON `Status` body via `resp.content.readline()`, sees no `"type"`/`"object"` watch keys, skips it or exits cleanly with `0` events, and triggers `AsyncSandboxBatch._watch_loop` to spin at `1.0 s` intervals forever instead of failing fatally on `401`/`403` or honoring `429` backoff!
+  2. **`Watch.close()` clears `self.resp = None`:** Checking `if w.resp.status >= 400:` *after* the `async for event in w.stream(...)` loop exits always sees `w.resp is None`, because `Watch.stream`'s `finally: await self.close()` releases the response and resets `self.resp = None`. You must hook response status before line iteration (for example, wrapping `Watch` or checking `w.resp` inside a subclass/helper before reading lines, and ensuring test doubles implement `await resp.read()` alongside `content.readline()`).
+  3. **Dropped `Retry-After` headers on re-wrapped `ApiException` (`F-17`, `F-26`):** `AsyncK8sHelper` helper wrappers that catch and re-wrap `ApiException(status=e.status, reason=...)` without forwarding `headers=e.headers` strip `Retry-After`, causing `_retry_after_delay(exc)` (`async_sandbox_batch.py:1098`) to fall back to short jitter instead of honoring apiserver `429` throttle windows (`RETRY-4`).
+- **What we do:** Check HTTP status on the `aiohttp.ClientResponse` before consuming watch lines (raising `ApiException(http_resp=resp)` on `status >= 400`, which populates `status`, `reason`, `body`, and `headers`), and preserve `http_resp` / `headers=e.headers` across every `ApiException` wrapper.
+- **Related:** [LIB-1](#lib-1), [LIB-4](#lib-4), [RETRY-4](retry.md#retry-4), [CHAOS-1](../chaos-verification-suite.md#chaos-1).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

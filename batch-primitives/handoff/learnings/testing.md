@@ -555,6 +555,40 @@ This section covers how we tested code that runs on several threads or asyncio t
 
 </details>
 
+<a id="test-27"></a>
+
+## TEST-27 Neutralize `atexit.register` in mock-backed client unit tests, and never share one mutable K8s model across `return_value` calls
+
+**Takeaway:** Two unit-test mock hazards stay completely invisible until post-fix code runs: un-patched `atexit` hooks on `SandboxClient` / `AsyncSandboxClient` run at interpreter shutdown and instantiate real `K8sHelper()` credentials (`gke-gcloud-auth-plugin` hang!), and setting `mock.return_value = model` shares one mutable Kubernetes Python object across calls so in-place field mutations (`lease.spec.holder_identity = ...`) poison call 2.
+
+<details>
+<summary>The full story (Chaos & Verification Sweep, Passes 3-4: F-08 & F-29)</summary>
+
+- **Situation:** `SandboxClient.__init__` and `AsyncSandboxClient.__init__` register static `atexit` cleanup callbacks (`CLEAN-12`). Meanwhile, Lease operations (`get_batch`, `detach`, `release`) read a `V1Lease`, mutate `lease.spec.holder_identity` or `renew_time` in place, and pass that object to `replace_batch_lease`.
+- **What goes wrong:**
+  1. **`atexit` credential hang (`F-08`):** On unfixed code, `AsyncSandboxClient.__aexit__` discarded a failed batch from `_active_batches`, so `atexit` saw an empty set and exited immediately. Once `__aexit__` was fixed to *retain* failed batches in `_active_batches` for retry, `SandboxClient._atexit_cleanup` fired at process exit, saw a live entry, constructed a real sync `K8sHelper()` to clean it up, and hung waiting on local kubeconfig exec auth (`gke-gcloud-auth-plugin`).
+  2. **In-place `V1Lease` mutation across calls (`F-29`):** `test_lease_replace_404_toctou_in_release_get_batch_and_detach` configured `helper.read_batch_lease.return_value = unheld` and called `get_batch("b1")` twice. Before the fix, call 1 crashed on `404` and call 2 never ran. After the fix, call 1 mutated `unheld.spec.holder_identity = holder_1` in place before `PUT` returned `404`; call 2 then read the *same* mutated `unheld` instance and raised `BatchInUseError` instead of `BatchLeaseExpiredError`.
+- **What we do:** Patch `atexit.register` inside unit-test client factories (unless specifically testing the `atexit` hook itself with a mocked `K8sHelper`), and use `side_effect = lambda ...: _make_lease(...)` (returning a fresh `V1Lease` per call) whenever production code mutates returned SDK models in place.
+- **Related:** [CLEAN-12](field-guide/clean.md#clean-12), [TEST-17](#test-17), [CHAOS-1](chaos-verification-suite.md#chaos-1).
+
+</details>
+
+<a id="test-28"></a>
+
+## TEST-28 Verify Hypothesis stateful fuzzers with a cold `-o cache_dir=/tmp/...` database so `.hypothesis/examples` cannot mask low-probability traces
+
+**Takeaway:** Hypothesis caches failing counterexamples in `.hypothesis/` (`pytest`'s cache dir) and replays them first on every rerun. Always verify a new Hypothesis fuzzer with `pytest -o cache_dir="$(mktemp -d)"` to prove it discovers multi-step races from a cold start within `max_examples`.
+
+<details>
+<summary>The full story (Chaos & Verification Sweep, Pass 1: test_batch_state_fuzz.py)</summary>
+
+- **Situation:** Stage 7 (`test_batch_state_fuzz.py`) uses Hypothesis's `RuleBasedStateMachine` (`15` rules driving `BatchState` against `BatchInvariantOracle`) to hunt accounting and monotonicity violations (`F-12` and `F-03`).
+- **What goes wrong:** Once Hypothesis stumbles onto a 3-step failure (`create_claim -> release_not_ready -> late watch ADDED`, `F-03`) once during development, `.hypothesis/examples` replays that exact sequence in `<50 ms` on every subsequent run, making a `0.4%`-per-run rule combination look `100%` deterministic. Running in CI or a fresh clone with an empty cache dir then passes spuriously when `max_examples=200` does not sample that exact 3-rule permutation.
+- **What we do:** Test every Hypothesis suite with `pytest -o cache_dir="$(mktemp -d)"` across multiple seeds. Keep the broad `RuleBasedStateMachine` for general invariant exploration (`F-12` triggers reliably on cold cache) and add focused `@given(...)` property tests for narrow lifecycle sequences (`post-stop late watch delivery`, `F-03`) so cold-start detection is `100%` deterministic.
+- **Related:** [TEST-3](#test-3), [CHAOS-3](chaos-verification-suite.md#chaos-3).
+
+</details>
+
 ---
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)

@@ -342,6 +342,53 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 </details>
 
+<a id="agent-6"></a>
+
+### AGENT-6 Converge verification sweeps by pairing three orthogonal adversarial roles until unanimous `ZERO_FINDINGS`
+
+**Takeaway:** One reviewer persona misses whole defect axes. Loop three specialized, independent subagents in parallel until all three return `ZERO_FINDINGS` on the same revision: an un-anchored code hunter (reads raw source before reading your report), a `/tmp` post-fix simulator (applies your proposed fixes in `/tmp` to break your tests and static rules), and an AST/line-number fact-checker.
+
+<details>
+<summary>The full story (Chaos & Verification Sweep, Passes 1-5)</summary>
+
+- **What happened:** Our initial verification sweep found `12` bugs (`F-01`..`F-12`). Running `5` iterative adversarial rounds expanded coverage to `29` verified production bugs (`48` failing test reproductions) while catching `18` defects in our own tests, TLA+ flags, static AST checks, and surgical fix recipes before a single line of production code changed:
+  - The **un-anchored code hunter** read the raw SDK and RL modules cold before reading `VERIFICATION_SWEEP_RESULTS.md`, uncovering `F-24` (in-flight `acquire()` escaping `release()`), `F-25` (popped pacing-slot starvation), `F-28` (`recycle.py` `held[img]` `-1` underflow), and `F-29` (Lease `PUT` `404` TOCTOU).
+  - The **`/tmp` post-fix simulator** patched a temporary copy of the codebase with our own report's proposed fixes, catching `6` tests/AST rules that failed *after* fixing the bug (`CHAOS-1`) plus two proposed lock-order self-deadlocks (`_exit_detaches` and `_stop_batches`).
+  - The **AST/prose fact-checker** verified every commit SHA, line range, lock-order claim, and symbol name against the source tree, catching Pass 4's shared `V1Lease` test mutation and `4` memory-recalled identifier typos before Pass 5 achieved unanimous `ZERO_FINDINGS` (`3/3`).
+- **Related:** [AGENT-1](#agent-1), [AGENT-2](#agent-2), [CHAOS-1](chaos-verification-suite.md#chaos-1).
+
+</details>
+
+<a id="agent-7"></a>
+
+### AGENT-7 Verify every backticked symbol, default argument, and lock-order claim against the AST instead of recalling from context
+
+**Takeaway:** Long audit sessions cause agents to substitute plausible-sounding symbol names (`reap_batches` instead of `batch_reaper.reap`, `BATCH_CLOCK_SKEW_MARGIN_SECONDS` instead of `CLOCK_SKEW_MARGIN`) or miss indirect lock acquisitions when writing prose fix recipes. Grep or AST-check every identifier and caller lock chain right before writing it down.
+
+<details>
+<summary>The full story (Chaos & Verification Sweep, Passes 1-4)</summary>
+
+- **What goes wrong:** Even when the test code itself runs and passes, prose fix recommendations are not executed by Python unless tested in `/tmp`. Across Passes 1-4, memory-based recall produced `4` drifted symbol/signature citations (`reap_batches` vs `reap`, `BATCH_CLOCK_SKEW_MARGIN_SECONDS` vs `CLOCK_SKEW_MARGIN`, `check_pool_size` default `explicit=False` vs `True`, and `w.resp` after `Watch.close()` clears `self.resp = None`) and `2` lock self-deadlocks where the caller already held `batch._lock` or `batch.detach()` re-entered `batch._lifecycle_lock`.
+- **What we do:** Treat prose fix recipes as code: verify exact symbol spellings against `ast.parse` / `git show`, trace every caller's held locks before proposing a lock acquisition, and test non-trivial recipes in an isolated `/tmp` tree ([CHAOS-1](chaos-verification-suite.md#chaos-1)).
+- **Related:** [PROC-10](#proc-10), [CHAOS-1](chaos-verification-suite.md#chaos-1).
+
+</details>
+
+<a id="agent-8"></a>
+
+### AGENT-8 Record verified non-bugs ("intended contracts") explicitly so fresh auditors do not invert existing tests
+
+**Takeaway:** Fresh adversarial subagents have no memory of why subtle design choices exist and will repeatedly flag intentional contracts as "bugs" (or propose "fixes" that break existing unit tests) unless your findings doc includes a cited **Verified Intended Contracts** table.
+
+<details>
+<summary>The full story (Chaos & Verification Sweep, Passes 2-3)</summary>
+
+- **What happened:** In Pass 1, an auditor flagged `BatchClaims.acquire` raising `BatchError` instead of `RuntimeError` when un-opened (`F-21a`), missing that `test_batch_claims.py:282` and `:357` explicitly pin `BatchError` (`class BatchError(RuntimeError)`). Similarly, fixing `F-08` (`AsyncSandboxClient.__aexit__` retaining failed batches) broke `cleanup=False` (`test_async_sandbox_batch.py:1544`) until gated on `batch._release_started() and not batch._lease_released`, and fixing `F-11a` (`BatchClaims._teardown` sweeping all batches) broke `test_batch_claims.py:238` until `_teardown` re-raised `first_exc` after completing the sweep.
+- **What we do:** Maintain an explicit "Verified Intended Contracts (Audited & Confirmed Sound)" section citing exact source lines and owning tests (such as `cleanup=False` detach semantics, `check_pool_size(explicit=False)` skipping `403` pool reads under least-privilege RBAC, and `BatchClaims.release_all()` keeping batches open for multi-step reuse). Subsequent audit passes stopped re-reporting settled contracts and checked new fix recipes against them.
+- **Related:** [AGENT-1](#agent-1), [TEST-2](testing.md#test-2).
+
+</details>
+
 ---
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)
