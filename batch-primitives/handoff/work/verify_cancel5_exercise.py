@@ -2,17 +2,18 @@
 drop_acquired. Checks three variants: today (no task awaits while holding the lock), the
 regression (one does), and the hardening (apply the state transition first). Run it with
 `python3 verify_cancel5_exercise.py`; the regression fails in 3 steps."""
+
 from collections import deque
 from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
 class S:
-    lock: str | None = None      # who holds _changed's lock
-    acquiring: bool = True       # claim name still in _acquiring / _acquire_waiters
-    a: str = "WAITING"           # acquire task: WAITING -> HANDLER_WANT_LOCK -> DONE | ESCAPED
-    cancels: int = 0             # cancels delivered to A so far (environment bound: 2)
-    b: str = "IDLE"              # some other task that touches _changed
+    lock: str | None = None  # who holds _changed's lock
+    acquiring: bool = True  # claim name still in _acquiring / _acquire_waiters
+    a: str = "WAITING"  # acquire task: WAITING -> HANDLER_WANT_LOCK -> DONE | ESCAPED
+    cancels: int = 0  # cancels delivered to A so far (environment bound: 2)
+    b: str = "IDLE"  # some other task that touches _changed
 
 
 def transitions(s, await_under_lock, transition_first):
@@ -21,12 +22,21 @@ def transitions(s, await_under_lock, transition_first):
         if s.a == "WAITING":
             if transition_first:
                 # Hardened: core transition before any await, then a best-effort wakeup.
-                yield "A:cancel1_transition_first", replace(s, cancels=s.cancels + 1, acquiring=False, a="DONE")
+                yield (
+                    "A:cancel1_transition_first",
+                    replace(s, cancels=s.cancels + 1, acquiring=False, a="DONE"),
+                )
             elif s.lock is None:
                 # Lock free: acquire takes the no-yield fast path, so the whole handler is one step.
-                yield "A:cancel1_handler_runs_atomically", replace(s, cancels=s.cancels + 1, acquiring=False, a="DONE")
+                yield (
+                    "A:cancel1_handler_runs_atomically",
+                    replace(s, cancels=s.cancels + 1, acquiring=False, a="DONE"),
+                )
             else:
-                yield "A:cancel1_handler_blocks_on_lock", replace(s, cancels=s.cancels + 1, a="HANDLER_WANT_LOCK")
+                yield (
+                    "A:cancel1_handler_blocks_on_lock",
+                    replace(s, cancels=s.cancels + 1, a="HANDLER_WANT_LOCK"),
+                )
         elif s.lock is not None:
             # Second cancel can land only if the acquire really suspends (someone holds the lock).
             # A free asyncio.Lock is taken on the no-yield fast path, so no cancel can land there.
@@ -66,6 +76,16 @@ def check(await_under_lock, transition_first=False):
 
 
 if __name__ == "__main__":
-    print("today (no await under lock):", check(False))
-    print("regression (await under lock):", check(True))
-    print("hardened (transition first) + await under lock:", check(True, transition_first=True))
+    today_states, today_trace = check(False)
+    reg_states, reg_trace = check(True)
+    hard_states, hard_trace = check(True, transition_first=True)
+    print("today (no await under lock):", (today_states, today_trace))
+    print("regression (await under lock):", (reg_states, reg_trace))
+    print("hardened (transition first) + await under lock:", (hard_states, hard_trace))
+    assert today_trace is None, (
+        f"Expected 0 leaks when no task awaits under lock, got {today_trace}"
+    )
+    assert reg_trace is not None, "Expected negative-control regression (await under lock) to leak"
+    assert hard_trace is None, (
+        f"Expected hardened transition-first to have 0 leaks, got {hard_trace}"
+    )
