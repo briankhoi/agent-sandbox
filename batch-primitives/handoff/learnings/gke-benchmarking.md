@@ -247,45 +247,45 @@
 
 ## GKE-13 Use `501–1,000` node bucket (`go/kcp-resize`) and `pd-standard` OS disks to preserve regional `SSD_TOTAL_GB` quota for Secondary Boot Disks
 
-**Takeaway:** GKE regional master VM sizing (`go/kcp-resize`) scales in discrete node buckets. Creating an initial temporary Spot warmup pool above `500` total nodes (`168–170` nodes/zone × `3` zones = `504–510` nodes) sizes regional KCP to `gomaxprocs = 16` (`1,449` nominal APF seats) immediately on birth. Using `--disk-type=pd-standard` for temporary warmup pools and worker OS boot disks consumes `0 GB` of `SSD_TOTAL_GB`, reserving the regional `40,960 GB` SSD quota exclusively for `50 × 600 GB = 30,000 GB` Secondary Boot Disks.
+**Takeaway:** GKE regional master VM sizing (`go/kcp-resize`) scales in discrete node buckets. Creating an initial temporary Spot warmup pool above `500` total nodes (`170` nodes/zone × `3` zones = `510` nodes) sizes regional KCP to `gomaxprocs = 16` (`1,449` nominal APF seats) immediately on birth. Using `--disk-type=pd-standard` for temporary warmup pools and worker OS boot disks consumes `0 GB` of `SSD_TOTAL_GB`, reserving the regional `40,960 GB` SSD quota exclusively for `50 × 600 GB = 30,000 GB` Secondary Boot Disks.
 
 <details>
 <summary>The full story (Campaign 3 5-Cluster Fleet, provision_multicluster_c3.sh & provision_all5_c3_rerun.sh)</summary>
 
 - **Situation:** Multi-cluster testing across `5` regional GKE clusters (`asrl-c3-1..5`) required `50 × n2-standard-32` worker nodes backed by `600 GB` `swebench-500-preload-600g` Secondary Boot Disks (`30,000 GB` total `pd-ssd`).
 - **What goes wrong:** If temporary master-warmup Spot pools or worker OS boot disks use `pd-balanced`, GCP charges them against regional `SSD_TOTAL_GB` (`40,960 GB` limit in `us-central1`), causing `gvisor-pool` creation to fail with `Quota SSD_TOTAL_GB exceeded`.
-- **What we do:** In `provision_multicluster_c3.sh` (`--num-nodes=168` × `3` zones = `504` nodes) and `provision_all5_c3_rerun.sh` (`--num-nodes=170` × `3` zones = `510` nodes), the temporary Spot warmup pool used `--disk-type=pd-standard --disk-size=30` (and worker primary OS boot disks used `50 GB pd-standard`), sizing `kube-apiserver` to `go_sched_gomaxprocs_threads = 16` on all `5` clusters while consuming `0 GB` of `SSD_TOTAL_GB` for OS boot disks.
+- **What we do:** In `provision_multicluster_c3.sh` and `provision_all5_c3_rerun.sh` (`--num-nodes=170` × `3` zones = `510` nodes), the temporary Spot warmup pool used `--disk-type=pd-standard --disk-size=30` (and `gvisor-pool`, `ctrl-pool`, and `driver-pool` primary OS boot disks used `100 GB pd-standard`), sizing `kube-apiserver` to `go_sched_gomaxprocs_threads = 16` on all `5` clusters while consuming `0 GB` of `SSD_TOTAL_GB` for OS boot disks.
 - **Related:** [GKE-1](#gke-1).
 
 </details>
 
 <a id="gke-14"></a>
 
-## GKE-14 GCE Secondary Boot Disk images hydrate blocks lazily from GCS on first read — and once hydrated on `wp=1` + 3-lane APF, streaming per-claim deletes can overlap refill faster than wave-boundary `DELETE_COLLECTION`
+## GKE-14 GCE Secondary Boot Disk images hydrate blocks lazily from GCS on first read — recreate SBD nodepools per arm for cold-SBD tests, and account for `wp=1` streaming deletes vs wave-boundary `DELETE_COLLECTION`
 
-**Takeaway:** Attaching a custom GCE disk image as a `CONTAINER_IMAGE_CACHE` Secondary Boot Disk pays lazy GCS block-hydration page faults on the first run after node creation. Once hydrated, local SBD reads shrink `wait_pool_ready` by `>16×` — and on size-1 warm pools (`wp=1`) when 3-lane APF + `gomaxprocs=16` eliminate HTTP `429`s, `per_claim` can finish `naive` `1.17×` faster on wall clock (`124.73s` vs `146.22s`) because streaming individual `DELETE`s start controller refill before wave stragglers finish, while `batch64` cuts open sockets `4.68×` (`524 → 112`).
+**Takeaway:** Attaching a custom GCE disk image as a `CONTAINER_IMAGE_CACHE` Secondary Boot Disk pays lazy GCS block-hydration page faults (`wait_pool_ready avg = 63.98s–67.44s`) on the first run after node creation before dropping `>20×` (`3.68s–4.11s`) once hydrated. Never compare a first-boot run against a second run on the same SBD pool; recreate the SBD nodepool from scratch before each arm for cold-SBD comparisons. On `wp=1` `naive` waves when 3-lane APF + `gomaxprocs=16` eliminate HTTP `429`s, `per_claim` finishes `1.09×` faster on symmetric cold SBD (`492.52s` vs `539.18s`) and `1.17×` faster on symmetric hydrated SBD (`124.73s` vs `146.22s`) because streaming individual `DELETE`s start controller refill before wave stragglers finish, while `batch64` cuts open sockets `4.51×–4.68×` (`559 → 124` and `524 → 112`).
 
 <details>
-<summary>The full story (Campaign 3 C3-1a Anchor, RESULTS.md #39–#42)</summary>
+<summary>The full story (Campaign 3 C3-1a Symmetric Cold & Hydrated SBD, RESULTS.md #39–#42)</summary>
 
-- **Situation:** `C3-1a` ran `500 × 6 = 3,000` SWE-bench tasks (`naive`, `probe='true'`) on a freshly created `10 × n2-standard-32` node pool with `600 GB` `swebench-500-preload-600g` SBD.
-- **What goes wrong:** Run 1 (`#39` `per_claim`, `tgs=-1`) pulled SBD blocks lazily from GCS (`wait_pool_ready avg = 68.05s, max = 171.80s`, `wall = 545.64s`), while Run 2 (`#40` `batch64`, `tgs=-1`) inherited `#39`'s partially hydrated blocks (`wait_pool_ready avg = 12.72s, max = 45.93s`, `wall = 308.59s`), making `#39` vs `#40` non-comparable.
-- **What we do:** Re-running both arms back-to-back after full SBD hydration with `termination_grace_seconds=0, enable_cow=True` (`#41` `per_claim` `124.73s`, `wait_pool_ready avg = 3.68s, max = 6.02s` vs `#42` `batch64` `146.22s`, `wait_pool_ready avg = 4.11s, max = 6.83s`) reproduced Campaign 2 `#32` (`139.10s`) within `5.1%` and exposed the exact `wp=1` streaming-delete vs wave-boundary `DELETE_COLLECTION` tradeoff.
+- **Situation:** `C3-1a` ran `500 × 6 = 3,000` SWE-bench tasks (`naive`, `probe='true'`) on `10 × n2-standard-32` nodes with `600 GB` `swebench-500-preload-600g` SBD.
+- **What goes wrong:** In an initial sequential diagnostic (`tgs=-1`), Run 1 (`per_claim`, `wall = 545.64s`, `wait_pool_ready avg = 68.05s`) pulled SBD blocks lazily from GCS while Run 2 (`batch64`, `wall = 308.59s`, `wait_pool_ready avg = 12.72s`) inherited partially hydrated blocks — the same sequential order that inflated Campaign 2 `#31` (`281.65s`) vs `#32` (`139.10s`).
+- **What we do:** First, `run_c3_1a_symmetric_cold_sbd.sh` deleted and recreated a brand-new `10 × n2-standard-32 + 600 GB SBD` `gvisor-pool` before **each** arm (`tgs=0, cow=True`, non-SWE-bench smoke gate): `#39` `per_claim` (`492.52s`, `wpr avg = 63.98s`, `559` sockets) vs `#40` `batch64` (`539.18s`, `wpr avg = 67.44s`, `124` sockets). Second, running both arms back-to-back after full SBD hydration (`#41` `per_claim` `124.73s` vs `#42` `batch64` `146.22s`) reproduced Campaign 2 `#32` (`139.10s`) within `5.1%` and confirmed the `wp=1` streaming-delete vs wave-boundary `DELETE_COLLECTION` tradeoff across both cache states.
 - **Related:** [GKE-4](#gke-4).
 
 </details>
 
 <a id="gke-15"></a>
 
-## GKE-15 Do not set `resources.requests["ephemeral-storage"]` when primary OS boot disks are `50 GB` and SBD hosts container images
+## GKE-15 Do not set `resources.requests["ephemeral-storage"]` when `100 GB` COS primary OS boot disks host kubelet overhead and SBD hosts container images
 
-**Takeaway:** Specifying `resources.requests["ephemeral-storage"]: 4Gi` on guest sandboxes when primary OS boot disks are `50 GB` (`~44 GiB` allocatable ephemeral storage) caps Kubelet scheduling at `10` pods/node (`100` pods across a `10`-node cluster). Keep `emptyDir.sizeLimit: 4Gi` on `/tmp` without setting `requests["ephemeral-storage"]`, and verify `--node-selector` matches the actual pool label (`cloud.google.com/gke-nodepool=gvisor-pool`).
+**Takeaway:** Specifying `resources.requests["ephemeral-storage"]: 4Gi` on guest sandboxes when primary COS OS boot disks are `100 GB pd-standard` (`~47 GiB` allocatable `ephemeral-storage` after GKE system/image-gc/eviction reservations) caps scheduling at `10` guest pods/node (`100` pods across a `10`-node cluster). Keep `emptyDir.sizeLimit: 4Gi` on `/tmp` without setting `requests["ephemeral-storage"]`, and verify `--node-selector` matches the actual pool label (`cloud.google.com/gke-nodepool=gvisor-pool`).
 
 <details>
 <summary>The full story (Campaign 3 C3-3d warm-pool scheduling failures #4 and #8)</summary>
 
-- **Situation:** `C3-3d` stood up `1,000` warm gVisor SWE-bench pods per cluster (`100` pods/node) across `5` clusters with `50 GB pd-standard` primary boot disks + `600 GB` SBD image caches.
-- **What goes wrong:** Requesting `ephemeral-storage: 4Gi` caused `kube-scheduler` to reject pods beyond `100/1000` per cluster (`Insufficient ephemeral-storage`); later passing `--node-selector bench-role=worker` (absent on `gvisor-pool`) left `0/1000` pods scheduled for `600s`.
+- **Situation:** `C3-3d` stood up `1,000` warm gVisor SWE-bench pods per cluster (`100` pods/node) across `5` clusters with `100 GB pd-standard` primary boot disks + `600 GB` SBD image caches.
+- **What goes wrong:** Requesting `ephemeral-storage: 4Gi` caused `kube-scheduler` to stall warm pools at exact `100/1000` ready replicas per cluster (`Insufficient ephemeral-storage`); later passing `--node-selector bench-role=worker` (absent on `gvisor-pool`) left `0/1000` pods scheduled for `600s`.
 - **What we do:** Omit `resources.requests["ephemeral-storage"]` (retaining `volumes.emptyDir.sizeLimit: 4Gi`) and pass `--node-selector cloud.google.com/gke-nodepool=gvisor-pool`. All `5,000` warm gVisor pods (`1,000/cluster` across `5` clusters) scheduled and reached `Ready` in `10.81s`.
 - **Related:** [GKE-5](#gke-5).
 
