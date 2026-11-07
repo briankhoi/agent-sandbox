@@ -743,6 +743,23 @@ for ns, lease in sorted(stale, key=lambda x: x[1].renew_interval):
 
 **Use it when:** you clean up resources abandoned by a dead heartbeat. Allow for clock skew, confirm the heartbeat didn't move, delete conditionally, and let owner references cascade. **Watch out:** skip Leases missing `renewTime` or a duration instead of guessing (waiting is always safe). Check the label and name before deleting, because RBAC can't limit the reaper to batch Leases. See [LEASE-8](field-guide/lease.md#lease-8), [LEASE-4](field-guide/lease.md#lease-4), [LEASE-10](field-guide/lease.md#lease-10), [CLEAN-23](field-guide/clean.md#clean-23), [K8S-2](field-guide/k8s.md#k8s-2), [K8S-3](field-guide/k8s.md#k8s-3), [K8S-20](field-guide/k8s.md#k8s-20). Further reading: Kubernetes docs on [Leases](https://kubernetes.io/docs/concepts/architecture/leases/) and [garbage collection](https://kubernetes.io/docs/concepts/architecture/garbage-collection/).
 
+<a id="pat-35"></a>
+
+### PAT-35 One shared structural + temporal invariant oracle across every test tier
+
+- **The idea:** factor all `O(N)` set-partition conservation laws (`BatchInvariantOracle`) and cross-step stream/monotonicity history checks (`ReferenceBatchModel`) into one standalone test helper module, and call `BatchInvariantOracle.assert_all(state, ref)` after every transition in unit tests, Hypothesis state machines, differential harnesses, and concurrency stress suites.
+- **Where:** `test/unit/batch_invariant_oracle.py: BatchInvariantOracle`, `ReferenceBatchModel` (`Chaos & Verification Suite`, `25cf3025`); reused in `test_batch_state_fuzz.py`, `test_batch_differential.py`, and `test_batch_concurrency_stress.py`.
+- **Why it works here:** production `BatchState` maintains incremental `O(1)` counters and sets (`_waiting`, `_resolved`, `_unable`, `_missing`, `_groups_short_of_quorum`) so per-event watch processing stays fast ([PAT-1](#pat-1), [PERF-1](field-guide/perf.md#perf-1)). Checking only public return values lets internal accounting rot silently until a specific follow-up transition trips over it (`F-12`). Recomputing partitions by `O(N)` scan and comparing stream outputs against a tiny stateful shadow model in tests costs microseconds at small `N` (`2..20` claims) and turns every test in every suite into a full state-corruption detector.
+
+```python
+ref = ReferenceBatchModel(state)
+for step in trace:
+    apply_step(state, step)
+    events, outcomes = BatchInvariantOracle.assert_all(state, ref)
+```
+
+**Use it when:** a Sans-I/O state machine maintains incremental counters, disjoint state sets, or one-way completion latches. **Watch out:** document intentional exceptions to monotonicity in the shadow model (such as `reopened_by_late_missing` when a missing claim on a re-attached batch arrives late) instead of disabling monotonicity checks wholesale. See [PAT-1](#pat-1), [TEST-29](testing.md#test-29), [TEST-32](testing.md#test-32), [COUNT-1](field-guide/count.md#count-1).
+
 ---
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)

@@ -559,6 +559,24 @@ This section covers what happens when work stops early. That includes Ctrl-C in 
 
 </details>
 
+<a id="cancel-25"></a>
+
+## CANCEL-25 Attach thread-pool cancellation cleanup to `concurrent.futures.Future` (never the wrapper `asyncio.Future`), and catch `BaseException` on every slot rollback
+
+**Takeaway:** Cancelling `asyncio.wrap_future(executor.submit(fn))` cancels only the `asyncio.Future` view while the OS worker thread keeps running `fn` to completion (`F-05`). Attach post-cancel resource reclamation via `cf_future.add_done_callback(...)` on the underlying `concurrent.futures.Future`, and guard every reservation counter or handle rollback in sync code with `except BaseException:` rather than `except Exception:` (`F-06`).
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-05 & F-06, async_fleet.py & fleet.py)</summary>
+
+- **Situation:** `AsyncSandboxFleet` (`examples/agent-sandbox-rl/agent_sandbox_rl/async_fleet.py`) delegates blocking sync operations (`self._sync.acquire(...)`) to a `ThreadPoolExecutor` via `_to_thread`, while `SandboxFleet` (`fleet.py`) reserves `_claims_reserved` slots and `_handles` entries across multi-step setup, release, resume, and restore calls.
+- **What goes wrong:**
+  1. **Orphaned worker-thread `SandboxHandle` on `asyncio` cancel (`F-05`, `async_fleet.py:179-182`):** When a caller cancelled `await asyncio.wait_for(async_fleet.acquire(...), timeout=0.05)`, the `asyncio.Future` raised `CancelledError` immediately while the pool thread finished `self._sync.acquire(...)` seconds later, permanently leaking a live `SandboxHandle`, `BatchClaim`, and `_claims_reserved` slot. Subtle trap: attaching `add_done_callback` to the *`asyncio.Future`* does not work because `asyncio.Future` transitions to `cancelled` immediately before the worker thread finishes!
+  2. **Five `except Exception:` rollback gaps on `SIGINT` (`F-06`, `fleet.py:1473,1567,1737,1852,1869`):** `acquire`, `_acquire_reserved`, `release`, `resume`, and `restore` caught `except Exception:` to roll back `_claims_reserved -= 1`, `batch_claim.release()`, or `_handles` re-insertion, so a `KeyboardInterrupt` (`BaseException`) arriving mid-RPC permanently leaked capacity slots or dropped live handles from `teardown()`.
+- **What we do:** Keep a reference to the raw `cf_fut = self._thread_pool().submit(...)`; if the awaiting coroutine exits via `BaseException` while `not cf_fut.cancel()`, set an `abandoned = True` flag and register `cf_fut.add_done_callback(...)` to invoke `handle.release()` as soon as the worker thread produces a `SandboxHandle`. Across `fleet.py`, widen every resource-rollback `except Exception:` to `except BaseException:` (enforced statically by `verify_batch_static.py` `Check 5`).
+- **Related:** [CANCEL-1](#cancel-1), [CANCEL-6](#cancel-6), [CLEAN-25](clean.md#clean-25), [CHAOS-9](../chaos-verification-suite.md#chaos-9).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

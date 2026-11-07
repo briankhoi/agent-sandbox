@@ -547,11 +547,49 @@ This section covers who owns each resource the batch SDK creates (cached connect
 
 - **Situation:** In `examples/agent-sandbox-rl`, `SandboxFleet.acquire_batch` and `AsyncSandboxFleet.acquire_batch` fan `N` acquires out in parallel while preserving task order (`c9600379`), on-demand `acquire()` lazily provisions `(cluster, image)` warm pools (`6d773276`), and `SandboxHandle.release()` tears down batch handles when `ClusterConfig(snapshots=True)` (`fb28c6de`).
 - **What goes wrong:** Three subtle cleanup bugs surfaced under concurrency and snapshots:
-  - If task #487 of a `500`-wide `acquire_batch` fails or the caller gets `KeyboardInterrupt` / `asyncio.CancelledError` (`BaseException`), cancelling pending tasks without draining already-running tasks lets in-flight acquires finish *after* `acquire_batch` unwinds — permanently leaking those sandboxes.
+  - If task #487 of a `500`-wide `acquire_batch` fails or the caller gets `KeyboardInterrupt` / `asyncio.CancelledError` (`BaseException`), cancelling pending tasks without draining already-running tasks lets in-flight acquires finish *after* `acquire_batch` unwinds, permanently leaking those sandboxes.
   - If two concurrent dynamic `acquire()` calls race to create `(cluster, image)` and one fails partway, blindly deleting the `SandboxWarmPool` and `SandboxTemplate` in its `except` block pulls the rug out from under the sibling `acquire()` that already adopted them.
   - With `snapshots=True` and `claim_mode="batch"`, `SandboxHandle.release()` delegated straight to `BatchClaim.release()` and skipped deleting `PodSnapshotManualTrigger` CRs recorded on the snapshot engine, while stopped-batch fallback `delete_claim` lacked a request timeout.
 - **What we do:** Both `SandboxFleet.acquire_batch` (`fleet.py`) and `AsyncSandboxFleet.acquire_batch` (`async_fleet.py`) catch `BaseException`, cancel queued tasks, drain all started tasks to completion, release every succeeded `SandboxHandle`, and re-raise the original exception (`4018f0dd`). On-demand pool creation tracks active creators/sharers under the fleet lock so a failed creator only deletes the pool/template if no sibling shares `(cluster, image)` (`4018f0dd`). And `handles.py: SandboxHandle.release` deletes `PodSnapshotManualTrigger` CRs best-effort after `_batch_claim.release()` succeeds, while `BatchClaim.release` bounds fallback `delete_claim` to `BATCH_REQUEST_TIMEOUT_SECONDS` (`fb28c6de`). Tests: `test_batch_claims.py`, `test_async_fleet.py`.
 - **Related:** [CLEAN-4](#clean-4), [CLEAN-15](#clean-15), [BP-29](../best-practices.md#bp-29), [LEASE-31](lease.md#lease-31).
+
+</details>
+
+<a id="clean-26"></a>
+
+## CLEAN-26 Keep failed batches registered until Lease release succeeds, record raced `BatchClaims` handles in `_opened`, and finish full `_teardown` sweeps before re-raising
+
+**Takeaway:** Retryable teardown (`delete_all()`, `atexit`, `release_all()`, `fleet.teardown()`) works only if failed resources stay registered until cleanup actually succeeds (`F-07`, `F-08`, `F-11`). Never clear a handle registry upfront before `release()` succeeds, never drop a raced handle from `_opened` if its immediate `batch.release()` can fail, and sweep *all* handles and warm pools in `_teardown` before re-raising `first_exc`.
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-07, F-08, F-11, F-14, F-21c)</summary>
+
+- **Situation:** Three nested registries own batch cleanup: `AsyncSandboxClient._active_batches` (`async_sandbox_client.py`), `BatchClaims._opened` (`batch_claims.py`, refining [CLEAN-24](#clean-24)), and `SandboxFleet._handles` / `_teardown` (`fleet.py`).
+- **What goes wrong:**
+  1. **`AsyncSandboxClient.__aexit__` drops failed batches (`F-08`, `async_sandbox_client.py:139-144,447-460`):** When `_delete_automatic_sandboxes()` failed to `release()` a batch on `503`, `__aexit__`'s `finally: await self.close()` called `_stop_batches()`, which unconditionally called `self._unregister_batch(batch)` even when `batch._release_started() and not batch._lease_released`, defeating `delete_all()` and `_atexit_cleanup` (unlike sync `SandboxClient.__exit__`, which kept them registered!).
+  2. **`BatchClaims._batch_for` race & `release_all()` upfront clear (`F-07`, `batch_claims.py:135-155,184-192`, `RLBatchLifecycle.tla`):** In [CLEAN-24](#clean-24)'s snippet, when `self._closed` won the race against `claim_batch()`, `_batch_for` left `_opened` untouched and called `batch.release()`; if that `batch.release()` failed transiently (`503`), the renewing `SandboxBatch` was in neither `_live` nor `_opened` and leaked forever! Likewise, `release_all()` cleared `self._opened = []` upfront before calling `batch.release()`, so a `KeyboardInterrupt` or error mid-loop lost the remaining handles.
+  3. **`SandboxFleet._teardown` early abort & unbounded fallback deletes (`F-11`, `F-14`, `F-21c`):** `_teardown()` set `_torndown = True` upfront and aborted on handle `0`'s exception without releasing handles `1..N-1` or deleting warm pools/templates (`F-11a`), post-teardown `acquire()` still created warm pools/templates before `_batch_for` rejected `_closed` (`F-11b`), `acquire_batch()` leaked earlier handles on synchronous worker rejection (`F-21c`), and `BatchClaim.release()`'s fallback `delete_claim` omitted `request_timeout` (`F-14`).
+- **What we do:** Skip `_unregister_batch(batch)` in `AsyncSandboxClient._stop_batches` when `batch._release_started() and not batch._lease_released`; append every `claim_batch` result to `_opened` and retain any batch whose `release()` raises inside `_opened`; check `_torndown` at the top of `SandboxFleet.acquire()`, collect `first_exc` across *all* handles, `release_all()`, and pool/template sweeps in `_teardown` before re-raising `first_exc` (preserving `C-04`), and pass `BATCH_REQUEST_TIMEOUT_SECONDS` to fallback `delete_claim`.
+- **Related:** [CLEAN-12](#clean-12), [CLEAN-24](#clean-24), [CLEAN-25](#clean-25), [CHAOS-9](../chaos-verification-suite.md#chaos-9).
+
+</details>
+
+<a id="clean-27"></a>
+
+## CLEAN-27 Guard paired `held[img]` counters with a `counted_hold` boolean so pre-increment failures cannot underflow to `-1` and scale warm pools up
+
+**Takeaway:** Whenever `finally` or error cleanup decrements a shared reference counter (`held[img] -= 1`), gate that decrement on an explicit local `counted_hold = True` set immediately beside `held[img] += 1` (`F-28`). Decrementing after a pre-increment failure underflows `0` to `-1`, which breaks `if held[img] == 0:` guards or passes negative counts into pool-scaling math!
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-28 & F-10b/c, recycle.py & handles.py)</summary>
+
+- **Situation:** `examples/agent-sandbox-rl/agent_sandbox_rl/recycle.py` recycles sandboxes across episodes and optionally scales warm pools (`scale_on_hold=True` or JIT `replicas_override=1`). When a recycled slot rotates to a new container image (`pos > 0`), it acquires a new sandbox and runs `reset.prime(handle)` *before* incrementing `held[img] += 1`.
+- **What goes wrong:**
+  1. **Async `held[img]` `-1` underflow scales warm pools UP (`F-28a`, `recycle.py:498-519,558-575`):** When `reset.prime(handle)` raised on a rotated image (`pos > 0`) before `held[img] += 1` ran, cleanup still executed `held[img] -= 1`, underflowing `held[img]` from `0` to `-1`. `_desired_pool_replicas` then computed `min(remaining, max(0, concurrency - (-1))) = min(1, 1) = 1` and called `scale_warm_pool(..., 1)`, scaling a cold pool *up* on failure!
+  2. **Sync JIT warm replica leak (`F-28b`, `recycle.py:336-355,389-394`):** On the sync path, a `reset.prime(handle)` failure after acquiring a JIT `replicas_override=1` pool released the handle without scaling the temporary warm pool back down to `0`.
+  3. **Batch `SandboxHandle.release()` snapshot & fallback-connection leaks (`F-10b/c`, `handles.py:553-574`):** In `claim_mode="batch"`, `SandboxHandle.release()` returned right after `_batch_claim.release()` without deleting `PodSnapshotManualTrigger` CRs (`F-10b`), and when `_batch_claim.release()` fell back to direct `resources.delete_claim` after a stopped batch, `self._sandbox.close_connection()` never ran (`F-10c`).
+- **What we do:** Track `counted_hold = False` per slot acquisition, set `counted_hold = True` atomically with `held[img] += 1`, decrement only `if counted_hold:` (`assert held[img] >= 0`), unwarm sync JIT pools on `prime` failure, and always run `close_connection()` plus best-effort snapshot-trigger cleanup in `SandboxHandle.release()`.
+- **Related:** [CLEAN-1](#clean-1), [CLEAN-25](#clean-25), [LEASE-32](lease.md#lease-32), [CHAOS-9](../chaos-verification-suite.md#chaos-9).
 
 </details>
 

@@ -16,9 +16,9 @@ You don't need to read it front to back. Use it like a textbook with an index.
 | See the performance wins side by side, with measured results | [Optimization showcase](learnings/optimizations.md) |
 | Scale on GKE (500–1,024 sandboxes) or build clean cloud benchmarks | [Benchmarking and GKE at 1,000-sandbox scale](learnings/gke-benchmarking.md) |
 | Look up a specific race, edge case, or optimization | [Field guide](#sec-field-guide) |
-| Improve how you test concurrent code (event gates, stateful Hypothesis fuzzing, lockstep differential & fault simulation) | [Testing techniques](learnings/testing.md) |
-| Pick the right verification strategy (9-method menu) or check every interleaving with BFS & AST call graphs | [Verification](learnings/verification.md) |
-| Model-check cross-process Lease fencing and decomposed subsystem TLA+ specs (`TLC`) | [TLA+ spec](learnings/tla.md) |
+| Improve how you test concurrent code (event gates, stateful Hypothesis fuzzing, shadow oracles, lockstep differential & fault simulation) | [Testing techniques](learnings/testing.md) |
+| Pick the right verification strategy (10-method menu) or check every interleaving with BFS & AST call graphs | [Verification](learnings/verification.md) |
+| Model-check cross-process Lease fencing, subsystem specs, and controller state machines (`TLC`) | [TLA+ spec](learnings/tla.md) |
 | Build automated chaos, differential, AST, and multi-agent verification pipelines | [Automated batch verification and chaos suite](learnings/chaos-verification-suite.md) |
 | Avoid our process and git mistakes | [Process, git, and working with agents](learnings/process.md) |
 
@@ -99,7 +99,7 @@ Nearly every edge case in this doc comes from one of these recurring design ques
 ### 1. Two observers on one object
 
 A background watch and an HTTP call both observe the same resource, and either can see the result first. Ask: what happens if the watch sees it before the response returns? What if the response is lost but the write landed? Validate every failure precondition before you mutate local state.
-See [RACE-1](learnings/field-guide/race.md#race-1) to [RACE-8](learnings/field-guide/race.md#race-8), [WATCH-7](learnings/field-guide/watch.md#watch-7), [LOCK-4](learnings/field-guide/lock.md#lock-4).
+See [RACE-1](learnings/field-guide/race.md#race-1) to [RACE-10](learnings/field-guide/race.md#race-10), [WATCH-7](learnings/field-guide/watch.md#watch-7), [LOCK-4](learnings/field-guide/lock.md#lock-4).
 
 ### 2. Ownership must be provable, and every failure falls toward safety
 
@@ -146,32 +146,32 @@ This is the deep part. Each section is its own page and groups entries around on
 
 | Section | Ids | Entries |
 | :-- | :-- | --: |
-| [Watching the cluster: list, watch, and the local cache](learnings/field-guide/watch.md) | `WATCH-` | 10 |
-| [Leases, liveness, handoff, and the reaper](learnings/field-guide/lease.md) | `LEASE-` | 33 |
-| [Two observers: when the watch and an RPC see the same object](learnings/field-guide/race.md) | `RACE-` | 8 |
+| [Watching the cluster: list, watch, and the local cache](learnings/field-guide/watch.md) | `WATCH-` | 11 |
+| [Leases, liveness, handoff, and the reaper](learnings/field-guide/lease.md) | `LEASE-` | 35 |
+| [Two observers: when the watch and an RPC see the same object](learnings/field-guide/race.md) | `RACE-` | 10 |
 | [Retries, backoff, pacing, and deadlines](learnings/field-guide/retry.md) | `RETRY-` | 19 |
-| [Concurrency inside one process: locks, waiters, and shared work](learnings/field-guide/lock.md) | `LOCK-` | 21 |
-| [Cancellation, interrupts, and sync/async parity](learnings/field-guide/cancel.md) | `CANCEL-` | 24 |
-| [Cleanup and resource ownership](learnings/field-guide/clean.md) | `CLEAN-` | 25 |
-| [Completion and accounting: when is the batch done?](learnings/field-guide/count.md) | `COUNT-` | 14 |
-| [Kubernetes API semantics that bit us (or could have)](learnings/field-guide/k8s.md) | `K8S-` | 21 |
+| [Concurrency inside one process: locks, waiters, and shared work](learnings/field-guide/lock.md) | `LOCK-` | 22 |
+| [Cancellation, interrupts, and sync/async parity](learnings/field-guide/cancel.md) | `CANCEL-` | 25 |
+| [Cleanup and resource ownership](learnings/field-guide/clean.md) | `CLEAN-` | 27 |
+| [Completion and accounting: when is the batch done?](learnings/field-guide/count.md) | `COUNT-` | 15 |
+| [Kubernetes API semantics that bit us (or could have)](learnings/field-guide/k8s.md) | `K8S-` | 22 |
 | [HTTP client and Python runtime quirks](learnings/field-guide/lib.md) | `LIB-` | 23 |
 | [Performance and memory at scale](learnings/field-guide/perf.md) | `PERF-` | 23 |
-| [API design: making the right thing easy and the wrong thing hard](learnings/field-guide/api.md) | `API-` | 30 |
+| [API design: making the right thing easy and the wrong thing hard](learnings/field-guide/api.md) | `API-` | 31 |
 
 ## The other pages
 
 | Page | What it gives you |
 | :-- | :-- |
 | [Kubernetes primer: the concepts this feature taught us](learnings/kubernetes-primer.md) | The Kubernetes concepts behind the feature, each with how we use it, a gotcha, and a snippet to try. |
-| [Patterns and code structure worth stealing](learnings/patterns.md) | Elegant code structures (`PAT-`) with small snippets and when to reach for them. |
-| [Best practices we followed, and where they come from](learnings/best-practices.md) | Industry practices (`BP-`) we followed, why they scale, and their sources. |
+| [Patterns and code structure worth stealing](learnings/patterns.md) | Elegant code structures (`PAT-1`..`PAT-35`) with small snippets and when to reach for them. |
+| [Best practices we followed, and where they come from](learnings/best-practices.md) | Industry practices (`BP-1`..`BP-37`) we followed, why they scale, and their sources. |
 | [Optimization showcase: how batch claim got fast and lean](learnings/optimizations.md) | The performance wins (`OPT-`) side by side: what each limit protects, why a shortcut may skip it, the guard that keeps it correct, and the measured result. |
 | [Benchmarking and GKE at 1,000-sandbox scale](learnings/gke-benchmarking.md) | Production GKE control-plane, APF, GCFS vs. Secondary Boot Disk, Kubelet ImageGC, and gVisor lessons (`GKE-1`..`GKE-12`) plus benchmark harness engineering (`BENCH-1`..`BENCH-9`) from `148,544` Campaign 2 rollouts. |
-| [Testing techniques for concurrent and distributed code](learnings/testing.md) | Techniques (`TEST-1`..`TEST-31`) for deterministic concurrency testing, stateful Hypothesis fuzzing (`RuleBasedStateMachine` + invariant oracles), lockstep sync/async differential simulation, and in-process OS/wire/clock fault simulation. |
-| [Verification: checking every interleaving, not just the ones you thought of](learnings/verification.md) | Model checking and strategy selection (`VER-1`..`VER-15`): the 9-strategy verification menu, in-process BFS over lock/signal/cancel interleavings, transitive AST call-graph checks, and two-sided `/tmp` negative controls. |
-| [Verifying the Lease protocol with TLA+](learnings/tla.md) | TLC-checked specs (`TLA-1`..`TLA-9`) covering cross-process Lease fencing (`BatchLease.tla`), 5 decomposed intra-process subsystem specs (`3.27M` states), authority separation, small-scope domains, and TLC CLI craft (`-deadlock`, `-workers 1`, `-coverage 1`). |
-| [Automated batch verification and chaos suite](learnings/chaos-verification-suite.md) | A 10-stage deterministic verification pipeline (`CHAOS-1`..`CHAOS-10`) combining 5 subsystem TLA+ specs, transitive AST checks, Hypothesis fuzzing, lockstep sync/async differential tests, and 5 rounds of adversarial `/tmp` post-fix audits (`29` verified findings). |
+| [Testing techniques for concurrent and distributed code](learnings/testing.md) | Techniques (`TEST-1`..`TEST-34`) for deterministic concurrency testing, stateful Hypothesis fuzzing + `ReferenceBatchModel` shadow oracles, CAS `Barrier` stress & lock-starvation probes, lockstep differential simulation, and in-process OS/wire/clock fault simulation. |
+| [Verification: checking every interleaving, not just the ones you thought of](learnings/verification.md) | Model checking and strategy selection (`VER-1`..`VER-17`): the 10-strategy verification menu, in-process BFS over lock/signal/cancel interleavings, cross-class AST lock-rank & sync/async parity checks, two-sided `/tmp` negative controls, and `SimKube`/MitM/flight-recorder chaos. |
+| [Verifying the Lease protocol with TLA+](learnings/tla.md) | TLC-checked specs (`TLA-1`..`TLA-10`) covering cross-process Lease fencing (`BatchLease.tla`), 5 decomposed intra-process subsystem specs (`3.27M` states), authority separation, small-scope domains, TLC CLI craft, and next-horizon controller/snapshot specs. |
+| [Automated batch verification and chaos suite](learnings/chaos-verification-suite.md) | A 10-stage deterministic verification pipeline (`CHAOS-1`..`CHAOS-11`) combining 5 subsystem TLA+ specs, transitive AST checks, Hypothesis fuzzing, lockstep sync/async differential tests, 5 rounds of adversarial `/tmp` post-fix audits (`29` verified findings), and `7` audited non-bug contracts. |
 | [Process, git, and working with agents](learnings/process.md) | Review, git, and subagent lessons (`PROC-`, `GIT-`, `AGENT-`). |
 
 ---
@@ -304,4 +304,4 @@ Use this to find every lesson a PR taught. It lists the entries whose story or l
 | 25/N | [WATCH-10](learnings/field-guide/watch.md#watch-10), [LEASE-31](learnings/field-guide/lease.md#lease-31), [LEASE-32](learnings/field-guide/lease.md#lease-32), [CLEAN-24](learnings/field-guide/clean.md#clean-24), [PERF-20](learnings/field-guide/perf.md#perf-20), [PERF-21](learnings/field-guide/perf.md#perf-21), [API-30](learnings/field-guide/api.md#api-30), [TEST-17](learnings/testing.md#test-17), [PROC-12](learnings/process.md#proc-12) |
 | WS-B (`feat/rl-batch-hardening`) | [CLEAN-25](learnings/field-guide/clean.md#clean-25), [K8S-21](learnings/field-guide/k8s.md#k8s-21), [LIB-20](learnings/field-guide/lib.md#lib-20), [PERF-22](learnings/field-guide/perf.md#perf-22), [PERF-23](learnings/field-guide/perf.md#perf-23), [OPT-25..OPT-28](learnings/optimizations.md#sec-optimizations) |
 | GKE Campaign 2 (`bench/rl-gke`) | [GKE-1..GKE-12](learnings/gke-benchmarking.md#sec-gke-benchmarking), [BENCH-1..BENCH-9](learnings/gke-benchmarking.md#bench-1), [OPT-1](learnings/optimizations.md#opt-1), [OPT-2](learnings/optimizations.md#opt-2), [OPT-3](learnings/optimizations.md#opt-3) |
-| Chaos & Verification Suite (`e84e964c`) | [CHAOS-1..CHAOS-10](learnings/chaos-verification-suite.md#sec-chaos-suite), [LIB-22](learnings/field-guide/lib.md#lib-22), [LIB-23](learnings/field-guide/lib.md#lib-23), [TEST-27..TEST-31](learnings/testing.md#test-27), [VER-13..VER-15](learnings/verification.md#ver-13), [TLA-6..TLA-9](learnings/tla.md#tla-6), [AGENT-6..AGENT-8](learnings/process.md#agent-6) |
+| Chaos & Verification Suite (`e84e964c`) | [CHAOS-1..CHAOS-11](learnings/chaos-verification-suite.md#sec-chaos-suite), [WATCH-11](learnings/field-guide/watch.md#watch-11), [LEASE-34](learnings/field-guide/lease.md#lease-34), [LEASE-35](learnings/field-guide/lease.md#lease-35), [RACE-9](learnings/field-guide/race.md#race-9), [RACE-10](learnings/field-guide/race.md#race-10), [LOCK-22](learnings/field-guide/lock.md#lock-22), [CANCEL-25](learnings/field-guide/cancel.md#cancel-25), [CLEAN-26](learnings/field-guide/clean.md#clean-26), [CLEAN-27](learnings/field-guide/clean.md#clean-27), [COUNT-15](learnings/field-guide/count.md#count-15), [K8S-22](learnings/field-guide/k8s.md#k8s-22), [LIB-22](learnings/field-guide/lib.md#lib-22), [LIB-23](learnings/field-guide/lib.md#lib-23), [API-31](learnings/field-guide/api.md#api-31), [PAT-35](learnings/patterns.md#pat-35), [BP-37](learnings/best-practices.md#bp-37), [TEST-27..TEST-34](learnings/testing.md#test-27), [VER-13..VER-17](learnings/verification.md#ver-13), [TLA-6..TLA-10](learnings/tla.md#tla-6), [AGENT-6..AGENT-8](learnings/process.md#agent-6) |

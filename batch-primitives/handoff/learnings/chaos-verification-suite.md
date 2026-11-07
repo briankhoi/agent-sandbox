@@ -258,6 +258,26 @@
 
 </details>
 
+<a id="chaos-11"></a>
+
+## CHAOS-11 Verify suspect behaviors against intentional design contracts before filing (`7` audited non-bugs `C-01..C-07`)
+
+**Takeaway:** Adversarial subagents rewarded for finding bugs will flag subtle, load-bearing optimizations and edge-case contracts as defects unless every candidate finding is cross-checked against existing tests, formal invariants, and design notes. Recording verified *non-bugs* explicitly (`C-01..C-07` in `VERIFICATION_SWEEP_RESULTS.md` Section 3.13) prevents well-meaning "fixes" from breaking production contracts.
+
+<details>
+<summary>The full story (Passes 2-4, VERIFICATION_SWEEP_RESULTS.md Section 3.13: C-01..C-07)</summary>
+
+- **Situation:** Across `5` adversarial audit rounds, independent reviewers flagged dozens of candidate issues across `BatchState`, `AsyncSandboxBatch`, `AsyncK8sHelper`, `SandboxFleet`, `handles.py`, and `recycle.py`.
+- **What goes wrong:** Accepting plausible-sounding bug reports without checking why the code was written that way introduces regressions:
+  - Flagging `BatchState.fill_settled()` reopening when a missing claim on a re-attached batch (`get_batch`) arrives late (`C-01`) would drop the delayed claim's eventual `MEMBER_READY` / `MEMBER_FAILED` event (`test_batch_state.py:695-710`).
+  - Flagging `SandboxHandle.is_alive()` calling `read_namespaced_pod_status` once `record_pod_identity()` sets `pod_uid` (`C-02`) ignores that `SandboxClaim` status lacks container restart counts needed to detect in-place OOM restarts (`WATCH-10`).
+  - Flagging `SandboxFleet._teardown()` for re-raising `first_exc` after releasing handles (`C-04`) would break `test_batch_claims.py:238` (only aborting *early* on handle `0` before sweeping handles `1..N-1` and pools in `F-11a` was a bug); likewise, including `BATCH_SHUTDOWN_MARGIN_SECONDS` in `recycle._claim_expiring` (`C-03`, `LEASE-32`) and binding planned images to clusters in `SandboxFleet.plan()` (`C-05`) are deliberate tested contracts.
+  - Flagging `AsyncK8sHelper._init_lock` and per-warmpool `refresh_lock` for `await`ing under a lock (`C-06`) confuses intentional single-flight I/O coalescing locks with shared state locks (`self._lock` / `self._changed`), while flagging `async with self._changed:` inside `wait_for_quorum` and `_drop_acquired` cancel handlers (`C-07`) overlooks that `INV-LOCK-ASYNC-1` guarantees zero `await`s inside `_changed`, keeping `asyncio.Lock.acquire()` synchronous (`verify_cancel5_exercise.py`: `19` states, `0` leaks).
+- **What we do:** Require every candidate finding to pass a three-step filter before entering the defect catalog: (1) check git blame, PR notes, and existing unit tests for an explicit contract, (2) build a runnable reproduction or formal counterexample, and (3) document subtle intentional designs in a dedicated "Verified Intended Contracts (`NO Production Change`)" section so downstream builders never "fix" working invariants.
+- **Related:** [AGENT-1](process.md#agent-1), [AGENT-6](process.md#agent-6), [VER-16](verification.md#ver-16), [WATCH-10](field-guide/watch.md#watch-10).
+
+</details>
+
 ---
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)

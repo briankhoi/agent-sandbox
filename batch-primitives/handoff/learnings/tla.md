@@ -256,6 +256,16 @@ Additional negative controls (each breaks one rule on purpose; trace lengths mat
   - **Popped pacing-slot stall (`bc_neg_popped_slot`, `33` states) & `_waiting` leak (`bc_neg_waiting_leak`, `77` states):** `2` groups with `1` popped worker slot caught `release_group()` missing already-popped items (`F-25`) and group timeout clearing `_waiting` without updating `_resolved` (`F-12`).
   - **Caller-thread `acquire()` vs. `release()` (`bar_neg_inflight_release`, `88` states):** `1` fill claim + `1` dynamic `acquire()` caught `release()` setting `_detached = True` while `acquire()`'s `POST` was in flight (`F-24`).
 
+<a id="tla-10"></a>
+
+## TLA-10 Extend small-scope TLA+ across the apiserver boundary to controller adoption and snapshot state machines
+
+- **Principle:** Once SDK-side Lease and handle specs (`BatchLease.tla` + the `5` subsystem specs) are clean, apply the exact same `2`-entity small-scope pattern across the Kubernetes API boundary to Go controller reconcilers (`extensions/controllers/`) and pod-snapshot state machines (`comprehensive_verification_strategy.md` Pillar 1).
+- **Two high-value cross-component boundaries to model next:**
+  1. **`WarmPoolAdoption.tla` (`SandboxWarmPool` + `SandboxClaim` reconcilers):** Model `2` concurrent `SandboxClaim`s racing to adopt from `2` warm pods while pod replacement, `deletionTimestamp`, and PVC attachment interleave. Target invariants: `AtMostOneClaimPerPod` (no double-adoption under stale informer caches), `NeverAdoptTerminatingPod`, and `ZeroOrphanedPodOnClaimCancel`.
+  2. **`PodSnapshot.tla` (`gke_extensions/snapshots/` + `SandboxHandle.refresh()`):** Model `1` sandbox moving through `RUNNING -> SUSPENDING -> SNAPSHOTTING (memory + disk) -> SUSPENDED -> RESUMING / RESTORING` against pod restarts and concurrent resume triggers. Target invariants: `ResumeWaitsForReadySnapshot` (never bind before volume/memory snapshot commits), `UniqueResumePerSnapshotUID`, and `ZeroStalePodIPAfterRestore` ([WATCH-10](field-guide/watch.md#watch-10), `F-10a`).
+- **Why this pays off:** Controller-runtime informers and client SDK watches share the exact same eventual-consistency hazards (stale caches, `409` optimistic-concurrency retries, out-of-order `DELETED` observation); a 150-line spec catches cross-reconciler races in seconds before spinning up `kind` clusters.
+
 ## Limits of the model
 
 - **Bounded instance (`BatchLease.tla`).** Two handles, one reaper, at most two Lease incarnations, at most two release rounds, and 7 to 14 ticks (`MaxTime`). TLC proves the seven cross-process invariants within these bounds.

@@ -496,6 +496,25 @@ A few terms used throughout: a **lock** (mutex) lets one thread in at a time. A 
 
 </details>
 
+<a id="lock-22"></a>
+
+## LOCK-22 Never hold `AsyncSandboxClient._lock` across `await close_connection()`, and serialize `client.close()` on `batch._lifecycle_lock` before closing `k8s_helper`
+
+**Takeaway:** Client-level registries (`AsyncSandboxClient._lock`, `SandboxClient._batches_lock`) follow the exact same rule as batch locks ([LOCK-1](#lock-1), [LOCK-2](#lock-2)): snapshot and clear the registry inside the lock, then `await close_connection()` outside it (`F-15`). Before closing `self.k8s_helper` (`aiohttp.ClientSession` / `ApiClient` pools), wait on each batch's `_lifecycle_lock` and read `batch._connected` / `_stale_connections` under `batch._lock` (`F-15`, `F-23`).
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-15 & F-23, async_sandbox_client.py, sandbox_client.py)</summary>
+
+- **Situation:** `AsyncSandboxClient.close()` and `SandboxClient.close()` tear down active single-sandbox connectors, stop/detach registered batches, and close the shared `k8s_helper` HTTP transport.
+- **What goes wrong:**
+  1. **Holding `self._lock` across `await` (`F-15a`, `async_sandbox_client.py:424-430`):** `AsyncSandboxClient.close()` iterated `self._active_connection_sandboxes` *inside* `async with self._lock:` while awaiting `await sandbox.close_connection()`, starving concurrent `create_sandbox`, `get_sandbox`, `claim_batch`, and `delete_all` callers behind slow connector teardown (caught both statically by `verify_batch_static.py` `INV-LOCK-ASYNC-1` and dynamically by `test_batch_concurrency_stress.py`'s `<50 ms` lock-starvation probe, [TEST-33](../testing.md#test-33)).
+  2. **Closing `k8s_helper` underneath in-flight `batch.release()` (`F-15b`, `verify_delete_lifecycle_model.py` Variant E):** Calling `client.close()` concurrently with `batch.release()` allowed `_stop_batches()` to finish and close `k8s_helper`'s `aiohttp.ClientSession` while `batch.release()` was still mid-HTTP `DELETE` under `batch._lifecycle_lock`.
+  3. **Unlocked cross-object dict reads (`F-23a`, `sandbox_client.py:451-471`):** Sync `SandboxClient._stop_batches` and `_atexit_cleanup` read `batch._detach_unfinished()` and iterated `batch._connected.values()` and `batch._stale_connections` without `batch._lock`, risking `RuntimeError: dictionary changed size during iteration` when `_watch_loop` mutated `_connected` concurrently.
+- **What we do:** Copy and clear `_active_connection_sandboxes` under `self._lock` before awaiting `close_connection()` outside the lock, acquire `batch._lifecycle_lock` before closing `k8s_helper` so in-flight `release()`/`detach()` RPCs finish before their transport closes, and snapshot `_connected` / `_stale_connections` / `_detach_unfinished()` under `batch._lock`.
+- **Related:** [LOCK-1](#lock-1), [LOCK-2](#lock-2), [LOCK-19](#lock-19), [VER-6](../verification.md#ver-6), [TEST-33](../testing.md#test-33).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

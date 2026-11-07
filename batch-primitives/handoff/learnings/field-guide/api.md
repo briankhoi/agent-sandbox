@@ -623,6 +623,28 @@ This section is about the public surface of the batch SDK: the types, method sig
 
 </details>
 
+<a id="api-31"></a>
+
+## API-31 Pair `py.typed` (PEP 561) with an explicit `__all__` in `__init__.py` so `mypy --strict` consumers can import re-exported symbols
+
+**Takeaway:** Shipping a `py.typed` marker promises PEP 561 type-checker compliance to downstream callers. Under `mypy --strict` (which turns on `no_implicit_reexport = True`), plain `from .sandbox_batch import SandboxBatch` lines inside `__init__.py` are treated as *private* imports unless `__init__.py` declares `__all__` (or uses redundant `import X as X` aliases), breaking every typed consumer with `[attr-defined]` (`F-13`).
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-13 & F-22, k8s_agent_sandbox/__init__.py & agent_sandbox_rl)</summary>
+
+- **Situation:** `clients/python/agentic-sandbox-client/k8s_agent_sandbox/` ships `py.typed` and re-exports `34` public classes, models, and exceptions from `k8s_agent_sandbox/__init__.py`. Downstream `examples/agent-sandbox-rl/agent_sandbox_rl/batch_claims.py` imports `BatchConfig`, `BatchError`, `BatchGroup`, `Member`, `SandboxBatch`, and `SandboxClient` from `k8s_agent_sandbox`.
+- **What goes wrong:** Running `mypy k8s_agent_sandbox` inside the SDK repo passed with `0` errors because the SDK's own `[tool.mypy]` configuration in `pyproject.toml` did not enable `no_implicit_reexport` on external callers. The moment an external consumer ran `mypy --strict` (`mypy --strict agent_sandbox_rl/batch_claims.py`), `mypy` rejected every top-level import from `k8s_agent_sandbox` (`Module "k8s_agent_sandbox" does not explicitly export attribute "SandboxBatch" [attr-defined]`), and running `mypy` across `examples/agent-sandbox-rl` uncovered `41` unchecked type errors across `10` RL modules (`F-22`) because `dev/tools/test-unit` only ran `mypy` on `k8s_agent_sandbox`.
+- **What we do:** Define an explicit `__all__` tuple/list in `k8s_agent_sandbox/__init__.py` covering every public re-export, enforce `py.typed` + `__all__` completeness statically in `verify_batch_static.py: check_pep561_exports` (`Check 7`), and type-check both downstream RL modules and external `--strict` import probes in Stage 1 (`--with-mypy`).
+- **Example:**
+  ```python
+  from .sandbox_batch import SandboxBatch
+  from .async_sandbox_batch import AsyncSandboxBatch
+  __all__ = ["AsyncSandboxBatch", "SandboxBatch", ...]  # required for mypy --strict consumers
+  ```
+- **Related:** [API-30](#api-30), [TEST-25](../testing.md#test-25), [VER-14](../verification.md#ver-14), [CHAOS-10](../chaos-verification-suite.md#chaos-10).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

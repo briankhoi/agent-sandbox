@@ -230,6 +230,24 @@ Every batch handle keeps a local copy of its SandboxClaims, and a background wat
 
 </details>
 
+<a id="watch-11"></a>
+
+## WATCH-11 Restart list pagination cleanly on `410 Gone` `continue` expiry, isolate malformed per-object timestamps, and close watch streams on teardown
+
+**Takeaway:** Any paginated Kubernetes `LIST` (`continue` token) can fail with `410 Gone` on page 2+ when `etcd` compacts the snapshot RV, and a single malformed object in a shared namespace must never abort an entire sweep (`F-18`). On handle teardown, explicitly interrupt sync `Watch.stop()` + join `_watch_thread` and wrap async watch generators in `contextlib.aclosing` (`F-16`).
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-16 & F-18, batch_reaper.py, sandbox_batch.py, async_sandbox_batch.py)</summary>
+
+- **Situation:** `batch_reaper.find_stale_leases` pages through batch Leases with `limit=500` and `continue` tokens (`batch_reaper.py:139-165`), while `SandboxBatch` and `AsyncSandboxBatch` maintain long-lived watch streams (`_watch_loop`).
+- **What goes wrong:**
+  1. **Reaper `410` crash & poison-pill `renew_time` (`F-18`):** Unlike `_claim_list_pages` (`20/N`), `batch_reaper.find_stale_leases` did not restart from `continue=None` when page 2 raised `ApiException(status=410)`, failing the entire namespace sweep. Worse, one `V1Lease` carrying a timezone-naive `spec.renew_time` raised `TypeError: can't subtract offset-naive and offset-aware datetimes` inside `is_lease_reapable`, aborting all healthy stale Leases behind it in that namespace.
+  2. **Un-interrupted sync watch socket & unclosed async generator (`F-16`):** Sync `_stop_background_threads` set `_stop_watch` without interrupting the active `Watch().stream(...)` call or joining `_watch_thread` (`CANCEL-10`), leaving a daemon thread and urllib3 socket blocked up to `65 s` (`BATCH_WATCH_TIMEOUT_SECONDS + 5`) after `release()` returned. Async `_watch_loop` iterated `async for event in self._client.k8s_helper.watch_sandbox_claims(...)` without `contextlib.aclosing(...)`, deferring `aiohttp` stream closure to GC when `break` or cancellation exited early.
+- **What we do:** Retry `find_stale_leases` from `continue=None` (bounded retries) on `410 Gone` and catch/log per-Lease evaluation errors inside the loop so one bad Lease never blocks its neighbors; store the active sync `Watch` reference so teardown calls `w.stop()` and joins `_watch_thread` within a bounded grace, and wrap async `watch_sandbox_claims` iteration in `async with contextlib.aclosing(...)`.
+- **Related:** [WATCH-2](#watch-2), [CANCEL-10](cancel.md#cancel-10), [LIB-23](lib.md#lib-23), [CLEAN-23](clean.md#clean-23).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

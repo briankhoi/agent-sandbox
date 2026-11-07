@@ -679,6 +679,45 @@ This section covers the batch's Lease: a small `coordination.k8s.io/v1` object n
 
 </details>
 
+<a id="lease-34"></a>
+
+## LEASE-34 Isolate Lease-renewal authority from watch-stream failure so a dead watch never halts heartbeats on running sandboxes
+
+**Takeaway:** A status watch (`_watch_loop`) owns readiness observation; a Lease heartbeat (`_renew_loop`) owns batch liveness and garbage-collection protection. Never couple both loops onto one shared `BatchState._error` channel: a fatal watch `403` must wake readiness waiters immediately while `_renew_loop` keeps renewing the Lease, updating `_lease.metadata.resource_version`, and allowing `release_member()` / `release_group()` cleanup (`F-01`).
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-01, PR 22/N review)</summary>
+
+- **Situation:** `SandboxBatch` and `AsyncSandboxBatch` run `_watch_loop` (watching `SandboxClaim` status) alongside `_renew_loop` (heartbeating the `coordination.k8s.io/v1` Lease whose `ownerReference` keeps every claim alive against `batch_reaper` and Kubernetes GC).
+- **What goes wrong:** Writing a fatal watch error (`403 Forbidden`, TLS cert expiry) into shared `BatchState._error` (`_fail(e)`) triggered four compound failures (`sandbox_batch.py:1343-1356,1557-1595`, `async_sandbox_batch.py:1360-1373,1557-1594`):
+  1. `_renew_once()` checked `if self._detached or self._state.err() is not None: return False` and exited immediately, halting Lease heartbeats while already-connected sandboxes were still running user workloads (`BatchHandle.tla` `bh_neg_janet`, `74` states).
+  2. If `_fail(watch_err)` raced an in-flight `replace_batch_lease`, the post-RPC check discarded the server's new `resource_version` and skipped updating `_lease_expires_at`, making subsequent `release()`/`detach()` `PUT`s send a stale `resource_version`.
+  3. `lease_degraded()` stayed `False` after `_renew_once` returned `False`, and a later real `BatchLeaseExpiredError` could not overwrite the sticky watch error in `_state._error`.
+  4. `_check_healthy()` raised the watch `BatchError` inside `release_member()` and `release_group()`, blocking callers from deleting individual sandboxes even while Lease ownership was intact (`bh_neg_janet_release`, `11` states).
+- **What we do:** Track watch-stream failure separately from Lease-authority failure: wake watch-dependent consumers (`wait_for_quorum`, `group_outcomes`, `events`, pending `acquire`) when the watch dies, keep `_renew_loop` running until explicit `detach()`, `release()`, or Lease loss/expiry, always commit a succeeded `replace_batch_lease` response's `resource_version` and `sent_at + D`, and gate `release_member()` / `release_group()` on Lease authority rather than watch health.
+- **Related:** [LEASE-2](#lease-2), [LEASE-31](#lease-31), [WATCH-10](watch.md#watch-10), [TLA-7](../tla.md#tla-7), [CHAOS-5](../chaos-verification-suite.md#chaos-5).
+
+</details>
+
+<a id="lease-35"></a>
+
+## LEASE-35 Handle `404 NotFound` alongside `409 Conflict` on every `GET -> PUT` Lease CAS, and clamp `get_batch()` and `release_group()` to Lease expiry
+
+**Takeaway:** Between `read_batch_lease` (`GET`) and `replace_batch_lease` (`PUT`), `batch_reaper` or a racing client can delete the Lease, turning an optimistic-concurrency race into HTTP `404 NotFound` rather than `409 Conflict` (`F-29`). Likewise, clamp `get_batch()`'s takeover `PUT` and `release_group()`'s multi-round `deletecollection` + `count_live_sandbox_claims` calls to the Lease deadline (`F-04`, `F-27`).
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-04, F-27, F-29)</summary>
+
+- **Situation:** `_take_batch_lease` (`release`), `_attach` (`get_batch`), and `detach` perform a `GET -> PUT` compare-and-swap on the batch Lease, while `release_group()` runs `_delete_claims_in_rounds`.
+- **What goes wrong:**
+  1. **`404` TOCTOU on `GET -> PUT` (`F-29`):** Catching only `status == 409` around `replace_batch_lease` meant a Lease deleted between `GET` and `PUT` raised raw `ApiException(status=404)`, aborting `release()` *before* `deletecollection`, escaping `except BatchError:` in `get_batch()`, and leaving `_lease_released = False` in `detach()`.
+  2. **Unclamped `get_batch()` takeover `PUT` (`F-27`):** `SandboxBatch._attach` (`sandbox_batch.py:420-467`) sent `replace_batch_lease` with a fixed `30 s` `_request_timeout` even when `lease_duration < 30 s`, returning an already-expired handle if the `PUT` stalled past `sent_at + D` (and note: unlike `_claim`, `_attach` must *never* roll back with `delete_batch_lease`, which would trigger Kubernetes GC on the existing batch's live claims!). `_attach` also skipped `check_pool_size`, under-sizing urllib3/aiohttp pools when `max_in_flight > 8`.
+  3. **Unclamped `release_group()` delete/list rounds (`F-04`):** `release_group()` called `_delete_claims_in_rounds` with a `90 s` `_request_timeout` and `count_live_sandbox_claims(..., deadline=None)`, allowing mutations and paginated lists to run past `_lease_expires_at`.
+- **What we do:** Treat `404` on `replace_batch_lease` with the same domain semantics as a lost Lease (`proceed to claim sweep` in `release`, `BatchLeaseExpiredError` in `get_batch`, `_lease_released = True` in `detach`), clamp `_attach`'s `replace_batch_lease` to `min(BATCH_REQUEST_TIMEOUT_SECONDS, lease_duration)` and validate `monotonic() < sent_at + lease_duration` afterward, call `check_pool_size` in `_attach`, and thread `_lease_expires_at` through `release_group()`'s delete and count rounds.
+- **Related:** [LEASE-17](#lease-17), [LEASE-29](#lease-29), [LEASE-33](#lease-33), [CHAOS-8](../chaos-verification-suite.md#chaos-8).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

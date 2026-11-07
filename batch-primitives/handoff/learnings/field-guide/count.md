@@ -284,6 +284,25 @@ A batch asks for N claims, and callers need to know when that fill is over: ever
 
 </details>
 
+<a id="count-15"></a>
+
+## COUNT-15 Record timed-out `GROUP`-mode `_waiting` members in `_resolved`, and account for `_create_plan` items already popped by sleeping `create_rps` workers
+
+**Takeaway:** Every item removed from a pending queue (`_waiting` or `_create_plan`) must stay visible in another set until its final outcome is accounted for (`F-12`, `F-25`). Clearing `_waiting[pool]` without adding those claims to `_resolved` breaks `BatchState` conservation laws, and popping `_create_plan` *before* sleeping on `create_rps` hides in-flight creates from `release_group()` and `release_not_ready()`, stalling consumers until `quorum_timeout`!
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-12, F-25, F-26, batch_state.py, sandbox_batch.py, async_sandbox_batch.py)</summary>
+
+- **Situation:** `BatchState` tracks fill claims across `_create_plan` (in the shell), `_members`, `_waiting[pool]`, `_resolved`, and `_unable` so `events_done()` and `group_outcomes()` settle the instant every fill slot is decided.
+- **What goes wrong:**
+  1. **Popped `_create_plan` slot invisible to `release_group()` / `release_not_ready()` (`F-25`, `sandbox_batch.py:926-965`, `async_sandbox_batch.py:931-971`):** `_create_worker` popped `(claim_name, warmpool)` from `self._create_plan` under `_lock` and *then* slept outside `_lock` waiting for its `create_rps` token. If `release_group(warmpool)` or `release_not_ready()` ran during that sleep, `unsent = len(remaining_in_plan)` missed the popped item! When the worker woke, `can_send()` returned `False` and dropped the item without calling `record_create_failure(1)`, leaving `settled + unable < size` so `events()` and `group_outcomes()` hung until `quorum_timeout` (`BatchConsumer.tla` `bc_neg_popped_slot`, `33` states).
+  2. **`_time_out_undecided_groups` omits `_resolved` (`F-12`, `batch_state.py:678-690`):** Unlike `_fail_group()` (`:659-672`), `_time_out_undecided_groups()` cleared `self._waiting[pool]` on `GROUP`-mode fill expiry without adding those Ready fill members to `self._resolved` (`bc_neg_waiting_leak`, `77` states; caught by Hypothesis + `BatchInvariantOracle`).
+  3. **Un-interrupted `acquire()` pacing sleeps & unbounded `_send_create` semaphore waits (`F-26`):** Dynamic `acquire()` slept through `create_rps` and `429 Retry-After` delays without waking on `release_group(pool)`, and `_send_create` waited on `self._in_flight` without clamping to caller or Lease deadlines.
+- **What we do:** Either peek `_create_plan` until the `create_rps` token is acquired or call `record_create_failure` when a popped item is aborted by `can_send() == False`; add `self._resolved.update(self._waiting[pool])` inside `_time_out_undecided_groups()` matching `_fail_group()`; and wake `acquire()` pacing/backoff waits on pool/batch stop while clamping `_in_flight` waits to `min(deadline, _lease_expires_at)`.
+- **Related:** [COUNT-1](#count-1), [COUNT-7](#count-7), [COUNT-12](#count-12), [TEST-29](../testing.md#test-29), [CHAOS-7](../chaos-verification-suite.md#chaos-7).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

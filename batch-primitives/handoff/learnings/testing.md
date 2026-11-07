@@ -659,6 +659,64 @@ This section covers how we tested code that runs on several threads or asyncio t
 
 </details>
 
+<a id="test-32"></a>
+
+## TEST-32 Pair a structural `BatchInvariantOracle` with a stateful `ReferenceBatchModel` shadow tracker to verify `O(1)` cores across time
+
+**Takeaway:** Checking single-snapshot state partitions ([TEST-29](#test-29)) catches static counter drift, but misses temporal bugs like double-dispatched `MEMBER_READY` events or regressed completion latches. Pair your per-step structural checker (`BatchInvariantOracle`) with a tiny stateful shadow model (`ReferenceBatchModel`) that records stream history across steps and checks one-way monotonicity laws.
+
+<details>
+<summary>The full story (batch_invariant_oracle.py, F-12 & Verified Contract C-01)</summary>
+
+- **Situation:** `BatchState` (`batch_state.py`) uses incremental `O(1)` sets and counters (`_waiting`, `_resolved`, `_unable`, `_missing`, `_groups_short_of_quorum`) for performance at 1,000-sandbox scale ([PERF-1](field-guide/perf.md#perf-1)).
+- **What goes wrong:** Incremental state machines fail along two orthogonal axes:
+  1. **Intra-step structural drift (`F-12`):** `_time_out_undecided_groups` cleared `_waiting[pool]` without adding those Ready fill claims to `_resolved`, breaking the conservation law connecting `_members`, `_waiting`, and `_resolved` while returning an apparently valid `GroupOutcome`.
+  2. **Inter-step temporal violations:** Even if every single snapshot looks internally consistent, a bug across steps could yield `MEMBER_READY` twice across `STREAM` / `GROUP` / `QUORUM`, emit two terminal events for one claim, regress `next_ordinal` or `_next_delete_seq`, or un-settle `groups_done()` / `fill_settled()`. Conversely, a naive monotonicity check without domain awareness flags intentional behavior as a bug: on a re-attached batch (`get_batch`), `count_missing_fill_as_unable()` marks unseen fill ordinals missing so consumers can settle, and a delayed create landing later as `PENDING` intentionally reopens `fill_settled()` so `events()` delivers its eventual outcome (`C-01`, `batch_state.py:304-309,851-865`).
+- **What we do:** `batch_invariant_oracle.py` combines two complementary oracles behind `BatchInvariantOracle.assert_all(state, ref)`:
+  - `BatchInvariantOracle.assert_structural_invariants(state)` recomputes every set partition (`_released & _members == empty`, `sum(_failed + _lost + _released_count) == len(_unable) + sum(_missing)`, `_groups_short_of_quorum`, sorted `members()`) by `O(N)` full scan.
+  - `ReferenceBatchModel` (`drain_and_verify_streams` + `observe_step`) tracks `dispatched_ready_claims`, `terminal_event_claims`, `yielded_group_outcomes`, `high_water_ordinal`, `high_water_delete_seq`, `ever_groups_done`, and `ever_fill_settled` across steps, explicitly modeling `reopened_by_late_missing` when `curr_missing < prev_missing_total`.
+- **Related:** [TEST-3](#test-3), [TEST-29](#test-29), [PAT-35](patterns.md#pat-35), [COUNT-1](field-guide/count.md#count-1).
+
+</details>
+
+<a id="test-33"></a>
+
+## TEST-33 Stress-test CAS split-brain, semaphore accounting, and lock starvation with `Barrier` stores, permit drains, and timed lock probes
+
+**Takeaway:** Two-actor Event-gated tests ([TEST-8](#test-8)) prove targeted races, while multi-worker contention tests catch what happens when `10` to `50` callers collide on compare-and-swap (CAS) Leases, bounded semaphores, and client locks. Make stress tests deterministic by checking three exact invariants instead of "no uncaught exception": CAS single-winner exclusivity, full semaphore permit drains at idle, and `<50 ms` lock-acquisition probes during slow I/O.
+
+<details>
+<summary>The full story (test_batch_concurrency_stress.py, Stage 8: F-15, INV-OWN-2, INV-LEAK-2)</summary>
+
+- **Situation:** `test_batch_concurrency_stress.py` exercises `50`-worker `acquire()`/`release_member()`/`release_group()` churn with injected `503`s, `9`-actor `detach(grace=30)` vs. `get_batch()` takeover races, `200`-claim paced bursts interrupted by `release_not_ready()`, and `AsyncSandboxClient.close()` concurrency.
+- **Three concrete stress-test patterns that turn contention runs into crisp pass/fail assertions:**
+  1. **`deepcopy`-isolated CAS `V1Lease` store + `threading.Barrier(9)` (`INV-OWN-2`):** `_AtomicLeaseK8sStore` guards an in-memory `V1Lease` with a mutex, returns `copy.deepcopy` snapshots on `GET` ([TEST-27](#test-27)), increments `metadata.resource_version` on every `PUT`, raises `409 Conflict` on stale RVs and `404 NotFound` after delete, and releases `1` `detach(grace=30)` thread + `8` `get_batch()` threads simultaneously via `threading.Barrier(9)` across `15` rounds, asserting `len(winners) <= 1` (zero split-brain) and monotonic `next-ordinal` Lease annotation persistence.
+  2. **Post-churn semaphore drain & zero-residue sweep (`INV-LEAK-2`):** After `50` concurrent threads hammer `acquire` and `release_*` through `1-in-11` injected `503`s, drain `batch._in_flight` (`for _ in range(max_in_flight): assert batch._in_flight.acquire(timeout=0.1)`) before restoring permits, proving not a single failure path leaked a semaphore slot, alongside asserting `_active_deletes == {}`, `_acquire_waiters == {}`, `_checking_acquires == {}`, and `all(not t.is_alive() for t in batch._creators)`.
+  3. **Timed lock-starvation probe (`F-15`):** To prove dynamically whether `AsyncSandboxClient.close()` holds `client._lock` across `await sandbox.close_connection()`, have a fake `close_connection` set an `asyncio.Event` (`entered_close_io`) and sleep `0.25 s`; once `entered_close_io` fires, time `t0 = time.monotonic(); async with client._lock: pass` in a sibling task and assert `elapsed < 0.05`. Unfixed `F-15` stalls the sibling task for the full `0.25 s` (`elapsed >= 0.20 s`), turning lock-hold-across-I/O into a deterministic runtime failure alongside the static AST check ([VER-14](verification.md#ver-14)).
+- **Related:** [TEST-8](#test-8), [TEST-27](#test-27), [LOCK-22](field-guide/lock.md#lock-22), [VER-14](verification.md#ver-14).
+
+</details>
+
+<a id="test-34"></a>
+
+## TEST-34 Fuzz crash-recovery (`detach -> get_batch`) handoffs with bitmask slot seeding, and gate known-bug rules with runtime capability probes
+
+**Takeaway:** Stateful fuzzers usually start from a clean constructor, missing state-reconstruction bugs on `detach() -> get_batch()` handoffs. Build a second `RuleBasedStateMachine` that seeds re-attached `BatchState` instances via bitmask claim subsets (`present_mask`), and use runtime capability probes (`_GROUP_TIMEOUT_FIXED`) when keeping a `10,000`-step fuzzer active alongside an unfixed bug.
+
+<details>
+<summary>The full story (test_batch_state_fuzz.py: TestReattachedBatchStateFuzz & _GROUP_TIMEOUT_FIXED)</summary>
+
+- **Situation:** Re-attaching to an existing batch (`get_batch`) reconstructs groups from claim annotations (`reconstruct_groups`), seeds existing claims (`seed_from_claims`), calls `count_missing_fill_as_unable()`, and then processes live watch events, including delayed `ADDED` events from the previous holder's in-flight creates.
+- **What goes wrong:**
+  1. **Dropping all claims of a group hides its annotations:** If a fuzzer drops fill claims completely at random before calling `reconstruct_groups()`, groups with `0` surviving claims disappear ([K8S-19](field-guide/k8s.md#k8s-19)), leaving the re-attached `min_ready` and `missing` paths untested.
+  2. **One known bug blinds a `10,000`-step fuzzer:** Once Hypothesis finds `F-12` (`_time_out_undecided_groups` dropping Ready members from `_waiting` without updating `_resolved`) in `3` steps, every fuzzer run aborts immediately on `F-12` instead of exploring the remaining `14` rules across `10,000` steps. Hard-coding `skip` on that rule, however, risks forgetting to re-enable it after the fix lands.
+- **What we do:**
+  1. `ReattachedBatchStateFuzzer.init_reattached` takes a Hypothesis `present_mask: int`, always retains slot `0` of each non-empty group (`slot == 0 or bool((present_mask >> ordinal) & 1)`) so `reconstruct_groups()` recovers `size` and `min_ready`, calls `seed_from_claims` + `count_missing_fill_as_unable()`, and keeps the omitted claim names in `missing_claim_pool` so later `@rule` steps can deliver them as late watch `ADDED` events!
+  2. `_group_timeout_resolves_waiting_ready()` runs a 6-line runtime probe against `BatchState` at import time (`_GROUP_TIMEOUT_FIXED`). While `F-12` is unfixed, a dedicated deterministic test (`test_group_mode_expire_fill_resolves_waiting_ready_members`) fails loudly on `F-12` while `TestHealthyCoreBatchStateFuzz` skips only that broken transition across its `10,000` steps; the instant `F-12` is fixed in production code, `_GROUP_TIMEOUT_FIXED` flips to `True` automatically with zero test edits!
+- **Related:** [TEST-28](#test-28), [TEST-29](#test-29), [TEST-32](#test-32), [K8S-19](field-guide/k8s.md#k8s-19).
+
+</details>
+
 ---
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)

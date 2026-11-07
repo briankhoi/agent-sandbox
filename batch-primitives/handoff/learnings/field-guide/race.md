@@ -224,6 +224,44 @@ The batch handle learns about claims in two ways. It sends RPCs (single HTTP cal
 
 </details>
 
+<a id="race-9"></a>
+
+## RACE-9 Mark late watch `ADDED` claims on stopped batches or groups `needs_delete=True`, and drain caller-thread `acquire()` `POST`s before `release()` or `detach()`
+
+**Takeaway:** Stopping fill creation (`release_not_ready`, `release_group`) or starting `release()`/`detach()` does not mean the apiserver has finished delivering earlier creates. Any late watch `ADDED` or `410` relist entry for an already-stopped batch or group must enter `_released` with `needs_delete=True` (`F-03`), and `release()`/`detach()` must drain in-flight caller-thread `acquire()` `POST`s just like background `_creators` (`F-24`).
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-03 & F-24, batch_state.py, sandbox_batch.py, async_sandbox_batch.py)</summary>
+
+- **Situation:** Two producer-vs-teardown races occur when claims land on the apiserver just as a caller tears down part or all of a batch:
+  1. **Late watch `ADDED` after `release_not_ready()` / `release_group()` (`F-03`):** `_create_worker` `POST`s a claim, `release_not_ready()` runs before the watch sees that `ADDED` event, and the watch delivers `ADDED` milliseconds later.
+  2. **Caller-thread `acquire()` `POST` vs. `release()` / `detach()` (`F-24`):** Dynamic `acquire()` sends `create_sandbox_claim` directly on the caller's thread/task (outside `_creators`), while another thread/task calls `release()` or `detach()`.
+- **What goes wrong:**
+  1. In `batch_state.py:258-262` (and `resync_from_list` `:415-426`), `upsert_claim` caught unseen claims arriving after `_fill_stopped` / `pool in _fill_stopped_pools` and called `self._mark_released(name, needs_delete=False)`. That hid the claim from `members()` while **never deleting it in Kubernetes**, leaving the sandbox pod running until Lease GC (`BatchWatch.tla` `bw_neg_late_added`, `20` states).
+  2. In `sandbox_batch.py:2166-2207` (`_stop_background_threads`) and `async_sandbox_batch.py:2166-2206` (`_stop_background_tasks`), teardown joined only initial-fill `_creators` without waiting for `self._state.has_in_flight_acquires()` (`_acquiring`). On `detach()`, `acquire()`'s `POST` committed *after* `_detached = True`, `_drop_acquired()` skipped cleanup because `self._detached` was set, and nobody held the Lease to delete the orphan; on `release()`, a `POST` committing after `deletecollection` survived until async GC (`BatchAcquireRelease.tla` `bar_neg_inflight_release`, `88` states).
+- **What we do:** Pass `needs_delete=True` in `upsert_claim` and `resync_from_list` when tombstoning unseen claims on stopped batches/groups (queuing `_delete_claim(name)` from the watch loop), and wait for in-flight `_acquiring` creates (bounded by `BATCH_REQUEST_TIMEOUT_SECONDS`) before `release()` sweeps claims or `detach()` surrenders the Lease.
+- **Related:** [RACE-3](#race-3), [RACE-7](#race-7), [RACE-8](#race-8), [CHAOS-7](../chaos-verification-suite.md#chaos-7).
+
+</details>
+
+<a id="race-10"></a>
+
+## RACE-10 Evict closed cached connectors (`is_active`), fence `sbx.terminate()` on batch Lease health, and reconnect watch-evicted handles in `refresh()`
+
+**Takeaway:** Caching a `Sandbox` handle in `batch._connected` creates three lifecycle aliases that must stay synchronized: `batch.connect(m)` must replace a cached `Sandbox` if the caller closed its transport (`not sbx.is_active`), `sbx.terminate()` on a batch-managed `Sandbox` must refuse un-fenced deletes after `detach()` or Lease expiry (`F-17`), and `SandboxHandle.refresh()` must fall back to `batch.connect(member)` when the batch watch already evicted and closed the old pod's connector (`F-10a`).
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-10a, F-17, F-21a)</summary>
+
+- **Situation:** `SandboxBatch.connect(member)` caches connected `Sandbox` objects in `_connected[claim_name]`, evicting and closing them when the watch sees pod IP or sandbox name changes ([WATCH-7](watch.md#watch-7)). Downstream `agent-sandbox-rl` wraps that `Sandbox` inside `SandboxHandle`.
+- **What goes wrong:**
+  1. **Returning dead cached `Sandbox`es & unfenced `terminate()` (`F-17`):** Calling `sbx.close_connection()` sets `sbx._is_active = False` without notifying `SandboxBatch._connected`, so the next `batch.connect(member)` returned the dead `Sandbox` (`SandboxError: Sandbox connection is closed`). Worse, calling `sbx.terminate()` called `k8s_helper.delete_sandbox_claim` directly without checking `_detached` or `_lease_expires_at`, bypassing batch Lease fencing (`INV-OWN-1`).
+  2. **Watch eviction races `SandboxHandle.refresh()` (`F-10a`) and `fleet._connect_batch_claim()` (`F-21a`):** After pod suspend/resume or restart, the batch watch sees the Pod IP change first and calls `close_connection()` on the cached `Sandbox`, setting `_is_active = False`. When `SandboxHandle.refresh()` (`handles.py:296-306`) then ran `self._sandbox.refresh()`, it raised `Sandbox connection is closed` instead of reconnecting via `batch.connect(fresh_member)`. Similarly, if a member flapped `READY -> PENDING` in the narrow window between `batch.acquire()` and `fleet._connect_batch_claim()` (`fleet.py:1533`), raw `SandboxNotReadyError` escaped unwrapped instead of `FleetUnavailableError`.
+- **What we do:** Check `sbx.is_active` before returning a cached entry in `batch.connect()`, route or fence `terminate()` on batch-managed `Sandbox` instances through batch Lease checks, reconnect from `self._batch_claim.batch.connect(...)` inside `SandboxHandle.refresh()` when the cached connection was closed by watch eviction, and translate transient `SandboxNotReadyError` in `_connect_batch_claim` into `FleetUnavailableError` after releasing the claim.
+- **Related:** [WATCH-7](watch.md#watch-7), [WATCH-8](watch.md#watch-8), [WATCH-10](watch.md#watch-10), [API-30](api.md#api-30).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

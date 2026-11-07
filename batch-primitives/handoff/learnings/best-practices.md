@@ -711,6 +711,20 @@ A link marked *(unconfirmed)* goes to a real page, but we did not confirm the sp
   ```
 - **Field guide:** [CLEAN-11](field-guide/clean.md#clean-11), [CLEAN-12](field-guide/clean.md#clean-12), [LEASE-22](field-guide/lease.md#lease-22), [LEASE-23](field-guide/lease.md#lease-23).
 
+<a id="bp-37"></a>
+
+### BP-37 Layer small-scope model checking, stateful property fuzzing, differential testing, and deterministic fault simulation
+
+- **Why it is a best practice:** example-based unit suites (`1,100` passing batch and RL tests on `e84e964c`) check only the execution schedules and error shapes their authors thought to script. Combining orthogonal verification layers catches bugs that slip through every single-method blind spot: explicit-state model checking (`TLA+` / BFS) proves multi-actor protocol and lock-order invariants over small domains, stateful property fuzzing (`Hypothesis`) shrinks unexpected call sequences against a reference oracle, differential testing catches silent divergence between twin implementations (`sync` vs. `async`, `FakeFleet` vs. `SandboxFleet`), and deterministic fault simulation exposes OS socket, HTTP framing, and clock-truncation bugs in milliseconds.
+- **Where we apply it:** `dev/tools/run_batch_verification.sh` runs `10` deterministic stages across `BatchLease.tla` + `5` subsystem TLA+ specs (`handoff/work/tla/`), `verify_delete_lifecycle_model.py` + `verify_cancel5_exercise.py`, `dev/tools/verify_batch_static.py`, `test_batch_state_fuzz.py` + `batch_invariant_oracle.py`, `test_batch_differential.py`, `test_batch_fault_injection.py` + `test_batch_fault_injection_rl.py`, and `test_batch_concurrency_stress.py`, uncovering `29` verified production bugs on a green unit-test baseline.
+- **Source:** Chris Newcombe et al., ["How Amazon Web Services Uses Formal Methods"](https://doi.org/10.1145/2699417), *Communications of the ACM* 58(4), 2015. Jingyu Zhou et al., ["FoundationDB: A Distributed Unbundled Transactional Key Value Store"](https://doi.org/10.1145/3448016.3457559), *SIGMOD* 2021 (deterministic simulation testing). Koen Claessen and John Hughes, ["QuickCheck: A Lightweight Tool for Random Testing of Haskell Programs"](https://doi.org/10.1145/351240.351266), *ICFP* 2000; [Hypothesis stateful testing](https://hypothesis.readthedocs.io/en/latest/stateful.html). William M. McKeeman, ["Differential Testing for Software"](https://www.hpl.hp.com/hpjournal/dtj/vol10num1/vol10num1art9.pdf), *Digital Technical Journal* 10(1), 1998.
+- **Example:**
+  ```text
+  dev/tools/run_batch_verification.sh --quick   # <30 s fast presubmit gate
+  dev/tools/run_batch_verification.sh           # full 10-stage formal + fuzz + chaos sweep
+  ```
+- **Field guide:** [VER-13](verification.md#ver-13), [VER-16](verification.md#ver-16), [TLA-6](tla.md#tla-6), [TEST-29](testing.md#test-29), [TEST-30](testing.md#test-30), [CHAOS-1](chaos-verification-suite.md#chaos-1).
+
 ---
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)

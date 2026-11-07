@@ -425,6 +425,25 @@ This section covers how the apiserver, the garbage collector, and controllers ac
 
 </details>
 
+<a id="k8s-22"></a>
+
+## K8S-22 Account for `.strftime("%Y-%m-%dT%H:%M:%SZ")` sub-second floor truncation on `shutdownTime`, preserve `DEFAULT_LABELS` on batch metadata, and check `leases` RBAC in `preflight()`
+
+**Takeaway:** Formatting a `datetime` with `.strftime("%Y-%m-%dT%H:%M:%SZ")` truncates microseconds toward zero (turning `12:00:10.999999Z` into `12:00:10Z`), making Kubernetes `spec.lifecycle.shutdownTime` expire up to `0.999999 s` *earlier* than float `started + ttl` (`F-19a`). Also merge `DEFAULT_LABELS` into custom fleet labels, stamp run labels on batch `Lease`s, and verify `coordination.k8s.io/leases` RBAC in `preflight()` when `claim_mode == "batch"` (`F-20`, `F-21b`).
+
+<details>
+<summary>The full story (Chaos & Verification Suite: F-19a, F-20, F-21b)</summary>
+
+- **Situation:** `k8s_agent_sandbox/utils.py: construct_sandbox_claim_lifecycle_spec` formats `spec.lifecycle.shutdownTime` as an RFC3339 second-precision UTC string, while `BatchClaims.acquire` (`LEASE-32`) tracks `expires_at = started + ttl` in float monotonic seconds. Meanwhile, `agent-sandbox-rl` stamps labels and runs `SandboxFleet.preflight()` (`SelfSubjectAccessReview`) before training starts.
+- **What goes wrong:**
+  1. **`.strftime` floor inversion (`F-19a`, `utils.py:109,115`, `batch_claims.py:176`):** Because `.strftime("%Y-%m-%dT%H:%M:%SZ")` drops `.%f` instead of rounding up, a claim created at wall clock `t = X.999999` with `ttl = 60` gets `shutdownTime = X + 60` (`59.000001 s` from now!), while `BatchClaim.expires_at` records `started + 60.0`. For up to `0.999999 s`, the controller can delete the expired claim while the client believes almost a second of TTL remains!
+  2. **Dropped `app=agent-sandbox-rl` label & unlabelled batch `Lease`s (`F-20`, `fleet.py:598`, `batch_claims.py:143`):** Passing custom `FleetConfig(labels={"env": "prod"})` skipped `DEFAULT_LABELS` (`app=agent-sandbox-rl`) on `BatchClaims`, hiding batch claims from `reaper.py`, and `claim_batch` omitted fleet run labels on the `Lease` object itself.
+  3. **Missing `leases` RBAC check in `preflight()` (`F-21b`, `fleet.py:926-965`):** `SandboxFleet.preflight()` checked `sandboxclaims`, `sandboxes`, `sandboxwarmpools`, and `sandboxtemplates`, but omitted `coordination.k8s.io` `leases` (`create`, `get`, `list`, `update`, `delete`) when `claim_mode == "batch"`, letting missing Lease RBAC pass `preflight()` and blow up mid-rollout on the first `claim_batch()`.
+- **What we do:** Either ceiling-round `shutdownTime` to the next whole second when microseconds `> 0` or subtract `1.0 s` from local `expires_at` so `local_expiry <= server_shutdownTime` holds strictly; merge `DEFAULT_LABELS | config.labels` across claims and batch `Lease`s; and include `coordination.k8s.io/leases` verbs in `preflight()` whenever `claim_mode == "batch"`.
+- **Related:** [K8S-15](#k8s-15), [K8S-21](#k8s-21), [LEASE-32](lease.md#lease-32), [TEST-31](../testing.md#test-31).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)
