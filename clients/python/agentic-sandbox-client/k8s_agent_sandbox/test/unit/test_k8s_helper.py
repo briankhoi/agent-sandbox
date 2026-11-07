@@ -1350,6 +1350,70 @@ class TestLeaseApiClient(unittest.TestCase):
                 sock.close()
                 server.join(timeout=1.0)
 
+    def test_batch_custom_object_requests_bsd_non_listening_socket_simulation(
+        self, mock_config: MagicMock
+    ) -> None:
+        """Simulates BSD/macOS xnu loopback behavior where connecting to a bound, non-listening
+        socket drops SYN packets until connect timeout (raising ConnectTimeoutError rather than
+        Linux ECONNREFUSED -> NewConnectionError).
+        """
+        import urllib3.util.connection as urllib3_conn
+
+        real_socket_cls = socket.socket
+        real_create_connection = urllib3_conn.create_connection
+        unlistening_ports: set[int] = set()
+        unset_timeout = object()
+
+        class TrackingSocket(real_socket_cls):  # type: ignore[misc, valid-type]
+            def bind(self, address: Any) -> None:
+                super().bind(address)
+                host_port = self.getsockname()
+                if isinstance(host_port, tuple) and len(host_port) >= 2:
+                    unlistening_ports.add(int(host_port[1]))
+
+            def listen(self, *args: Any, **kwargs: Any) -> None:
+                host_port = self.getsockname()
+                if isinstance(host_port, tuple) and len(host_port) >= 2:
+                    unlistening_ports.discard(int(host_port[1]))
+                super().listen(*args, **kwargs)
+
+            def close(self) -> None:
+                try:
+                    host_port = self.getsockname()
+                    if isinstance(host_port, tuple) and len(host_port) >= 2:
+                        unlistening_ports.discard(int(host_port[1]))
+                except OSError:
+                    pass
+                super().close()
+
+        def bsd_create_connection(
+            address: tuple[str, int],
+            timeout: Any = unset_timeout,
+            source_address: tuple[str, int] | None = None,
+            **kwargs: Any,
+        ) -> socket.socket:
+            host, port = address
+            if host == "127.0.0.1" and port in unlistening_ports:
+                raise TimeoutError(
+                    "timed out waiting for SYN-ACK on bound non-listening BSD socket"
+                )
+            if timeout is unset_timeout:
+                return real_create_connection(address, source_address=source_address, **kwargs)
+            return real_create_connection(
+                address, timeout=timeout, source_address=source_address, **kwargs
+            )
+
+        target_attr = (
+            "test_batch_custom_object_requests_do_not_retry_and_keep_injected_settings"
+        )
+        raw_method = getattr(TestLeaseApiClient, target_attr)
+        upstream_fn: Any = getattr(raw_method, "__wrapped__", raw_method)
+        with (
+            patch.object(socket, "socket", TrackingSocket),
+            patch.object(urllib3_conn, "create_connection", side_effect=bsd_create_connection),
+        ):
+            upstream_fn(self, mock_config)
+
 
 @patch("k8s_agent_sandbox.k8s_helper.config")
 class TestK8sHelperPoolSize(unittest.TestCase):

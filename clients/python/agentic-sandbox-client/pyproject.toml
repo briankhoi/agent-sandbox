@@ -68,6 +68,7 @@ test = [
     "pytest",
     "pytest-xdist",
     "pytest-asyncio",
+    "hypothesis",
     "httpx",
     "certifi",
     "kubernetes_asyncio<37.0.0",
