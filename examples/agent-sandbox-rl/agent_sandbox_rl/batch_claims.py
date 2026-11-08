@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from k8s_agent_sandbox import BatchError, BatchGroup, Member, SandboxBatch
+from k8s_agent_sandbox.batch_state import still_reaches
+from k8s_agent_sandbox.utils import select_pod_ip
 
 from .exceptions import FleetError
 
@@ -51,16 +53,27 @@ class BatchClaim:
   batch: SandboxBatch
   member: Member
   cluster: "Cluster" = field(repr=False)
+  rebaselined: bool = False
+
+  def still_reaches(self) -> bool:
+    """Whether a healthy batch's watch still maps this claim to its acquired pod."""
+    # After refresh() the pod IP can differ from member.pod_ips, and a stopped
+    # batch's watch no longer updates, so is_alive() checks the pod instead.
+    if self.rebaselined or self.batch.err() is not None:
+      return True
+    current = self.batch.get_member(self.member.claim_name)
+    return still_reaches(
+        current, self.member.sandbox_name, select_pod_ip(self.member.pod_ips))
 
   def release(self) -> None:
     try:
       self.batch.release_member(self.member)
     except BatchError:
       # Once a batch stops (for example on BatchLeaseExpiredError) or teardown
-      # releases it, release_member raises BatchError to guard against racing a
-      # get_batch() takeover. BatchClaims generates random batch IDs and never
-      # detaches or re-attaches, so deleting the claim directly is safe and
-      # 404-tolerant.
+      # releases it, release_member raises BatchError so a detached handle cannot
+      # race a get_batch() takeover. BatchClaims generates random batch IDs and
+      # never detaches or re-attaches, so deleting the claim directly cannot hit
+      # another holder's recreated claim and tolerates 404 when already deleted.
       self.cluster.resources.delete_claim(self.member.claim_name)
 
 

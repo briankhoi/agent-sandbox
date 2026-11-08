@@ -20,8 +20,11 @@ import logging
 import shlex
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from k8s_agent_sandbox import BatchError, Member
+from k8s_agent_sandbox.exceptions import SandboxNotReadyError
+from k8s_agent_sandbox.utils import select_pod_ip
 from kubernetes import client
 from kubernetes.stream import stream
 
@@ -33,6 +36,7 @@ from .sources import Task
 logger = logging.getLogger("agent_sandbox_rl.handles")
 
 if TYPE_CHECKING:
+  from .batch_claims import BatchClaim
   from .cluster import Cluster
 
 logger = logging.getLogger("agent_sandbox_rl.handles")
@@ -310,6 +314,8 @@ class SandboxHandle:
   # pod under the same name, or an in-place restart, means the state is gone.
   pod_uid: Optional[str] = field(default=None, repr=False)
   runtime_restarts: Optional[int] = field(default=None, repr=False)
+  # Set when the claim is a member of the fleet's batch (claim_mode="batch").
+  _batch_claim: Optional["BatchClaim"] = field(default=None, repr=False)
 
   def exec(self, command, timeout: float | None = None, *,
            container: str | None = None) -> str:
@@ -348,8 +354,12 @@ class SandboxHandle:
 
   def record_pod_identity(self) -> None:
     """Remember which pod this handle is on: its UID and the runtime container's
-    restart count. Best-effort (one bounded ``GET``); `acquire()` calls it.
-    Without it, `is_alive()` cannot tell a replacement pod from the original."""
+    restart count. Best-effort (one bounded ``GET``). `acquire()` calls this in
+    ``per_claim`` mode while ``claim_mode="batch"`` skips that initial ``GET`` and
+    uses the batch watch for claim loss and pod replacement in `is_alive()`, so
+    callers in batch mode needing container restart-count baselines for in-place
+    OOM restarts can call `record_pod_identity()`. Without it, `is_alive()` cannot
+    tell an in-place container restart from the original."""
     if self._cluster is None:
       return
     # A failed read must leave the identity unknown, not the previous pod's:
@@ -372,7 +382,10 @@ class SandboxHandle:
     is not the same pod any more (a different UID: the controller recreated an
     evicted or deleted pod under the same name; or a higher restart count: the
     runtime container restarted in place, as after an OOM kill). A handle with
-    no cluster wiring answers True (unknown is not dead).
+    no cluster wiring answers True (unknown is not dead). In ``claim_mode="batch"``
+    a healthy batch watch first catches claim loss and pod replacement with no
+    ``GET``, while `acquire()` skips `record_pod_identity()` unless the caller
+    invokes it for in-place container restart baselines.
 
     ``exec()`` consults this only after a transport error, so a live sandbox pays
     nothing for it. A one-shot ``exec()`` against a same-name replacement pod
@@ -380,6 +393,12 @@ class SandboxHandle:
     state should call ``is_alive()`` at its step boundaries."""
     if self._cluster is None:
       return True
+    if (
+        self._batch_claim is not None
+        and self.pod_uid is None
+        and not self._batch_claim.still_reaches()
+    ):
+      return False
     try:
       # Bounded (connect, read): this runs on an error path and must not turn a
       # stalled API server into a hang; on timeout the original error stands.
@@ -450,6 +469,35 @@ class SandboxHandle:
           + _snap.HINT)
     return engine
 
+  @staticmethod
+  def _carry_manual_triggers(old_sb: object, new_sb: object) -> None:
+    if new_sb is old_sb:
+      return
+    old_snaps = vars(old_sb).get("_snapshots") if hasattr(old_sb, "__dict__") else None
+    if old_snaps is None:
+      return
+    old_trigs = getattr(old_snaps, "created_manual_triggers", None)
+    if not isinstance(old_trigs, list) or not old_trigs:
+      return
+    new_snaps = vars(new_sb).get("_snapshots") if hasattr(new_sb, "__dict__") else None
+    if new_snaps is None:
+      try:
+        new_snaps = getattr(new_sb, "snapshots", None)
+      except Exception:  # noqa: BLE001
+        new_snaps = None
+    if new_snaps is not None and new_snaps is not old_snaps:
+      new_trigs = getattr(new_snaps, "created_manual_triggers", None)
+      if isinstance(new_trigs, list):
+        for trig in old_trigs:
+          if trig not in new_trigs:
+            new_trigs.append(trig)
+
+  def _get_direct_sandbox(self) -> Any:
+    new_sb = self._cluster.sandbox_client.get_sandbox(
+        self.claim_name, namespace=self._cluster.namespace)
+    forget_claim_in_client(self._cluster, self.claim_name)
+    return new_sb
+
   def refresh(self) -> None:
     """Re-read pod identity after a pod restart (resume / restore).
 
@@ -465,14 +513,87 @@ class SandboxHandle:
     the pod identity used by ``is_alive()`` is re-recorded for the new pod.
     """
     self.close_session()
-    sb = self.sandbox
+    sb: Any = self.sandbox
     if sb is None:
       return
+    batch_cached_ip: Optional[str] = (
+        select_pod_ip(self._batch_claim.member.pod_ips)
+        if self._batch_claim is not None else None
+    )
     last_error: Optional[BaseException] = None
     for attempt in range(_REFRESH_ATTEMPTS):
       try:
+        if self._batch_claim is not None:
+          if hasattr(sb, "__dict__"):
+            vars(sb).pop("_pod_name", None)
+            vars(sb).pop("_seeded_pod_ip", None)
+          if not bool(getattr(sb, "is_active", True)):
+            latest = self._batch_claim.batch.get_member(
+                self._batch_claim.member.claim_name)
+            target = (latest if isinstance(latest, Member)
+                      else self._batch_claim.member)
+            new_cached_ip: Optional[str] = select_pod_ip(target.pod_ips)
+            try:
+              new_sb: Any = self._batch_claim.batch.connect(target)
+            except BatchError:
+              if self._cluster is None:
+                raise
+              new_sb = self._get_direct_sandbox()
+              new_cached_ip = None
+            except SandboxNotReadyError:
+              if attempt + 1 < _REFRESH_ATTEMPTS or self._cluster is None:
+                raise
+              new_sb = self._get_direct_sandbox()
+              new_cached_ip = None
+            self._carry_manual_triggers(sb, new_sb)
+            sb = self.sandbox = new_sb
+            batch_cached_ip = new_cached_ip
+            if hasattr(sb, "__dict__"):
+              vars(sb).pop("_pod_name", None)
+              vars(sb).pop("_seeded_pod_ip", None)
         name = sb.get_pod_name()
-      except Exception as e:  # noqa: BLE001 — retried, then raised below
+        if name and self._batch_claim is not None:
+          try:
+            ip = sb.get_pod_ip()
+          except Exception:  # noqa: BLE001
+            ip = None
+          if batch_cached_ip is not None and ip != batch_cached_ip:
+            latest = self._batch_claim.batch.get_member(
+                self._batch_claim.member.claim_name)
+            if (
+                isinstance(latest, Member)
+                and isinstance(ip, str)
+                and bool(ip)
+                and select_pod_ip(latest.pod_ips) == ip
+            ):
+              try:
+                new_sb = self._batch_claim.batch.connect(latest)
+                new_cached_ip = ip
+              except (BatchError, SandboxNotReadyError):
+                if self._cluster is None:
+                  raise
+                new_sb = self._get_direct_sandbox()
+                new_cached_ip = None
+            elif self._cluster is not None:
+              new_sb = self._get_direct_sandbox()
+              new_cached_ip = None
+            else:
+              new_sb = sb
+              new_cached_ip = batch_cached_ip
+            if new_sb is not sb:
+              self._carry_manual_triggers(sb, new_sb)
+              close_fn = getattr(sb, "close_connection", None)
+              if callable(close_fn):
+                try:
+                  close_fn()
+                except Exception:  # noqa: BLE001
+                  pass
+              sb = self.sandbox = new_sb
+              batch_cached_ip = new_cached_ip
+          self.pod_name = name
+          self.pod_ip = ip
+          break
+      except Exception as e:  # noqa: BLE001 (retried, then raised below)
         name, last_error = None, e
       if name:
         self.pod_name = name
@@ -484,13 +605,15 @@ class SandboxHandle:
           f"refresh: could not read the pod name of sandbox {self.sandbox_id!r} "
           f"after {_REFRESH_ATTEMPTS} tries; the handle still names {self.pod_name!r}, "
           "which may be gone. Call refresh() again before exec().") from last_error
-    try:
-      self.pod_ip = sb.get_pod_ip()
-    except Exception:  # noqa: BLE001
-      self.pod_ip = None
-    # The new pod is the sandbox's state from now on: re-baseline the identity
-    # that is_alive() compares against, or every check after a resume would
-    # report the restored pod as a replacement of the one that was suspended.
+    if self._batch_claim is None:
+      try:
+        self.pod_ip = sb.get_pod_ip()
+      except Exception:  # noqa: BLE001
+        self.pod_ip = None
+    # Re-baseline the identity that is_alive() compares against so checks after
+    # a resume do not treat the restored pod as a replacement of the suspended one.
+    if self._batch_claim is not None:
+      self._batch_claim.rebaselined = True
     self.record_pod_identity()
 
   def snapshot(self, name: str | None = None, *, timeout: int = 180) -> str:
@@ -587,6 +710,13 @@ class SandboxHandle:
     this directly just frees the remote resources.
     """
     self.close_session()                       # drop the persistent stream, if any
+    if self._batch_claim is not None:
+      # Release through the batch so it stops tracking the member without
+      # deleting the claim behind the batch's back.
+      self._batch_claim.release()
+      if self._cluster is not None:
+        forget_claim_in_client(self._cluster, self.claim_name)
+      return
     if self.sandbox is not None:
       self.sandbox.terminate()
     else:
