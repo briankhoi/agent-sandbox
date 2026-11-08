@@ -963,6 +963,40 @@ def test_reaper_sweeps_batch_leases_while_keeping_protected_runs():
   counts = reaper_mod._reap_with_cluster(
       c, None, delete_pods=False, protect_claims_of=lambda rid: rid == "live")
   assert counts["leases"] == 1
+  assert coord.list_namespaced_lease.call_count == 1
   deleted = [k.kwargs["name"] for k in coord.delete_namespaced_lease.call_args_list]
   assert deleted == ["batch-dead"]
+
+
+def test_reaper_lease_rbac_403_skips_and_503_fails_closed():
+  from agent_sandbox_rl.resources import Resources
+  c = MagicMock()
+  c.namespace = "ns"
+  coord = MagicMock()
+  custom = MagicMock()
+  custom.list_namespaced_custom_object.side_effect = lambda **kw: (
+      {"items": [{"metadata": {"name": "claim-dead",
+                               "labels": {constants.RUN_ID_LABEL: "dead"}}}]}
+      if kw.get("plural") == "sandboxclaims" and kw.get("label_selector")
+      else {"items": []})
+  core = MagicMock()
+  c.core_api = core
+  c.resources = Resources(custom, core, "ns", coordination_api=coord)
+
+  # 403 Forbidden (per_claim RBAC without coordination.k8s.io/leases) skips
+  # Lease sweeping with a warning while still reaping claims/pools/templates.
+  coord.list_namespaced_lease.side_effect = client.ApiException(status=403)
+  counts = reaper_mod._reap_with_cluster(
+      c, "dead", delete_pods=False, protect_claims_of=lambda rid: rid != "dead")
+  assert counts["leases"] == 0 and counts["claims"] == 1
+  assert custom.delete_namespaced_custom_object.call_count == 1
+
+  # 503 under protect_claims_of fails closed BEFORE deleting any claim or pool.
+  custom.delete_namespaced_custom_object.reset_mock()
+  coord.list_namespaced_lease.side_effect = client.ApiException(status=503)
+  with pytest.raises(FleetError, match="nothing was deleted"):
+    reaper_mod._reap_with_cluster(
+        c, "dead", delete_pods=False, protect_claims_of=lambda rid: rid != "dead")
+  custom.delete_namespaced_custom_object.assert_not_called()
+  coord.delete_namespaced_lease.assert_not_called()
 

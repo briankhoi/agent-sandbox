@@ -332,3 +332,124 @@ async def test_async_acquire_batch_short_circuits_queued_waves_on_early_failure(
   f.close(wait=True)
   assert f.handles() == []
   assert c.active_claims == 0 and f._fleet._claims_reserved == 0
+
+
+async def test_async_acquire_batch_rolls_back_on_cancellation(make_cluster):
+  import threading
+  from agent_sandbox_rl import ClusterRegistry
+  c = make_cluster("solo")
+  f = _fleet(ClusterRegistry([c]), max_concurrent=4)
+  tasks = f.load_tasks(["img-0", "img-1", "img-2"])
+  await f.plan()
+  slow_pool = f.plan_.for_image("img-2").pool
+  orig = c.sandbox_client.create_sandbox.side_effect
+  in_slow = threading.Event()
+  unblock_slow = threading.Event()
+  fast_done = threading.Event()
+  fast_count = 0
+  fast_lock = threading.Lock()
+
+  def staged_create(**kw):
+    nonlocal fast_count
+    if kw.get("warmpool") == slow_pool:
+      in_slow.set()
+      unblock_slow.wait(timeout=5)
+      return orig(**kw)
+    res = orig(**kw)
+    with fast_lock:
+      fast_count += 1
+      if fast_count == 2:
+        fast_done.set()
+    return res
+
+  c.sandbox_client.create_sandbox.side_effect = staged_create
+  batch_task = asyncio.create_task(f.acquire_batch(tasks))
+  loop = asyncio.get_running_loop()
+  await loop.run_in_executor(None, lambda: (fast_done.wait(5), in_slow.wait(5)))
+  batch_task.cancel()
+  unblock_slow.set()
+  with pytest.raises(asyncio.CancelledError):
+    await batch_task
+  f.close(wait=True)
+  assert f.handles() == []
+  assert c.active_claims == 0 and f._fleet._claims_reserved == 0
+
+
+async def test_async_acquire_cancellation_reclaims_worker_handle_and_slot(make_cluster):
+  import threading
+  import time
+  from unittest.mock import patch
+  from agent_sandbox_rl import ClusterRegistry
+  c = make_cluster("solo")
+  f = _fleet(ClusterRegistry([c]), max_concurrent=2, max_live_sandboxes=1)
+  tasks = f.load_tasks(["img-0", "img-0"])
+  await f.plan()
+  worker_entered = threading.Event()
+  release_worker = threading.Event()
+  worker_done = threading.Event()
+  real_acquire_reserved = f._fleet._acquire_reserved
+
+  def gated_acquire_reserved(*args, **kwargs):
+    worker_entered.set()
+    release_worker.wait(timeout=2.0)
+    try:
+      return real_acquire_reserved(*args, **kwargs)
+    finally:
+      worker_done.set()
+
+  h2 = None
+  try:
+    with patch.object(f._fleet, "_acquire_reserved", side_effect=gated_acquire_reserved):
+      acq_task = asyncio.create_task(f.acquire(tasks[0]))
+      await asyncio.to_thread(worker_entered.wait, 2.0)
+      assert f._fleet._claims_reserved == 1
+      acq_task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await acq_task
+      release_worker.set()
+      await asyncio.to_thread(worker_done.wait, 2.0)
+      await asyncio.sleep(0.02)
+    assert f._fleet._claims_reserved == 0
+    assert f.handles() == []
+    h2 = await f.acquire(tasks[1])
+  finally:
+    release_worker.set()
+    if h2 is not None:
+      await f.release(h2)
+    f.close()
+
+  # Cancelling an in-flight acquire followed immediately by close(wait=True)
+  # must complete self._fleet.release(handle) inline on the worker thread
+  # before close(wait=True) returns.
+  c2 = make_cluster("solo")
+  f2 = _fleet(ClusterRegistry([c2]), max_concurrent=2, max_live_sandboxes=1)
+  t2 = f2.load_tasks(["img-0"])[0]
+  await f2.plan()
+  entered2 = threading.Event()
+  unblock2 = threading.Event()
+  real_acq2 = f2._fleet._acquire_reserved
+  real_rel2 = f2._fleet.release
+
+  def slow_acq2(*args, **kwargs):
+    entered2.set()
+    unblock2.wait(timeout=2.0)
+    return real_acq2(*args, **kwargs)
+
+  def slow_rel2(h, **kwargs):
+    time.sleep(0.03)
+    return real_rel2(h, **kwargs)
+
+  with (
+      patch.object(f2._fleet, "_acquire_reserved", side_effect=slow_acq2),
+      patch.object(f2._fleet, "release", side_effect=slow_rel2),
+  ):
+    acq2 = asyncio.create_task(f2.acquire(t2))
+    await asyncio.to_thread(entered2.wait, 2.0)
+    acq2.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await acq2
+    threading.Timer(0.01, unblock2.set).start()
+    await asyncio.to_thread(f2.close, wait=True)
+  assert f2._fleet._claims_reserved == 0
+  assert f2.handles() == []
+  assert c2.active_claims == 0
