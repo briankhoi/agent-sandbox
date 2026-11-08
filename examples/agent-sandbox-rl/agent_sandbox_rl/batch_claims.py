@@ -30,11 +30,13 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from k8s_agent_sandbox import BatchError, BatchGroup, Member, SandboxBatch
 from k8s_agent_sandbox.batch_state import still_reaches
+from k8s_agent_sandbox.batch_utils import BATCH_SHUTDOWN_MARGIN_SECONDS
 from k8s_agent_sandbox.utils import select_pod_ip
 
 from .exceptions import FleetError
@@ -52,6 +54,9 @@ class BatchClaim:
 
   batch: SandboxBatch
   member: Member
+  # time.monotonic() by which the controller deletes the claim (its shutdownTime),
+  # measured from before the create with a 1 s margin for sub-second truncation.
+  expires_at: float
   cluster: "Cluster" = field(repr=False)
   rebaselined: bool = False
 
@@ -132,7 +137,7 @@ class BatchClaims:
           create_rps=s.create_rps,
           max_in_flight=s.max_in_flight,
           work_budget=s.work_budget,
-          # Part of each acquired claim's shutdownTime.
+          # Part of each acquired claim's shutdownTime, which expires_at assumes.
           quorum_timeout=self._ready_timeout,
           lease_duration=s.lease_duration)
       stale = False
@@ -185,9 +190,15 @@ class BatchClaims:
     Raises ``FleetError`` once `release_all` has run.
     """
     batch = self._batch_for(cluster, pool)
+    started = time.monotonic()
     member = batch.acquire(
         pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
-    return BatchClaim(batch=batch, member=member, cluster=cluster)
+    # construct_sandbox_claim_lifecycle_spec formats shutdownTime to whole
+    # seconds via strftime, truncating up to almost 1 s of microseconds.
+    expires_at = (started + self._ready_timeout + self._settings.work_budget
+                  + BATCH_SHUTDOWN_MARGIN_SECONDS - 1.0)
+    return BatchClaim(
+        batch=batch, member=member, expires_at=expires_at, cluster=cluster)
 
   def release_all(self) -> None:
     """Releases every batch this fleet opened. Errors are logged, so one cluster's
