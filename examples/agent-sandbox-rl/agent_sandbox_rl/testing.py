@@ -229,7 +229,11 @@ class FakeFleet:
     self.fail_acquire = dict(fail_acquire or {})
     self.run_id = self.config.run_id or "fake-run"
     self._shared_run_id = self.config.run_id is not None
-    self.config.labels = {**self.config.labels, constants.RUN_ID_LABEL: self.run_id}
+    self.config.labels = {
+        **self.config.labels,
+        **constants.DEFAULT_LABELS,
+        constants.RUN_ID_LABEL: self.run_id,
+    }
     self.config.apply_run_isolation(self.run_id)
     if self.config.clusters:
       self.namespace = self.config.clusters[0].namespace
