@@ -1269,6 +1269,7 @@ class AsyncSandboxBatch:
             batch_utils.group_label_selector(self.batch_id, warmpool, self._lease_uid),
             f"batch '{self.batch_id}' group '{warmpool}'",
             guard=self._member_delete,
+            deadline=lambda: self._lease_expires_at,
         )
 
     def _drop_planned_creates(self, warmpool: str | None) -> None:
@@ -2303,6 +2304,7 @@ async def _delete_claims_in_rounds(
     hold: Callable[[], Awaitable[None]] | None = None,
     finish: Callable[[], Awaitable[None]] | None = None,
     guard: Callable[[], contextlib.AbstractAsyncContextManager[None]] = contextlib.nullcontext,
+    deadline: Callable[[], float] | None = None,
 ) -> None:
     """Deletes the claims matching ``label_selector`` with deletecollection rounds, re-listing
     between rounds until no claim is left that isn't already being deleted, then calls ``finish``.
@@ -2320,6 +2322,21 @@ async def _delete_claims_in_rounds(
     collection_timeout = batch_utils.BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS
     idle_rounds = 0
     remaining_before: int | None = None
+
+    def step_budget() -> tuple[int | float, float | None]:
+        if deadline is None:
+            return collection_timeout, None
+        round_deadline = deadline()
+        remaining = round_deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"{description} delete deadline elapsed")
+        return min(float(collection_timeout), remaining), round_deadline
+
+    def is_round_retryable(error: Exception) -> bool:
+        if _is_transient_error(error):
+            return True
+        return deadline is not None and not isinstance(error, BatchError) and isinstance(error, TimeoutError)
+
     while True:
         last_error: Exception | None = None
         held = False
@@ -2330,11 +2347,12 @@ async def _delete_claims_in_rounds(
             # deletecollection deletes one claim at a time on the apiserver, so for a large batch
             # it can time out while deletion continues. For this case, we track it with the list below.
             async with guard():
+                step_timeout, _ = step_budget()
                 await helper.delete_sandbox_claims_by_label(
-                    namespace, label_selector, _request_timeout=collection_timeout
+                    namespace, label_selector, _request_timeout=step_timeout
                 )
         except Exception as e:
-            if not _is_transient_error(e):
+            if not is_round_retryable(e):
                 raise
             last_error = e
 
@@ -2343,11 +2361,15 @@ async def _delete_claims_in_rounds(
             # A consistent read (no resourceVersion), so a lagging watch cache can't report
             # that no claims are left too early.
             async with guard():
+                step_timeout, round_deadline = step_budget()
                 live = await helper.count_live_sandbox_claims(
-                    namespace, label_selector, _request_timeout=collection_timeout
+                    namespace,
+                    label_selector,
+                    _request_timeout=step_timeout,
+                    deadline=round_deadline,
                 )
         except Exception as e:
-            if not _is_transient_error(e):
+            if not is_round_retryable(e):
                 raise
             last_error = e
 
@@ -2359,7 +2381,7 @@ async def _delete_claims_in_rounds(
                     await finish()
                 return
             except Exception as e:
-                if not _is_transient_error(e):
+                if not is_round_retryable(e):
                     raise
                 last_error = e
 
@@ -2368,6 +2390,9 @@ async def _delete_claims_in_rounds(
         progressed = live is not None and (remaining_before is None or live < remaining_before)
         idle_rounds = 0 if progressed else idle_rounds + 1
         if idle_rounds >= batch_utils.BATCH_RELEASE_MAX_IDLE_ROUNDS:
+            if deadline is not None:
+                async with guard():
+                    pass
             if last_error is not None:
                 raise last_error
             raise BatchError(
@@ -2378,5 +2403,7 @@ async def _delete_claims_in_rounds(
         # Fail fast if the handle detached or stopped instead of sleeping through retry backoff,
         # without counting the sleep itself as an active delete.
         async with guard():
-            pass
-        await asyncio.sleep(batch_utils.retry_delay(max(idle_rounds, 1), last_error))
+            delay = batch_utils.retry_delay(max(idle_rounds, 1), last_error)
+            if deadline is not None:
+                delay = min(delay, max(0.0, deadline() - time.monotonic()))
+        await asyncio.sleep(delay)
