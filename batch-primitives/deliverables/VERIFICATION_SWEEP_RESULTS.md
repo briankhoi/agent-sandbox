@@ -4,19 +4,21 @@
 - **Verified Commit SHA:** `e84e964ce2d87987ec2443a5b5edccc84a374289`
 - **Verified Git Tree SHA:** `f798166c129e24f4f0ae59b842a0a32ce40fe177`
 - **Verification Strategy Reference:** `batch-primitives/comprehensive_verification_strategy.md` (`e72f7347`)
-- **Drop-In Verification Suite Patch:** `/usr/local/google/home/brianknguyen/agent-sandbox-notes/batch-primitives/deliverables/verification_suite/verification_suite.patch` (`7,455` lines across `10` repository files; verified with `git apply --check --whitespace=error` both full and `--exclude='examples/agent-sandbox-rl/*'` against tree `f798166c129e24f4f0ae59b842a0a32ce40fe177`)
+- **Drop-In Verification Suite Patch:** `/usr/local/google/home/brianknguyen/agent-sandbox-notes/batch-primitives/deliverables/verification_suite/verification_suite.patch` (`12,419` lines across `12` repository files; verified with `git apply --check --whitespace=error` both full and `--exclude='examples/agent-sandbox-rl/*'` against tree `f798166c129e24f4f0ae59b842a0a32ce40fe177`)
 
 ---
 
 ## 1. One-Minute Executive Summary
 
-We built seven permanent, deterministic verification pipelines (a 22-run modular TLA+ formal suite, a 21-finding static AST and call-graph auditor, a pure SDK 12-cell fault-injection suite paired with a dedicated RL batch fault-injection suite, a stateful Hypothesis fuzzer backed by a shared structural invariant oracle, a lockstep sync/async differential fuzzer, a multi-threaded and async concurrency/CAS stress suite, and a 10-stage single-command master runner) and executed an exhaustive verification sweep across `origin/feat/rl-batch-claim-mode` at commit `e84e964ce2d87987ec2443a5b5edccc84a374289` (tree `f798166c129e24f4f0ae59b842a0a32ce40fe177`).
+We built eight permanent, deterministic verification pipelines (a 22-run modular TLA+ formal suite, a 21-finding static AST and call-graph auditor, a pure SDK 12-cell fault-injection suite paired with a dedicated RL batch fault-injection suite, a stateful Hypothesis fuzzer backed by a shared structural invariant oracle, a lockstep sync/async differential fuzzer, a multi-threaded and async concurrency/CAS stress suite, a performance and complexity suite of bytecode-count, request-count, memory, and wakeup gates for the SDK and RL integration (Pipeline 8), and a 12-stage single-command master runner) and executed an exhaustive verification sweep across `origin/feat/rl-batch-claim-mode` at commit `e84e964ce2d87987ec2443a5b5edccc84a374289` (tree `f798166c129e24f4f0ae59b842a0a32ce40fe177`).
 
 Before sweeping for new defects, we ran our pipelines against both known PR `#2188` review bugs as unfixed negative controls:
 1. **Janet's PR `#2188` review bug** (a fatal watch error stops Lease renewal while sandboxes run) failed deterministically in `BatchHandle.tla` (`ActiveWorkloadProtected` across `74` distinct states and `CleanMemberReleaseAllowed` across `11` distinct states), in `verify_batch_static.py` (`[01]`, `[02]` `INV-AUTH-1`), and live in `test_batch_fault_injection.py` (sync and async).
 2. **Aditya's PR `#2188` Darwin bug** (connecting to a bound, non-listening TCP socket raises `ConnectTimeoutError` on BSD/macOS rather than `NewConnectionError`) failed live in `test_k8s_helper.py` via BSD `SYN`-drop socket simulation.
 
-All `1,100` pre-existing batch SDK (`399`) and RL (`701`) unit tests passed on `e84e964ce2d87987ec2443a5b5edccc84a374289` without detecting any of the defects below. Across the full verification sweep and iterative multi-agent adversarial audit rounds, the suite uncovered **29 distinct verified findings** (`4 CRITICAL`, `9 HIGH`, `14 MEDIUM`, `2 LOW`) backed by **48 executable failing test reproductions**, **21 static AST/call-graph detections**, and **14 deterministic TLA+ negative-control counterexamples** (`8` baseline bug reproductions + `6` protocol mutation controls), alongside **7 audited intended contracts** (`Section 3.13`, where we recommend zero production changes):
+All `1,100` pre-existing batch SDK (`399`) and RL (`701`) unit tests passed on `e84e964ce2d87987ec2443a5b5edccc84a374289` without detecting any of the defects below. Across the full verification sweep and iterative multi-agent adversarial audit rounds, the correctness pipelines uncovered **29 distinct verified findings** (`4 CRITICAL`, `9 HIGH`, `14 MEDIUM`, `2 LOW`) backed by **48 executable failing test reproductions**, **21 static AST/call-graph detections**, and **14 deterministic TLA+ negative-control counterexamples** (`8` baseline bug reproductions + `6` protocol mutation controls), alongside **7 audited intended contracts** (`Section 3.13`, where we recommend zero production changes):
+
+Pipeline 8 then added **10 performance findings** (`F-30`..`F-39`: `1 HIGH`, `3 MEDIUM`, `6 LOW`; [Section 3.14](#perf-findings)), each red in a deterministic gate on `e84e964c`, green under its candidate fix, and re-confirmed by a standalone wall-clock and request-count repro on real SDK and RL objects. The largest: `F-30` (every RL step's liveness check sorts the whole batch under its lock, `41x` slower at `2,000` members), `F-33` (`SandboxFleet.release` is `O(H)` under the fleet lock), `F-39` (session command output costs quadratic time), and `F-34` (`25/N` only, fixed on `26/N`).
 
 | ID | Severity | Invariant / Rule | Verified Location (`file:line`) | Owning Commit & Stack Target | Active-Voice Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -49,13 +51,24 @@ All `1,100` pre-existing batch SDK (`399`) and RL (`701`) unit tests passed on `
 | **F-27** | `MEDIUM` | `INV-OWN-1`, `INV-AUTH-3`, `INV-LEAK-2` | `sandbox_batch.py:414,442-466` (`sandbox_client.py:509-515,520-558`) & `async_sandbox_batch.py:411,439-463` (`async_sandbox_client.py:672-678,685-724`) | `3a1607bc` / `6feedc5c` (`22/N` `#2188` or standalone PR) | `get_batch()` (`_attach`) sends `replace_batch_lease(..., _request_timeout=30)` unclamped by `lease_duration`, returning an already-expired handle when the `PUT` takes longer than `lease_duration`, and omits `batch_utils.check_pool_size` (accepting `pool_size < 3` and leaving `max_in_flight=20`). |
 | **F-28** | `MEDIUM` | `INV-LEAK-1` | `recycle.py:336-355,389-394,498-519,558-575` | `2b68984b` (`25/N` or standalone `main` PR) | When a recyclable image rotates (`pos > 0`) under `scale_on_hold=True` and `reset.prime(handle)` fails before `held[img] += 1` / `unwarm_image`, async `reuse_git_restore_sandbox_async` decrements `held[img]` to `-1` (scaling the pool to `1` dangling warm replica) and sync `reuse_git_restore_sandbox` leaks its JIT `replicas_override=1` warm replica. |
 | **F-29** | `HIGH` | `INV-OWN-3`, `INV-LEAK-2` | `sandbox_batch.py:441-450,1518-1544,2137-2147` & `async_sandbox_batch.py:438-447,1520-1544,2137-2147` | `522dad4c` / `3a1607bc` (standalone `feature/batch-claim` PR) | When `batch_reaper` or a racing client deletes a Lease between `read_batch_lease` (`GET`) and `replace_batch_lease` (`PUT`), `_take_batch_lease` (`release`), `_attach` (`get_batch`), and `detach` only catch `409`, letting raw `ApiException(status=404)` abort `release()` before `deletecollection`, escape `except BatchError:` in `get_batch()`, and leave `_lease_released=False` in `detach()`. |
+| **F-30** | `HIGH` | `INV-PERF-HOTPATH-1` | `batch_claims.py:72` (`25/N`), `:92` and `failfast.py:404-411,447` (`26/N`) | `25/N` and `26/N` | `BatchClaim.still_reaches()` (every `is_alive()` step check) and `26/N`'s `BatchWatchdog._poll_once` copy and sort every member under the batch lock to read one: `33x` to `39x` more work at `2,000` members. |
+| **F-31** | `LOW` | `INV-PERF-HOTPATH-3` | `batch_state.py:426-448,574-582` | SDK (both) | `has_pool`, `members(pool)`, and `release_group(pool)` scan every member and group per pool release (`39x` to `43x`). |
+| **F-32** | `LOW` | `INV-PERF-HOTPATH-2` | `sandbox_batch.py:1393-1400`, `async_sandbox_batch.py:1400-1407` | SDK (both) | `_close_connections` scans the `_stale_connections` list per connection, `O(S^2)` behind a backlog of failed closes. |
+| **F-33** | `MEDIUM` | `INV-PERF-HOTPATH-2` | `fleet.py:1717,1719` (`25/N`), `:1857,1859` (`26/N`) | `25/N` and `26/N` | `SandboxFleet.release()` runs two dataclass-equality scans of every live handle under the fleet lock (`19.5x` at `1,000` handles). |
+| **F-34** | `MEDIUM` | Minimum requests | `fleet.py:1503-1510` | `25/N` only (fixed by `3f95b264`) | Repeat on-demand acquires re-send `ensure_template` and `create_warmpool`: `2` extra requests per acquire. |
+| **F-35** | `LOW` | Bounded memory | `batch_state.py:256` | SDK (both) | `BatchState._released` keeps one tombstone per released claim forever (`156 B` per episode). |
+| **F-36** | `LOW` | `INV-PERF-HOTPATH-2` | `sandbox_batch.py:1220-1232`, `async_sandbox_batch.py:1253-1265` | SDK (both) | The handles' `release_group()` walks the whole fill plan to drop one pool's planned creates (`12x` at `1,000` planned pools). |
+| **F-37** | `LOW` | No needless wakeups | `sandbox_batch.py:1210`, `async_sandbox_batch.py:1243` | SDK (both) | `release_group()` wakes every waiting acquire, including other pools' (`100` of `100`). |
+| **F-38** | `LOW` | Minimum requests | `fleet.py:1562,1564` (`25/N`), `:1610,1612` (`26/N`) | `25/N` and `26/N` | A per-claim acquire `GET`s the Sandbox twice (`get_pod_name`, `get_pod_ip`) where one read returns both. |
+| **F-39** | `MEDIUM` | `INV-PERF-HOTPATH-5` | `handles.py:186-222` (`:217`) | `25/N` and `26/N` | `SandboxSession.run` re-joins and re-scans its whole output buffer per chunk: `10x` the output costs `107x` the time. |
 
-### Master 10-Stage Sweep Summary (`dev/tools/run_batch_verification.sh`)
+### Master 12-Stage Sweep Summary (`dev/tools/run_batch_verification.sh`)
 
 | Stage | Pipeline | Wall Time | Result on `e84e964c` | Measured Output |
 | :--- | :--- | :--- | :--- | :--- |
 | `0` | Harness Self-Check (`Import & Mypy`) | `39s` (`~6s` warm) | `PASS` | Verifies `k8s_agent_sandbox` resolves inside `REPO_ROOT`; `0` `mypy` errors across `6` SDK harness files, `1` RL test module, and `2` BFS model scripts. |
 | `1` | Static AST & Call-Graph Auditor (`verify_batch_static.py`) | `1s` | `FAIL` (expected on unfixed code) | `Summary: 21 finding(s) (CRITICAL=4, HIGH=9, MEDIUM=5, LOW=3)`, `0` false positives. |
+| `1b` | Static Hot-Path Complexity (Check 8 alone) | `1s` | `FAIL` (expected on unfixed code) | `16` findings on `25/N` (`F-30`..`F-33`, `F-36`, `F-39`), `18` on `26/N`, `0` with the candidate fixes. |
 | `2` | Modular TLA+ Suite (`runall_subsystems.sh`, `22` TLC runs) | `56s` | `PASS` (`22/22` expected outcomes) | `8` positive specs pass (`3,272,848` distinct / `17,866,937` generated states); `14` deterministic `-workers 1` negative controls violate target invariants (`2,499` distinct / `6,296` generated states; `3,275,347` total distinct states, `0` subsystem deadlocks). |
 | `3` | BFS Lock & Cancel State Models (`verify_delete_lifecycle_model.py`, `verify_cancel5_exercise.py`) | `4s` | `PASS` | `62,579` total reachable states across `15` sync/async lock/signal models (`7` positive safety models = `26,053` states with `0` violations + `8` expected negative-control models = `36,526` states) + `19` explored states across `3` `CANCEL-5` assertions (`4 + 9 + 6`). |
 | `4` | BSD/macOS Socket Portability (`test_k8s_helper.py`) | `2s` | `FAIL` (reproduces **F-02**) | `1 failed, 80 deselected in 1.35s` (`ConnectTimeoutError` at `test_k8s_helper.py:1243`). |
@@ -65,6 +78,8 @@ All `1,100` pre-existing batch SDK (`399`) and RL (`701`) unit tests passed on `
 | `7` | Sync/Async Lockstep Differential Fuzzer (`test_batch_differential.py`) | `3s` | `FAIL` (reproduces **F-12**) | `1 failed, 51 passed in 2.55s` (`50` seeded lockstep traces + `CANCEL-5` interruption parity pass; `F-12` fails identically on sync and async). |
 | `8` | Concurrency & CAS Stress Suite (`test_batch_concurrency_stress.py`) | `4s` | `FAIL` (reproduces **F-15**) | `1 failed, 4 passed in 3.63s` (`50`-worker sync/async churn, `15`-round `9`-thread Lease CAS, and creator flood pass; `0.250s` lock starvation fails). |
 | `9` | Production Mypy & PEP 561 (`SDK + RL`) | `32s` (`~8s` warm) | `FAIL` (reproduces **F-13** & **F-22**) | SDK internal: `0` errors (`44` files); PEP 561 `--strict -c`: `Found 3 errors in 1 file`; RL `--ignore-missing-imports`: `Found 41 errors in 10 files (checked 29 source files)`. |
+| `10a` | SDK Performance & Complexity Suite (`test_batch_performance_invariants.py`) | `~3 min` (`-n 8`) | `FAIL` (reproduces **F-31, F-32, F-36, F-37**) | `9` red gates on `25/N`; `66 passed, 1 xfailed` (`F-35` target) with the candidate fixes. |
+| `10b` | RL Performance & Complexity Suite (`test_batch_performance_rl.py`) | `~15s` | `FAIL` (reproduces **F-30, F-33, F-34, F-39**) | `12` red gates on `25/N`, `8` on `26/N` (including the watchdog); `20 passed, 2 skipped, 1 xfailed` (`F-38` target) with the candidate fixes. |
 
 ---
 
@@ -127,7 +142,7 @@ A verification harness that starts green proves nothing about its defect-detecti
 
 ---
 
-## 3. Complete Findings Catalog (`F-01` .. `F-29` at `e84e964ce2d87987ec2443a5b5edccc84a374289`)
+## 3. Complete Findings Catalog (`F-01` .. `F-39` at `e84e964ce2d87987ec2443a5b5edccc84a374289`)
 
 Every finding below cites exact `file:line` coordinates and `git blame` SHAs verified against `e84e964ce2d87987ec2443a5b5edccc84a374289`, paired with a deterministic single-command reproduction and surgical fix recommendation.
 
@@ -772,6 +787,81 @@ Per `working_rules.md` line 73, we audited seven candidate behaviors flagged dur
    In `AsyncSandboxBatch.wait_for_quorum` (`:702`) and `_drop_acquired` (`:1138`), `except BaseException:` acquires `async with self._changed:` before mutating `_state`. Because `verify_batch_static.py` enforces zero `await` points inside every `self._lock` / `self._changed` block across `AsyncSandboxBatch` (`INV-LOCK-ASYNC-1`), `self._changed` is never held across an event-loop yield, so `asyncio.Lock.acquire()` executes synchronously without suspending (`test_sdk_async_acquire_repeated_cancellation_with_concurrent_watch` and `test_differential_acquire_interruption_cleanup_parity` pass `100%` under concurrent watch notifications and repeated `task.cancel()`, while `verify_cancel5_exercise.py` explores `19` states across `3` assertions to guard against any future `await` inside `_changed`).
 
 ---
+
+<a id="perf-findings"></a>
+
+### 3.14 Performance & Complexity Findings (`F-30` .. `F-39`, Pipeline 8)
+
+Pipeline 8 (Stage `1b` Check 8 `HOT_PATH_COMPLEXITY`, Stages `10a`/`10b`) measures cost in machine-independent units: executed Python bytecode instructions of the test thread at a small and a large size, whole-table walks inside C builtins, `__eq__` comparisons, outbound request counts, and `tracemalloc` bytes. Line numbers are at `e84e964c` (`25/N`) unless marked `26/N` (`bb443e71`, `origin/feat/rl-batch-hardening`). The SDK is byte-identical on both branches, so every SDK finding applies to both. Every finding was re-confirmed outside the suite by a standalone wall-clock and request-count repro on real `SandboxClient` / `SandboxBatch` / `SandboxFleet` objects (last column).
+
+| ID | Severity | `25/N` | `26/N` | Gate (RED today) | Gate measurement | Standalone repro (wall clock) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **F-30** | `HIGH` | Present | Present, plus `BatchWatchdog` | `test_batch_performance_rl.py::test_batch_claim_still_reaches_is_o1_in_pool_size`, `::test_handle_is_alive_on_lost_claim_is_o1_in_pool_size` (each on a state stand-in and on a real `SandboxBatch`), `::test_batch_watchdog_idle_poll_is_o1_in_batch_size` (`26/N`); Check 8 `INV-PERF-HOTPATH-1` | `still_reaches`: `4,421` vs `146,783` instructions at `N=50` vs `2,000` (`33.2x`); lost-claim `is_alive`: `4,049` vs `146,405` (`36.2x`); watchdog idle poll: `4,184` vs `162,134` (`38.8x`) | `still_reaches` on a real batch: `41.4` vs `1,692.7 us` (`40.9x`); watchdog idle poll: `37.7` vs `1,884.7 us` (`50.0x`) |
+| **F-31** | `LOW` | Present | Present | `test_batch_performance_invariants.py::test_has_pool_is_o1_in_batch_and_group_count`, `::test_per_pool_members_and_release_group_scale_with_pool_size`; Check 8 `INV-PERF-HOTPATH-3` | `has_pool`: `1,116` vs `48,156` (`43.2x`); `members(pool)` `43.8x`; `release_group(pool)` `39.0x` | `has_pool`: `11.3` vs `554.5 us` at `G=100` vs `5,000` (`48.9x`) |
+| **F-32** | `LOW` | Present | Present | `::test_sync_close_connections_is_linear_in_stale_count`, `::test_async_close_connections_is_linear_in_stale_count`; Check 8 `INV-PERF-HOTPATH-2` | `5,000` vs `1,280,000` comparisons closing `S=50` vs `800` connections behind an equal backlog | `45` vs `8,012 us` (`177.5x` where linear is `16x`) |
+| **F-33** | `MEDIUM` | Present | Present | `test_batch_performance_rl.py::test_fleet_release_is_o1_in_active_handles`; Check 8 `INV-PERF-HOTPATH-2` | `11,106` vs `216,306` instructions for one `release()` at `H=50` vs `1,000` (`19.5x`) | `147.4` vs `2,927.9 us` (`19.9x`) |
+| **F-34** | `MEDIUM` | Present | **Fixed** (`3f95b264`) | `test_batch_performance_rl.py::test_repeat_on_demand_acquires_skip_pool_and_template_requests`, `::test_fleet_batch_mode_acquire_is_o1_in_pool_size`, `::test_fleet_episodes_retain_no_memory[fleet,per_claim]` | `18` extra requests (`ensure_template` + `create_warmpool`) across `9` repeat acquires; `6,000` across `3,000` churn episodes | `18` extra requests across `9` acquires on `25/N`, `0` on `26/N` |
+| **F-35** | `LOW` | Present | Present | Pinned: `::test_acquire_release_churn_retains_only_released_tombstones`; strict expected failure: `::test_released_tombstones_stay_bounded` | `156 B` retained per acquire/release episode, all `BatchState._released` tombstones | `5,000` tombstones after `5,000` episodes, `172 B`/episode |
+| **F-36** | `LOW` | Present | Present | `::test_sync_release_group_is_o1_in_planned_pools`, `::test_async_release_group_is_o1_in_planned_pools`; Check 8 `INV-PERF-HOTPATH-2` | First `release_group` during the fill: `7,469` vs `90,769` instructions at `20x5` vs `1,000x5` planned creates (`12.2x`; async `12.6x`) | `600` vs `1,588 us` (`2.6x`) |
+| **F-37** | `LOW` | Present | Present | `::test_sync_release_group_wakes_only_its_pool`, `::test_async_release_group_wakes_only_its_pool` | `release_group('pool-a')` wakes `100` of `100` acquires waiting on another pool | `100` of `100` woken |
+| **F-38** | `LOW` | Present | Present | Strict expected failure: `test_batch_performance_rl.py::test_per_claim_acquire_reads_the_sandbox_once` | `2` Sandbox `GET`s per per-claim acquire where `1` returns both values | `18` Sandbox `GET`s across `9` acquires |
+| **F-39** | `MEDIUM` | Present | Present | `test_batch_performance_rl.py::test_session_run_cost_is_linear_in_output_size`; Check 8 `INV-PERF-HOTPATH-5` | `0.62` vs `1,075.55 ms` for `50` vs `2,000` 1 KiB output chunks (`1,737x` for `40x` the output) | `10.9` vs `1,165.5 ms` for `400 KiB` vs `4 MB` (`106.6x` for `10x`) |
+
+#### `F-30` [`HIGH`]: `BatchClaim.still_reaches()` (and `26/N` `BatchWatchdog._poll_once`) Look Up One Member Through a Full `batch.members(warmpool)` Snapshot
+
+- **Verified Locations:** `examples/agent-sandbox-rl/agent_sandbox_rl/batch_claims.py:72` (`25/N`), `:92` (`26/N`), called from `SandboxHandle.is_alive()` at every RL step boundary. `26/N` only: `failfast.py:404-411` (every poll copies and sorts every member and rebuilds `O(N)` sets) and `failfast.py:447` (per-verdict re-check). Neither handle exposes `get_member(claim_name)`, although `BatchState.get_member` (`batch_state.py:584`) is `O(1)`.
+- **Root Cause:** `SandboxBatch.members(warmpool)` takes the batch lock, walks all `N` members, filters to the pool, and sorts. `still_reaches()` keeps one member. `N` workers checking once per step do `O(N^2 log N)` work per step, serialized on the lock the watch thread needs for every event. The watchdog polls at up to `50 Hz` during acquire bursts.
+- **Recommended Fix:** Add `get_member(claim_name)` to both handles (sync under the lock, async without awaiting) and use it in `still_reaches()` and the watchdog re-check; track pending members so an idle poll is `O(1)`.
+- **Two-Sided Proof:** With the fix, both RL gates pass at `1.0x`, the handle `get_member` gates pass, Check 8 reports no `INV-PERF-HOTPATH-1` finding, and the only existing test that changes is `test_batch_claims.py`'s `FakeBatch`, which gains `get_member`.
+
+#### `F-31` [`LOW`]: `BatchState.has_pool`, `members(warmpool)`, and `release_group` Scan Every Member and Group
+
+- **Verified Locations:** `batch_state.py:426-448`, `:574-582`; callers are the handles' `release_group()`.
+- **Why `LOW`:** These run once per pool release, not per event; releasing all `G` pools of a multi-image batch costs `O(G * N)` under the batch lock.
+- **Recommended Fix:** Per-pool indexes `_members_by_pool` and `_acquiring_by_pool`, maintained by one insert and one pop helper each.
+
+#### `F-32` [`LOW`]: `_close_connections` Scans `_stale_connections` (a `list`) per Connection
+
+- **Verified Locations:** `sandbox_batch.py:1393-1400`, `async_sandbox_batch.py:1400-1407`.
+- **Why `LOW`:** Quadratic only behind a backlog of failed closes, which stay at the front of the list.
+- **Recommended Fix:** An insertion-ordered `dict[Sandbox, None]`.
+
+#### `F-33` [`MEDIUM`]: `SandboxFleet.release(handle)` Runs Two Dataclass-Equality Scans of `self._handles` Under `fleet._lock`
+
+- **Verified Locations:** `fleet.py:1717,1719` (`25/N`), `fleet.py:1857,1859` (`26/N`).
+- **Recommended Fix:** Key `self._handles` by `id(handle)` in an insertion-ordered dict.
+
+#### `F-34` [`MEDIUM`, `25/N` only]: Repeat On-Demand `acquire()` Re-Sends `ensure_template` and `create_warmpool`
+
+- **Verified Location:** `fleet.py:1503-1510` (`25/N`). Applies in per-claim and batch mode. **Fixed on `26/N`** by `3f95b264`.
+
+#### `F-35` [`LOW`]: `BatchState._released` Keeps One Tombstone per Released Claim for the Life of a Dynamic Batch
+
+- **Verified Location:** `batch_state.py:256`, never pruned (about `1.5 GB` per `10M` episodes).
+- **Recommended Fix:** Prune once the claim's `DELETED` event is seen and no create for it can still land, or keep an ordinal low-watermark. The strict expected-failure gate then passes, so remove its marker.
+
+#### `F-36` [`LOW`]: The Handles' `release_group()` Walks the Whole Fill Plan to Drop One Pool's Planned Creates
+
+- **Verified Locations:** `sandbox_batch.py:1220-1232` (`_drop_planned_creates`), `async_sandbox_batch.py:1253-1265`.
+- **Why `LOW`:** Once per pool release during the fill; releasing all `G` pools costs `O(G^2)` under the batch lock (about `1 s` at `G=1,000`).
+- **Recommended Fix:** Index planned creates per pool (`_plan_by_pool`) with a live counter; the create worker skips dropped entries.
+
+#### `F-37` [`LOW`]: `release_group()` Wakes Every Waiting Acquire, Not Only That Pool's
+
+- **Verified Locations:** `sandbox_batch.py:1210`, `async_sandbox_batch.py:1243` (`self._notify_all()`).
+- **Recommended Fix:** `notify_all()` on the condition plus waking only the released pool's acquiring names.
+
+#### `F-38` [`LOW`]: A Per-Claim Acquire Reads the Sandbox Twice
+
+- **Verified Locations:** `fleet.py:1562,1564` (`25/N`), `:1610,1612` (`26/N`) call `sandbox.get_pod_name()` and `sandbox.get_pod_ip()`; each `GET`s the Sandbox (`sandbox.py:103-113`, `:131-142`).
+- **Recommended Fix:** One read that returns both, or seed the pod IP from the read `get_pod_name()` already makes. The strict expected-failure gate then passes, so remove its marker.
+
+#### `F-39` [`MEDIUM`]: `SandboxSession.run` Re-Joins and Re-Scans Its Whole Output Buffer on Every Chunk
+
+- **Verified Location:** `handles.py:186-222` (`:217`), both branches. This is the per-command path of a recycled sandbox with `use_session=True`.
+- **Root Cause:** Each stdout chunk runs `"".join(buf)` and `marker in text` over everything received so far, so `K` chunks copy and scan `O(K^2)` bytes. The copying happens in C: instruction counts and peak memory stay linear, so only time (and Check 8's `INV-PERF-HOTPATH-5`) shows it.
+- **Recommended Fix:** Keep the last `len(marker) - 1` characters, test `marker in tail + chunk`, and join once when the marker arrives.
+- **Two-Sided Proof:** With that fix, the repro scales linearly (`0.6`, `2.6`, `9.3 ms` for `1x`, `4x`, `10x` the output) and all `21` session unit tests pass.
 
 ## 4. Coverage Matrices: Master Invariants, Chaos Suites, & 22-Run TLA+ Suite
 

@@ -16,10 +16,15 @@
 # Master Batch Verification and Chaos Pipeline Runner.
 #
 # Usage:
-#   ./dev/tools/run_batch_verification.sh [--quick] [--skip-external] [--python /path/to/python]
+#   ./dev/tools/run_batch_verification.sh [--quick] [--skip-external] [--perf-only]
+#       [--python /path/to/python]
+#
+#   --perf-only runs only the harness self-check (Stage 0) and the performance stages (1b, 10a,
+#   10b), so a branch that is red on correctness stages still gets a clean performance verdict.
 #
 # Environment overrides:
 #   PYTHON_BIN   Python interpreter with pytest, hypothesis, mypy, kubernetes_asyncio installed.
+#   PERF_STAGE_TIMEOUT  Seconds before Stage 10a or 10b is killed and fails (default 1800).
 #   TLA_DIR      Path to TLA+ specification directory containing runall_subsystems.sh.
 #   BFS_DIR      Path to handoff/work directory containing BFS lock/cancel model scripts.
 
@@ -31,6 +36,7 @@ DEFAULT_NOTES_WORK="$(cd "${REPO_ROOT}/.." && pwd)/agent-sandbox-notes/batch-pri
 
 QUICK_MODE=0
 SKIP_EXTERNAL=0
+PERF_ONLY=0
 EXPLICIT_TLA=0
 EXPLICIT_BFS=0
 if [[ -n "${TLA_DIR:-}" ]]; then
@@ -51,6 +57,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-external)
       SKIP_EXTERNAL=1
+      shift
+      ;;
+    --perf-only)
+      PERF_ONLY=1
       shift
       ;;
     --python)
@@ -158,9 +168,13 @@ print(f\"Verified import root: {mod}\")
       '${SDK_UNIT_DIR}/test_batch_fault_injection.py' \
       '${SDK_UNIT_DIR}/test_batch_state_fuzz.py' \
       '${SDK_UNIT_DIR}/test_batch_differential.py' \
-      '${SDK_UNIT_DIR}/test_batch_concurrency_stress.py'
+      '${SDK_UNIT_DIR}/test_batch_concurrency_stress.py' \
+      '${SDK_UNIT_DIR}/test_batch_performance_invariants.py'
     if [[ -f '${RL_DIR}/tests/test_batch_fault_injection_rl.py' ]]; then
       '${PYTHON_BIN}' -m mypy --cache-dir '${MYPY_CACHE_RL}' --ignore-missing-imports --follow-imports=silent '${RL_DIR}/tests/test_batch_fault_injection_rl.py'
+    fi
+    if [[ -f '${RL_DIR}/tests/test_batch_performance_rl.py' ]]; then
+      '${PYTHON_BIN}' -m mypy --cache-dir '${MYPY_CACHE_RL}' --ignore-missing-imports --follow-imports=silent '${RL_DIR}/tests/test_batch_performance_rl.py'
     fi
     if [[ ${SKIP_EXTERNAL} -eq 0 && -f '${BFS_DIR}/verify_delete_lifecycle_model.py' && -f '${BFS_DIR}/verify_cancel5_exercise.py' ]]; then
       '${PYTHON_BIN}' -m mypy --cache-dir '${MYPY_CACHE_RL}' --ignore-missing-imports \
@@ -170,8 +184,19 @@ print(f\"Verified import root: {mod}\")
   "
 
 # Stage 1: Static AST & Call-Graph Auditor
-run_stage "1. Static AST & Call-Graph Auditor" \
-  "${PYTHON_BIN}" "${REPO_ROOT}/dev/tools/verify_batch_static.py" --repo-root "${REPO_ROOT}" --fail-on LOW
+if [[ ${PERF_ONLY} -eq 0 ]]; then
+  run_stage "1. Static AST & Call-Graph Auditor" \
+    "${PYTHON_BIN}" "${REPO_ROOT}/dev/tools/verify_batch_static.py" --repo-root "${REPO_ROOT}" --fail-on LOW
+fi
+
+# Stage 1b: Hot-path complexity check on its own, so a new HOT_PATH finding (or a fix that
+# removes one) changes a stage result even while Stage 1 is red on other checks.
+run_stage "1b. Static Hot-Path Complexity" \
+  "${PYTHON_BIN}" "${REPO_ROOT}/dev/tools/verify_batch_static.py" --repo-root "${REPO_ROOT}" \
+  --check HOT_PATH_COMPLEXITY --fail-on LOW
+
+# Stages 2-9 check correctness, not performance; --perf-only skips them.
+if [[ ${PERF_ONLY} -eq 0 ]]; then
 
 # Stage 2: Modular TLA+ Formal Suite (deadlock checking enabled)
 if [[ ${QUICK_MODE} -eq 1 || ${SKIP_EXTERNAL} -eq 1 ]]; then
@@ -262,6 +287,24 @@ run_stage "9. Production Mypy & PEP 561 (SDK+RL)" \
     fi
     exit \${rc}
   "
+
+fi  # PERF_ONLY
+
+# Stages 10a/10b get a hard time limit, so a regression that hangs a gate fails the stage
+# instead of stalling the run (the SDK suite takes about 3 minutes on 8 cores).
+PERF_STAGE_TIMEOUT="${PERF_STAGE_TIMEOUT:-1800}"
+
+# Stage 10a: SDK Performance & Complexity Suite (bytecode-count, request-count, memory gates)
+run_stage "10a. SDK Performance & Complexity Suite" \
+  timeout "${PERF_STAGE_TIMEOUT}" "${PYTHON_BIN}" -m pytest -c "${SDK_CFG}" -o "cache_dir=${PYTEST_CACHE_DIR}" -q \
+  "${SDK_UNIT_DIR}/test_batch_performance_invariants.py"
+
+# Stage 10b: RL Performance & Complexity Suite
+if [[ -f "${RL_DIR}/tests/test_batch_performance_rl.py" ]]; then
+  run_stage "10b. RL Performance & Complexity Suite" \
+    timeout "${PERF_STAGE_TIMEOUT}" "${PYTHON_BIN}" -m pytest -o asyncio_mode=auto -o "cache_dir=${PYTEST_CACHE_DIR}" -q \
+    "${RL_DIR}/tests/test_batch_performance_rl.py"
+fi
 
 echo ""
 echo "============================================================================================================"

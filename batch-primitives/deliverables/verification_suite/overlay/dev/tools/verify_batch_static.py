@@ -14,7 +14,7 @@
 # limitations under the License.
 """Static AST and call-graph auditor for the agent-sandbox batch stack and RL integration.
 
-Executes seven deterministic structural checks across the Python SDK batch modules and
+Executes eight deterministic structural checks across the Python SDK batch modules and
 examples/agent-sandbox-rl (skipping optional downstream RL files when absent on SDK-only branches):
   1. SHARED_AUTHORITY_ISOLATION: Flags watch-stream error handlers that write into the
      shared error channel read by Lease renewal, Lease-expiry notification, and release gates.
@@ -34,6 +34,11 @@ examples/agent-sandbox-rl (skipping optional downstream RL files when absent on 
      ``AsyncSandboxBatch`` and checks ``CANCEL-5`` statement ordering in async cleanup paths.
   7. PEP561_PUBLIC_EXPORTS: Verifies ``k8s_agent_sandbox/__init__.py`` declares explicit
      ``__all__`` re-exports for every public symbol when ``py.typed`` is shipped.
+  8. HOT_PATH_COMPLEXITY: Flags ``O(N)``/``O(N log N)`` full-batch snapshot calls
+     (``.members(...)``) inside per-member or per-event hot paths, ``O(N^2)`` list membership
+     and ``.remove(...)`` scans on lock-guarded handle/connection lists, linear ``self._members``
+     or ``self.groups`` scans inside ``O(1)``/``O(K_pool)`` ``BatchState`` methods, and
+     ``copy.deepcopy`` on batch hot paths.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ import pathlib
 import subprocess
 import sys
 from collections.abc import Iterator
+from typing import Any
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1063,6 +1069,14 @@ def check_base_exception_rollback(repo_root: pathlib.Path) -> list[Finding]:
                                     )
                                     if "_claims_reserved" in targets_txt:
                                         rollback_summary.append("_claims_reserved decrement")
+                                    elif isinstance(st, ast.Assign) and any(
+                                        isinstance(t, ast.Subscript)
+                                        and _attr_chain(t.value) == "self._handles"
+                                        for t in st.targets
+                                    ):
+                                        # An id-keyed `_handles` dict re-inserts with a
+                                        # subscript instead of `.append()`.
+                                        rollback_summary.append("self._handles.append()")
                                 elif isinstance(st, ast.Call):
                                     ch = _attr_chain(st.func)
                                     if ch and any(
@@ -1611,6 +1625,1005 @@ def check_pep561_exports(repo_root: pathlib.Path) -> list[Finding]:
     return findings
 
 
+# ---------------------------------------------------------------------------
+# Check 8: Hot-path complexity (snapshot lookups, quadratic list scans, linear index scans)
+# ---------------------------------------------------------------------------
+
+# BatchState methods that run once per watch event, acquire, or release and must stay O(1) in the
+# batch's member count N and group count G.
+_BATCH_STATE_O1_METHODS = frozenset({
+    "upsert_claim",
+    "mark_lost",
+    "pop_event",
+    "pop_group_outcome",
+    "_check_quorum",
+    "start_acquire",
+    "acquired_member",
+    "release_claim",
+    "note_deleted",
+    "get_member",
+    "release_member",
+    "take_exhausted_pools",
+    "enter_acquire",
+    "exit_acquire",
+    "pool_release_seq",
+    "drop_acquired",
+    # Consumers recheck these on every wake, and every watch event wakes them.
+    "events_done",
+    "groups_done",
+    "fill_settled",
+    "quorum_result",
+    "error",
+    # Per fill create.
+    "group_failed",
+    "record_skipped_create",
+    "delete_seq",
+})
+
+# BatchState per-pool methods that must scale with the pool's own size K_pool, not with N or G.
+# They run per pool release (the handles' release_group), so a full scan costs O(G * N) across
+# releasing all G pools of a multi-image batch rather than per event.
+_BATCH_STATE_PER_POOL_METHODS = frozenset({"members", "release_group", "has_pool"})
+
+# Attribute chains holding every member, in-flight acquire, or group of a batch.
+_FULL_BATCH_COLLECTIONS = frozenset({
+    "self._members",
+    "self._acquiring",
+    "self.groups",
+})
+
+# Whole-collection walks that run once per batch (the quorum resolving or failing), not per
+# event, even though the method also runs per event.
+_ONE_SHOT_WALKS = frozenset({
+    ("_check_quorum", "self._waiting"),
+    ("fail_quorum", "self._waiting"),
+    # A group's held members are walked once, when its outcome is decided.
+    ("_decide_group_outcome", "self._waiting"),
+    # A set bounded by the number of pools, not by members.
+    ("take_exhausted_pools", "self._exhausted_pools"),
+})
+
+
+def _state_collection_roots(
+    methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+) -> frozenset[str]:
+    """Returns ``_FULL_BATCH_COLLECTIONS`` plus every ``self.<attr>`` that ``__init__`` binds to a
+    collection (dict, set, list, Counter, or a comprehension), each of which grows with the
+    batch's members, groups, or release history."""
+    roots = set(_FULL_BATCH_COLLECTIONS)
+    init = methods.get("__init__")
+    if init is None:
+        return frozenset(roots)
+    for sub in _iter_no_nested_defs(init):
+        target: ast.AST | None = None
+        value: ast.AST | None = None
+        if isinstance(sub, ast.AnnAssign):
+            target, value = sub.target, sub.value
+        elif isinstance(sub, ast.Assign) and len(sub.targets) == 1:
+            target, value = sub.targets[0], sub.value
+        if not (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+        ):
+            continue
+        collection = isinstance(
+            value, (ast.Dict, ast.Set, ast.List, ast.DictComp, ast.SetComp, ast.ListComp)
+        ) or (
+            isinstance(value, ast.Call)
+            and (
+                (isinstance(value.func, ast.Name)
+                 and value.func.id in {"dict", "set", "list", "Counter", "deque"})
+                or (isinstance(value.func, ast.Attribute) and value.func.attr == "fromkeys")
+            )
+        )
+        if collection:
+            roots.add(f"self.{target.attr}")
+    return frozenset(roots)
+
+
+# Handle attributes the batch stack treats as membership sets that Check 8 forbids as ``list``.
+_SET_LIKE_LIST_ATTRS = frozenset({
+    "_stale_connections", "_handles", "_checked_pools", "_ondemand",
+})
+_SET_LIKE_SELF_ROOTS = frozenset(f"self.{attr}" for attr in _SET_LIKE_LIST_ATTRS)
+# Per-item handle methods must not walk any per-claim table: cached connections, stale
+# connections, waiting acquires, or the fleet's handles.
+_PER_ITEM_TABLE_ROOTS = _SET_LIKE_SELF_ROOTS | {
+    "self._connected", "self._acquire_waiters", "self._prechecks", "self._credit_refresh_locks",
+    # WarmCredit's per-pool tables, which the handles consult on every acquire.
+    "self._credit", "self._read_at", "self._seq",
+    # The batch state's whole-batch tables and groups, and the fill plan, reached from the
+    # handle.
+    "self._state.groups", "self._state._members", "self._state._acquiring", "self.groups",
+    "self._create_plan", "self._plan_by_pool",
+}
+
+# Handle methods that legitimately walk a whole table, since they act on the whole batch or
+# run once per batch. Every other handle method (and every helper it calls through
+# ``self.<method>()``) handles one claim, connection, event, or create per call, so new
+# methods are checked by default. The create worker loops once per fill create, so a walk
+# inside its loop or its nested helpers costs O(N) per create and O(N^2) per fill.
+_HANDLE_WHOLE_BATCH_METHODS = frozenset({
+    "__init__", "__enter__", "__exit__", "__aenter__", "__aexit__", "__repr__", "__del__",
+    "_start", "release", "detach", "close", "members", "groups",
+    "_close_cached_connections", "_notify_all", "_fail_waiters",
+    "_wait_active_deletes", "_stop_background", "_join_background",
+})
+_PER_ITEM_EXEMPT: dict[str, frozenset[str]] = {
+    "SandboxBatch": _HANDLE_WHOLE_BATCH_METHODS,
+    "AsyncSandboxBatch": _HANDLE_WHOLE_BATCH_METHODS,
+    "WarmCredit": frozenset({"__init__"}),
+}
+
+
+# Flags whose `if <flag>:` block runs once per batch or per watch reconnect, not per item: the
+# watch loop re-lists (and resyncs every cached connection) only after a 410 or a failure.
+_ONCE_PER_BATCH_FLAGS = frozenset({"relist"})
+
+
+def _once_per_batch_nodes(method: ast.FunctionDef | ast.AsyncFunctionDef) -> set[int]:
+    """Returns the ids of every node inside an `if <flag>:` block guarded by one of
+    ``_ONCE_PER_BATCH_FLAGS``, or inside an `if warmpool is None:` block (the whole-batch form
+    of a per-pool method, as release() calls it)."""
+    once: set[int] = set()
+    for sub in ast.walk(method):
+        whole_batch_branch = (
+            isinstance(sub, ast.If)
+            and isinstance(sub.test, ast.Compare)
+            and isinstance(sub.test.left, ast.Name)
+            and sub.test.left.id == "warmpool"
+            and len(sub.test.ops) == 1
+            and isinstance(sub.test.ops[0], ast.Is)
+            and isinstance(sub.test.comparators[0], ast.Constant)
+            and sub.test.comparators[0].value is None
+        )
+        if not isinstance(sub, ast.If):
+            continue
+        if whole_batch_branch or (
+            isinstance(sub.test, ast.Name) and sub.test.id in _ONCE_PER_BATCH_FLAGS
+        ):
+            for stmt in sub.body:
+                once.update(id(n) for n in ast.walk(stmt))
+    return once
+
+
+_RELATIONAL_OPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)
+# Set methods that walk the whole receiver (or argument) in C.
+_WHOLE_SET_METHODS = frozenset({
+    "issubset", "issuperset", "isdisjoint", "union", "intersection", "difference",
+    "symmetric_difference", "intersection_update", "difference_update",
+    "symmetric_difference_update",
+})
+
+
+def _whole_aliases(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, roots: frozenset[str]
+) -> dict[str, str]:
+    """Maps locals bound to a whole table (`acquiring = self._state._acquiring`) to its root.
+    Unlike ``_collection_aliases``, a subscript (`self._min_ready[pool]`, often a scalar) never
+    makes an alias here."""
+    aliases: dict[str, str] = {}
+    for sub in _iter_no_nested_defs(fn):
+        if (
+            isinstance(sub, ast.Assign)
+            and len(sub.targets) == 1
+            and isinstance(sub.targets[0], ast.Name)
+            and _attr_chain(sub.value) in roots
+        ):
+            aliases[sub.targets[0].id] = str(_attr_chain(sub.value))
+    return aliases
+
+
+def _relational_root(
+    sub: ast.AST, roots: frozenset[str], aliases: dict[str, str] | None = None
+) -> str | None:
+    """Returns the root a comparison or set operation walks whole: `self._a <= other`,
+    `self._a == other`, `self._a.issubset(x)`, `x.isdisjoint(self._a)`. These run in C, call no
+    Python method, and allocate nothing. ``aliases`` must map only whole-table locals (see
+    ``_whole_aliases``)."""
+    def root_of(node: ast.AST) -> str | None:
+        chain = _attr_chain(node)
+        if chain in roots:
+            return chain
+        if isinstance(node, ast.Name) and aliases and node.id in aliases:
+            return aliases[node.id]
+        return None
+
+    if isinstance(sub, ast.Compare) and any(isinstance(op, _RELATIONAL_OPS) for op in sub.ops):
+        for side in [sub.left, *sub.comparators]:
+            if (root := root_of(side)) is not None:
+                return root
+    if (
+        isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr in _WHOLE_SET_METHODS
+    ):
+        for operand in [sub.func.value, *sub.args]:
+            if (root := root_of(operand)) is not None:
+                return root
+    return None
+
+
+def _module_function_names(tree: ast.Module) -> frozenset[str]:
+    return frozenset(
+        node.name for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+
+
+def _root_passed_to_module_helper(
+    sub: ast.AST, roots: frozenset[str], module_funcs: frozenset[str],
+    aliases: dict[str, str] | None = None,
+) -> str | None:
+    """Returns the root when ``sub`` calls a module-level function of the same file with a
+    whole table (or a ``.values()``/``.items()``/``.keys()`` view of one) as an argument. Check 8
+    analyzes methods, not module functions, so such a helper could walk the table unseen."""
+    if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+            and sub.func.id in module_funcs):
+        return None
+    for arg in [*sub.args, *(kw.value for kw in sub.keywords)]:
+        if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) and (
+            arg.func.attr in ("values", "items", "keys")
+        ):
+            arg = arg.func.value
+        chain = _attr_chain(arg)
+        if chain in roots:
+            return chain
+        if isinstance(arg, ast.Name) and aliases and arg.id in aliases:
+            return aliases[arg.id]
+    return None
+
+
+def _per_item_methods(
+    cls_name: str, methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
+) -> set[str]:
+    """Returns the class's per-item methods: every method except its whole-batch ones for
+    classes in ``_PER_ITEM_EXEMPT``, else ``_PER_ITEM_MEMBERSHIP_METHODS``, plus every helper
+    those reach through ``self.<method>()`` calls."""
+    exempt = _PER_ITEM_EXEMPT.get(cls_name)
+    if exempt is not None:
+        seeds = frozenset(methods) - exempt
+    else:
+        seeds = _PER_ITEM_MEMBERSHIP_METHODS.get(cls_name, frozenset())
+    return _self_call_closure(methods, seeds, exempt or frozenset())
+
+
+# Methods that add or remove one membership entry per call.
+_PER_ITEM_MEMBERSHIP_METHODS: dict[str, frozenset[str]] = {
+    "SandboxFleet": frozenset({"release", "acquire", "_acquire_reserved"}),
+}
+
+
+_ITERATING_BUILTINS = frozenset({
+    "list", "tuple", "set", "frozenset", "sorted", "reversed", "filter", "map", "max", "min",
+    "sum", "any", "all", "enumerate", "iter",
+})
+
+
+def _iter_collection_root(
+    node: ast.AST,
+    roots: frozenset[str] = _FULL_BATCH_COLLECTIONS,
+    *,
+    aliases: dict[str, str] | None = None,
+    pool_slices_ok: bool = False,
+) -> str | None:
+    """Returns ``self._members`` for ``self._members``, ``self._members.items()``, ``.values()``,
+    or ``.keys()``, also when wrapped in an iterating builtin (``list(...)``, ``sorted(...)``,
+    ``filter(f, ...)``), and ``None`` for anything else. ``roots`` selects the collections.
+
+    For ``a if cond else b`` it checks both branches, except that a branch taken only when
+    ``warmpool is None`` is the whole-batch snapshot API and is allowed to scan everything.
+
+    One pool's slice of a per-pool index (``self._waiting[pool]``, ``self._x.get(pool, {})``)
+    resolves to the index, since it grows with that pool, which is the whole batch in the common
+    one-group case. With ``pool_slices_ok`` (per-pool methods), a slice keyed by the method's own
+    ``warmpool`` is within budget. ``aliases`` maps locals bound to a collection (``m =
+    self._members``) to its root.
+    """
+    if isinstance(node, ast.IfExp):
+        test = node.test
+        whole_batch_branch = (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "warmpool"
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Is)
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value is None
+        )
+        branches = [node.orelse] if whole_batch_branch else [node.body, node.orelse]
+        for branch in branches:
+            root = _iter_collection_root(
+                branch, roots, aliases=aliases, pool_slices_ok=pool_slices_ok
+            )
+            if root:
+                return root
+        return None
+    while (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _ITERATING_BUILTINS
+        and node.args
+    ):
+        node = node.args[-1] if node.func.id in {"filter", "map"} else node.args[0]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr in {"items", "values", "keys"} and not node.args:
+            node = node.func.value
+    key: ast.AST | None = None
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"get", "setdefault"}
+        and node.args
+    ):
+        key, node = node.args[0], node.func.value
+    elif isinstance(node, ast.Subscript):
+        key, node = node.slice, node.value
+    if key is not None and pool_slices_ok and isinstance(key, ast.Name) and key.id == "warmpool":
+        return None
+    if isinstance(node, ast.Name) and aliases and node.id in aliases:
+        return aliases[node.id]
+    chain = _attr_chain(node)
+    return chain if chain in roots else None
+
+
+def _collection_aliases(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, roots: frozenset[str], pool_slices_ok: bool
+) -> dict[str, str]:
+    """Maps locals bound to a collection or one pool's slice of it (``waiting =
+    self._waiting[pool]``) to the collection's root. Copies (``list(...)``) are flagged where
+    they are made, so they don't create aliases."""
+    aliases: dict[str, str] = {}
+    for sub in _iter_no_nested_defs(fn):
+        if not (
+            isinstance(sub, ast.Assign)
+            and len(sub.targets) == 1
+            and isinstance(sub.targets[0], ast.Name)
+        ):
+            continue
+        value = sub.value
+        bindable = isinstance(value, (ast.Attribute, ast.Subscript, ast.Name)) or (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr in {"get", "setdefault"}
+        )
+        if not bindable:
+            continue
+        root = _iter_collection_root(
+            value, roots, aliases=aliases, pool_slices_ok=pool_slices_ok
+        )
+        if root:
+            aliases[sub.targets[0].id] = root
+    return aliases
+
+
+# Builtins that walk, copy, or sort a whole collection in C. Python-level instruction counts
+# don't grow with the collection for these; the runtime allocation-peak gates catch the copies,
+# and this static check is the only one that sees non-allocating scans.
+_WHOLE_COLLECTION_BUILTINS = _ITERATING_BUILTINS | {"dict"}
+
+
+def _whole_collection_call(
+    node: ast.AST,
+    roots: frozenset[str] = _FULL_BATCH_COLLECTIONS,
+    *,
+    aliases: dict[str, str] | None = None,
+    pool_slices_ok: bool = False,
+) -> str | None:
+    """Returns the root a call copies, sorts, or walks in full (``dict(self._members)``,
+    ``sorted(self._members)``, ``self._members.copy()``), or ``None``."""
+    if not isinstance(node, ast.Call):
+        return None
+    if (
+        isinstance(node.func, ast.Name)
+        and node.func.id in _WHOLE_COLLECTION_BUILTINS
+        and node.args
+    ):
+        arg = node.args[-1] if node.func.id in {"filter", "map"} else node.args[0]
+        return _iter_collection_root(
+            arg, roots, aliases=aliases, pool_slices_ok=pool_slices_ok
+        )
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "copy"
+        and not node.args
+    ):
+        return _iter_collection_root(
+            node.func.value, roots, aliases=aliases, pool_slices_ok=pool_slices_ok
+        )
+    return None
+
+
+def _self_call_closure(
+    methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    seeds: frozenset[str],
+    stop: frozenset[str],
+) -> set[str]:
+    """Returns ``seeds`` plus every method they reach through ``self.<method>(...)`` calls,
+    without expanding through ``stop``."""
+    reached = {m for m in seeds if m in methods}
+    stack = list(reached)
+    while stack:
+        cur = stack.pop()
+        for sub in _iter_no_nested_defs(methods[cur]):
+            if isinstance(sub, ast.Call):
+                chain = _attr_chain(sub.func)
+                if chain and chain.startswith("self.") and chain.count(".") == 1:
+                    callee = chain[5:]
+                    if callee in methods and callee not in reached and callee not in stop:
+                        reached.add(callee)
+                        stack.append(callee)
+    return reached
+
+
+def _lineno(node: ast.AST) -> int:
+    return int(getattr(node, "lineno", 1))
+
+
+def _is_members_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "members"
+    )
+
+
+# Attributes that identify one member, so filtering a snapshot by one is a lookup.
+_MEMBER_IDENTITY_ATTRS = frozenset({"claim_name", "sandbox_name", "uid", "name"})
+# Builtins that walk an iterable with a predicate or key function; given a snapshot and an
+# identity-comparing lambda, each is a member lookup. `next` takes a `filter(...)` or a
+# generator, which the walk visits on its own.
+_PREDICATE_WALKERS = frozenset({"filter", "map", "min", "max", "sorted"})
+
+
+def _compares_claim_name(cond: ast.AST) -> bool:
+    for sub in ast.walk(cond):
+        if isinstance(sub, ast.Compare) and any(isinstance(op, (ast.Eq, ast.Is)) for op in sub.ops):
+            for side in [sub.left, *sub.comparators]:
+                if isinstance(side, ast.Attribute) and side.attr in _MEMBER_IDENTITY_ATTRS:
+                    return True
+    return False
+
+
+def _list_typed_self_attrs(cls_node: ast.ClassDef) -> dict[str, int]:
+    """Returns ``{attr: line}`` for every ``self`` attribute the class initializes as a ``list`` or
+    ``deque`` (by annotation or literal), since membership and removal on either walk it."""
+    out: dict[str, int] = {}
+    for sub in ast.walk(cls_node):
+        target: ast.AST | None = None
+        value: ast.AST | None = None
+        annotation: ast.AST | None = None
+        if isinstance(sub, ast.AnnAssign):
+            target, value, annotation = sub.target, sub.value, sub.annotation
+        elif isinstance(sub, ast.Assign) and len(sub.targets) == 1:
+            target, value = sub.targets[0], sub.value
+        if not (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+        ):
+            continue
+        base = annotation.value if isinstance(annotation, ast.Subscript) else annotation
+        base_name = (
+            base.id if isinstance(base, ast.Name)
+            else base.attr if isinstance(base, ast.Attribute)
+            else None
+        )
+        is_list_annotation = annotation is not None and base_name in {"list", "List", "deque"}
+        is_list_literal = isinstance(value, ast.List) or (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in {"list", "deque"}
+        )
+        if is_list_annotation or (annotation is None and is_list_literal):
+            out.setdefault(target.attr, _lineno(sub))
+    return out
+
+
+def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
+    findings: list[Finding] = []
+
+    # A renamed or moved module would otherwise drop out of every rule below without a signal.
+    required = [
+        f"{SDK_REL}/batch_state.py",
+        f"{SDK_REL}/sandbox_batch.py",
+        f"{SDK_REL}/async_sandbox_batch.py",
+        f"{SDK_REL}/batch_utils.py",
+    ]
+    if (repo_root / RL_REL).is_dir():
+        required += [f"{RL_REL}/batch_claims.py", f"{RL_REL}/handles.py", f"{RL_REL}/fleet.py"]
+    for rel_path in required:
+        if not (repo_root / rel_path).is_file():
+            findings.append(
+                Finding(
+                    check="HOT_PATH_COMPLEXITY",
+                    severity="CRITICAL",
+                    invariant="INV-PERF-HOTPATH-0",
+                    rel_path=rel_path,
+                    line=1,
+                    symbol="<module>",
+                    message=f"`{rel_path}` is missing, so Check 8 can't audit its hot paths.",
+                )
+            )
+
+    # INV-PERF-HOTPATH-1: per-member lookups through a full-batch ``members()`` snapshot, and
+    # ``members()`` snapshots inside per-event BatchState methods or poll loops.
+    lookup_targets = [
+        f"{SDK_REL}/sandbox_batch.py",
+        f"{SDK_REL}/async_sandbox_batch.py",
+        f"{SDK_REL}/batch_state.py",
+        f"{RL_REL}/batch_claims.py",
+        f"{RL_REL}/handles.py",
+        f"{RL_REL}/failfast.py",
+        f"{RL_REL}/fleet.py",
+        f"{RL_REL}/recycle.py",
+    ]
+    handle_per_item: dict[tuple[str, str], set[str]] = {}
+    for rel_path in lookup_targets:
+        parsed = _parse_if_exists(repo_root, rel_path)
+        if parsed is None:
+            continue
+        tree, _ = parsed
+        for cls_name, methods in _class_methods(tree).items():
+            for mname, mnode in methods.items():
+                symbol = f"{cls_name}.{mname}"
+                flagged_lines: set[int] = set()
+                # Locals bound to a snapshot (`ms = batch.members(...)`) count as the snapshot.
+                snapshot_calls: dict[str, ast.AST] = {}
+                for sub in _iter_no_nested_defs(mnode):
+                    if (
+                        isinstance(sub, ast.Assign)
+                        and len(sub.targets) == 1
+                        and isinstance(sub.targets[0], ast.Name)
+                        and _is_members_call(sub.value)
+                    ):
+                        snapshot_calls[sub.targets[0].id] = sub.value
+
+                def snapshot_of(node: ast.AST) -> ast.AST | None:
+                    if _is_members_call(node):
+                        return node
+                    if isinstance(node, ast.Name):
+                        return snapshot_calls.get(node.id)
+                    return None
+
+                lookups: list[tuple[ast.AST, ast.AST]] = []
+                for sub in _iter_no_nested_defs(mnode):
+                    if isinstance(sub, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+                        for gen in sub.generators:
+                            snap = snapshot_of(gen.iter)
+                            if snap is not None and any(
+                                _compares_claim_name(cond) for cond in gen.ifs
+                            ):
+                                lookups.append((sub, snap))
+                    elif isinstance(sub, ast.DictComp):
+                        # `{m.claim_name: m for m in batch.members()}[name]` builds a whole
+                        # index to read one entry.
+                        snap = snapshot_of(sub.generators[0].iter) if sub.generators else None
+                        if (
+                            snap is not None
+                            and isinstance(sub.key, ast.Attribute)
+                            and sub.key.attr == "claim_name"
+                        ):
+                            lookups.append((sub, snap))
+                    elif isinstance(sub, ast.For):
+                        snap = snapshot_of(sub.iter)
+                        if snap is not None and any(
+                            _compares_claim_name(stmt) for stmt in sub.body
+                        ):
+                            lookups.append((sub, snap))
+                    elif (
+                        isinstance(sub, ast.Call)
+                        and isinstance(sub.func, ast.Name)
+                        and sub.func.id in _PREDICATE_WALKERS
+                    ):
+                        # `next(filter(lambda m: m.claim_name == name, batch.members()))` and
+                        # `min(..., key=...)` spell the same walk with a predicate function.
+                        operands = [*sub.args, *(kw.value for kw in sub.keywords)]
+                        snaps = [s for s in map(snapshot_of, operands) if s is not None]
+                        if snaps and any(
+                            isinstance(op, ast.Lambda) and _compares_claim_name(op.body)
+                            for op in operands
+                        ):
+                            lookups.append((sub, snaps[0]))
+                for sub, members_call in lookups:
+                    # A watchdog decides on one member only once its pod has failed to start,
+                    # which is rare, unlike per-step liveness checks.
+                    rare = mname == "_poll_once"
+                    flagged_lines.add(_lineno(members_call))
+                    findings.append(
+                        Finding(
+                            check="HOT_PATH_COMPLEXITY",
+                            severity="MEDIUM" if rare else "HIGH",
+                            invariant="INV-PERF-HOTPATH-1",
+                            rel_path=rel_path,
+                            line=_lineno(sub),
+                            symbol=symbol,
+                            message=(
+                                f"Looks up one member by `claim_name` through "
+                                f"`{ast.unparse(members_call)}`, which copies, filters, "
+                                f"and sorts the batch's members under the batch lock "
+                                f"(O(N + K log K) per call"
+                                + ("" if rare else ", O(N^2 log N) across N workers")
+                                + "). Look the member up by name in O(1) instead "
+                                "(`get_member(claim_name)`)."
+                            ),
+                        )
+                    )
+                # A handle's per-item helpers run nested functions per item too (the create
+                # worker's `can_send`), so their bodies count.
+                handle_item = (
+                    cls_name in ("SandboxBatch", "AsyncSandboxBatch")
+                    and mname in handle_per_item.setdefault(
+                        (rel_path, cls_name), _per_item_methods(cls_name, methods)
+                    )
+                )
+                body_nodes = ast.walk(mnode) if handle_item else _iter_no_nested_defs(mnode)
+                for sub in body_nodes:
+                    if not _is_members_call(sub) or _lineno(sub) in flagged_lines:
+                        continue
+                    assert isinstance(sub, ast.Call)
+                    in_state_hot_path = (
+                        rel_path.endswith("batch_state.py")
+                        and cls_name == "BatchState"
+                        and mname in _BATCH_STATE_O1_METHODS
+                    )
+                    in_watch_loop = mname == "_watch_loop"
+                    in_poll_loop = mname == "_poll_once" and not sub.args and not sub.keywords
+                    in_handle_item = handle_item
+                    if not (in_state_hot_path or in_watch_loop or in_poll_loop or in_handle_item):
+                        continue
+                    where = (
+                        "a polling loop" if in_poll_loop
+                        else "the per-event watch loop" if in_watch_loop
+                        else f"`{mname}`, which handles one item per call" if in_handle_item
+                        else "an O(1) BatchState transition"
+                    )
+                    findings.append(
+                        Finding(
+                            check="HOT_PATH_COMPLEXITY",
+                            severity="MEDIUM" if in_poll_loop else "HIGH",
+                            invariant="INV-PERF-HOTPATH-1",
+                            rel_path=rel_path,
+                            line=_lineno(sub),
+                            symbol=symbol,
+                            message=(
+                                f"Calls `{ast.unparse(sub)}` inside {where}, copying and sorting "
+                                f"every member under the batch lock (O(N log N)) on each "
+                                f"iteration. Track the subset this path needs incrementally "
+                                f"instead of rebuilding a full snapshot."
+                            ),
+                        )
+                    )
+
+    # The handles reach every batch-state table through `self._state`, so a handle's per-item
+    # method must not walk those either.
+    bs_tree = _parse_if_exists(repo_root, f"{SDK_REL}/batch_state.py")
+    state_tables = (
+        _state_collection_roots(_class_methods(bs_tree[0]).get("BatchState", {}))
+        if bs_tree is not None else frozenset()
+    )
+    item_roots = _PER_ITEM_TABLE_ROOTS | {
+        f"self._state.{root.removeprefix('self.')}" for root in state_tables
+    }
+    # INV-PERF-HOTPATH-2: ``in`` / ``.remove()`` on membership collections stored as ``list``.
+    list_targets = [
+        (f"{SDK_REL}/sandbox_batch.py", "SandboxBatch"),
+        (f"{SDK_REL}/async_sandbox_batch.py", "AsyncSandboxBatch"),
+        (f"{SDK_REL}/batch_state.py", "BatchState"),
+        (f"{RL_REL}/fleet.py", "SandboxFleet"),
+        (f"{RL_REL}/batch_claims.py", "BatchClaims"),
+        (f"{SDK_REL}/batch_utils.py", "WarmCredit"),
+    ]
+    for rel_path, cls_name in list_targets:
+        parsed = _parse_if_exists(repo_root, rel_path)
+        if parsed is None:
+            continue
+        tree, _ = parsed
+        cls_node = next(
+            (n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls_name), None
+        )
+        if cls_node is None:
+            continue
+        module_funcs = _module_function_names(tree)
+        # Per-item paths must not copy or walk the whole membership collection, whatever
+        # container it is.
+        class_methods = {
+            item.name: item for item in cls_node.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        per_item = _per_item_methods(cls_name, class_methods)
+        for item in class_methods.values():
+            if item.name not in per_item:
+                continue
+            once = _once_per_batch_nodes(item)
+            # A per-pool method may walk its own pool's slice of a per-pool index.
+            per_pool = any(a.arg == "warmpool" for a in item.args.args)
+            item_aliases = _collection_aliases(item, item_roots, per_pool)
+            item_kw: dict[str, Any] = {"aliases": item_aliases, "pool_slices_ok": per_pool}
+            for sub in ast.walk(item):
+                if id(sub) in once:
+                    continue
+                copied = _whole_collection_call(sub, item_roots, **item_kw)
+                if copied is None:
+                    copied = _relational_root(sub, item_roots, _whole_aliases(item, item_roots))
+                if copied is None and isinstance(sub, ast.Compare) and any(
+                    isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
+                ):
+                    # `x in self._connected` is a lookup; `x in self._connected.values()` is a
+                    # C-level scan that allocates nothing, so only this check can see it.
+                    copied = next(
+                        (
+                            f"{root}.values()"
+                            for comp in sub.comparators
+                            if isinstance(comp, ast.Call)
+                            and isinstance(comp.func, ast.Attribute)
+                            and comp.func.attr in ("values", "items", "keys")
+                            and (root := _iter_collection_root(comp, item_roots, **item_kw))
+                        ),
+                        None,
+                    )
+                if copied is None:
+                    copied = _root_passed_to_module_helper(
+                        sub, item_roots, module_funcs, item_aliases
+                    )
+                if copied is None and isinstance(sub, ast.Call):
+                    # operator.countOf / operator.indexOf walk the whole iterable in C.
+                    callee = _attr_chain(sub.func) or ""
+                    if callee.split(".")[-1] in ("countOf", "indexOf") and sub.args:
+                        copied = _iter_collection_root(sub.args[0], item_roots, **item_kw)
+                if copied is None and isinstance(sub, ast.For):
+                    copied = _iter_collection_root(sub.iter, item_roots, **item_kw)
+                if copied is None and isinstance(
+                    sub, (ast.GeneratorExp, ast.ListComp, ast.SetComp, ast.DictComp)
+                ):
+                    copied = next(
+                        (
+                            root
+                            for gen in sub.generators
+                            if (root := _iter_collection_root(gen.iter, item_roots, **item_kw))
+                        ),
+                        None,
+                    )
+                if copied is None:
+                    continue
+                findings.append(
+                    Finding(
+                        check="HOT_PATH_COMPLEXITY",
+                        severity="MEDIUM",
+                        invariant="INV-PERF-HOTPATH-2",
+                        rel_path=rel_path,
+                        line=_lineno(sub),
+                        symbol=f"{cls_name}.{item.name}",
+                        message=(
+                            f"`{ast.unparse(sub)}` copies or walks all of `{copied}` inside "
+                            f"`{cls_name}.{item.name}`, which handles one entry per call, so S "
+                            f"calls cost O(S^2) while the lock is held."
+                        ),
+                    )
+                )
+        list_attrs = _list_typed_self_attrs(cls_node)
+        if not list_attrs:
+            continue
+        for body_item in cls_node.body:
+            if not isinstance(body_item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for sub in _iter_no_nested_defs(body_item):
+                hit: str | None = None
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Attribute)
+                    and sub.func.attr in {"remove", "index", "count"}
+                ):
+                    chain = _attr_chain(sub.func.value)
+                    if chain and chain.startswith("self.") and chain[5:] in list_attrs:
+                        hit = f"`{chain}.{sub.func.attr}(...)`"
+                elif isinstance(sub, ast.Compare) and any(
+                    isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
+                ):
+                    for comp in sub.comparators:
+                        chain = _attr_chain(comp)
+                        if chain and chain.startswith("self.") and chain[5:] in list_attrs:
+                            hit = f"`{ast.unparse(sub)}`"
+                if hit is None:
+                    continue
+                attr = next(a for a in list_attrs if f"self.{a}" in hit)
+                findings.append(
+                    Finding(
+                        check="HOT_PATH_COMPLEXITY",
+                        severity="LOW" if attr == "_stale_connections" else "MEDIUM",
+                        invariant="INV-PERF-HOTPATH-2",
+                        rel_path=rel_path,
+                        line=_lineno(sub),
+                        symbol=f"{cls_name}.{body_item.name}",
+                        message=(
+                            f"{hit} scans `self.{attr}`, a `list` (initialized at line "
+                            f"{list_attrs[attr]}), comparing every element ahead of the match, so "
+                            f"removing S entries one at a time behind a backlog costs O(S^2) "
+                            f"comparisons and shifts while the lock is held. Store "
+                            f"`self.{attr}` as an insertion-ordered `dict` keyed the same way "
+                            f"every caller looks entries up, so membership and removal are O(1)."
+                        ),
+                    )
+                )
+
+    # INV-PERF-HOTPATH-3: full-batch scans inside O(1) or per-pool BatchState methods.
+    bs_rel = f"{SDK_REL}/batch_state.py"
+    bs_parsed = _parse_if_exists(repo_root, bs_rel)
+    if bs_parsed is not None:
+        bs_methods = _class_methods(bs_parsed[0]).get("BatchState", {})
+        # Helpers reached from an O(1) transition inherit its O(1) budget.
+        o1_closure = _self_call_closure(
+            bs_methods, _BATCH_STATE_O1_METHODS, _BATCH_STATE_PER_POOL_METHODS
+        )
+        state_roots = _state_collection_roots(bs_methods)
+        bs_funcs = _module_function_names(bs_parsed[0])
+        for mname, mnode in bs_methods.items():
+            per_pool = mname in _BATCH_STATE_PER_POOL_METHODS and any(
+                a.arg == "warmpool" for a in mnode.args.args
+            )
+            if mname not in o1_closure and not per_pool:
+                continue
+            seen_roots: set[tuple[int, str]] = set()
+            aliases = _collection_aliases(mnode, state_roots, per_pool)
+            kw: dict[str, Any] = {"aliases": aliases, "pool_slices_ok": per_pool}
+            for sub in _iter_no_nested_defs(mnode):
+                roots: list[str] = []
+                copied = _whole_collection_call(sub, state_roots, **kw)
+                if copied:
+                    roots.append(copied)
+                handed = _root_passed_to_module_helper(sub, state_roots, bs_funcs, aliases)
+                if handed:
+                    roots.append(handed)
+                compared = _relational_root(sub, state_roots, _whole_aliases(mnode, state_roots))
+                if compared:
+                    roots.append(compared)
+                if isinstance(sub, ast.For):
+                    root = _iter_collection_root(sub.iter, state_roots, **kw)
+                    if root:
+                        roots.append(root)
+                elif isinstance(sub, (ast.GeneratorExp, ast.ListComp, ast.SetComp, ast.DictComp)):
+                    for gen in sub.generators:
+                        root = _iter_collection_root(gen.iter, state_roots, **kw)
+                        if root:
+                            roots.append(root)
+                elif isinstance(sub, ast.Compare) and any(
+                    isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
+                ):
+                    for comp in sub.comparators:
+                        # ``x in self._members`` is a dict lookup; ``x in self._members.values()``
+                        # is a linear scan.
+                        if (
+                            isinstance(comp, ast.Call)
+                            and isinstance(comp.func, ast.Attribute)
+                            and comp.func.attr == "values"
+                        ):
+                            root = _iter_collection_root(comp, state_roots, **kw)
+                            if root:
+                                roots.append(f"{root}.values()")
+                for root in roots:
+                    if (_lineno(sub), root) in seen_roots:
+                        continue
+                    if (mname, root.removesuffix(".values()")) in _ONE_SHOT_WALKS:
+                        continue
+                    seen_roots.add((_lineno(sub), root))
+                    if per_pool:
+                        cost = (
+                            "which runs per pool release and should cost O(K_pool) (O(1) for "
+                            "has_pool); releasing all G pools of one batch then costs O(G * N) "
+                            "under the batch lock"
+                        )
+                    else:
+                        cost = (
+                            "which runs per watch event, acquire, or release and must stay "
+                            "O(1); N such calls then cost O(N^2)"
+                        )
+                    findings.append(
+                        Finding(
+                            check="HOT_PATH_COMPLEXITY",
+                            severity="LOW" if per_pool else "MEDIUM",
+                            invariant="INV-PERF-HOTPATH-3",
+                            rel_path=bs_rel,
+                            line=_lineno(sub),
+                            symbol=f"BatchState.{mname}",
+                            message=(
+                                f"Scans every entry of `{root}` inside `BatchState.{mname}`, "
+                                f"{cost}. Maintain an index keyed by claim name or warmpool "
+                                f"(e.g. `dict[str, dict[str, None]]` per warmpool) instead."
+                            ),
+                        )
+                    )
+
+    # INV-PERF-HOTPATH-4: deep copies on batch hot paths.
+    for rel_path in [
+        f"{SDK_REL}/batch_state.py",
+        f"{SDK_REL}/sandbox_batch.py",
+        f"{SDK_REL}/async_sandbox_batch.py",
+        f"{RL_REL}/batch_claims.py",
+        f"{RL_REL}/handles.py",
+    ]:
+        parsed = _parse_if_exists(repo_root, rel_path)
+        if parsed is None:
+            continue
+        tree, _ = parsed
+        for sub in ast.walk(tree):
+            if isinstance(sub, ast.Call) and _attr_chain(sub.func) in {"copy.deepcopy", "deepcopy"}:
+                findings.append(
+                    Finding(
+                        check="HOT_PATH_COMPLEXITY",
+                        severity="MEDIUM",
+                        invariant="INV-PERF-HOTPATH-4",
+                        rel_path=rel_path,
+                        line=_lineno(sub),
+                        symbol="copy.deepcopy",
+                        message=(
+                            "`copy.deepcopy` on a batch hot path recursively copies claim dicts "
+                            "(managedFields, status, annotations) per call; copy only the fields "
+                            "the caller mutates."
+                        ),
+                    )
+                )
+
+    # INV-PERF-HOTPATH-5: a loop that appends to a buffer and re-joins the whole buffer on every
+    # pass copies (and usually re-scans) O(K^2) bytes for K chunks; the copying happens in C, so
+    # neither instruction counts nor peak memory show it.
+    for package in (SDK_REL, RL_REL):
+        package_dir = repo_root / package
+        if not package_dir.is_dir():
+            continue
+        for path in sorted(package_dir.rglob("*.py")):
+            rel_path = str(path.relative_to(repo_root))
+            if "/test/" in rel_path or "/tests/" in rel_path:
+                continue
+            parsed = _parse_if_exists(repo_root, rel_path)
+            if parsed is None:
+                continue
+            for loop in ast.walk(parsed[0]):
+                if not isinstance(loop, (ast.For, ast.While, ast.AsyncFor)):
+                    continue
+                appended = {
+                    sub.func.value.id for sub in ast.walk(loop)
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                    and sub.func.attr in ("append", "extend")
+                    and isinstance(sub.func.value, ast.Name)
+                }
+                # A join inside an `if` that then leaves the loop runs once, not per pass.
+                exits_once = {
+                    id(node)
+                    for branch in ast.walk(loop)
+                    if isinstance(branch, ast.If)
+                    and any(isinstance(stmt, (ast.Return, ast.Break)) for stmt in branch.body)
+                    for stmt in branch.body
+                    for node in ast.walk(stmt)
+                }
+                for sub in ast.walk(loop):
+                    if id(sub) in exits_once:
+                        continue
+                    if not (
+                        isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr == "join" and len(sub.args) == 1
+                        and isinstance(sub.args[0], ast.Name) and sub.args[0].id in appended
+                    ):
+                        continue
+                    findings.append(
+                        Finding(
+                            check="HOT_PATH_COMPLEXITY",
+                            severity="MEDIUM",
+                            invariant="INV-PERF-HOTPATH-5",
+                            rel_path=rel_path,
+                            line=_lineno(sub),
+                            symbol=sub.args[0].id,
+                            message=(
+                                f"`{ast.unparse(sub)}` re-joins the whole `{sub.args[0].id}` "
+                                f"buffer on every pass of the loop that appends to it, so K "
+                                f"chunks copy O(K^2) bytes. Check only the new chunk (plus any "
+                                f"overlap a match can span) and join once."
+                            ),
+                        )
+                    )
+    return findings
+
+
 def run_mypy_checks(repo_root: pathlib.Path, python_exe: str) -> list[Finding]:
     findings: list[Finding] = []
     sdk_dir = repo_root / "clients/python/agentic-sandbox-client"
@@ -1686,6 +2699,7 @@ def run_all_checks(
     all_findings.extend(check_base_exception_rollback(repo_root))
     all_findings.extend(check_sync_async_ast_parity(repo_root))
     all_findings.extend(check_pep561_exports(repo_root))
+    all_findings.extend(check_hot_path_complexity(repo_root))
     if with_mypy:
         all_findings.extend(run_mypy_checks(repo_root, python_exe))
     return all_findings
@@ -1700,6 +2714,12 @@ def main() -> int:
         "--with-mypy", action="store_true", help="Also run mypy on SDK and agent-sandbox-rl"
     )
     parser.add_argument(
+        "--check",
+        action="append",
+        default=None,
+        help="Report only these checks (repeatable), e.g. --check HOT_PATH_COMPLEXITY",
+    )
+    parser.add_argument(
         "--fail-on",
         choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE"],
         default="MEDIUM",
@@ -1708,6 +2728,8 @@ def main() -> int:
     args = parser.parse_args()
 
     findings = run_all_checks(args.repo_root.resolve(), with_mypy=args.with_mypy)
+    if args.check:
+        findings = [f for f in findings if f.check in set(args.check)]
     rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "NONE": 99}
 
     if args.json:
