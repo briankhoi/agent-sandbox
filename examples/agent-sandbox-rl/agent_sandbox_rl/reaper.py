@@ -47,6 +47,8 @@ import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
+from kubernetes import client
+
 from . import constants
 from .cluster import Cluster
 from .config import ClusterConfig
@@ -123,6 +125,10 @@ def _reap_with_cluster(cluster: Cluster, run_id: str | None, *,
                    sorted(protected_templates))
     counts["kept_in_use"] = len(protected_pools) + len(protected_templates)
 
+  # Plan the batch Lease sweep up front so a transient Lease list failure under
+  # protect_claims_of aborts before any claim, pool, or pod is deleted.
+  leases_to_delete = _plan_lease_sweep(cluster, selector, protect_claims_of)
+
   # Sandboxes and pods are reached through the pools and claims (see the module
   # docstring), so record how before those are deleted.
   pod_selectors, sandbox_names = _sandbox_links(cluster, selector,
@@ -139,8 +145,12 @@ def _reap_with_cluster(cluster: Cluster, run_id: str | None, *,
     counts[kind] = len(names)
 
   _sweep("claims", r.list_claims, r.delete_claim)
-  keep_leases = _protected_leases(cluster, selector, protect_claims_of)
-  _sweep("leases", r.list_leases, r.delete_lease, keep=keep_leases)
+  for lease_name in leases_to_delete:
+    try:
+      r.delete_lease(lease_name)
+    except Exception:  # noqa: BLE001 (best-effort; keep going)
+      logger.warning("reap: failed to delete leases %s", lease_name, exc_info=True)
+  counts["leases"] = len(leases_to_delete)
   _sweep("warmpools", r.list_warmpools, r.delete_warmpool, keep=protected_pools)
   # Sandboxes reachable by label (none today; kept for a controller that copies
   # the label) plus the ones the claims and pools pointed at.
@@ -316,28 +326,54 @@ def _in_use_elsewhere(cluster: Cluster, protect_claims_of, *,
   return pools, templates, pod_selectors
 
 
-def _protected_leases(cluster: Cluster, selector: str,
-                      protect_claims_of) -> set[str]:
-  """Batch Lease names under ``selector`` whose ``RUN_ID_LABEL`` is protected."""
-  if protect_claims_of is None:
-    return set()
-  list_objs = getattr(cluster.resources, "_list_lease_objects", None)
-  if not callable(list_objs):
-    return set()
+def _plan_lease_sweep(cluster: Cluster, selector: str,
+                      protect_claims_of) -> list[str]:
+  """Batch Lease names under ``selector`` to delete.
+
+  Uses one ``_list_lease_objects`` call when available so protected runs are
+  filtered in memory without a second ``list_namespaced_lease`` RPC. Missing
+  Lease RBAC (HTTP 403/404) logs a warning and skips Lease sweeping so
+  ``per_claim`` identities without ``coordination.k8s.io/leases`` keep working.
+  When ``protect_claims_of`` is set, any other list failure raises `FleetError`
+  before anything is deleted so an unreadable Lease set never reads as empty.
+  """
+  r = cluster.resources
+  list_objs = getattr(r, "_list_lease_objects", None)
   try:
-    objs = list_objs(selector)
-  except Exception:  # noqa: BLE001
-    return set()
-  if not isinstance(objs, list):
-    return set()
-  keep: set[str] = set()
-  for obj in objs:
-    meta = (obj.get("metadata") if isinstance(obj, dict) else None) or {}
-    name = meta.get("name")
-    rid = (meta.get("labels") or {}).get(constants.RUN_ID_LABEL)
-    if isinstance(name, str) and name and protect_claims_of(rid):
-      keep.add(name)
-  return keep
+    objs = list_objs(selector) if callable(list_objs) else None
+    if isinstance(objs, list):
+      names: list[str] = []
+      for obj in objs:
+        meta = (obj.get("metadata") if isinstance(obj, dict) else None) or {}
+        name = meta.get("name")
+        rid = (meta.get("labels") or {}).get(constants.RUN_ID_LABEL)
+        if not isinstance(name, str) or not name:
+          continue
+        if protect_claims_of is not None and protect_claims_of(rid):
+          continue
+        names.append(name)
+      return names
+    return list(r.list_leases(label_selector=selector))
+  except client.ApiException as exc:
+    if exc.status in (403, 404):
+      logger.warning(
+          "reap: skipping batch Lease sweep in namespace %s (HTTP %s); "
+          "grant coordination.k8s.io/leases RBAC when using claim_mode='batch'",
+          cluster.namespace, exc.status)
+      return []
+    if protect_claims_of is not None:
+      raise FleetError(
+          "reap: could not list batch Leases to separate live runs from "
+          "reaped ones; nothing was deleted. Retry when the API server "
+          "answers.") from exc
+    raise
+  except Exception as exc:  # noqa: BLE001
+    if protect_claims_of is not None:
+      raise FleetError(
+          "reap: could not list batch Leases to separate live runs from "
+          "reaped ones; nothing was deleted. Retry when the API server "
+          "answers.") from exc
+    raise
 
 
 def _delete_pods_except(cluster: Cluster, selector: str,
@@ -408,8 +444,12 @@ def find_orphan_runs(cluster: Cluster, alive_run_ids: Iterable[str], *,
       lease_objs = list_leases(managed)
       if isinstance(lease_objs, list):
         objs_to_scan.extend(lease_objs)
-    except Exception:  # noqa: BLE001
-      logger.debug("reap: could not list batch leases for orphan discovery", exc_info=True)
+    except client.ApiException as exc:
+      if exc.status in (403, 404):
+        logger.debug("reap: skipping batch leases for orphan discovery (HTTP %s)",
+                     exc.status)
+      else:
+        raise
   for obj in objs_to_scan:
     rid = ((obj.get("metadata") or {}).get("labels") or {}).get(constants.RUN_ID_LABEL)
     if not rid:
