@@ -115,7 +115,7 @@ class Cluster:
     _resize_api_client_pool(self.api_client, needed)
     helper = self._k8s_helper
     if helper is not None:
-      for attr in ("coordination_v1_api", "_claim_collection_api"):
+      for attr in ("coordination_v1_api", "_batch_custom_objects_api"):
         sub_api = getattr(helper, attr, None)
         sub_client = getattr(sub_api, "api_client", None)
         if sub_client is not None:
