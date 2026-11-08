@@ -249,3 +249,72 @@ async def test_async_teardown_verify_reaches_the_sync_fleet(make_cluster, monkey
   assert await f.teardown() is None
   assert await f.teardown(verify=True) == {"solo": {"claims": 0}}
   assert await f.verify_teardown() == {"solo": {"claims": 0}}
+
+
+async def test_async_acquire_batch_rolls_back_on_partial_failure(make_cluster):
+  from agent_sandbox_rl import ClusterRegistry
+  c = make_cluster("solo")
+  f = _fleet(ClusterRegistry([c]), max_concurrent=4)
+  tasks = f.load_tasks(["img-0", "img-1", "img-2", "img-3"])
+  await f.plan()
+  bad_pool = f.plan_.for_image("img-2").pool
+  orig = c.sandbox_client.create_sandbox.side_effect
+
+  def fail_on_two(**kw):
+    if kw.get("warmpool") == bad_pool:
+      raise RuntimeError("async boom")
+    return orig(**kw)
+
+  c.sandbox_client.create_sandbox.side_effect = fail_on_two
+  with pytest.raises(RuntimeError, match="async boom"):
+    await f.acquire_batch(tasks)
+  assert f.handles() == []
+  assert c.active_claims == 0 and f._fleet._claims_reserved == 0
+  f.close()
+
+
+async def test_async_acquire_batch_short_circuits_queued_waves_on_early_failure(
+    make_cluster,
+):
+  import threading
+  from agent_sandbox_rl import ClusterRegistry
+  c = make_cluster("solo")
+  f = _fleet(ClusterRegistry([c]), max_concurrent=2)
+  tasks = f.load_tasks([f"img-{i}" for i in range(6)])
+  await f.plan()
+  bad_pool = f.plan_.for_image("img-0").pool
+  slow_pool = f.plan_.for_image("img-1").pool
+  dispatched_pools = []
+  wave1_entered = threading.Barrier(2, timeout=2.0)
+  wave1_aborted = threading.Event()
+  orig = c.sandbox_client.create_sandbox.side_effect
+  real_acquire = f.acquire
+
+  async def tracked_acquire(t):
+    try:
+      return await real_acquire(t)
+    except BaseException:
+      wave1_aborted.set()
+      raise
+
+  f.acquire = tracked_acquire
+
+  def fail_wave_one(**kw):
+    pool = kw.get("warmpool")
+    dispatched_pools.append(pool)
+    if pool in (bad_pool, slow_pool):
+      wave1_entered.wait()
+    if pool == bad_pool:
+      raise RuntimeError("wave 1 boom")
+    if pool == slow_pool:
+      wave1_aborted.wait(timeout=2.0)
+    return orig(**kw)
+
+  c.sandbox_client.create_sandbox.side_effect = fail_wave_one
+  with pytest.raises(RuntimeError, match="wave 1 boom"):
+    await f.acquire_batch(tasks)
+  assert set(dispatched_pools) == {bad_pool, slow_pool}
+  assert len(dispatched_pools) == 2
+  f.close(wait=True)
+  assert f.handles() == []
+  assert c.active_claims == 0 and f._fleet._claims_reserved == 0

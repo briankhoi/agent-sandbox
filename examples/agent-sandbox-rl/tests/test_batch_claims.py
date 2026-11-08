@@ -1010,3 +1010,132 @@ def test_batch_fail_fast_handles_ordinal_zero_and_continuous_load_after_unparsed
   bg_thread.join(timeout=2.0)
   assert bg_err == [] and len(bg_handle) == 1
   f.teardown()
+
+
+def test_acquire_batch_and_release_all_run_concurrently_and_preserve_order(make_cluster):
+  c = _batch_cluster(make_cluster)
+  imgs = [f"img-{i}" for i in range(8)]
+  f = _fleet(ClusterRegistry([c]), max_concurrent=8,
+             fail_fast=FailFastPolicy(enabled=False))
+  tasks = f.load_tasks(imgs)
+  f.plan()
+  # Open the batch once first so acquire_batch measures member acquires directly.
+  h_warm = f.acquire(tasks[0])
+  f.release(h_warm)
+  b = c.batches[0]
+  real_acquire = b.acquire
+  real_release_member = b.release_member
+  sleep_s = 0.10
+
+  def slow_acquire(warmpool, timeout=None, *, pod_annotations=None):
+    # Reverse stagger slightly so later tasks complete first while input order stays intact.
+    time.sleep(sleep_s)
+    return real_acquire(warmpool, timeout=timeout, pod_annotations=pod_annotations)
+
+  def slow_release(member):
+    time.sleep(sleep_s)
+    return real_release_member(member)
+
+  b.acquire = slow_acquire
+  b.release_member = slow_release
+
+  t0 = time.monotonic()
+  handles = f.acquire_batch(tasks)
+  acq_dt = time.monotonic() - t0
+  assert acq_dt < 4 * sleep_s, f"acquire_batch took {acq_dt:.3f}s (expected < {4 * sleep_s:.3f}s)"
+  assert [h.task.image for h in handles] == imgs
+
+  t1 = time.monotonic()
+  f.release_all()
+  rel_dt = time.monotonic() - t1
+  assert rel_dt < 4 * sleep_s, f"release_all took {rel_dt:.3f}s (expected < {4 * sleep_s:.3f}s)"
+  assert f.handles() == [] and c.active_claims == 0 and f._claims_reserved == 0
+  f.teardown()
+
+
+def test_acquire_batch_rolls_back_succeeded_handles_on_partial_failure(make_cluster):
+  c = _batch_cluster(make_cluster)
+  imgs = [f"img-{i}" for i in range(6)]
+  f = _fleet(ClusterRegistry([c]), max_concurrent=6,
+             fail_fast=FailFastPolicy(enabled=False))
+  tasks = f.load_tasks(imgs)
+  f.plan()
+  bad_pool = f.plan_.for_image("img-3").pool
+  open_batch = c.sandbox_client.claim_batch.side_effect
+
+  def batch_with_bad_pool(groups, **kwargs):
+    b = open_batch(groups, **kwargs)
+    real_acq = b.acquire
+
+    def maybe_fail(warmpool, timeout=None, *, pod_annotations=None):
+      if warmpool == bad_pool:
+        time.sleep(0.03)
+        raise RuntimeError("boom on img-3")
+      return real_acq(warmpool, timeout=timeout, pod_annotations=pod_annotations)
+
+    b.acquire = maybe_fail
+    return b
+
+  c.sandbox_client.claim_batch.side_effect = batch_with_bad_pool
+  with pytest.raises(RuntimeError, match="boom on img-3"):
+    f.acquire_batch(tasks)
+  assert f.handles() == []
+  assert c.active_claims == 0 and f._claims_reserved == 0
+  assert len(c.batches[0].released_members) == len(c.batches[0].acquired)
+  f.teardown()
+
+  from agent_sandbox_rl.exceptions import FleetOvercommitError
+  from agent_sandbox_rl.testing import FakeFleet
+  fake = FakeFleet(FleetConfig(claim_mode="batch", max_live_sandboxes=2))
+  fake_tasks = fake.load_tasks(["img-0", "img-1", "img-2"])
+  with pytest.raises(FleetOvercommitError):
+    fake.acquire_batch(fake_tasks)
+  assert fake.handles() == [] and fake._claims_reserved == 0
+
+
+def test_release_all_attempts_all_handles_before_reraising_first_error(make_cluster):
+  c = _batch_cluster(make_cluster)
+  f = _fleet(ClusterRegistry([c]), max_concurrent=4,
+             fail_fast=FailFastPolicy(enabled=False))
+  tasks = f.load_tasks(["img"] * 4)
+  f.plan()
+  handles = f.acquire_batch(tasks)
+  b = c.batches[0]
+  bad_claim = handles[1].claim_name
+  real_rel = b.release_member
+
+  def fail_one(member):
+    if member.claim_name == bad_claim:
+      raise RuntimeError("release failed on 1")
+    return real_rel(member)
+
+  b.release_member = fail_one
+  with pytest.raises(RuntimeError, match="release failed on 1"):
+    f.release_all()
+  # All 3 healthy handles were released; only the failed handle stays tracked.
+  assert [h.claim_name for h in f.handles()] == [bad_claim]
+  assert sorted(b.released_members) == sorted(
+      h.claim_name for h in handles if h.claim_name != bad_claim
+  )
+  assert c.active_claims == 1 and f._claims_reserved == 1
+  b.release_member = real_rel
+  f.teardown()
+
+
+def test_teardown_sweeps_remaining_handles_and_pools_when_handle_release_raises(make_cluster):
+  c = _batch_cluster(make_cluster)
+  c.resources.list_warmpools.return_value = ["pool-run-1"]
+  c.resources.list_templates.return_value = ["tmpl-run-1"]
+  f = _fleet(ClusterRegistry([c]), max_concurrent=4,
+             fail_fast=FailFastPolicy(enabled=False))
+  tasks = f.load_tasks(["img", "img"])
+  f.plan()
+  h0 = f.acquire(tasks[0])
+  h1 = f.acquire(tasks[1])
+  assert h0 in f.handles() and h1 in f.handles()
+  h0.release = MagicMock(side_effect=RuntimeError("apiserver 500 on h0"))
+  with pytest.raises(RuntimeError, match="apiserver 500 on h0"):
+    f.teardown()
+  assert h1.claim_name in c.batches[0].released_members
+  c.resources.delete_warmpool.assert_called_once_with("pool-run-1")
+  c.resources.delete_template.assert_called_once_with("tmpl-run-1")

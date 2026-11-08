@@ -455,7 +455,18 @@ class FakeFleet:
     return handle
 
   def acquire_batch(self, tasks) -> list[FakeHandle]:
-    return [self.acquire(t) for t in tasks]
+    acquired: list[FakeHandle] = []
+    try:
+      for t in tasks:
+        acquired.append(self.acquire(t))
+    except BaseException:
+      for h in acquired:
+        try:
+          self.release(h)
+        except Exception:  # noqa: BLE001
+          pass
+      raise
+    return acquired
 
   def release(self, handle: FakeHandle, *, delete_snapshots: bool = False) -> None:
     with self._lock:
@@ -470,17 +481,18 @@ class FakeFleet:
     self.release_calls.append(handle.sandbox_id)
 
   def release_all(self) -> None:
-    for h in list(self._handles):
+    for h in self.handles():
       self.release(h)
 
   def handles(self) -> list[FakeHandle]:
-    return list(self._handles)
+    with self._lock:
+      return list(self._handles)
 
   def hostnames(self) -> list[str]:
-    return [h.hostname for h in self._handles]
+    return [h.hostname for h in self.handles()]
 
   def endpoints(self, port: int = 8888) -> list[str]:
-    return [h.endpoint(port) for h in self._handles]
+    return [h.endpoint(port) for h in self.handles()]
 
   # --- snapshots: the fleet's slot bookkeeping over the handle methods ------- #
   def _held(self, handle: FakeHandle) -> None:

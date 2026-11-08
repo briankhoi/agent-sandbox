@@ -182,14 +182,73 @@ class AsyncSandboxFleet:
                                  pod_annotations=pod_annotations)
 
   async def acquire_batch(self, tasks: list[Task]) -> list[SandboxHandle]:
-    return list(await asyncio.gather(*(self.acquire(t) for t in tasks)))
+    task_list = list(tasks)
+    if not task_list:
+      return []
+    sem = asyncio.Semaphore(max(1, self._fleet.config.max_concurrent))
+    abort = False
+    first_err: BaseException | None = None
+    atasks: list[asyncio.Task[SandboxHandle]] = []
+    entered: set[asyncio.Task[SandboxHandle]] = set()
+
+    async def _one(t: Task) -> SandboxHandle:
+      nonlocal abort, first_err
+      me = asyncio.current_task()
+      async with sem:
+        if abort:
+          raise asyncio.CancelledError()
+        if me is not None:
+          entered.add(me)
+        try:
+          return await self.acquire(t)
+        except Exception as exc:
+          if first_err is None:
+            first_err = exc
+            abort = True
+            for sibling in atasks:
+              if sibling is not me and sibling not in entered and not sibling.done():
+                sibling.cancel()
+          raise
+
+    atasks = [asyncio.create_task(_one(t)) for t in task_list]
+    try:
+      outcomes = await asyncio.gather(*atasks, return_exceptions=True)
+    except BaseException as exc:
+      abort = True
+      if first_err is None:
+        first_err = exc
+      for sibling in atasks:
+        if not sibling.done():
+          sibling.cancel()
+      outcomes = await asyncio.gather(*atasks, return_exceptions=True)
+
+    if first_err is None:
+      first_err = next((o for o in outcomes if isinstance(o, BaseException)), None)
+    if first_err is not None:
+      acquired = [o for o in outcomes if isinstance(o, SandboxHandle)]
+      if acquired:
+        rb = await asyncio.gather(
+            *(self.release(h) for h in acquired), return_exceptions=True)
+        for h, res in zip(acquired, rb):
+          if isinstance(res, BaseException):
+            logger.warning("acquire_batch: failed to roll back handle %s: %s",
+                           h.claim_name, res)
+      raise first_err
+    return [o for o in outcomes if isinstance(o, SandboxHandle)]
 
   async def release(self, handle: SandboxHandle, *, delete_snapshots: bool = False):
     return await self._to_thread(self._fleet.release, handle,
                                  delete_snapshots=delete_snapshots)
 
   async def release_all(self):
-    await asyncio.gather(*(self.release(h) for h in self.handles()))
+    handles = self.handles()
+    if not handles:
+      return
+    outcomes = await asyncio.gather(
+        *(self.release(h) for h in handles), return_exceptions=True)
+    first_err = next((o for o in outcomes if isinstance(o, BaseException)), None)
+    if first_err is not None:
+      raise first_err
 
   # --- GKE Pod Snapshots (blocking SDK calls, run on the pool) ------------- #
   # The handle's snapshot methods block (the SDK extension is synchronous); use
