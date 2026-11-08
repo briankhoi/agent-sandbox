@@ -208,7 +208,7 @@ class SandboxFleet:
     self.placement = get_placement(self.config.placement)
     self.tasks: list[Task] = []
     self.plan_: FleetPlan | None = None
-    self._handles: list[SandboxHandle] = []
+    self._handles: dict[int, SandboxHandle] = {}
     # Claims live or in flight on this fleet, counted SYNCHRONOUSLY (reserved
     # in acquire() before the remote create, released on failure/release). The
     # async pod-count breaker cannot enforce max_live_sandboxes in adopt mode
@@ -1690,7 +1690,7 @@ class SandboxFleet:
     with self._lock:
       torn = self._torndown
       if not torn:
-        self._handles.append(handle)
+        self._handles[id(handle)] = handle
     if torn:
       try:
         if claim is not None:
@@ -1728,16 +1728,79 @@ class SandboxFleet:
     return handle
 
   def acquire_batch(self, tasks: list[Task]) -> list[SandboxHandle]:
-    return [self.acquire(t) for t in tasks]
+    task_list = list(tasks)
+    if not task_list:
+      return []
+    if len(task_list) == 1:
+      return [self.acquire(task_list[0])]
+    workers = min(len(task_list), max(1, self.config.max_concurrent))
+    if workers == 1:
+      acquired: list[SandboxHandle] = []
+      try:
+        for t in task_list:
+          acquired.append(self.acquire(t))
+        return acquired
+      except BaseException:
+        for h in acquired:
+          try:
+            self.release(h)
+          except Exception:  # noqa: BLE001 (best-effort rollback)
+            logger.warning("acquire_batch: failed to roll back handle %s",
+                           h.claim_name, exc_info=True)
+        raise
+
+    results: list[SandboxHandle | None] = [None] * len(task_list)
+    first_err: BaseException | None = None
+    ex = ThreadPoolExecutor(max_workers=workers)
+    try:
+      fut_to_idx = {ex.submit(self.acquire, t): i for i, t in enumerate(task_list)}
+      for fut in as_completed(fut_to_idx):
+        if fut.cancelled():
+          continue
+        idx = fut_to_idx[fut]
+        try:
+          results[idx] = fut.result()
+        except BaseException as exc:  # noqa: BLE001
+          if first_err is None:
+            first_err = exc
+            for other in fut_to_idx:
+              if other is not fut:
+                other.cancel()
+    finally:
+      ex.shutdown(wait=True)
+
+    if first_err is not None:
+      succeeded = [h for h in results if h is not None]
+      if succeeded:
+        rb_workers = min(len(succeeded), workers)
+        if rb_workers <= 1:
+          for h in succeeded:
+            try:
+              self.release(h)
+            except Exception:  # noqa: BLE001
+              logger.warning("acquire_batch: failed to roll back handle %s",
+                             h.claim_name, exc_info=True)
+        else:
+          with ThreadPoolExecutor(max_workers=rb_workers) as rb_ex:
+            rb_futs = {rb_ex.submit(self.release, h): h for h in succeeded}
+            for rf, h in rb_futs.items():
+              try:
+                rf.result()
+              except Exception:  # noqa: BLE001
+                logger.warning("acquire_batch: failed to roll back handle %s",
+                               h.claim_name, exc_info=True)
+      raise first_err
+    return [h for h in results if h is not None]
 
   def handles(self) -> list[SandboxHandle]:
-    return list(self._handles)
+    with self._lock:
+      return list(self._handles.values())
 
   def hostnames(self) -> list[str]:
-    return [h.hostname for h in self._handles]
+    return [h.hostname for h in self.handles()]
 
   def endpoints(self, port: int = 8888) -> list[str]:
-    return [h.endpoint(port) for h in self._handles]
+    return [h.endpoint(port) for h in self.handles()]
 
   def release(self, handle: SandboxHandle, *, delete_snapshots: bool = False) -> None:
     """Release ``handle`` (delete its claim). With ``delete_snapshots`` also
@@ -1748,9 +1811,8 @@ class SandboxFleet:
     # Claim the handle under the lock first, so a concurrent double-release of the
     # same handle issues the remote delete (and counter decrement) exactly once.
     with self._lock:
-      if handle not in self._handles:
+      if self._handles.pop(id(handle), None) is None:
         return
-      self._handles.remove(handle)
       c = self.registry.get(handle.cluster_name)
     snapshot_uids: list = []
     delete_snapshot = None
@@ -1774,7 +1836,7 @@ class SandboxFleet:
       # sandbox that never died) and the handle must go back so the caller can
       # retry the release.
       with self._lock:
-        self._handles.append(handle)
+        self._handles[id(handle)] = handle
       raise
     # A suspended handle gave its slot back at suspend time (see suspend()).
     if not handle._slot_released:
@@ -1907,8 +1969,32 @@ class SandboxFleet:
     self._obs.restored(handle.cluster_name, True)
 
   def release_all(self) -> None:
-    for h in list(self._handles):
-      self.release(h)
+    handles = self.handles()
+    if not handles:
+      return
+    if len(handles) == 1:
+      self.release(handles[0])
+      return
+    workers = min(len(handles), max(1, self.config.max_concurrent))
+    first_err: BaseException | None = None
+    if workers == 1:
+      for h in handles:
+        try:
+          self.release(h)
+        except Exception as exc:  # noqa: BLE001 (drain remaining handles first)
+          if first_err is None:
+            first_err = exc
+    else:
+      with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(self.release, h) for h in handles]
+        for fut in futs:
+          try:
+            fut.result()
+          except Exception as exc:  # noqa: BLE001 (drain all futures first)
+            if first_err is None:
+              first_err = exc
+    if first_err is not None:
+      raise first_err
 
   # --- teardown ---------------------------------------------------------- #
   def teardown(self, delete_namespace: bool = False, *,
@@ -2025,8 +2111,11 @@ class SandboxFleet:
       with self._lock:
         self._torndown = True
     with self._sweep_lock:
+      release_err: Exception | None = None
       try:
         self.release_all()
+      except Exception as exc:  # noqa: BLE001 (sweep remaining run resources first)
+        release_err = exc
       finally:
         if self._batch_claims is not None:
           # Deletes any member a handle didn't release, and each batch's Lease,
@@ -2128,6 +2217,8 @@ class SandboxFleet:
       self._adopted_templates.clear()
       self.plan_ = None
       self._remove_teardown_hooks()
+      if release_err is not None:
+        raise release_err
 
   def __enter__(self) -> "SandboxFleet":
     return self.setup()
