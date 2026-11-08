@@ -37,7 +37,10 @@ from typing import TYPE_CHECKING
 
 from k8s_agent_sandbox import BatchError, BatchGroup, Member, SandboxBatch
 from k8s_agent_sandbox.batch_state import still_reaches
-from k8s_agent_sandbox.batch_utils import BATCH_SHUTDOWN_MARGIN_SECONDS
+from k8s_agent_sandbox.batch_utils import (
+    BATCH_REQUEST_TIMEOUT_SECONDS,
+    BATCH_SHUTDOWN_MARGIN_SECONDS,
+)
 from k8s_agent_sandbox.utils import select_pod_ip
 
 from .exceptions import FleetError
@@ -98,7 +101,9 @@ class BatchClaim:
       # race a get_batch() takeover. BatchClaims generates random batch IDs and
       # never detaches or re-attaches, so deleting the claim directly cannot hit
       # another holder's recreated claim and tolerates 404 when already deleted.
-      self.cluster.resources.delete_claim(self.member.claim_name)
+      self.cluster.resources.delete_claim(
+          self.member.claim_name,
+          request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS)
 
 
 class BatchClaims:

@@ -722,9 +722,38 @@ class SandboxHandle:
     if self._batch_claim is not None:
       # Release through the batch so it stops tracking the member without
       # deleting the claim behind the batch's back.
-      self._batch_claim.release()
-      if self._cluster is not None:
-        forget_claim_in_client(self._cluster, self.claim_name)
+      try:
+        self._batch_claim.release()
+        if self._cluster is not None:
+          forget_claim_in_client(self._cluster, self.claim_name)
+        if self.sandbox is not None:
+          try:
+            sb_vars = vars(self.sandbox)
+          except TypeError:
+            sb_vars = {}
+          if "_snapshots" in sb_vars:
+            snapshots = sb_vars["_snapshots"]
+          else:
+            snapshots = sb_vars.get("snapshots")
+          if snapshots is not None and hasattr(snapshots, "delete_manual_triggers"):
+            try:
+              snapshots.delete_manual_triggers()
+            except Exception as exc:  # noqa: BLE001 (best-effort trigger cleanup)
+              logger.warning(
+                  "failed to delete snapshot manual triggers for %s: %s",
+                  self.sandbox_id, exc)
+          if "_snapshots" in sb_vars:
+            setattr(self.sandbox, "_snapshots", None)
+      finally:
+        if self.sandbox is not None:
+          close_conn = getattr(self.sandbox, "close_connection", None)
+          if callable(close_conn):
+            try:
+              close_conn()
+            except Exception as exc:  # noqa: BLE001 (best-effort connection close)
+              logger.warning(
+                  "failed to close sandbox connection for %s: %s",
+                  self.sandbox_id, exc)
       return
     if self.sandbox is not None:
       self.sandbox.terminate()

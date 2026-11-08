@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from k8s_agent_sandbox import BatchError, Member, MemberState
+from k8s_agent_sandbox.batch_utils import BATCH_REQUEST_TIMEOUT_SECONDS
 from k8s_agent_sandbox.exceptions import SandboxNotReadyError
 from kubernetes import client
 from pydantic import ValidationError
@@ -365,7 +366,8 @@ def test_teardown_releases_every_batch(make_cluster):
   assert len(c.batches) == 2
   f.teardown()
   assert c.batches[0].released_members == []
-  c.resources.delete_claim.assert_called_once_with(h0.claim_name)
+  c.resources.delete_claim.assert_called_once_with(
+      h0.claim_name, request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS)
   assert c.batches[1].released_members == [h1.claim_name]
   assert all(b.released for b in c.batches)
   assert c.active_claims == 0 and f._claims_reserved == 0
@@ -409,7 +411,8 @@ def test_acquire_racing_teardown_leaves_no_batch_open(make_cluster):
 
 def test_claim_landing_after_teardown_falls_back_to_direct_claim_delete(make_cluster):
   # Window 1 runs teardown inside batch.acquire before batch.connect, so connect
-  # raises BatchError on the released batch and rollback deletes the claim directly.
+  # raises BatchError on the released batch and rollback deletes the claim
+  # directly with a bounded request_timeout.
   c = _batch_cluster(make_cluster)
   f = _fleet(ClusterRegistry([c]))
   f.load_tasks(["img", "img"])
@@ -426,12 +429,13 @@ def test_claim_landing_after_teardown_falls_back_to_direct_claim_delete(make_clu
   with pytest.raises(BatchError):
     f.acquire(f.tasks[1])
   assert b.released_members == [h0.claim_name]
-  c.resources.delete_claim.assert_called_once_with(f"{b.batch_id}-2")
+  c.resources.delete_claim.assert_called_once_with(
+      f"{b.batch_id}-2", request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS)
   assert f._claims_reserved == 0
 
   # Window 2 runs teardown after batch.connect returns, so fleet.acquire sees
-  # _torndown, deletes the claim directly once release_member rejects the released
-  # batch, and raises FleetError without calling sandbox.terminate().
+  # _torndown, deletes the claim directly once release_member rejects the
+  # released batch, and raises FleetError without calling sandbox.terminate().
   c2 = _batch_cluster(make_cluster)
   f2 = _fleet(ClusterRegistry([c2]))
   f2.load_tasks(["img", "img"])
@@ -448,7 +452,8 @@ def test_claim_landing_after_teardown_falls_back_to_direct_claim_delete(make_clu
   with pytest.raises(FleetError):
     f2.acquire(f2.tasks[1])
   assert b2.released_members == [h2.claim_name]
-  c2.resources.delete_claim.assert_called_once_with(f"{b2.batch_id}-2")
+  c2.resources.delete_claim.assert_called_once_with(
+      f"{b2.batch_id}-2", request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS)
   assert not b2.connected[-1].terminate.called
   assert f2._claims_reserved == 0
 
@@ -486,8 +491,12 @@ def test_stopped_batch_is_replaced_and_old_members_still_release(make_cluster):
   c.resources.delete_claim.side_effect = None
   f.release(old)
   assert c.batches[0].released_members == []
-  c.resources.delete_claim.assert_called_with(old.claim_name)
+  c.resources.delete_claim.assert_called_with(
+      old.claim_name, request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS)
+  assert not old.sandbox.terminate.called
   assert c.active_claims == 1 and f._claims_reserved == 1
+  f.teardown()
+  assert all(b.released for b in c.batches)
 
 
 def test_failure_after_acquire_releases_the_member(make_cluster, monkeypatch):
@@ -510,6 +519,56 @@ def test_failure_after_acquire_releases_the_member(make_cluster, monkeypatch):
   assert isinstance(ei.value.__cause__, SandboxNotReadyError)
   assert b.released_members == [f"{b.batch_id}-2", f"{b.batch_id}-3"]
   assert f._claims_reserved == 1
+
+
+def test_batch_release_cleans_up_snapshot_manual_triggers(make_cluster):
+  c = _batch_cluster(make_cluster)
+  f = _fleet(ClusterRegistry([c]))
+  f.load_tasks(["img", "img", "img"])
+  f.plan()
+
+  h1 = f.acquire(f.tasks[0])
+  snap_engine = MagicMock()
+  h1.sandbox._snapshots = snap_engine
+
+  # If _batch_claim.release() raises (e.g. fallback delete_claim fails on a
+  # stopped batch), delete_manual_triggers() must NOT run so retry state stays,
+  # while close_connection() still closes the local client transport.
+  c.batches[0].error = BatchError("lease lost")
+  c.resources.delete_claim.side_effect = client.ApiException(status=503)
+  with pytest.raises(client.ApiException):
+    f.release(h1)
+  snap_engine.delete_manual_triggers.assert_not_called()
+  assert h1.sandbox._snapshots is snap_engine
+  assert h1.sandbox.close_connection.call_count == 1
+
+  # Once release succeeds, manual triggers are deleted and _snapshots cleared.
+  c.resources.delete_claim.side_effect = None
+  f.release(h1)
+  snap_engine.delete_manual_triggers.assert_called_once_with()
+  assert h1.sandbox._snapshots is None
+  assert h1.sandbox.close_connection.call_count == 2
+
+  # Configured MagicMock(snapshots=...) does not fabricate _snapshots first.
+  c.batches[0].error = None
+  h_mock = f.acquire(f.tasks[1])
+  mock_engine = MagicMock()
+  h_mock.sandbox = MagicMock(
+      claim_name=h_mock.claim_name, sandbox_id=h_mock.sandbox_id,
+      snapshots=mock_engine)
+  f.release(h_mock)
+  mock_engine.delete_manual_triggers.assert_called_once_with()
+  assert h_mock.sandbox.close_connection.call_count == 1
+
+  # Also works via public .snapshots attribute and tolerates best-effort errors.
+  h2 = f.acquire(f.tasks[2])
+  pub_engine = MagicMock()
+  pub_engine.delete_manual_triggers.side_effect = RuntimeError("apiserver blip")
+  h2.sandbox = types.SimpleNamespace(
+      claim_name=h2.claim_name, sandbox_id=h2.sandbox_id, snapshots=pub_engine)
+  f.release(h2)
+  pub_engine.delete_manual_triggers.assert_called_once_with()
+  f.teardown()
 
 
 def test_annotated_and_pinned_acquires_go_through_the_batch(make_cluster):
