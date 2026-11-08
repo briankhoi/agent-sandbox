@@ -17,6 +17,7 @@
 import asyncio
 import collections
 import contextlib
+import gc
 import inspect
 import json
 import logging
@@ -25,6 +26,7 @@ import ssl
 import threading
 import time
 import unittest
+import weakref
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -38,6 +40,7 @@ from kubernetes_asyncio import client as k8s_client
 
 from k8s_agent_sandbox import async_sandbox_batch, batch_state, batch_utils
 from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
+from k8s_agent_sandbox.async_sandbox import AsyncSandbox
 from k8s_agent_sandbox.async_sandbox_batch import AsyncSandboxBatch
 from k8s_agent_sandbox.async_sandbox_client import AsyncSandboxClient
 from k8s_agent_sandbox.batch_utils import (
@@ -1391,6 +1394,205 @@ class TestConnect(unittest.IsolatedAsyncioTestCase):
         member = handle.members()[0]
         await handle.connect(member)
         self.assertEqual(real_client._active_connection_sandboxes, {})
+
+    async def test_close_connection_evicts_cached_sandbox_and_connect_recreates_it(self):
+        patcher = patch("k8s_agent_sandbox.async_sandbox_client.AsyncK8sHelper")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        config = SandboxDirectConnectionConfig(api_url="http://test-router:8080")
+        real_client = AsyncSandboxClient(connection_config=config, cleanup=False)
+        handle = _make_handle(real_client)
+        handle._state.upsert_claim(
+            _claim(
+                "b1-0",
+                conditions=[{"type": "Ready", "status": "True"}],
+                sandbox={"name": "sbx-1", "podIPs": ["10.0.0.1"]},
+            )
+        )
+        member = handle.members()[0]
+        first = await handle.connect(member)
+        self.assertIsInstance(first, AsyncSandbox)
+        self.assertTrue(first.is_active)
+        self.assertIn("b1-0", handle._connected)
+
+        await first.close_connection()
+        self.assertFalse(first.is_active)
+        self.assertEqual(handle._connected, {})
+
+        second = await handle.connect(member)
+        self.addAsyncCleanup(second.close_connection)
+        self.assertIsNot(second, first)
+        self.assertTrue(second.is_active)
+
+    async def test_terminate_on_connected_sandbox_routes_through_lease_fenced_release_member(self):
+        patcher = patch("k8s_agent_sandbox.async_sandbox_client.AsyncK8sHelper")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        config = SandboxDirectConnectionConfig(api_url="http://test-router:8080")
+        real_client = AsyncSandboxClient(connection_config=config, cleanup=False)
+        helper = real_client.k8s_helper
+
+        # Healthy handle routes terminate() through Lease-fenced release_member.
+        helper.delete_sandbox_claim = AsyncMock()
+        handle = _make_handle(real_client)
+        handle._state.upsert_claim(
+            _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+        )
+        sbx = await handle.connect(handle.members()[0])
+        await sbx.terminate()
+        helper.delete_sandbox_claim.assert_awaited_once_with(
+            "b1-0",
+            "default",
+            _request_timeout=batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+            log_level=logging.DEBUG,
+            batch=True,
+        )
+        self.assertEqual(handle.members(), [])
+        self.assertIsNone(sbx.claim_name)
+        self.assertFalse(sbx.is_active)
+        await sbx.terminate()
+        self.assertEqual(helper.delete_sandbox_claim.await_count, 1)
+
+        # Lost Lease fences terminate() before closing the active connection.
+        helper.delete_sandbox_claim = AsyncMock()
+        lost_handle = _make_handle(real_client)
+        lost_handle._state.upsert_claim(
+            _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+        )
+        lost_sbx = await lost_handle.connect(lost_handle.members()[0])
+        self.addAsyncCleanup(lost_sbx.close_connection)
+        await lost_handle._stop_renewal(BatchLeaseExpiredError("Lease lost"))
+        with self.assertRaises(BatchError):
+            await lost_sbx.terminate()
+        self.assertTrue(lost_sbx.is_active)
+        self.assertEqual(lost_sbx.claim_name, "b1-0")
+        helper.delete_sandbox_claim.assert_not_called()
+
+        # Detached handle fences terminate() with BatchError without calling delete_sandbox_claim,
+        # and an unclosed connection stays active when fencing rejects terminate().
+        helper.delete_sandbox_claim = AsyncMock()
+        detached_handle = _make_handle(real_client)
+        helper.read_batch_lease = AsyncMock(
+            return_value=_lease(holder_identity=detached_handle._holder_identity)
+        )
+        helper.replace_batch_lease = AsyncMock()
+        detached_handle._state.upsert_claim(
+            _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+        )
+        detached_sbx = await detached_handle.connect(detached_handle.members()[0])
+        self.addAsyncCleanup(detached_sbx.close_connection)
+        detached_handle._detached = True
+        with self.assertRaises(BatchError):
+            await detached_sbx.terminate()
+        self.assertTrue(detached_sbx.is_active)
+        helper.delete_sandbox_claim.assert_not_called()
+
+        detached_handle._detached = False
+        await detached_handle.detach(grace=10)
+        with self.assertRaises(BatchError):
+            await detached_sbx.terminate()
+        helper.delete_sandbox_claim.assert_not_called()
+
+        # Released handle makes terminate() an idempotent no-op.
+        helper.delete_sandbox_claim = AsyncMock()
+        released_handle = _make_handle(real_client)
+        helper.read_batch_lease = AsyncMock(
+            return_value=_lease(holder_identity=released_handle._holder_identity)
+        )
+        helper.replace_batch_lease = AsyncMock(
+            return_value=_lease(holder_identity=released_handle._holder_identity)
+        )
+        helper.delete_sandbox_claims_by_label = AsyncMock()
+        helper.count_live_sandbox_claims = AsyncMock(return_value=0)
+        helper.delete_batch_lease = AsyncMock()
+        released_handle._state.upsert_claim(
+            _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+        )
+        released_sbx = await released_handle.connect(released_handle.members()[0])
+        await released_handle.release()
+        await released_sbx.terminate()
+        helper.delete_sandbox_claim.assert_not_called()
+        self.assertIsNone(released_sbx.claim_name)
+        self.assertFalse(released_sbx.is_active)
+
+        # A close_connection failure after fenced delete clears claim_name so retry skips unfenced delete.
+        helper.delete_sandbox_claim = AsyncMock()
+        close_fail_handle = _make_handle(real_client)
+        close_fail_handle._state.upsert_claim(
+            _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+        )
+        close_fail_sbx = await close_fail_handle.connect(close_fail_handle.members()[0])
+        orig_connector_close = close_fail_sbx.connector.close
+        close_attempts = 0
+
+        async def flaky_close():
+            nonlocal close_attempts
+            close_attempts += 1
+            if close_attempts <= 2:
+                raise RuntimeError("close failed")
+            await orig_connector_close()
+
+        close_fail_sbx.connector.close = flaky_close  # type: ignore[method-assign]
+        with self.assertLogs(level="WARNING"), self.assertRaisesRegex(RuntimeError, "close failed"):
+            await close_fail_sbx.terminate()
+        self.assertIsNone(close_fail_sbx.claim_name)
+        self.assertIsNone(close_fail_sbx._claim_deleter)
+        self.assertTrue(close_fail_sbx.is_active)
+        self.assertEqual(helper.delete_sandbox_claim.await_count, 1)
+
+        await close_fail_sbx.terminate()
+        self.assertFalse(close_fail_sbx.is_active)
+        self.assertEqual(helper.delete_sandbox_claim.await_count, 1)
+
+    async def test_connected_sandbox_callbacks_form_no_reference_cycle_when_gc_disabled(self):
+        class _StubAsyncSandbox:
+            def __init__(self, claim_name, sandbox_id, **_kwargs):
+                self.claim_name = claim_name
+                self.sandbox_id = sandbox_id
+                self.is_active = True
+                self._seeded_pod_ip = None
+                self._on_close = None
+                self._claim_deleter = None
+
+            async def close_connection(self):
+                self.is_active = False
+                on_close, self._on_close = self._on_close, None
+                if on_close is not None:
+                    on_close()
+
+        mock_client = MagicMock()
+        mock_client.sandbox_class = _StubAsyncSandbox
+
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            handle = _make_handle(mock_client)
+            handle._state.upsert_claim(
+                _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+            )
+            sbx = await handle.connect(handle.members()[0])
+            batch_ref = weakref.ref(handle)
+            sbx_ref = weakref.ref(sbx)
+            del sbx
+            del handle
+            self.assertIsNone(batch_ref())
+            self.assertIsNone(sbx_ref())
+
+            handle2 = _make_handle(mock_client)
+            handle2._state.upsert_claim(
+                _claim("b1-0", conditions=[{"type": "Ready", "status": "True"}], sandbox={"name": "sbx-1"})
+            )
+            sbx2 = await handle2.connect(handle2.members()[0])
+            batch_ref2 = weakref.ref(handle2)
+            sbx_ref2 = weakref.ref(sbx2)
+            await sbx2.close_connection()
+            del handle2
+            self.assertIsNone(batch_ref2())
+            del sbx2
+            self.assertIsNone(sbx_ref2())
+        finally:
+            if was_enabled:
+                gc.enable()
 
 
 class TestDetach(unittest.IsolatedAsyncioTestCase):
