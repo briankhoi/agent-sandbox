@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import functools
 import logging
 import math
 import time
@@ -751,10 +752,33 @@ class AsyncK8sHelper:
         """
         await self._ensure_initialized()
 
+        list_fn = self.custom_objects_api.list_namespaced_custom_object
+
+        @functools.wraps(list_fn)
+        async def _checked_list(*args: Any, **kwargs: Any) -> Any:
+            # Watch.stream passes _preload_content=False, which skips the generated client's HTTP
+            # status check. Validate non-2xx responses here so non-JSON errors raise ApiException
+            # and 429 responses preserve their HTTP headers such as Retry-After.
+            response = cast(aiohttp.ClientResponse, await list_fn(*args, **kwargs))
+            if not 200 <= response.status <= 299:
+                try:
+                    try:
+                        raw = await response.read()
+                    except BaseException:
+                        response.close()
+                        raise
+                finally:
+                    response.release()
+                body = raw.decode("utf-8", errors="replace")
+                err = client.ApiException(http_resp=cast(Any, RESTResponse(response, raw)))
+                err.body = cast(Any, body)
+                raise err
+            return response
+
         w = watch.Watch()
         try:
             async for event in w.stream(
-                func=self.custom_objects_api.list_namespaced_custom_object,
+                func=_checked_list,
                 namespace=namespace,
                 group=CLAIM_API_GROUP,
                 version=CLAIM_API_VERSION,
@@ -935,7 +959,10 @@ class AsyncK8sHelper:
         A caller-injected ``api_client`` is left open and remains attached to
         this helper. Only a client created internally is closed and cleared.
         """
-        if self._api_client and self._owns_api_client:
-            await self._api_client.close()
+        async with self._init_lock:
+            if not (self._api_client and self._owns_api_client):
+                return
+            api_client = self._api_client
             self._api_client = None
             self._initialized = False
+        await api_client.close()

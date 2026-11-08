@@ -843,46 +843,53 @@ class AsyncSandboxClient(Generic[T]):
             kube_config_dir_cm = (
                 contextlib.nullcontext() if atexit_api_client is not None else tempfile.TemporaryDirectory()
             )
-            with kube_config_dir_cm as kube_config_dir:
-                helper = K8sHelper(api_client=atexit_api_client, kube_config_temp_dir=kube_config_dir)
-                for ns, claim_name in (key for key, _ in tracked):
-                    if (ns, claim_name) in self._explicit_claims:
-                        continue
+            try:
+                with kube_config_dir_cm as kube_config_dir:
+                    helper = K8sHelper(api_client=atexit_api_client, kube_config_temp_dir=kube_config_dir)
                     try:
-                        helper.delete_sandbox_claim(
-                            claim_name,
-                            ns,
-                            _request_timeout=_ATEXIT_DELETE_REQUEST_TIMEOUT_SECONDS,
-                        )
-                    except Exception as e:
-                        if sys.stderr is not None:
-                            print(
-                                f"[agent-sandbox] Warning: failed to delete sandbox claim "
-                                f"'{claim_name}' in namespace '{ns}' during atexit cleanup: {e}",
-                                file=sys.stderr,
-                            )
-                for batch in batches:
-                    # A batch whose detach() didn't finish was handed off, and an atexit hook can't await detach().
-                    # The hook leaves an attached batch in place until its Lease goes stale.
-                    if batch._detach_unfinished() or batch._exit_detaches():
-                        continue
-                    try:
-                        _delete_batch_objects_sync(
-                            helper,
-                            batch.namespace,
-                            batch.batch_id,
-                            batch._lease_name,
-                            batch._holder_identity,
-                            batch._lease_duration,
-                            batch._lease,
-                        )
-                    except Exception as e:
-                        if sys.stderr is not None:
-                            print(
-                                f"[agent-sandbox] Warning: failed to release batch "
-                                f"'{batch.batch_id}' in namespace '{batch.namespace}' during atexit cleanup: {e}",
-                                file=sys.stderr,
-                            )
+                        for ns, claim_name in (key for key, _ in tracked):
+                            if (ns, claim_name) in self._explicit_claims:
+                                continue
+                            try:
+                                helper.delete_sandbox_claim(
+                                    claim_name,
+                                    ns,
+                                    _request_timeout=_ATEXIT_DELETE_REQUEST_TIMEOUT_SECONDS,
+                                )
+                            except Exception as e:
+                                if sys.stderr is not None:
+                                    print(
+                                        f"[agent-sandbox] Warning: failed to delete sandbox claim "
+                                        f"'{claim_name}' in namespace '{ns}' during atexit cleanup: {e}",
+                                        file=sys.stderr,
+                                    )
+                        for batch in batches:
+                            # A batch whose detach() didn't finish was handed off, and an atexit hook can't await detach().
+                            # The hook leaves an attached batch in place until its Lease goes stale.
+                            if batch._detach_unfinished() or batch._exit_detaches():
+                                continue
+                            try:
+                                _delete_batch_objects_sync(
+                                    helper,
+                                    batch.namespace,
+                                    batch.batch_id,
+                                    batch._lease_name,
+                                    batch._holder_identity,
+                                    batch._lease_duration,
+                                    batch._lease,
+                                )
+                            except Exception as e:
+                                if sys.stderr is not None:
+                                    print(
+                                        f"[agent-sandbox] Warning: failed to release batch "
+                                        f"'{batch.batch_id}' in namespace '{batch.namespace}' during atexit cleanup: {e}",
+                                        file=sys.stderr,
+                                    )
+                    finally:
+                        helper.close()
+            finally:
+                if atexit_api_client is not None:
+                    atexit_api_client.close()
         except Exception as e:
             if sys.stderr is not None:
                 print(
