@@ -29,6 +29,7 @@ each later pool once, on the thread of its own first acquire.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -40,12 +41,30 @@ from k8s_agent_sandbox.batch_utils import BATCH_SHUTDOWN_MARGIN_SECONDS
 from k8s_agent_sandbox.utils import select_pod_ip
 
 from .exceptions import FleetError
+from .failfast import BatchWatchdog, StartVerdict
 
 if TYPE_CHECKING:
   from .cluster import Cluster
-  from .config import BatchClaimConfig
+  from .config import BatchClaimConfig, FailFastPolicy
 
 logger = logging.getLogger("agent_sandbox_rl.batch_claims")
+
+_RELEASED_MEMBER_RE = re.compile(
+    r"(?:acquired member|while acquiring|for claim|batch lost) '([^']+)'"
+)
+
+
+def extract_batch_claim_name(exc: BaseException) -> str | None:
+  """Extract the claim name from an SDK ``BatchError`` / ``TerminalMemberError``."""
+  member = getattr(exc, "member", None)
+  claim_name = getattr(member, "claim_name", None) if member is not None else None
+  if isinstance(claim_name, str) and claim_name:
+    return claim_name
+  if isinstance(exc, BatchError):
+    match = _RELEASED_MEMBER_RE.search(str(exc))
+    if match is not None:
+      return match.group(1)
+  return None
 
 
 @dataclass
@@ -86,13 +105,17 @@ class BatchClaims:
   """The batches one fleet claims through, one live batch per cluster."""
 
   def __init__(self, settings: "BatchClaimConfig", *, ready_timeout: int,
-               labels: dict[str, str]) -> None:
+               labels: dict[str, str],
+               fail_fast: "FailFastPolicy | None" = None) -> None:
     self._settings = settings
     self._ready_timeout = ready_timeout
     self._labels = labels
+    self._fail_fast = fail_fast
     self._lock = threading.Lock()
     self._cluster_locks: dict[str, threading.Lock] = {}
     self._live: dict[str, SandboxBatch] = {}
+    self._watchdogs: dict[str, BatchWatchdog] = {}
+    self._verdicts: dict[tuple[str, str], StartVerdict] = {}
     # Every batch opened, including ones replaced after an error, so teardown
     # releases their remaining claims and Leases.
     self._opened: list[SandboxBatch] = []
@@ -105,6 +128,22 @@ class BatchClaims:
     """Lets acquires open batches again after `release_all`, for a new setup()."""
     with self._lock:
       self._closed = False
+
+  def _record_verdict(
+      self, cluster_name: str, claim_name: str, verdict: StartVerdict
+  ) -> None:
+    with self._lock:
+      if (
+          (cluster_name, claim_name) not in self._verdicts
+          and len(self._verdicts) >= 4096
+      ):
+        self._verdicts.pop(next(iter(self._verdicts)), None)
+      self._verdicts[(cluster_name, claim_name)] = verdict
+
+  def pop_verdict(self, cluster_name: str, claim_name: str) -> StartVerdict | None:
+    """Pop any fail-fast `StartVerdict` recorded for ``(cluster_name, claim_name)``."""
+    with self._lock:
+      return self._verdicts.pop((cluster_name, claim_name), None)
 
   def _cluster_lock(self, name: str) -> threading.Lock:
     with self._lock:
@@ -126,6 +165,10 @@ class BatchClaims:
         # its claims are the reaper's. Members already handed out keep working
         # until then, and new acquires go to a fresh batch. It stays open until
         # teardown releases it.
+        with self._lock:
+          old_wd = self._watchdogs.pop(cluster.name, None)
+        if old_wd is not None:
+          old_wd.stop()
         logger.warning("batch %s on cluster %s stopped (%s); opening a new one "
                        "for new acquires", existing.batch_id, cluster.name, error)
       s = self._settings
@@ -142,6 +185,7 @@ class BatchClaims:
           lease_duration=s.lease_duration)
       stale = False
       registered = False
+      wd: BatchWatchdog | None = None
       try:
         with self._lock:
           self._opened.append(batch)
@@ -150,7 +194,23 @@ class BatchClaims:
             stale = True
           else:
             self._live[cluster.name] = batch
+            if self._fail_fast is not None and self._fail_fast.enabled:
+              cluster_name = cluster.name
+              wd = BatchWatchdog(
+                  cluster, batch, self._fail_fast,
+                  record_verdict=lambda cname, v: (
+                      self._record_verdict(cluster_name, cname, v)))
+              self._watchdogs[cluster.name] = wd
+        if not stale and wd is not None:
+          wd.start()
       except BaseException:
+        if wd is not None:
+          wd.stop()
+        with self._lock:
+          if self._live.get(cluster.name) is batch:
+            self._live.pop(cluster.name, None)
+          if wd is not None and self._watchdogs.get(cluster.name) is wd:
+            self._watchdogs.pop(cluster.name, None)
         try:
           batch.release()
         except Exception:  # noqa: BLE001
@@ -191,8 +251,23 @@ class BatchClaims:
     """
     batch = self._batch_for(cluster, pool)
     started = time.monotonic()
-    member = batch.acquire(
-        pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
+    with self._lock:
+      wd = self._watchdogs.get(cluster.name)
+      if wd is not None and wd.batch is not batch:
+        wd = None
+    if wd is not None:
+      wd.enter_acquire(started)
+    acquired_claim: str | None = None
+    try:
+      member = batch.acquire(
+          pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
+      acquired_claim = member.claim_name
+    except BaseException as exc:
+      acquired_claim = extract_batch_claim_name(exc)
+      raise
+    finally:
+      if wd is not None:
+        wd.exit_acquire(acquired_claim)
     # construct_sandbox_claim_lifecycle_spec formats shutdownTime to whole
     # seconds via strftime, truncating up to almost 1 s of microseconds.
     expires_at = (started + self._ready_timeout + self._settings.work_budget
@@ -207,7 +282,12 @@ class BatchClaims:
       self._closed = True
       self._epoch += 1
       opened = list(self._opened)
+      watchdogs = list(self._watchdogs.values())
+      self._watchdogs.clear()
+      self._verdicts.clear()
       self._live.clear()
+    for wd in watchdogs:
+      wd.stop()
     for batch in opened:
       try:
         batch.release()

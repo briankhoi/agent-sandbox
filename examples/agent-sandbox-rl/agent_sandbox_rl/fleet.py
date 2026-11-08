@@ -44,7 +44,7 @@ from k8s_agent_sandbox.utils import select_pod_ip
 from kubernetes import client
 
 from . import constants, sizing
-from .batch_claims import BatchClaim, BatchClaims
+from .batch_claims import BatchClaim, BatchClaims, extract_batch_claim_name
 from .cluster import Cluster, ClusterRegistry
 from .config import ClusterConfig, FleetConfig, run_namespace
 from .exceptions import (
@@ -230,7 +230,8 @@ class SandboxFleet:
     self._batch_claims = (
         BatchClaims(self.config.batch_claims,
                     ready_timeout=self.config.effective_claim_timeout(),
-                    labels=self.config.labels)
+                    labels=self.config.labels,
+                    fail_fast=self.config.fail_fast)
         if self.config.claim_mode == "batch" else None)
     if self.config.observability.enable_tracing:
       self._enable_sdk_tracing()
@@ -1550,6 +1551,11 @@ class SandboxFleet:
         if batch_claims is not None:
           claim = batch_claims.acquire(
               cluster, pool, pod_annotations=annotations or None)
+          v = batch_claims.pop_verdict(cluster.name, claim.member.claim_name)
+          if v is not None:
+            raise SandboxStartError(
+                v.reason, v.message, claim_name=claim.member.claim_name,
+                pod_name=v.pod_name, image=task.image)
           # The batch's watch already reported the member's Sandbox and pod IP,
           # so no GETs here. The pod is named after its Sandbox, and connect()
           # gives the snapshot operations their Sandbox without a request.
@@ -1636,6 +1642,20 @@ class SandboxFleet:
         cluster.release_replicas(1)
         with self._lock:
           self._ondemand.discard(key)
+      if batch_claims is not None:
+        if isinstance(exc, SandboxStartError):
+          self._obs.claim(cluster.name, "start_failed")
+          raise
+        failed_claim = extract_batch_claim_name(exc)
+        b_verdict = (
+            batch_claims.pop_verdict(cluster.name, failed_claim)
+            if failed_claim is not None else None
+        )
+        if failed_claim is not None and b_verdict is not None:
+          self._obs.claim(cluster.name, "start_failed")
+          raise SandboxStartError(
+              b_verdict.reason, b_verdict.message, claim_name=failed_claim,
+              pod_name=b_verdict.pod_name, image=task.image) from exc
       if batch_claims is None and verdict is not None:
         # The watchdog deleted the claim, which is what ended the SDK wait; the
         # error the caller needs is the pod's, not "claim was deleted".
