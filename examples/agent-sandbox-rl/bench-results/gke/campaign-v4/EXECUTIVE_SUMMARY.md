@@ -6,7 +6,7 @@
 > - **Controller Image:** `us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/agent-sandbox-controller@sha256:8d11e685651cfb17e406d3440256dedb8317c219a7fe80a789999290d3161ab1`
 > - **Driver Image:** `us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:faa997cf22194fb81ed0833f54b8fa34469e746e6ac32c149f6f19df9441d38c`
 > - **Fairness Guarantees:** Identical `1000/500` controller workers, identical `go_sched_gomaxprocs_threads = 16` regional GKE 1.37 control planes, `ABABAB` interleaved `3`-repetition medians on fast sweeps/bursts, verified `0` residual objects + `30s` settle before every run, and `per_claim` code paths `100%` untouched.
-> - **Live Status:** Complete: `#1`, `#2`, `#4A`, `#4C`, `#5A`, `#5B`, `#5C`, `#6`, `#7A`, `#7B`, `#7C`, **`#7D`**. Running: clean `#4B` ABABAB rerun (original `#4B` `batch64` Step 0 had `893/1,024` probe errors and is **superseded**), `#7D` `mif=256` bonus. Pending: `#3A/#3B/#3C`, `#4-SWE` (Track B, held pending canonical-hardware decision).
+> - **Live Status:** Complete: `#1`, `#2`, `#4A`, `#4C`, `#5A`, `#5B`, `#5C`, `#6`, `#7A`, `#7B`, `#7C`, **`#7D`**. `#4B` clean rerun complete (supersedes the original, whose `batch64` Step 0 had `893/1,024` probe errors). Running: `#3A/#3B/#3C`, `#4-SWE` on the existing SBD cluster (non-canonical hardware, labeled as such).
 
 > [!WARNING]
 > **Comparability scope (audit 2026-11-09):** Every `per_claim` vs `batch64` ratio in this file is a same-cluster, back-to-back A/B and is valid. **Absolute numbers are NOT directly comparable to published `sandbox-rl-performance` `RESULTS.md` rows**, whose canonical env is `10× e2-standard-32`, pd-ssd 600 GB, GKE `1.36.0-gke.3712000` (kernel 6.12), controller `1000/50`, and on T1 patched gcfsd/Riptide. Campaign 4 ran GKE `1.37.1-gke.2097000` (kernel 6.18) on:
@@ -30,7 +30,7 @@
 | **4** | **Standing `1,000`-Pod Warm `TTFI` Curves (`#5A` & `#5B`)**<br>`1×1,000` & `200×5` High-Cardinality Pools (`c = 100..1,000`, `3`-rep median) | `88.6–108.5/s` at `c=1k`<br>`9.28s` (`#5A`) / `10.74s` (`#5B`) TTFI P50<br>`11,436` driver K8s API requests | **`192.3/s` (`#5A`) / `186.0/s` (`#5B`) peak**<br>**`3.94s` (`#5A`) / `4.05s` (`#5B`) TTFI P50**<br>**`1,785` driver K8s API requests** | • **`6.41×` fewer K8s API HTTP requests** (`apiserver_flowcontrol_dispatched_requests_total`)<br>• **`2.36×–2.66×` faster TTFI P50** & **`3.07×` faster First TTFI** at `c=1,000`<br>• **Hits M2 `<1s` TTFI** at `c=100` (`0.69s–0.73s` P50) & **Eval `Pass` `<5s` P99** through `c=500` (`3.45s`) |
 | **5** | **Active gVisor Compute Packing Density (`#6`)**<br>`640` (`2/vCPU`), `1,600` (`5/vCPU`), `2,350` (`7.34/vCPU`, `3`-rep median) | `86.3–94.7/s` claim rate<br>`4.997/vCPU` (`3` errs at `c=1,600`)<br>`15.62s` TTFI P50 at `7.34/vCPU`<br>`1,309` held sockets (`~797` ctrl) | **`141.9–157.4/s` claim rate**<br>**`5.000/vCPU` & `7.344/vCPU` (`0` errs)**<br>**`8.21s` TTFI P50 at `7.34/vCPU`**<br>**`535` held sockets (`~23` ctrl)** | • **Clears Eval `Pass = 5.0/vCPU` (`4,800/4,800` OK)** & **`7.34/vCPU` (`7,050/7,050` OK, `0` OOMs)** up to GKE `256`-pod/node cap<br>• **`1.72×–1.82×` faster claim rate** · **`1.89×–2.01×` faster TTFI P50**<br>• **`~34×` fewer control-plane sockets** (`~23` vs `~797`) |
 | **6** | **`20,000`-Claim Sustained Reliability Soak (`#5C`)**<br>`100` Waves × `200` Claims on `200` Pools (`1` Python Process) | `1.138s` aggregate P50<br>`168.3 ms` 1st Ready<br>`187` steady sockets | **`0.560s` (`560 ms`) aggregate P50**<br>**`94.4 ms` 1st Ready**<br>**`68` flat sockets (`230.8/s` peak)** | • **`20,000 / 20,000` (`0.000% < 0.01%` Eval `Small` failure bar)**<br>• **`2.03×` faster P50 claim latency** across `20k` claims<br>• **`1.78×` faster 1st Ready (`<100 ms`)** · **`2.75×` fewer sockets** (`0` drift) |
-| **7** | **Canonical Stock `T0` Warm SWE-bench `3,000` (`#1`)**<br>`500` Images × `6` Rollouts (`wp=1`, `ABABAB` `3`-rep median) | `naive`: `121.09s` (`329.1s` `r1`)<br>`sliding`: `87.03s` (`551` socks)<br>`pipelined`: `100.07s` (`546` socks) | **`naive`: `96.54s` (`1.25×`)**<br>**`sliding`: `90.86s` (`99` socks)**<br>**`pipelined`: `98.14s` (`90` socks, `140.3s` `r1` vs `581.0s` = `4.14×`!)** | • **`1.25×` faster `naive` median** (`4.14×` faster `r1` `pipelined` under GCFS FUSE mount load)<br>• **`4.07×–6.07×` fewer open sockets** (`484–551 → 90–119`)<br>• Published `RESULTS.md` `#10–#12` (`507–604s`) ran a different env (see warning above) — not a SandboxBatch comparison; fresh `batch64` (`96.5s`) beats in-place `git restore` recycle (`393.5s`) by **`4.08×`** |
+| **7** | **Canonical Stock `T0` Warm SWE-bench `3,000` (`#1`)**<br>`500` Images × `6` Rollouts (`wp=1`, `ABABAB` `3`-rep median) | `naive`: `121.09s` (`329.1s` `r1`)<br>`sliding`: `87.03s` (`551` socks)<br>`pipelined`: `100.07s` (`546` socks) | **`naive`: `96.54s` (`1.25×`)**<br>**`sliding`: `90.86s` (`99` socks)**<br>**`pipelined`: `98.14s` (`90` socks)** | • **`1.25×` faster `naive` median** <br>• **`4.07×–6.07×` fewer open sockets** (`484–551 → 90–119`)<br>• Published `RESULTS.md` `#10–#12` (`507–604s`) ran a different env (see warning above) — not a SandboxBatch comparison; fresh `batch64` (`96.5s`) beats in-place `git restore` recycle (`393.5s`) by **`4.08×`** |
 
 ---
 
@@ -119,9 +119,9 @@
 
 | Suite & Strategy | `per_claim` Wall (`r1 \| r2 \| r3 \| med`) | **`batch64` Wall (`r1 \| r2 \| r3 \| med`)** | Speedup / Parity | Open Sockets (`per_claim → batch64`) | Published `RESULTS.md` row (different env — context only) |
 | --- | --- | --- | --- | ---: | --- |
-| **`#1` `naive` (`3,000`)** | `329.1 \| 121.1 \| 115.6 \|` `121.09s` | `102.7 \| 93.7 \| 96.5 \|` **`96.54s`** | **`1.25×` faster** (`3.20×` on `r1`) | `484 → 119` (**`4.07×` fewer**) | `#10`: `587.7s` |
+| **`#1` `naive` (`3,000`)** | `329.1 \| 121.1 \| 115.6 \|` `121.09s` | `102.7 \| 93.7 \| 96.5 \|` **`96.54s`** | **`1.25×` faster** | `484 → 119` (**`4.07×` fewer**) | `#10`: `587.7s` |
 | **`#1` `sliding` (`3,000`)** | `107.7 \| 87.0 \| 84.8 \|` `87.03s` | `94.7 \| 88.2 \| 90.9 \|` **`90.86s`** | `0.96×` parity (`1.20×` lower Claim P99) | `551 → 99` (**`5.57×` fewer**) | `#11`: `603.8s` |
-| **`#1` `pipelined` (`3,000`)** | `581.0 \| 100.1 \| 98.5 \|` `100.07s` | `140.3 \| 98.1 \| 93.1 \|` **`98.14s`** | **`1.02×` med** (**`4.14×` faster on `r1`!**) | `546 → 90` (**`6.07×` fewer**) | `#12`: `507.4s` |
+| **`#1` `pipelined` (`3,000`)** | `581.0 \| 100.1 \| 98.5 \|` `100.07s` | `140.3 \| 98.1 \| 93.1 \|` **`98.14s`** | **`1.02×` med** | `546 → 90` (**`6.07×` fewer**) | `#12`: `507.4s` |
 | **`#1` `naive+recycle` (`3,000`)** | `395.9 \| 404.1 \| 408.7 \|` `404.09s` | `393.5 \| 391.4 \| 402.8 \|` **`393.53s`** | **`1.03×`** (fresh `batch64` `96.5s` is **`4.08×` faster** than in-place `git restore`) | `64 → 22` (**`2.91×` fewer**) | `#13`: `587.4s` |
 | **`#2` Truly Cold `0%` `T0` (`500`)** | `54.45s` (`500/500` OK) | `70.47s` (`500/500` OK; `B0` raw Pod = `73.40s`) | Node GCFS cold FUSE pull-bound (`batch64` faster than raw `B0` `73.4s`) | `484 → 96` (**`5.04×` fewer**) | `#14`: `422.1s` |
 
@@ -162,3 +162,19 @@ Same harness, same 5 clusters, run immediately after `#7D` (own `per_claim` arm 
 | `5,000` | `120.3s` | `32.0s` | **`22.7s`** | `1.183s` / `1.222s` |
 
 **Raising `max_in_flight` to 256 is slower at every size** (`1.4×–2.5×` slower claim than `mif=64`); release is unchanged (one `DELETE_COLLECTION` either way). `mif=256`: `0 / 25,500` errors.
+
+
+### 3.11 Suite `#4B` (clean rerun) — Tunix GRPO `64 × 16 × 8` steps `@ c = 1,024` (supersedes original `#4B`)
+
+Fresh `10× n2-standard-32` pool (pd-balanced 1,500 GB), `r2e_subset_500` DaemonSet pre-pull + smoke gate, ABABAB. **Rep 1 discarded for both arms**: image-streaming pre-pull does not hydrate image data, so the pool warmed during rep 1 (steps fell `~260s → ~20s`). Reported = median of warm reps 2–4.
+
+| Arm | 8-step total (`r2 \| r3 \| r4 \| med`) | Step 0 (med) | Steady step `1–7` (med) | Env-ready P50 `1–7` (med) | Errors (3 reps) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `per_claim` | `202.2 \| 214.4 \| 210.2 \|` **`210.2s`** | `34.2s` | `25.1s` | `12.2s` | `3 / 24,576` |
+| `batch64` | `261.8 \| 227.6 \| 203.1 \|` `227.6s` | `30.3s` | `25.6s` | `15.5s` | `0 / 24,576` |
+| **Ratio** | **`0.92×` (batch slightly slower)** | `1.13×` | `0.98×` | `0.78×` | — |
+
+**No SandboxBatch win on this shape** (64 images, 16 rollouts per image, 1,024-wide). The original `#4B` "`1.62×` faster Step 0" was an artifact of `893/1,024` failed `batch64` probes and is withdrawn.
+
+> [!NOTE]
+> **Rep-1 cold-cache bias also affected `#1`.** Its rep 1 ran `per_claim` first on a pool whose streamed images were not yet hydrated (`naive` `329s`, `pipelined` `581s` vs ~`100–120s` afterwards). The "`3.20×` / `4.14×` faster on `r1`" callouts were run-order artifacts and are withdrawn; the medians stand.
