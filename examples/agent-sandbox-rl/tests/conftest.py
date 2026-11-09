@@ -57,6 +57,7 @@ class FakeCluster:
     self._seq = 0
     self.sandbox_client = MagicMock()
     self.sandbox_client.create_sandbox.side_effect = self._make_sandbox
+    self.sandbox_client.claim_batch.return_value.err.return_value = None
 
   def has_capacity(self, additional: int = 1) -> bool:
     with self._lock:

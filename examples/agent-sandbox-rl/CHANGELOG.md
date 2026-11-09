@@ -8,16 +8,20 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
 ### Added (batch claim mode)
 - **`FleetConfig.claim_mode="batch"` and `BatchClaimConfig` claim through one `SandboxBatch` per cluster.**
   `claim_mode` defaults to `"per_claim"`, leaving existing `create_sandbox` behavior
-  unchanged (`constants.CLAIM_MODES`). In `"batch"` mode each fleet lazily opens one
-  `SandboxBatch` per cluster on that cluster's first `acquire()` and claims members with
-  `SandboxBatch.acquire` (`run()`, recycling, and `AsyncSandboxFleet` share this path),
+  unchanged (`constants.CLAIM_MODES`). In `"batch"` mode each fleet pre-opens one
+  `SandboxBatch` per cluster during `setup()` (and the first window of
+  `warm_images(wait=True)`) with warmed pools as `size=0` groups (prechecked
+  concurrently up to `max_in_flight`, falling back to lazy open on unplanned pools)
+  and claims members with `SandboxBatch.acquire` (`run()`, recycling, and
+  `AsyncSandboxFleet` share this path),
   forwarding `snapshot_uid` and `pod_annotations` and bounding readiness by
   `claim_timeout` (or `ready_timeout` when unset). Readiness comes from one shared watch
   per cluster, and `acquire()` builds `SandboxHandle` from the watched `Member` and
   `batch.connect(member)` without per-claim `Sandbox` or `Pod` `GET`s (`snapshot_uid`
   still reads the `Pod` to check `PodRestored`). When `FleetConfig.fail_fast` is enabled,
   one background `BatchWatchdog` per active batch tracks active in-flight claims via
-  `_acquire_waiters` and `batch.get_member()` and fails broken images or configs early
+  `_acquire_waiters` and `batch.get_member()` (reading cold-pod `Pod/status` directly by
+  `sandbox_name` before falling back to `Sandbox` `POD_NAME_ANNOTATION`) and fails broken images or configs early
   via `batch.release_member` with `SandboxStartError`; other failed or timed-out batch
   acquires raise `BatchError`. The driver needs `coordination.k8s.io` `leases` RBAC
   permissions from the SDK's batch RBAC (`preflight()` checks `leases` create access
@@ -41,7 +45,10 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
   `release()` deletes any snapshot triggers created on the handle, calls
   `batch.release_member`, falls back to a bounded direct claim delete if `release_member`
   raises `BatchError` after the batch stops or releases, and always closes the handle's
-  `Sandbox` connection. Once `batch.err()` reports an error, the next `acquire()` opens a
+  `Sandbox` connection; `release_all()` deletes active batch claims per cluster via
+  `batch.release_members()` (`deletecollection`, keeping the batch `Lease` and watch
+  open across bursts), and `teardown()` skips redundant per-member `DELETE`s on healthy
+  batches in favor of `batch.release()`. Once `batch.err()` reports an error, the next `acquire()` opens a
   fresh batch. `teardown()` releases every batch the fleet opened (sweeping remaining
   claims, warm pools, templates, and batch `Lease`s even if a handle release fails), and
   `setup()` reopens batch claiming. With the SDK's batch reaper deployed, the reaper

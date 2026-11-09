@@ -533,21 +533,35 @@ class BatchWatchdog(threading.Thread):
       if claim_name not in self._first_seen_at:
         return None
       pod_name = self._pod_names.get(claim_name)
+    pod = None
     if pod_name is None:
       sb_name = getattr(member, "sandbox_name", None)
-      if isinstance(sb_name, str) and sb_name:
-        pod_name = resolve_pod_name_for_sandbox(self.cluster, sb_name)
-      else:
-        pod_name = resolve_pod_name_for_claim(self.cluster, claim_name)
-      if pod_name is None:
+      if not isinstance(sb_name, str) or not sb_name:
+        # The batch's shared watch populates member.sandbox_name once bound;
+        # avoid polling GET SandboxClaim redundantly.
         return None
+      # Cold-born Sandboxes name their Pod identically to sandbox_name, so try
+      # Pod/status directly before falling back to GET Sandbox for adopted pods
+      # carrying POD_NAME_ANNOTATION.
+      pod = read_pod_status(self.cluster, sb_name)
+      if pod is not None:
+        pod_name = sb_name
+      else:
+        resolved = resolve_pod_name_for_sandbox(self.cluster, sb_name)
+        if resolved == sb_name:
+          return None
+        pod_name = resolved
+        pod = read_pod_status(self.cluster, pod_name)
       with self._decide_lock:
         if claim_name not in self._first_seen_at:
           return None
         self._pod_names[claim_name] = pod_name
-    pod = read_pod_status(self.cluster, pod_name)
-    if pod is None:
-      return None
+      if pod is None:
+        return None
+    else:
+      pod = read_pod_status(self.cluster, pod_name)
+      if pod is None:
+        return None
     with self._decide_lock:
       if claim_name not in self._first_seen_at:
         return None
