@@ -155,3 +155,54 @@ def test_registry_from_configs():
     reg = ClusterRegistry.from_configs(
         [ClusterConfig(name="x"), ClusterConfig(name="y")])
     assert reg.names() == ["x", "y"]
+
+
+def test_fleet_autosizes_connection_pool_maxsize_for_sdk_check_pool_size():
+  from k8s_agent_sandbox.batch_utils import check_pool_size
+  from kubernetes import client
+  from agent_sandbox_rl import BatchClaimConfig, FleetConfig, SandboxFleet
+
+  cfg_obj = client.Configuration()
+  cfg_obj.host = "https://127.0.0.1:6443"
+  cfg_obj.connection_pool_maxsize = 4
+  api = client.ApiClient(cfg_obj)
+  try:
+    c = Cluster(ClusterConfig(name="solo"), api_client=api)
+    # Pre-instantiate k8s_helper before SandboxFleet so ensure_pool_maxsize
+    # exercises resizing the existing _UnretriedApiClient sub-clients too.
+    pre_helper = c.k8s_helper
+    assert pre_helper._batch_custom_objects_api.api_client.rest_client.pool_manager.connection_pool_kw["maxsize"] < 1532
+    f = SandboxFleet(
+        FleetConfig(
+            claim_mode="batch",
+            max_concurrent=1500,
+            batch_claims=BatchClaimConfig(max_in_flight=1200),
+            install_teardown_hooks=False,
+        ),
+        registry=ClusterRegistry([c]),
+    )
+    pool_size = c.k8s_helper.api_pool_size()
+    assert pool_size is not None and pool_size >= 1532
+    check_pool_size(pool_size, 1200, explicit=True)
+    assert api.rest_client.pool_manager.connection_pool_kw["maxsize"] >= 1532
+    assert c.k8s_helper._batch_custom_objects_api.api_client.rest_client.pool_manager.connection_pool_kw["maxsize"] >= 1532
+    assert c.k8s_helper.coordination_v1_api.api_client.rest_client.pool_manager.connection_pool_kw["maxsize"] >= 1532
+    assert f.registry.get("solo") is c
+  finally:
+    api.close()
+
+  with patch.object(cluster_mod.k8s_config, "load_kube_config"):
+    f2 = SandboxFleet(
+        FleetConfig(
+            claim_mode="batch",
+            batch_claims=BatchClaimConfig(max_in_flight=1200),
+            install_teardown_hooks=False,
+        )
+    )
+    c2 = next(iter(f2.registry))
+    try:
+      pool_size2 = c2.k8s_helper.api_pool_size()
+      assert pool_size2 is not None and pool_size2 >= 1216
+      check_pool_size(pool_size2, 1200, explicit=True)
+    finally:
+      c2.api_client.close()

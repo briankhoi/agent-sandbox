@@ -47,6 +47,7 @@ import collections
 import contextlib
 import itertools
 import threading
+import time
 import types
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -440,11 +441,24 @@ class FakeFleet:
       if plan is None or plan.for_image(task.image) is None:
         self.on_demand.add(task.image)
       n = next(self._seq)
+      batch_claim = (
+          types.SimpleNamespace(
+              expires_at=(
+                  time.monotonic()
+                  + self.config.effective_claim_timeout()
+                  + self.config.batch_claims.work_budget
+                  + constants.BATCH_SHUTDOWN_MARGIN_SECONDS
+              ),
+              still_reaches=lambda: True,
+          )
+          if self.config.claim_mode == "batch"
+          else None
+      )
       handle = FakeHandle(
           task=task, cluster_name=FAKE_CLUSTER, claim_name=f"claim-{n}",
           sandbox_id=f"sb-{n}", pod_name=f"sb-{n}-pod0", hostname=f"sb-{n}",
           pod_ip=f"10.0.0.{n % 250 + 1}", exec_outputs=dict(self.exec_outputs),
-          _cluster=self._cluster)
+          _cluster=self._cluster, _batch_claim=batch_claim)
       self._claims_reserved += 1
       self._handles.append(handle)
     self._obs.claim(FAKE_CLUSTER, "ok")

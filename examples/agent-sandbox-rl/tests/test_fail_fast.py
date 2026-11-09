@@ -16,6 +16,7 @@
 handle liveness, and the reaper's orphan sweep."""
 
 import threading
+import time
 import types
 from unittest.mock import MagicMock
 
@@ -316,12 +317,13 @@ def test_release_and_a_failed_acquire_prune_the_clients_claim_tracking(make_clus
 def test_record_pod_identity_clears_a_stale_identity_when_the_read_fails():
   cluster = MagicMock()
   cluster.namespace = "ns"
-  cluster.exec_core_api.return_value.read_namespaced_pod_status.side_effect = RuntimeError("timeout")
+  cluster.core_api.read_namespaced_pod_status.side_effect = RuntimeError("timeout")
   h = SandboxHandle(task=Task(id="t", image="i"), cluster_name="c", claim_name="cl",
                     sandbox_id="sb", pod_name="p", hostname="sb", _cluster=cluster)
   h.pod_uid, h.runtime_restarts = "old-uid", 2
   h.record_pod_identity()                                # a resume re-baselines here
   assert h.pod_uid is None and h.runtime_restarts is None   # unknown, not the old pod's
+  cluster.exec_core_api.assert_not_called()
 
 
 def test_acquire_deletes_named_claim_when_create_fails_without_verdict(make_cluster, recording_watchdog):
@@ -351,7 +353,9 @@ def test_acquire_leaves_foreign_claim_alone_on_409(make_cluster):
 def _handle(core=None):
   cluster = MagicMock()
   cluster.namespace = "ns"
-  cluster.exec_core_api.return_value = core if core is not None else MagicMock()
+  api = core if core is not None else MagicMock()
+  cluster.core_api = api
+  cluster.exec_core_api.return_value = api
   return SandboxHandle(task=Task(id="t", image="i"), cluster_name="c", claim_name="cl",
                        sandbox_id="s", pod_name="p", hostname="s", _cluster=cluster)
 
@@ -385,6 +389,33 @@ def test_exec_raises_sandbox_lost_when_pod_is_gone(monkeypatch):
   with pytest.raises(SandboxLostError) as ei:
     h.exec("true")
   assert ei.value.pod_name == "p" and isinstance(ei.value.cause, client.ApiException)
+  assert ei.value.expired is False
+  assert "work_budget" not in str(ei.value) and "shutdownTime" not in str(ei.value)
+
+
+def test_exec_sandbox_lost_surfaces_work_budget_hint_when_batch_claim_expired(monkeypatch):
+  core = MagicMock()
+  core.read_namespaced_pod_status.side_effect = client.ApiException(status=404)
+  monkeypatch.setattr(handles_mod, "exec_in_pod",
+                      MagicMock(side_effect=client.ApiException(status=404)))
+
+  expired_handle = _handle(core)
+  expired_handle._batch_claim = types.SimpleNamespace(
+      expires_at=time.monotonic() - 1.0, still_reaches=lambda: False)
+  with pytest.raises(SandboxLostError) as ei:
+    expired_handle.exec("true")
+  assert ei.value.expired is True
+  assert "work_budget" in str(ei.value)
+  assert "shutdownTime" in str(ei.value)
+
+  active_handle = _handle(core)
+  active_handle._batch_claim = types.SimpleNamespace(
+      expires_at=time.monotonic() + 3600.0, still_reaches=lambda: False)
+  with pytest.raises(SandboxLostError) as ei2:
+    active_handle.exec("true")
+  assert ei2.value.expired is False
+  assert "work_budget" not in str(ei2.value)
+  assert "shutdownTime" not in str(ei2.value)
 
 
 def test_exec_reraises_original_error_when_pod_is_alive(monkeypatch):
@@ -857,8 +888,115 @@ def test_record_pod_identity_at_acquire_and_best_effort():
   h = _handle(core)
   h.record_pod_identity()
   assert (h.pod_uid, h.runtime_restarts) == ("u-7", 2)
+  assert h.is_alive() is True
+  h._cluster.exec_core_api.assert_not_called()
   core.read_namespaced_pod_status.side_effect = client.ApiException(status=500)
   h2 = _handle(core)
   h2.record_pod_identity()                       # never raises
   assert (h2.pod_uid, h2.runtime_restarts) == (None, None)
+
+
+def test_resources_list_and_delete_leases_guard_against_system_leases():
+  from agent_sandbox_rl.resources import Resources
+  coord = MagicMock()
+  r = Resources(MagicMock(), MagicMock(), "ns", coordination_api=coord)
+  for bad in ("", "   "):
+    with pytest.raises(ValueError, match="non-empty label_selector"):
+      r.list_leases(bad)
+
+  # Even if an API mock ignores the selector and returns leader-election or node
+  # Leases without agents.x-k8s.io/batch-id, list_leases never returns them.
+  coord.list_namespaced_lease.return_value = types.SimpleNamespace(
+      items=[
+          client.V1Lease(metadata=client.V1ObjectMeta(
+              name="agent-sandbox-controller-leader",
+              labels={"app": "agent-sandbox-rl"})),
+          client.V1Lease(metadata=client.V1ObjectMeta(
+              name="kube-node-lease", labels={})),
+          client.V1Lease(metadata=client.V1ObjectMeta(
+              name="batch-abc",
+              labels={
+                  "app": "agent-sandbox-rl",
+                  constants.RUN_ID_LABEL: "r1",
+                  constants.BATCH_ID_LABEL: "batch-abc",
+              })),
+      ],
+      metadata=types.SimpleNamespace(_continue=None),
+  )
+  names = r.list_leases(f"{constants.RUN_ID_LABEL}=r1")
+  assert names == ["batch-abc"]
+  sel_used = coord.list_namespaced_lease.call_args.kwargs["label_selector"]
+  assert f"{constants.RUN_ID_LABEL}=r1" in sel_used
+  assert constants.BATCH_ID_LABEL in sel_used
+
+  r.delete_lease("batch-abc")
+  coord.delete_namespaced_lease.assert_called_once()
+  coord.delete_namespaced_lease.side_effect = client.ApiException(status=404)
+  r.delete_lease("already-gone")                 # 404 swallowed like delete_claim
+
+
+def test_reaper_sweeps_batch_leases_while_keeping_protected_runs():
+  from agent_sandbox_rl.resources import Resources
+  c = MagicMock()
+  c.namespace = "ns"
+  coord = MagicMock()
+  custom = MagicMock()
+  custom.list_namespaced_custom_object.return_value = {"items": []}
+  core = MagicMock()
+  c.core_api = core
+  c.resources = Resources(custom, core, "ns", coordination_api=coord)
+  coord.list_namespaced_lease.return_value = {
+      "items": [
+          {"metadata": {"name": "agent-sandbox-controller-leader",
+                        "labels": {"app": "agent-sandbox-rl"}}},
+          {"metadata": {"name": "batch-dead",
+                        "labels": {"app": "agent-sandbox-rl",
+                                   constants.RUN_ID_LABEL: "dead",
+                                   constants.BATCH_ID_LABEL: "batch-dead"}}},
+          {"metadata": {"name": "batch-live",
+                        "labels": {"app": "agent-sandbox-rl",
+                                   constants.RUN_ID_LABEL: "live",
+                                   constants.BATCH_ID_LABEL: "batch-live"}}},
+      ],
+      "metadata": {},
+  }
+  counts = reaper_mod._reap_with_cluster(
+      c, None, delete_pods=False, protect_claims_of=lambda rid: rid == "live")
+  assert counts["leases"] == 1
+  assert coord.list_namespaced_lease.call_count == 1
+  deleted = [k.kwargs["name"] for k in coord.delete_namespaced_lease.call_args_list]
+  assert deleted == ["batch-dead"]
+
+
+def test_reaper_lease_rbac_403_skips_and_503_fails_closed():
+  from agent_sandbox_rl.resources import Resources
+  c = MagicMock()
+  c.namespace = "ns"
+  coord = MagicMock()
+  custom = MagicMock()
+  custom.list_namespaced_custom_object.side_effect = lambda **kw: (
+      {"items": [{"metadata": {"name": "claim-dead",
+                               "labels": {constants.RUN_ID_LABEL: "dead"}}}]}
+      if kw.get("plural") == "sandboxclaims" and kw.get("label_selector")
+      else {"items": []})
+  core = MagicMock()
+  c.core_api = core
+  c.resources = Resources(custom, core, "ns", coordination_api=coord)
+
+  # 403 Forbidden (per_claim RBAC without coordination.k8s.io/leases) skips
+  # Lease sweeping with a warning while still reaping claims/pools/templates.
+  coord.list_namespaced_lease.side_effect = client.ApiException(status=403)
+  counts = reaper_mod._reap_with_cluster(
+      c, "dead", delete_pods=False, protect_claims_of=lambda rid: rid != "dead")
+  assert counts["leases"] == 0 and counts["claims"] == 1
+  assert custom.delete_namespaced_custom_object.call_count == 1
+
+  # 503 under protect_claims_of fails closed BEFORE deleting any claim or pool.
+  custom.delete_namespaced_custom_object.reset_mock()
+  coord.list_namespaced_lease.side_effect = client.ApiException(status=503)
+  with pytest.raises(FleetError, match="nothing was deleted"):
+    reaper_mod._reap_with_cluster(
+        c, "dead", delete_pods=False, protect_claims_of=lambda rid: rid != "dead")
+  custom.delete_namespaced_custom_object.assert_not_called()
+  coord.delete_namespaced_lease.assert_not_called()
 

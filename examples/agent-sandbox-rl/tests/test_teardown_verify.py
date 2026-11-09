@@ -38,8 +38,8 @@ def _patch_reap(monkeypatch, counts=None, error=None):
     calls.append((run_id, kw))
     if error:
       raise error
-    return dict(counts or {"claims": 0, "warmpools": 0, "sandboxes": 0, "templates": 0,
-                           "pods": "requested (force)"})
+    return dict(counts or {"claims": 0, "leases": 0, "warmpools": 0, "sandboxes": 0,
+                           "templates": 0, "pods": "requested (force)"})
   monkeypatch.setattr(sys.modules["agent_sandbox_rl.reaper"], "reap", fake)
   return calls
 
@@ -62,15 +62,17 @@ def test_teardown_without_verify_is_unchanged(make_cluster, monkeypatch):
 
 
 def test_verify_runs_the_run_scoped_reaper_per_cluster_and_reports(make_cluster, monkeypatch, caplog):
-  calls = _patch_reap(monkeypatch, counts={"claims": 0, "warmpools": 1, "sandboxes": 2,
-                                           "templates": 0, "pods": "requested (force)"})
+  calls = _patch_reap(monkeypatch, counts={"claims": 0, "leases": 0, "warmpools": 1,
+                                           "sandboxes": 2, "templates": 0,
+                                           "pods": "requested (force)"})
   c = make_cluster("solo")
   f = _fleet(c)
   with caplog.at_level("WARNING"):
     out = f.teardown(verify=True)
-  assert out == {"solo": {"claims": 0, "warmpools": 1, "sandboxes": 2, "templates": 0,
-                          "pods": 0, "remaining": {"claims": 0, "warmpools": 0,
-                                                   "templates": 0, "pods": 0}}}
+  assert out == {"solo": {"claims": 0, "leases": 0, "warmpools": 1, "sandboxes": 2,
+                          "templates": 0, "pods": 0,
+                          "remaining": {"claims": 0, "leases": 0, "warmpools": 0,
+                                        "templates": 0, "pods": 0}}}
   (run_id, kw), = calls
   assert run_id == f.run_id
   assert kw == {"context": "ctx-1", "namespace": c.namespace, "kubeconfig": "/kc", "in_cluster": False}
@@ -173,3 +175,57 @@ def test_verify_waits_for_a_sweep_another_thread_is_running(make_cluster, monkey
   gate.set()
   t.join(5); v.join(5)
   assert order[:2] == ["sweep-start", "sweep-end"] and calls
+
+
+def test_verify_detects_and_flags_leaked_batch_leases(make_cluster, monkeypatch, caplog):
+  _patch_reap(monkeypatch, counts={"claims": 0, "leases": 1, "warmpools": 0,
+                                   "sandboxes": 0, "templates": 0,
+                                   "pods": "requested (force)"})
+  c = make_cluster("solo")
+  f = _fleet(c)
+  c.resources.list_leases.return_value = ["batch-lease-still-here"]
+  with caplog.at_level("WARNING"):
+    out = f.teardown(verify=True)
+  assert out["solo"]["leases"] == 1
+  assert out["solo"]["remaining"]["leases"] == 1
+  assert any("NOT verified clean" in r.message and "leases" in r.message
+             for r in caplog.records)
+
+
+def test_per_claim_teardown_and_verify_tolerate_missing_lease_rbac(make_cluster, monkeypatch):
+  from kubernetes import client
+  _patch_reap(monkeypatch, counts={"claims": 0, "leases": 0, "warmpools": 0,
+                                   "sandboxes": 0, "templates": 0,
+                                   "pods": "requested (force)"})
+  c = make_cluster("solo")
+  f = _fleet(c)  # default claim_mode="per_claim"
+  c.resources.list_claims.return_value = ["stray-claim"]
+  c.resources.list_warmpools.return_value = ["pool-1"]
+  c.resources.list_templates.return_value = ["tpl-1"]
+  c.resources.list_leases.side_effect = client.ApiException(status=403)
+
+  f.teardown()
+  # per_claim teardown never queries Leases and sweeps claims/pools/templates.
+  c.resources.list_leases.assert_not_called()
+  c.resources.delete_claim.assert_called_once_with("stray-claim")
+  c.resources.delete_warmpool.assert_called_once_with("pool-1")
+  c.resources.delete_template.assert_called_once_with("tpl-1")
+
+  # verify_teardown's _run_leftovers treats 403 on Leases as 0 for per_claim.
+  c.resources.list_claims.return_value = []
+  c.resources.list_warmpools.return_value = []
+  c.resources.list_templates.return_value = []
+  out = f.verify_teardown()
+  assert out["solo"]["remaining"]["leases"] == 0
+
+  # In batch mode, one failing list during teardown does not abort the others.
+  c2 = make_cluster("solo")
+  f2 = _fleet(c2, claim_mode="batch")
+  c2.resources.list_claims.side_effect = client.ApiException(status=500)
+  c2.resources.list_leases.return_value = ["batch-lease-1"]
+  c2.resources.list_warmpools.return_value = ["pool-b"]
+  c2.resources.list_templates.return_value = ["tpl-b"]
+  f2.teardown()
+  c2.resources.delete_lease.assert_called_once_with("batch-lease-1")
+  c2.resources.delete_warmpool.assert_called_once_with("pool-b")
+  c2.resources.delete_template.assert_called_once_with("tpl-b")

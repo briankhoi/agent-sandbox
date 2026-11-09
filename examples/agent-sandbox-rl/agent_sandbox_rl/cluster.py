@@ -50,20 +50,45 @@ def build_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
   return client.ApiClient(configuration)
 
 
+def _resize_api_client_pool(api_client, needed: int) -> None:
+  cfg_obj = getattr(api_client, "configuration", None)
+  cur = getattr(cfg_obj, "connection_pool_maxsize", None)
+  if not (isinstance(cur, int) and not isinstance(cur, bool) and 0 < cur < needed):
+    return
+  cfg_obj.connection_pool_maxsize = needed
+  rest = getattr(api_client, "rest_client", None)
+  pm = getattr(rest, "pool_manager", None)
+  pool_kw = getattr(pm, "connection_pool_kw", None)
+  if isinstance(pool_kw, dict):
+    pool_kw["maxsize"] = needed
+    if type(pm).__module__.startswith("urllib3") and callable(getattr(pm, "clear", None)):
+      pm.clear()
+
+
 class Cluster:
   """A single target cluster and its API clients."""
 
   def __init__(self, config: ClusterConfig, *, api_client=None,
-               labels: dict | None = None):
+               labels: dict | None = None, pool_maxsize: int = 1000):
     self.config = config
     self.name = config.name
     self.namespace = config.namespace
-    self.api_client = api_client if api_client is not None else build_api_client(config)
+    if api_client is not None:
+      self.api_client = api_client
+    elif pool_maxsize == 1000:
+      self.api_client = build_api_client(config)
+    else:
+      try:
+        self.api_client = build_api_client(config, pool_maxsize=pool_maxsize)
+      except TypeError:
+        self.api_client = build_api_client(config)
     self.custom_api = client.CustomObjectsApi(self.api_client)
     self.core_api = client.CoreV1Api(self.api_client)
     self.apps_api = client.AppsV1Api(self.api_client)
+    self.coordination_api = client.CoordinationV1Api(self.api_client)
     self.resources = Resources(
-        self.custom_api, self.core_api, self.namespace, labels=labels)
+        self.custom_api, self.core_api, self.namespace, labels=labels,
+        coordination_api=self.coordination_api)
     self._k8s_helper = None
     self._sandbox_client = None
     # Concurrent first acquires would otherwise each build a SandboxClient,
@@ -80,6 +105,18 @@ class Cluster:
     self.active_claims = 0
     # One CoreV1Api per thread for router-free pod exec (see exec_core_api).
     self._exec_local = threading.local()
+    self.ensure_pool_maxsize(pool_maxsize)
+
+  def ensure_pool_maxsize(self, needed: int) -> None:
+    """Grow ``api_client``'s urllib3 connection pool to at least ``needed``."""
+    _resize_api_client_pool(self.api_client, needed)
+    helper = self._k8s_helper
+    if helper is not None:
+      for attr in ("coordination_v1_api", "_batch_custom_objects_api"):
+        sub_api = getattr(helper, attr, None)
+        sub_client = getattr(sub_api, "api_client", None)
+        if sub_client is not None:
+          _resize_api_client_pool(sub_client, needed)
 
   def exec_core_api(self):
     """A thread-local `CoreV1Api` for router-free pod exec.
@@ -217,5 +254,8 @@ class ClusterRegistry:
 
   @classmethod
   def from_configs(cls, configs: list[ClusterConfig],
-                   *, labels: dict | None = None) -> "ClusterRegistry":
-    return cls([Cluster(c, labels=labels) for c in configs])
+                   *, labels: dict | None = None,
+                   pool_maxsize: int = 1000) -> "ClusterRegistry":
+    return cls([
+        Cluster(c, labels=labels, pool_maxsize=pool_maxsize) for c in configs
+    ])

@@ -33,6 +33,7 @@ from .sources import Task
 logger = logging.getLogger("agent_sandbox_rl.handles")
 
 if TYPE_CHECKING:
+  from .batch_claims import BatchClaim
   from .cluster import Cluster
 
 logger = logging.getLogger("agent_sandbox_rl.handles")
@@ -310,6 +311,14 @@ class SandboxHandle:
   # pod under the same name, or an in-place restart, means the state is gone.
   pod_uid: Optional[str] = field(default=None, repr=False)
   runtime_restarts: Optional[int] = field(default=None, repr=False)
+  # Set when the claim is a member of the fleet's batch (claim_mode="batch").
+  _batch_claim: Optional["BatchClaim"] = field(default=None, repr=False)
+
+  @property
+  def claim_expires_at(self) -> Optional[float]:
+    """``time.monotonic()`` at or after which the controller deletes this claim (its
+    ``shutdownTime``), or ``None`` when the claim has none (claim_mode="per_claim")."""
+    return None if self._batch_claim is None else self._batch_claim.expires_at
 
   def exec(self, command, timeout: float | None = None, *,
            container: str | None = None) -> str:
@@ -348,15 +357,19 @@ class SandboxHandle:
 
   def record_pod_identity(self) -> None:
     """Remember which pod this handle is on: its UID and the runtime container's
-    restart count. Best-effort (one bounded ``GET``); `acquire()` calls it.
-    Without it, `is_alive()` cannot tell a replacement pod from the original."""
+    restart count. Best-effort (one bounded ``GET``). `acquire()` calls this in
+    ``per_claim`` mode while ``claim_mode="batch"`` skips that initial ``GET`` and
+    uses the batch watch for claim loss and pod replacement in `is_alive()`, so
+    callers in batch mode needing container restart-count baselines for in-place
+    OOM restarts can call `record_pod_identity()`. Without it, `is_alive()` cannot
+    tell an in-place container restart from the original."""
     if self._cluster is None:
       return
     # A failed read must leave the identity unknown, not the previous pod's:
     # after a resume or restore a stale UID would read the new pod as lost.
     self.pod_uid, self.runtime_restarts = None, None
     try:
-      pod = self._cluster.exec_core_api().read_namespaced_pod_status(
+      pod = self._cluster.core_api.read_namespaced_pod_status(
           self.pod_name, self._cluster.namespace, _request_timeout=(3, 10))
       self.pod_uid, self.runtime_restarts = _pod_identity(pod)
     except Exception:  # noqa: BLE001 — liveness then falls back to presence checks
@@ -372,7 +385,10 @@ class SandboxHandle:
     is not the same pod any more (a different UID: the controller recreated an
     evicted or deleted pod under the same name; or a higher restart count: the
     runtime container restarted in place, as after an OOM kill). A handle with
-    no cluster wiring answers True (unknown is not dead).
+    no cluster wiring answers True (unknown is not dead). In ``claim_mode="batch"``
+    a healthy batch watch first catches claim loss and pod replacement with no
+    ``GET``, while `acquire()` skips `record_pod_identity()` unless the caller
+    invokes it for in-place container restart baselines.
 
     ``exec()`` consults this only after a transport error, so a live sandbox pays
     nothing for it. A one-shot ``exec()`` against a same-name replacement pod
@@ -380,10 +396,16 @@ class SandboxHandle:
     state should call ``is_alive()`` at its step boundaries."""
     if self._cluster is None:
       return True
+    if (
+        self._batch_claim is not None
+        and self.pod_uid is None
+        and not self._batch_claim.still_reaches()
+    ):
+      return False
     try:
       # Bounded (connect, read): this runs on an error path and must not turn a
       # stalled API server into a hang; on timeout the original error stands.
-      pod = self._cluster.exec_core_api().read_namespaced_pod_status(
+      pod = self._cluster.core_api.read_namespaced_pod_status(
           self.pod_name, self._cluster.namespace, _request_timeout=(3, 10))
     except client.ApiException as e:
       if e.status == 404:
@@ -405,7 +427,10 @@ class SandboxHandle:
       return
     if not alive:
       self.close_session()
-      raise SandboxLostError(self.pod_name, self.claim_name, cause) from cause
+      exp = self.claim_expires_at
+      expired = exp is not None and time.monotonic() >= exp
+      raise SandboxLostError(
+          self.pod_name, self.claim_name, cause, expired=expired) from cause
 
   def open_session(self, *, container: str | None = None) -> "SandboxSession":
     """Open (once) a persistent exec session so subsequent ``exec()`` calls reuse
@@ -491,6 +516,8 @@ class SandboxHandle:
     # The new pod is the sandbox's state from now on: re-baseline the identity
     # that is_alive() compares against, or every check after a resume would
     # report the restored pod as a replacement of the one that was suspended.
+    if self._batch_claim is not None:
+      self._batch_claim.rebaselined = True
     self.record_pod_identity()
 
   def snapshot(self, name: str | None = None, *, timeout: int = 180) -> str:
@@ -587,6 +614,25 @@ class SandboxHandle:
     this directly just frees the remote resources.
     """
     self.close_session()                       # drop the persistent stream, if any
+    if self._batch_claim is not None:
+      # Through the batch, so it stops tracking the member; terminating the
+      # connected Sandbox would delete the claim behind the batch's back.
+      self._batch_claim.release()
+      if self.sandbox is not None:
+        snapshots = (
+            getattr(self.sandbox, "_snapshots", None)
+            or getattr(self.sandbox, "snapshots", None)
+        )
+        if hasattr(snapshots, "delete_manual_triggers"):
+          try:
+            snapshots.delete_manual_triggers()
+          except Exception as exc:  # noqa: BLE001 — best-effort trigger cleanup
+            logger.warning(
+                "failed to delete snapshot manual triggers for %s: %s",
+                self.sandbox_id, exc)
+        if hasattr(self.sandbox, "_snapshots"):
+          self.sandbox._snapshots = None
+      return
     if self.sandbox is not None:
       self.sandbox.terminate()
     else:

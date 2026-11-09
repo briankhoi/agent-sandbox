@@ -113,9 +113,10 @@ class Resources:
   """Template + warm-pool lifecycle for a single cluster/namespace."""
 
   def __init__(self, custom_api, core_api, namespace: str,
-               *, labels: dict | None = None):
+               *, labels: dict | None = None, coordination_api=None):
     self.custom_api = custom_api
     self.core_api = core_api
+    self.coordination_api = coordination_api
     self.namespace = namespace
     # Always include the management labels (custom labels add to, but cannot
     # drop, them) so teardown's managed_selector still matches everything created.
@@ -781,6 +782,70 @@ class Resources:
   def list_claims(self, label_selector: str | None = None) -> list[str]:
     return self._list(constants.CLAIMS_PLURAL, label_selector)
 
+  def _list_lease_objects(self, label_selector: str) -> list[dict]:
+    if not label_selector or not label_selector.strip():
+      raise ValueError("list_leases requires a non-empty label_selector")
+    if self.coordination_api is None:
+      return []
+    keys = {
+        part.strip().split("=")[0].lstrip("!").strip()
+        for part in label_selector.split(",") if part.strip()
+    }
+    effective = (
+        label_selector if constants.BATCH_ID_LABEL in keys
+        else f"{label_selector.strip()},{constants.BATCH_ID_LABEL}"
+    )
+    items = []
+    cont: str | None = None
+    while True:
+      extra = {"_continue": cont, "limit": 500} if cont else {}
+      resp = self.coordination_api.list_namespaced_lease(
+          namespace=self.namespace, label_selector=effective, **extra)
+      page = resp.get("items", []) if isinstance(resp, dict) else getattr(resp, "items", [])
+      items.extend(page or [])
+      meta = resp.get("metadata") if isinstance(resp, dict) else getattr(resp, "metadata", None)
+      nxt = (
+          meta.get("continue") or meta.get("_continue")
+          if isinstance(meta, dict) else getattr(meta, "_continue", None)
+      )
+      if isinstance(nxt, str) and nxt:
+        cont = nxt
+      else:
+        break
+    out: list[dict] = []
+    for item in items:
+      if isinstance(item, dict):
+        meta = item.get("metadata") or {}
+        name = meta.get("name")
+        labels = meta.get("labels") or {}
+        created = meta.get("creationTimestamp") or meta.get("creation_timestamp")
+      else:
+        meta = getattr(item, "metadata", None)
+        name = getattr(meta, "name", None) if meta is not None else None
+        labels = (getattr(meta, "labels", None) if meta is not None else None) or {}
+        created = getattr(meta, "creation_timestamp", None) if meta is not None else None
+        if hasattr(created, "isoformat"):
+          created = created.isoformat()
+      if (
+          isinstance(name, str)
+          and name
+          and isinstance(labels, dict)
+          and bool(labels.get(constants.BATCH_ID_LABEL))
+      ):
+        md: dict = {"name": name, "labels": dict(labels)}
+        if isinstance(created, str) and created:
+          md["creationTimestamp"] = created
+        out.append({"metadata": md})
+    return out
+
+  def list_leases(self, label_selector: str) -> list[str]:
+    """List batch ``Lease`` names matching ``label_selector`` (non-empty required).
+
+    Always requires ``agents.x-k8s.io/batch-id`` both in the server-side label
+    selector and on returned Lease metadata so controller leader-election or node
+    Leases in the namespace are structurally untouchable."""
+    return [o["metadata"]["name"] for o in self._list_lease_objects(label_selector)]
+
   def list_sandboxes(self, label_selector: str | None = None) -> list[str]:
     # Sandbox is in the CORE group, not extensions — pass it explicitly.
     return self._list(constants.SANDBOXES_PLURAL, label_selector,
@@ -820,6 +885,22 @@ class Resources:
                    request_timeout: float | tuple[float, float] | None = None) -> None:
     self._delete(constants.CLAIMS_PLURAL, name, "SandboxClaim",
                  request_timeout=request_timeout)
+
+  def delete_lease(self, name: str, *,
+                   request_timeout: float | tuple[float, float] | None = None) -> None:
+    if self.coordination_api is None:
+      return
+    opts = client.V1DeleteOptions(grace_period_seconds=0)
+    extra = {"_request_timeout": request_timeout} if request_timeout is not None else {}
+    try:
+      self.coordination_api.delete_namespaced_lease(
+          name=name, namespace=self.namespace, body=opts, **extra)
+      logger.info("Deleted Lease '%s'", name)
+    except client.ApiException as e:
+      if e.status == 404:
+        logger.warning("Lease '%s' not found (already deleted).", name)
+      else:
+        raise
 
   def delete_sandbox(self, name: str) -> None:
     self._delete(constants.SANDBOXES_PLURAL, name, "Sandbox",
