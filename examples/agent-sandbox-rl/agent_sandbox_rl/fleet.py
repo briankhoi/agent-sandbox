@@ -39,6 +39,7 @@ from typing import Optional
 from collections.abc import Callable
 
 from k8s_agent_sandbox import BatchError
+from k8s_agent_sandbox.batch_utils import BATCH_REQUEST_TIMEOUT_SECONDS
 from k8s_agent_sandbox.exceptions import SandboxNotReadyError
 from k8s_agent_sandbox.utils import select_pod_ip
 from kubernetes import client
@@ -1246,6 +1247,8 @@ class SandboxFleet:
       logger.warning("warm_images: %d image(s) not in the plan, skipped: %s",
                      len(missing), missing[:5])
     self._warm_entries(entries, wait, replicas_override=replicas_override)
+    if wait:
+      self._prepare_batch_clusters(entries, only_unopened=True)
 
   def warm_image(self, image: str, *, replicas_override: int | None = None,
                  wait: bool = True) -> None:
@@ -1465,7 +1468,29 @@ class SandboxFleet:
       logger.warning("pre-pull did not finish within its budget; the warm pools "
                      "start anyway and pull what is missing")
     self.start_warmpools(wait=True, create_budget=create_budget)
+    if self.plan_ is not None:
+      self._prepare_batch_clusters(self.plan_.entries)
     return self
+
+  def _prepare_batch_clusters(
+      self, entries: list[PlanEntry], *, only_unopened: bool = False
+  ) -> None:
+    """Pre-open each cluster's batch with its warmed pools as size-0 groups."""
+    if self._batch_claims is None or not entries:
+      return
+    with self._lock:
+      if self._torndown:
+        return
+    pools_by_cluster: dict[str, list[str]] = collections.defaultdict(list)
+    for entry in entries:
+      pools_by_cluster[entry.cluster].append(entry.pool)
+    cluster_pools = [
+        (self.registry.get(cname), pools)
+        for cname, pools in pools_by_cluster.items()
+    ]
+    self._batch_claims.prepare_clusters(
+        cluster_pools, only_unopened=only_unopened
+    )
 
   # --- claims ------------------------------------------------------------ #
   def acquire(self, task: Task, *, snapshot_uid: str | None = None,
@@ -2032,13 +2057,45 @@ class SandboxFleet:
       raise
     self._obs.restored(handle.cluster_name, True)
 
-  def release_all(self) -> None:
-    handles = self.handles()
+  def _can_bulk_release_batch_handle(
+      self, handle: SandboxHandle, *, require_release_members: bool
+  ) -> bool:
+    if "release" in self.__dict__ or type(self).release is not SandboxFleet.release:
+      return False
+    bc = handle._batch_claim
+    if bc is None:
+      return False
+    if "release" in handle.__dict__ or type(handle).release is not SandboxHandle.release:
+      return False
+    batch = bc.batch
+    if "release_member" in getattr(batch, "__dict__", {}):
+      return False
+    if batch.err() is not None:
+      return False
+    if require_release_members and not callable(getattr(batch, "release_members", None)):
+      return False
+    return True
+
+  def _finalize_claimed_batch_handles(self, claimed: list[SandboxHandle]) -> None:
+    released_slots = 0
+    for h in claimed:
+      h.finalize_bulk_batch_release()
+      if not h._slot_released:
+        self.registry.get(h.cluster_name).release_claim()
+        released_slots += 1
+    if released_slots:
+      with self._lock:
+        self._claims_reserved = max(0, self._claims_reserved - released_slots)
+
+  def _release_handles_individually(self, handles: list[SandboxHandle]) -> BaseException | None:
     if not handles:
-      return
+      return None
     if len(handles) == 1:
-      self.release(handles[0])
-      return
+      try:
+        self.release(handles[0])
+      except Exception as exc:  # noqa: BLE001
+        return exc
+      return None
     workers = min(len(handles), max(1, self.config.max_concurrent))
     first_err: BaseException | None = None
     if workers == 1:
@@ -2057,8 +2114,141 @@ class SandboxFleet:
           except Exception as exc:  # noqa: BLE001 (drain all futures first)
             if first_err is None:
               first_err = exc
+    return first_err
+
+  def release_all(self) -> None:
+    handles = self.handles()
+    if not handles:
+      return
+    if self._batch_claims is None:
+      if len(handles) == 1:
+        self.release(handles[0])
+        return
+      workers = min(len(handles), max(1, self.config.max_concurrent))
+      first_err: BaseException | None = None
+      if workers == 1:
+        for h in handles:
+          try:
+            self.release(h)
+          except Exception as exc:  # noqa: BLE001 (drain remaining handles first)
+            if first_err is None:
+              first_err = exc
+      else:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+          futs = [ex.submit(self.release, h) for h in handles]
+          for fut in futs:
+            try:
+              fut.result()
+            except Exception as exc:  # noqa: BLE001 (drain all futures first)
+              if first_err is None:
+                first_err = exc
+      if first_err is not None:
+        raise first_err
+      return
+
+    by_batch: dict[int, tuple[object, str, list[SandboxHandle]]] = {}
+    individual: list[SandboxHandle] = []
+    excluded_batches: set[int] = set()
+    for h in handles:
+      if self._can_bulk_release_batch_handle(h, require_release_members=True):
+        assert h._batch_claim is not None
+        b = h._batch_claim.batch
+        key = id(b)
+        if key not in by_batch:
+          by_batch[key] = (b, h.cluster_name, [])
+        by_batch[key][2].append(h)
+      else:
+        if h._batch_claim is not None:
+          excluded_batches.add(id(h._batch_claim.batch))
+        individual.append(h)
+
+    bulk_groups: list[tuple[object, str, list[SandboxHandle]]] = []
+    for key, (b, cname, group_handles) in by_batch.items():
+      if key not in excluded_batches and len(group_handles) >= 2:
+        bulk_groups.append((b, cname, group_handles))
+      else:
+        individual.extend(group_handles)
+
+    def _release_batch_group(
+        batch_obj: object, cluster_name: str, group_handles: list[SandboxHandle]
+    ) -> None:
+      with self._lock:
+        claimed = [
+            h for h in group_handles if self._handles.pop(id(h), None) is not None
+        ]
+      if not claimed:
+        return
+      try:
+        with self._obs.phase("release", cluster=cluster_name):
+          getattr(batch_obj, "release_members")()
+      except BaseException:
+        with self._lock:
+          for h in claimed:
+            self._handles[id(h)] = h
+        raise
+      self._finalize_claimed_batch_handles(claimed)
+
+    first_err = None
+    if len(bulk_groups) == 1 and not individual:
+      b, cname, group_handles = bulk_groups[0]
+      _release_batch_group(b, cname, group_handles)
+      return
+    if bulk_groups:
+      with ThreadPoolExecutor(max_workers=len(bulk_groups)) as ex:
+        futs = [
+            ex.submit(_release_batch_group, b, cname, gh)
+            for b, cname, gh in bulk_groups
+        ]
+        ind_err = self._release_handles_individually(individual)
+        for fut in futs:
+          try:
+            fut.result()
+          except Exception as exc:  # noqa: BLE001
+            if first_err is None:
+              first_err = exc
+        if first_err is None:
+          first_err = ind_err
+    else:
+      first_err = self._release_handles_individually(individual)
     if first_err is not None:
       raise first_err
+
+  def _release_for_batch_teardown(
+      self, deferred_by_batch: dict[int, list[SandboxHandle]]
+  ) -> None:
+    handles = self.handles()
+    if not handles:
+      return
+    by_batch: dict[int, list[SandboxHandle]] = {}
+    individual: list[SandboxHandle] = []
+    excluded_batches: set[int] = set()
+    for h in handles:
+      if self._can_bulk_release_batch_handle(h, require_release_members=False):
+        assert h._batch_claim is not None
+        by_batch.setdefault(id(h._batch_claim.batch), []).append(h)
+      else:
+        if h._batch_claim is not None:
+          excluded_batches.add(id(h._batch_claim.batch))
+        individual.append(h)
+
+    bulk: list[SandboxHandle] = []
+    for bid, group_handles in by_batch.items():
+      if bid in excluded_batches:
+        individual.extend(group_handles)
+      else:
+        bulk.extend(group_handles)
+
+    if bulk:
+      with self._lock:
+        claimed = [h for h in bulk if self._handles.pop(id(h), None) is not None]
+      if claimed:
+        for h in claimed:
+          assert h._batch_claim is not None
+          deferred_by_batch.setdefault(id(h._batch_claim.batch), []).append(h)
+        self._finalize_claimed_batch_handles(claimed)
+    err = self._release_handles_individually(individual)
+    if err is not None:
+      raise err
 
   # --- teardown ---------------------------------------------------------- #
   def teardown(self, delete_namespace: bool = False, *,
@@ -2186,8 +2376,12 @@ class SandboxFleet:
         self._torndown = True
     with self._sweep_lock:
       release_err: Exception | None = None
+      deferred_by_batch: dict[int, list[SandboxHandle]] = {}
       try:
-        self.release_all()
+        if self._batch_claims is not None and "release_all" not in self.__dict__:
+          self._release_for_batch_teardown(deferred_by_batch)
+        else:
+          self.release_all()
       except Exception as exc:  # noqa: BLE001 (sweep remaining run resources first)
         release_err = exc
       finally:
@@ -2195,7 +2389,24 @@ class SandboxFleet:
           # Deletes any member a handle didn't release, and each batch's Lease,
           # even when a handle's release failed, since a live Lease keeps the
           # batch reaper away.
-          self._batch_claims.release_all()
+          failed_batches = self._batch_claims.release_all()
+          for bid, exc in failed_batches.items():
+            failed_handles = deferred_by_batch.get(bid)
+            if not failed_handles:
+              continue
+            if release_err is None:
+              release_err = exc
+            if self._shared_run_id:
+              for h in failed_handles:
+                try:
+                  self.registry.get(h.cluster_name).resources.delete_claim(
+                      h.claim_name, request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS
+                  )
+                except Exception:  # noqa: BLE001
+                  logger.warning(
+                      "teardown: fallback claim delete failed for %s on %s",
+                      h.claim_name, h.cluster_name, exc_info=True,
+                  )
       if self._shared_run_id:
         # A sweep by a shared id would tear down the whole job; unwarm only what
         # this fleet warmed and leave the rest for the reaper.

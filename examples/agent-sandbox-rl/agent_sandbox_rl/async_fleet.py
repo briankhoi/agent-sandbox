@@ -344,6 +344,12 @@ class AsyncSandboxFleet:
                                  delete_snapshots=delete_snapshots)
 
   async def release_all(self):
+    if (
+        self._fleet._batch_claims is not None
+        and "release" not in self.__dict__
+        and type(self).release is AsyncSandboxFleet.release
+    ):
+      return await self._to_thread(self._fleet.release_all)
     handles = self.handles()
     if not handles:
       return

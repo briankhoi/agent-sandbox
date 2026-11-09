@@ -56,6 +56,7 @@ class FakeBatch:
     self.acquired_annotations = []
     self.connected = []
     self.released_members = []
+    self.release_members_calls = 0
     self.released = False
     self.acquire_error = None
     self.hold_pending = False
@@ -137,6 +138,16 @@ class FakeBatch:
       self.released_members.append(member.claim_name)
       ev = self._waiters.pop(member.claim_name, None)
     if ev is not None:
+      ev.set()
+
+  def release_members(self):
+    self._check_healthy()
+    with self._lock:
+      self.release_members_calls += 1
+      self._members.clear()
+      waiters = list(self._waiters.values())
+      self._waiters.clear()
+    for ev in waiters:
       ev.set()
 
   def release(self):
@@ -368,7 +379,8 @@ def test_teardown_releases_every_batch(make_cluster):
   assert c.batches[0].released_members == []
   c.resources.delete_claim.assert_called_once_with(
       h0.claim_name, request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS)
-  assert c.batches[1].released_members == [h1.claim_name]
+  # Healthy batches skip per-member DELETEs during teardown and delete via batch.release().
+  assert c.batches[1].released_members == []
   assert all(b.released for b in c.batches)
   assert c.active_claims == 0 and f._claims_reserved == 0
 
@@ -428,7 +440,7 @@ def test_claim_landing_after_teardown_falls_back_to_direct_claim_delete(make_clu
   b.acquire = acquire_during_teardown
   with pytest.raises(BatchError):
     f.acquire(f.tasks[1])
-  assert b.released_members == [h0.claim_name]
+  assert b.released_members == [] and b.released
   c.resources.delete_claim.assert_called_once_with(
       f"{b.batch_id}-2", request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS)
   assert f._claims_reserved == 0
@@ -451,7 +463,7 @@ def test_claim_landing_after_teardown_falls_back_to_direct_claim_delete(make_clu
   b2.connect = connect_during_teardown
   with pytest.raises(FleetError):
     f2.acquire(f2.tasks[1])
-  assert b2.released_members == [h2.claim_name]
+  assert b2.released_members == [] and b2.released
   c2.resources.delete_claim.assert_called_once_with(
       f"{b2.batch_id}-2", request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS)
   assert not b2.connected[-1].terminate.called
@@ -1455,3 +1467,211 @@ def test_keyboard_interrupt_rolls_back_acquire_and_release(make_cluster):
   assert h in f.handles() and f._claims_reserved == 1
   h.release = real_release
   f.teardown()
+
+
+def test_setup_and_warm_images_preopen_batches_with_size_zero_groups(
+    make_cluster, monkeypatch
+):
+  monkeypatch.setattr("agent_sandbox_rl.preflight.preflight_cluster",
+                      lambda cluster, **kw: MagicMock(ok=True, checks=[]))
+  c1 = _batch_cluster(make_cluster, "c1")
+  c2 = _batch_cluster(make_cluster, "c2")
+  f = _fleet(ClusterRegistry([c1, c2]), placement="round-robin",
+             fail_fast=FailFastPolicy(enabled=False))
+  f.load_tasks(["img-a", "img-b", "img-c", "img-d"])
+  f.setup()
+  # Both clusters pre-opened 1 batch each during setup() before any acquire().
+  assert len(c1.batches) == 1 and len(c2.batches) == 1
+  assert all(g.size == 0 for g in c1.batches[0].groups + c2.batches[0].groups)
+  planned_pools = {e.pool for e in f.plan_.entries}
+  opened_pools = {g.warmpool for g in c1.batches[0].groups + c2.batches[0].groups}
+  assert opened_pools == planned_pools
+  handles = f.acquire_batch(f.tasks)
+  assert len(c1.batches) == 1 and len(c2.batches) == 1
+  assert len(handles) == 4
+  f.teardown()
+
+  # Windowed strategies (warm_images(..., wait=True)) also pre-open on window 0.
+  c3 = _batch_cluster(make_cluster, "c3")
+  fw = _fleet(ClusterRegistry([c3]), fail_fast=FailFastPolicy(enabled=False))
+  fw.load_tasks(["img-w0", "img-w1", "img-w2", "img-w3"])
+  fw.plan()
+  assert len(c3.batches) == 0
+  fw.warm_images(["img-w0", "img-w1"], wait=True)
+  assert len(c3.batches) == 1
+  assert [g.warmpool for g in c3.batches[0].groups] == [
+      fw.plan_.for_image("img-w0").pool,
+      fw.plan_.for_image("img-w1").pool,
+  ]
+  # Window 1 keeps the already-open batch without opening a second one.
+  fw.warm_images(["img-w2", "img-w3"], wait=True)
+  assert len(c3.batches) == 1
+  fw.teardown()
+
+
+@pytest.mark.asyncio
+async def test_release_all_uses_batch_release_members_and_reuses_batch_across_bursts(
+    make_cluster, monkeypatch
+):
+  monkeypatch.setattr("agent_sandbox_rl.preflight.preflight_cluster",
+                      lambda cluster, **kw: MagicMock(ok=True, checks=[]))
+  c = _batch_cluster(make_cluster)
+  af = AsyncSandboxFleet(
+      FleetConfig(claim_mode="batch", max_concurrent=8,
+                  fail_fast=FailFastPolicy(enabled=False)),
+      registry=ClusterRegistry([c]),
+  )
+  tasks = af.load_tasks([f"img-{i}" for i in range(6)])
+  await af.setup()
+  assert len(c.batches) == 1
+  b = c.batches[0]
+
+  # Burst 1 -> release_all uses 1 batch.release_members() call (0 per-member DELETEs)
+  h_burst1 = await af.acquire_batch(tasks)
+  assert len(h_burst1) == 6
+  assert c.active_claims == 6 and af._fleet._claims_reserved == 6
+  await af.release_all()
+  assert b.release_members_calls == 1
+  assert b.released_members == []
+  assert not b.released
+  assert af.handles() == [] and c.active_claims == 0 and af._fleet._claims_reserved == 0
+  for h in h_burst1:
+    assert h.sandbox.close_connection.called
+
+  # Burst 2 reuses the exact same batch (same Lease & shared watch)
+  h_burst2 = await af.acquire_batch(tasks)
+  assert len(h_burst2) == 6 and len(c.batches) == 1
+  # A transient error in release_members preserves handles and slots for retry
+  real_rm = b.release_members
+  b.release_members = MagicMock(side_effect=RuntimeError("transient 500"))
+  with pytest.raises(RuntimeError, match="transient 500"):
+    await af.release_all()
+  assert len(af.handles()) == 6 and c.active_claims == 6 and af._fleet._claims_reserved == 6
+  b.release_members = real_rm
+  await af.release_all()
+  assert b.release_members_calls == 2
+  assert af.handles() == [] and c.active_claims == 0 and af._fleet._claims_reserved == 0
+
+  await af.teardown()
+  assert b.released
+  af.close()
+
+
+def test_batch_watchdog_skips_claim_and_sandbox_gets_for_cold_pods(make_cluster):
+  from agent_sandbox_rl.failfast import BatchWatchdog
+
+  c = _batch_cluster(make_cluster)
+  b = FakeBatch("solo", 0)
+  verdicts = {}
+  wd = BatchWatchdog(
+      c, b, FailFastPolicy(enabled=True, initial_delay_s=0.0, poll_s=0.01, grace_s=0),
+      record_verdict=lambda cname, v: verdicts.__setitem__(cname, v),
+  )
+
+  # 1. Unbound member (sandbox_name=None): 0 GET SandboxClaim, 0 GET Pod/status.
+  c_unbound = f"{b.batch_id}-0"
+  b._members[c_unbound] = Member(
+      claim_name=c_unbound, sandbox_name=None, warmpool="pool-a",
+      pod_ips=(), state=MemberState.PENDING)
+  b._waiters[c_unbound] = threading.Event()
+  wd._first_seen_at[c_unbound] = time.monotonic() - 1.0
+  wd._poll_once()
+  assert c.custom_api.get_namespaced_custom_object.call_count == 0
+  assert c.core_api.read_namespaced_pod_status.call_count == 0
+
+  # 2. Cold-born Sandbox (pod name == sandbox_name): 1 GET Pod/status, 0 GET Sandbox.
+  c_cold = f"{b.batch_id}-1"
+  b._members.pop(c_unbound, None)
+  b._waiters.pop(c_unbound, None)
+  b._members[c_cold] = Member(
+      claim_name=c_cold, sandbox_name="sb-cold-1", warmpool="pool-a",
+      pod_ips=(), state=MemberState.PENDING)
+  b._waiters[c_cold] = threading.Event()
+  wd._first_seen_at[c_cold] = time.monotonic() - 1.0
+  c.core_api.read_namespaced_pod_status.return_value = {
+      "metadata": {"name": "sb-cold-1"},
+      "status": {
+          "phase": "Pending",
+          "container_statuses": [{
+              "name": "agent-runtime",
+              "state": {"waiting": {"reason": "ImagePullBackOff",
+                                    "message": "Back-off pulling image"}},
+          }],
+      },
+  }
+  wd._poll_once()
+  assert c.custom_api.get_namespaced_custom_object.call_count == 0
+  assert c.core_api.read_namespaced_pod_status.call_count == 1
+  assert verdicts[c_cold].pod_name == "sb-cold-1"
+  assert b.released_members == [c_cold]
+
+  # 3. Adopted Sandbox with POD_NAME_ANNOTATION: falls back to GET Sandbox when sb_name 404s.
+  c_adopted = f"{b.batch_id}-2"
+  b._members[c_adopted] = Member(
+      claim_name=c_adopted, sandbox_name="sb-adopted-2", warmpool="pool-a",
+      pod_ips=(), state=MemberState.PENDING)
+  b._waiters[c_adopted] = threading.Event()
+  wd._first_seen_at[c_adopted] = time.monotonic() - 1.0
+
+  def pod_by_name(name, *args, **kwargs):
+    if name == "sb-adopted-2":
+      raise client.ApiException(status=404)
+    return {
+        "metadata": {"name": name},
+        "status": {
+            "phase": "Pending",
+            "container_statuses": [{
+                "name": "agent-runtime",
+                "state": {"waiting": {"reason": "InvalidImageName",
+                                      "message": "bad tag"}},
+            }],
+        },
+    }
+
+  c.core_api.read_namespaced_pod_status.side_effect = pod_by_name
+  c.custom_api.get_namespaced_custom_object.return_value = {
+      "metadata": {"annotations": {constants.POD_NAME_ANNOTATION: "wp-pod-99"}},
+  }
+  wd._poll_once()
+  assert c.custom_api.get_namespaced_custom_object.call_count == 1
+  assert verdicts[c_adopted].pod_name == "wp-pod-99"
+  assert c_adopted in b.released_members
+
+
+def test_teardown_surfaces_failed_batch_release_and_cleans_shared_run_id_claims(
+    make_cluster,
+):
+  c = _batch_cluster(make_cluster)
+  f = SandboxFleet(
+      FleetConfig(
+          claim_mode="batch",
+          run_id="shared-job-1",
+          fail_fast=FailFastPolicy(enabled=False),
+      ),
+      registry=ClusterRegistry([c]),
+  )
+  tasks = f.load_tasks(["img-a", "img-b"])
+  f.plan()
+  handles = f.acquire_batch(tasks)
+  b = c.batches[0]
+  b.release = MagicMock(side_effect=RuntimeError("deletecollection 503"))
+  with pytest.raises(RuntimeError, match="deletecollection 503"):
+    f.teardown()
+  # Under shared_run_id, failed batch.release() falls back to direct claim deletes.
+  deleted_names = [call.args[0] for call in c.resources.delete_claim.call_args_list]
+  assert sorted(deleted_names) == sorted(h.claim_name for h in handles)
+  # And if one handle on a batch has a custom release override, release_all avoids
+  # calling release_members() behind its back.
+  c2 = _batch_cluster(make_cluster, "c2")
+  f2 = _fleet(ClusterRegistry([c2]), max_concurrent=4,
+              fail_fast=FailFastPolicy(enabled=False))
+  t2 = f2.load_tasks(["img"] * 3)
+  f2.plan()
+  hs2 = f2.acquire_batch(t2)
+  hs2[0].release = MagicMock(side_effect=RuntimeError("custom h0 fail"))
+  with pytest.raises(RuntimeError, match="custom h0 fail"):
+    f2.release_all()
+  assert c2.batches[0].release_members_calls == 0
+  assert [h.claim_name for h in f2.handles()] == [hs2[0].claim_name]
+  hs2[0].release = SandboxHandle.release.__get__(hs2[0], SandboxHandle)
+  f2.teardown()
