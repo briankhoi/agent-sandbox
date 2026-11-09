@@ -17,6 +17,7 @@ import copy
 import functools
 import logging
 import math
+import socket
 import threading
 import time
 import weakref
@@ -54,6 +55,16 @@ from .constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _shutdown_response_socket(resp: Any) -> None:
+    """Shuts down the socket under a streaming response so a read blocked on it in another thread
+    returns at once. Closing the socket instead can hang on the SSL lock that the blocked read holds.
+    """
+    sock = getattr(getattr(resp, "connection", None), "sock", None)
+    if sock is not None:
+        with contextlib.suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
 
 
 class _EmptyWatchResponse:
@@ -805,11 +816,16 @@ class K8sHelper:
         if type(w) is watch.Watch:
             stopped = threading.Event()
             w_ref = weakref.ref(w)
+            # kubernetes releases before 37 make Watch.stop() only set a flag, so a quiet stream
+            # stays blocked in its read until the watch times out. Keeping the response lets stop
+            # unblock that read on every client version.
+            active_resp: list[Any] = [None]
 
             def _stop() -> None:
                 stopped.set()
                 if (target := w_ref()) is not None:
                     watch.Watch.stop(target)
+                _shutdown_response_socket(active_resp[0])
 
             w.stop = _stop  # type: ignore[method-assign]
 
@@ -823,6 +839,7 @@ class K8sHelper:
                         target._stop = True
                     return _EmptyWatchResponse()
                 resp: Any = orig_list_fn(*args, **kwargs)
+                active_resp[0] = resp
                 # Watch.stream resets _stop at entry and invokes the list call before assigning
                 # _resp, so re-check stopped here to close the response immediately on race.
                 if stopped.is_set():

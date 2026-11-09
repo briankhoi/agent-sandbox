@@ -23,8 +23,9 @@ import unittest
 import weakref
 from unittest.mock import MagicMock, call, patch
 
-from kubernetes import client
+from kubernetes import client, watch
 from kubernetes.config import incluster_config
+import urllib3
 import urllib3.exceptions
 from pydantic import ValidationError
 from k8s_agent_sandbox.models import AdditionalPodMetadata
@@ -1805,6 +1806,66 @@ class TestK8sHelperBatchMethods(unittest.TestCase):
         mock_resp.release_conn.assert_called_once()
         mock_resp.stream.assert_not_called()
         self.assertEqual(len(close_calls), 1)
+
+    def test_watch_sandbox_claims_stop_interrupts_blocked_stream_read(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        # A quiet watch blocks reading a real socket. kubernetes releases before 37 make
+        # Watch.stop() only set a flag, so stop must still unblock the read itself.
+        server = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(server.close)
+        port = server.getsockname()[1]
+        headers_sent = threading.Event()
+        release_server = threading.Event()
+        self.addCleanup(release_server.set)
+
+        def serve():
+            conn, _ = server.accept()
+            with conn:
+                conn.recv(65536)
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    b"Transfer-Encoding: chunked\r\n\r\n"
+                )
+                headers_sent.set()
+                release_server.wait(10)
+
+        threading.Thread(target=serve, daemon=True).start()
+        pool = urllib3.PoolManager()
+        self.addCleanup(pool.clear)
+
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        mock_api.list_namespaced_custom_object = lambda *a, **kw: pool.request(
+            "GET", f"http://127.0.0.1:{port}/watch", preload_content=False
+        )
+        helper = K8sHelper()
+
+        active_watch = [None]
+        watch_ready = threading.Event()
+
+        def on_watch(w):
+            if w is not None:
+                active_watch[0] = w
+                watch_ready.set()
+
+        def run_watch():
+            list(
+                helper.watch_sandbox_claims(
+                    "default", "agents.x-k8s.io/batch-id=b1", "5", 30, on_watch=on_watch
+                )
+            )
+
+        with patch.object(watch.Watch, "stop", lambda w: setattr(w, "_stop", True)):
+            worker = threading.Thread(target=run_watch, daemon=True)
+            worker.start()
+            self.assertTrue(watch_ready.wait(5))
+            self.assertTrue(headers_sent.wait(5))
+            worker.join(0.2)
+            self.assertTrue(worker.is_alive())
+            active_watch[0].stop()
+            worker.join(2)
+        self.assertFalse(worker.is_alive())
 
     def test_read_batch_lease_returns_lease_on_success(
         self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
