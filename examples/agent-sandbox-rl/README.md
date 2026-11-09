@@ -608,6 +608,7 @@ cluster rights to create it. A namespace per user costs the sharing of warm
 pods and nothing else: two users warming the same image hold two pools, on
 image layers they share. Several clusters are a follow-up example: the
 namespace, quota and pre-pull are then needed on each cluster.
+
 ### Batch claim mode (opt-in)
 
 `FleetConfig(claim_mode="batch")` claims sandboxes through the Python SDK's
@@ -620,25 +621,25 @@ from agent_sandbox_rl import BatchClaimConfig, FleetConfig, SandboxFleet
 
 fleet = SandboxFleet(FleetConfig(
     claim_mode="batch",
-    batch_claims=BatchClaimConfig(work_budget=2 * 3600),  # longest rollout, in seconds
+    batch_claims=BatchClaimConfig(work_budget=2 * 3600),  # longest rollout in seconds
 ))
 ```
 
-- Each fleet holds one batch per cluster, opened by the first acquire on that
-  cluster. Every acquire adds one member to it, so readiness comes from the batch's
-  one watch instead of a watch per claim, and the handle is built from the member
-  without reading the Sandbox or its pod.
+- Each fleet holds one batch per cluster, which the first acquire on that
+  cluster opens. Every acquire adds one member to it, so readiness comes from
+  the batch's shared watch instead of a watch per claim, and `acquire` builds
+  the handle from the member without reading the Sandbox or its pod.
 - Batch mode skips the initial `pods/{name}/status` read on `acquire()` and checks
   the batch watch for claim loss and pod replacement in `is_alive()`, so callers
   that need container restart-count baselines for in-place OOM detection can call
   `handle.record_pod_identity()`.
 - `release` frees the member through the batch, or deletes its claim directly once
   the batch has stopped or released, and `teardown` releases every batch the fleet
-  opened, which deletes their remaining claims and their Leases.
+  opened, deleting their remaining claims and their Leases.
 - With the SDK's [batch reaper](../../clients/python/agentic-sandbox-client/README.md#batch-reaper)
-  deployed, a driver that dies without tearing down loses its claims once its Lease
-  goes stale, so no `reap(run_id=…)` is needed for them. Without the reaper they
-  stay until their `shutdownTime`. `reap(run_id=…)` deletes them but leaves the
+  deployed, the reaper deletes a crashed driver's claims once its Lease goes
+  stale, so those claims need no `reap(run_id=…)`. Without the reaper they stay
+  until their `shutdownTime`. `reap(run_id=…)` deletes them while leaving the
   run's batch Leases, which carry the run id label, so delete those with
   `kubectl delete lease -l agents.x-k8s.io/asrl-run-id=<run id>`.
 - A driver that stalls or loses the API server for longer than `lease_duration`
@@ -646,14 +647,15 @@ fleet = SandboxFleet(FleetConfig(
   rollout still running on it fails. The next acquire opens a new batch.
 - Acquires with `snapshot_uid` or `pod_annotations` pass their pod annotations
   through the batch onto each member's claim.
-- A batch claim's `shutdownTime` is fixed when it is created, at `claim_timeout`
-  (or `ready_timeout` when `claim_timeout` is unset) plus `work_budget + 600`
+- Creation fixes a batch claim's `shutdownTime` at `claim_timeout` (or
+  `ready_timeout` when `claim_timeout` is unset) plus `work_budget + 600`
   seconds later. Set `work_budget` above the longest time one rollout holds its
-  sandbox. Recycling holds one claim for many tasks, so it rotates a claim once
-  less than twice its longest task plus `reset_timeout` is left.
+  sandbox. Recycling holds one claim across many tasks and rotates a claim once
+  less than twice its longest task plus `reset_timeout` remains.
 - The driver needs the batch RBAC from the SDK's
   [RBAC section](../../clients/python/agentic-sandbox-client/README.md#rbac), which
-  adds Leases to what per-claim needs.
+  adds Leases to what per-claim needs (`preflight()` checks Lease create access (dry-run)
+  when `claim_mode="batch"`).
 
 **BatchClaimConfig:** `work_budget` (3600), `lease_duration` (300, longer than the
 SDK's 60 because losing the Lease ends every rollout in flight on the batch, and each

@@ -17,7 +17,8 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
   `batch.connect(member)` without per-claim `Sandbox` or `Pod` `GET`s (`snapshot_uid`
   still reads the `Pod` to check `PodRestored`). Failed or timed-out batch acquires raise
   `BatchError` (`FleetConfig.fail_fast` applies only to `"per_claim"` mode), and the
-  driver needs `coordination.k8s.io` `leases` RBAC permissions from the SDK's batch RBAC.
+  driver needs `coordination.k8s.io` `leases` RBAC permissions from the SDK's batch RBAC
+  (`preflight()` checks `leases` create access (dry-run) in `"batch"` mode).
   `BatchClaimConfig` validates and configures `work_budget` (default `3600`),
   `lease_duration` (default `300`, longer than the SDK's `60` because losing a `Lease`
   stops the batch), `create_rps` (`None`), and `max_in_flight` (`None`).

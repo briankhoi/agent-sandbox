@@ -38,6 +38,8 @@ from collections.abc import Mapping
 from typing import Optional
 from collections.abc import Callable
 
+from k8s_agent_sandbox import BatchError
+from k8s_agent_sandbox.exceptions import SandboxNotReadyError
 from k8s_agent_sandbox.utils import select_pod_ip
 from kubernetes import client
 
@@ -151,7 +153,11 @@ class SandboxFleet:
     self.run_id = self.config.run_id or uuid.uuid4().hex[:12]
     # Other processes may share a caller-supplied id, so the id doesn't mean "mine".
     self._shared_run_id = self.config.run_id is not None
-    self.config.labels = {**self.config.labels, constants.RUN_ID_LABEL: self.run_id}
+    self.config.labels = {
+        **self.config.labels,
+        **constants.DEFAULT_LABELS,
+        constants.RUN_ID_LABEL: self.run_id,
+    }
     # Resolve the run-dependent parts of the config (`{run_id}` in names, the
     # per-run namespace) before the registry is built, so every cluster, template
     # and pool name sees the final values.
@@ -799,7 +805,8 @@ class SandboxFleet:
           image_pull_secret=ts.image_pull_secret, namespace=c.namespace,
           validate_template=ts, sample_image=sample_image,
           unmanaged_pod_labels=unmanaged_labels,
-          snapshots=getattr(c.config, "snapshots", False))
+          snapshots=getattr(c.config, "snapshots", False),
+          check_leases=(self.config.claim_mode == "batch"))
       reports[c.name] = rep
       for w in rep.warnings:
         logger.warning("[%s] %s: %s", c.name, w.name, w.detail)
@@ -1460,6 +1467,8 @@ class SandboxFleet:
     unbounded claim count.
     """
     with self._lock:
+      if self._torndown:
+        raise FleetError("fleet was torn down; call setup() before acquiring again")
       hard = self.config.max_live_sandboxes
       if hard and self._claims_reserved >= hard:
         raise FleetOvercommitError(
@@ -1544,7 +1553,12 @@ class SandboxFleet:
           # The batch's watch already reported the member's Sandbox and pod IP,
           # so no GETs here. The pod is named after its Sandbox, and connect()
           # gives the snapshot operations their Sandbox without a request.
-          sandbox = claim.batch.connect(claim.member)
+          try:
+            sandbox = claim.batch.connect(claim.member)
+          except SandboxNotReadyError as exc:
+            raise BatchError(
+                f"batch lost '{claim.member.claim_name}' before connect: {exc}"
+            ) from exc
           pod = sandbox.sandbox_id
           pod_ip = select_pod_ip(claim.member.pod_ips)
         else:

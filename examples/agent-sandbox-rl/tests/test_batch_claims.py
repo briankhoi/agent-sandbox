@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from k8s_agent_sandbox import BatchError, Member, MemberState
+from k8s_agent_sandbox.exceptions import SandboxNotReadyError
 from kubernetes import client
 from pydantic import ValidationError
 
@@ -29,8 +30,10 @@ from agent_sandbox_rl import (AsyncSandboxFleet, BatchClaimConfig,
                               ClusterRegistry, FleetConfig, SandboxFleet, constants,
                               reuse_git_restore_sandbox,
                               reuse_git_restore_sandbox_async)
+from agent_sandbox_rl.batch_claims import BatchClaims
 from agent_sandbox_rl.exceptions import FleetError
 from agent_sandbox_rl.handles import SandboxHandle
+from agent_sandbox_rl.sources import Task
 
 _CLEAN = "PRISTINE=abc\nHEAD=abc\nDIRTY=0\nENV=e1\nCFG=g1\nPROCS=5"
 
@@ -60,6 +63,10 @@ class FakeBatch:
       raise BatchError(f"batch '{self.batch_id}' has been detached or released")
     if self.error is not None:
       raise BatchError(f"batch '{self.batch_id}' has stopped") from self.error
+
+  def get_member(self, claim_name: str) -> Member | None:
+    with self._lock:
+      return self._members.get(claim_name)
 
   def members(self, warmpool=None):
     with self._lock:
@@ -130,6 +137,103 @@ def test_claim_mode_defaults_to_per_claim_and_rejects_unknown():
   BatchClaimConfig(lease_duration=6, work_budget=1, create_rps=0.5, max_in_flight=1)
 
 
+def test_batch_claims_retains_failed_batch_across_teardown_race_and_retries():
+  bc = BatchClaims(BatchClaimConfig(), ready_timeout=30, labels={"run": "r1"})
+  cluster = MagicMock()
+  cluster.name = "c1"
+  cluster.namespace = "default"
+
+  raced = MagicMock(batch_id="b-raced")
+  raced.release.side_effect = [client.ApiException(status=503), None]
+
+  def claim_while_closing(*_args, **_kwargs):
+    bc.release_all()
+    return raced
+
+  cluster.sandbox_client.claim_batch.side_effect = claim_while_closing
+  with pytest.raises(FleetError):
+    bc.acquire(cluster, "pool-a")
+  assert raced.release.call_count == 1
+
+  # A follow-up release_all retries the batch whose first release failed.
+  bc.release_all()
+  assert raced.release.call_count == 2
+  bc.release_all()
+  assert raced.release.call_count == 2
+
+
+def test_batch_claims_reopen_epoch_rejects_stale_opener_without_clobbering_new_epoch():
+  bc = BatchClaims(BatchClaimConfig(), ready_timeout=30, labels={"run": "r1"})
+  c1 = MagicMock()
+  c1.name = "c1"
+  c1.namespace = "default"
+  c2 = MagicMock()
+  c2.name = "c2"
+  c2.namespace = "default"
+
+  stale_batch = MagicMock(batch_id="b-c1-stale")
+  fresh_c1 = MagicMock(batch_id="b-c1-fresh")
+  fresh_c1.err.return_value = None
+  fresh_c1.acquire.return_value = Member(
+      claim_name="b-c1-fresh-0", sandbox_name="sb-c1", warmpool="pool-a",
+      pod_ips=("10.0.0.3",), state=MemberState.READY)
+  fresh_c2 = MagicMock(batch_id="b-c2-fresh")
+  fresh_c2.err.return_value = None
+  fresh_c2.acquire.return_value = Member(
+      claim_name="b-c2-fresh-0", sandbox_name="sb-c2", warmpool="pool-b",
+      pod_ips=("10.0.0.4",), state=MemberState.READY)
+  c2.sandbox_client.claim_batch.return_value = fresh_c2
+
+  calls = 0
+
+  def claim_across_reopen(*_args, **_kwargs):
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      bc.release_all()
+      bc.reopen()
+      bc.acquire(c2, "pool-b")
+      return stale_batch
+    return fresh_c1
+
+  c1.sandbox_client.claim_batch.side_effect = claim_across_reopen
+
+  with pytest.raises(FleetError, match="torn down"):
+    bc.acquire(c1, "pool-a")
+
+  stale_batch.release.assert_called_once_with()
+  fresh_c2.release.assert_not_called()
+  assert bc._closed is False
+  assert bc._live.get("c2") is fresh_c2
+  assert "c1" not in bc._live
+  assert stale_batch not in bc._opened
+
+  claimed = bc.acquire(c1, "pool-a")
+  assert claimed.batch is fresh_c1
+  assert bc._live.get("c1") is fresh_c1
+
+
+def test_batch_claims_release_all_retains_failed_batches_for_retry():
+  bc = BatchClaims(BatchClaimConfig(), ready_timeout=30, labels={"run": "r1"})
+  cluster = MagicMock()
+  cluster.name = "c1"
+  cluster.namespace = "default"
+
+  flaky = MagicMock(batch_id="b-flaky")
+  flaky.err.return_value = None
+  flaky.acquire.return_value = Member(
+      claim_name="b-flaky-1", sandbox_name="sb-1", warmpool="pool-a",
+      pod_ips=("10.0.0.2",), state=MemberState.READY)
+  flaky.release.side_effect = [client.ApiException(status=503), None]
+  cluster.sandbox_client.claim_batch.return_value = flaky
+
+  bc.acquire(cluster, "pool-a")
+  bc.release_all()
+  assert flaky.release.call_count == 1
+  bc.release_all()
+  assert flaky.release.call_count == 2
+
+
 def test_first_acquire_opens_one_batch_from_its_pool(make_cluster):
   c = _batch_cluster(make_cluster)
   f = _fleet(ClusterRegistry([c]), ready_timeout=120,
@@ -141,8 +245,8 @@ def test_first_acquire_opens_one_batch_from_its_pool(make_cluster):
   assert len(c.batches) == 1
   b = c.batches[0]
   pool_a = f.plan_.for_image("imgA").pool
-  # One size-0 group, from the first acquire's pool only: claim_batch prechecks
-  # every group serially, so the others are checked by acquire instead.
+  # One size-0 group, from the first acquire's pool only, because claim_batch
+  # prechecks every group serially and acquire checks the rest lazily.
   assert [(g.warmpool, g.size) for g in b.groups] == [(pool_a, 0)]
   assert b.kwargs["quorum_timeout"] == 120
   assert b.kwargs["lease_duration"] == 300
@@ -359,6 +463,14 @@ def test_failure_after_acquire_releases_the_member(make_cluster, monkeypatch):
   assert b.released_members == [f"{b.batch_id}-2"]
   assert f._claims_reserved == 1
 
+  monkeypatch.setattr(
+      b, "connect", MagicMock(side_effect=SandboxNotReadyError("not ready")))
+  with pytest.raises(BatchError) as ei:
+    f.acquire(f.tasks[1])
+  assert isinstance(ei.value.__cause__, SandboxNotReadyError)
+  assert b.released_members == [f"{b.batch_id}-2", f"{b.batch_id}-3"]
+  assert f._claims_reserved == 1
+
 
 def test_annotated_and_pinned_acquires_go_through_the_batch(make_cluster):
   c = _batch_cluster(make_cluster)
@@ -474,12 +586,108 @@ async def test_async_fleet_claims_releases_and_tears_down_through_one_batch(make
   af.close()
 
 
+def test_batch_refresh_reconnects_closed_sandbox_handle(make_cluster):
+  c = _batch_cluster(make_cluster)
+  f = _fleet(ClusterRegistry([c]))
+  t = f.load_tasks(["img"])[0]
+  f.plan()
+  h = f.acquire(t)
+  b = c.batches[0]
+
+  old_sb = h.sandbox
+  old_sb.is_active = False
+  old_sb._pod_name = "stale-pod"
+  old_sb._seeded_pod_ip = "10.1.0.5"
+  old_sb._snapshots = types.SimpleNamespace(created_manual_triggers=["trig-1"])
+  b._members[h.claim_name] = Member(
+      claim_name=h.claim_name, sandbox_name=h.sandbox_id,
+      warmpool=f.plan_.for_image("img").pool,
+      pod_ips=("10.1.0.9",), state=MemberState.READY)
+  reconnected = MagicMock(claim_name=h.claim_name, sandbox_id=h.sandbox_id, is_active=True)
+  reconnected._pod_name = "stale-reconnected-pod"
+  reconnected._seeded_pod_ip = "10.1.0.9"
+  reconnected._snapshots = types.SimpleNamespace(created_manual_triggers=[])
+  reconnected.get_pod_name.return_value = "pod-resumed"
+  reconnected.get_pod_ip.return_value = "10.1.0.9"
+  b.connect = MagicMock(return_value=reconnected)
+  c.core_api.read_namespaced_pod_status.return_value = _running_pod(
+      name="pod-resumed", uid="u-9")
+
+  h.refresh()
+  assert h.sandbox is reconnected and h.sandbox.is_active is True
+  assert "_pod_name" not in vars(reconnected)
+  assert "_seeded_pod_ip" not in vars(reconnected)
+  assert h.pod_name == "pod-resumed" and h.pod_ip == "10.1.0.9"
+  assert reconnected._snapshots.created_manual_triggers == ["trig-1"]
+
+  # When the batch watch has not yet closed an active handle whose resumed pod
+  # already moved to a new IP, refresh() closes the stale connection, falls back
+  # to get_sandbox when the watch still reports the old IP, and never leaks the
+  # direct handle into _active_connection_sandboxes.
+  c.sandbox_client._active_connection_sandboxes = {}
+  h2 = f.acquire(t)
+  active_old = h2.sandbox
+  active_old.is_active = True
+  active_old._pod_name = "stale-pod-2"
+  active_old._seeded_pod_ip = "10.1.0.5"
+  active_old.get_pod_name.return_value = "pod-resumed-2"
+  active_old.get_pod_ip.return_value = "10.1.0.42"
+  direct_sb = MagicMock(claim_name=h2.claim_name, sandbox_id=h2.sandbox_id, is_active=True)
+
+  def fake_get_sandbox(claim_name, *, namespace):
+    c.sandbox_client._active_connection_sandboxes[(namespace, claim_name)] = direct_sb
+    return direct_sb
+
+  c.sandbox_client.get_sandbox.side_effect = fake_get_sandbox
+
+  h2.refresh()
+  assert "_pod_name" not in vars(active_old)
+  assert "_seeded_pod_ip" not in vars(active_old)
+  active_old.close_connection.assert_called_once_with()
+  c.sandbox_client.get_sandbox.assert_called_once_with(
+      h2.claim_name, namespace=c.namespace)
+  assert h2.sandbox is direct_sb
+  assert c.sandbox_client._active_connection_sandboxes == {}
+  c.sandbox_client._active_connection_sandboxes[(c.namespace, h2.claim_name)] = direct_sb
+  f.release(h2)
+  assert c.sandbox_client._active_connection_sandboxes == {}
+
+
+def test_post_teardown_acquire_fails_before_creating_ondemand_pool(make_cluster):
+  c = _batch_cluster(make_cluster)
+  f = _fleet(ClusterRegistry([c]))
+  f.teardown()
+  c.resources.ensure_template.reset_mock()
+  c.resources.create_warmpool.reset_mock()
+  with pytest.raises(FleetError):
+    f.acquire(Task(id="late", image="unplanned:1"))
+  c.resources.ensure_template.assert_not_called()
+  c.resources.create_warmpool.assert_not_called()
+
+
+def test_custom_fleet_labels_preserve_default_managed_label(make_cluster):
+  from agent_sandbox_rl.testing import FakeFleet
+  c = _batch_cluster(make_cluster)
+  f = _fleet(ClusterRegistry([c]), labels={"team": "rl", "app": "custom"})
+  t = f.load_tasks(["img"])[0]
+  f.plan()
+  f.acquire(t)
+  batch_labels = c.batches[0].kwargs["labels"]
+  assert batch_labels["team"] == "rl"
+  for k, v in constants.DEFAULT_LABELS.items():
+    assert batch_labels[k] == v
+  fake = FakeFleet(FleetConfig(claim_mode="batch", labels={"team": "rl", "app": "custom"}))
+  assert fake.config.labels["team"] == "rl"
+  for k, v in constants.DEFAULT_LABELS.items():
+    assert fake.config.labels[k] == v
+
+
 def _recycle_on_a_fake_clock(monkeypatch):
   """Patches recycle and batch claims onto a clock that only each task advances, by
-  100 s, and returns the batch settings under which a claim lives 400 s.
+  100 s, and returns the batch settings under which a claim lives 399 s.
 
-  After one task 300 s are left, more than twice the longest task plus the 5 s
-  reset_timeout (205 s), so the claim is reset and reused. After two, 200 s are
+  After one task 299 s are left, more than twice the longest task plus the 5 s
+  reset_timeout (205 s), so the claim is reset and reused. After two, 199 s are
   left, so it is rotated, and the third task runs on a second claim."""
   monkeypatch.setattr("agent_sandbox_rl.preflight.preflight_cluster",
                       lambda cluster, **kw: MagicMock(ok=True, checks=[]))
@@ -520,3 +728,18 @@ async def test_async_recycle_rotates_a_batch_claim_before_it_expires(make_cluste
   assert len(c.batches[0].acquired) == 2
   await af.teardown()
   af.close()
+
+
+def test_batch_claim_expires_at_accounts_for_subsecond_shutdown_truncation():
+  bc = BatchClaims(BatchClaimConfig(work_budget=40), ready_timeout=0, labels={"run": "r1"})
+  cluster = MagicMock(name="c1", namespace="default")
+  fake_batch = MagicMock()
+  fake_batch.err.return_value = None
+  fake_batch.acquire.return_value = Member(
+      claim_name="b1-1", sandbox_name="sb-1", warmpool="pool-a",
+      pod_ips=("10.0.0.2",), state=MemberState.READY)
+  cluster.sandbox_client.claim_batch.return_value = fake_batch
+
+  t0 = time.monotonic()
+  claim = bc.acquire(cluster, "pool-a")
+  assert claim.expires_at - t0 <= 639.05
