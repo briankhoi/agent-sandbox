@@ -53,7 +53,9 @@ def build_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
 def _resize_api_client_pool(api_client, needed: int) -> None:
   cfg_obj = getattr(api_client, "configuration", None)
   cur = getattr(cfg_obj, "connection_pool_maxsize", None)
-  if not (isinstance(cur, int) and not isinstance(cur, bool) and 0 < cur < needed):
+  if cfg_obj is None or not (
+      isinstance(cur, int) and not isinstance(cur, bool) and 0 < cur < needed
+  ):
     return
   cfg_obj.connection_pool_maxsize = needed
   rest = getattr(api_client, "rest_client", None)
@@ -61,8 +63,9 @@ def _resize_api_client_pool(api_client, needed: int) -> None:
   pool_kw = getattr(pm, "connection_pool_kw", None)
   if isinstance(pool_kw, dict):
     pool_kw["maxsize"] = needed
-    if type(pm).__module__.startswith("urllib3") and callable(getattr(pm, "clear", None)):
-      pm.clear()
+    clear_fn = getattr(pm, "clear", None)
+    if pm is not None and type(pm).__module__.startswith("urllib3") and callable(clear_fn):
+      clear_fn()
 
 
 class Cluster:

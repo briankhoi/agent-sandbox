@@ -326,12 +326,14 @@ def read_pod_status(cluster: "Cluster", name: str):
 class BatchWatchdog(threading.Thread):
   """Poll cold-starting pending members of one `SandboxBatch`.
 
-  Warm adoptions reach ``READY`` in under a second — long before
-  ``policy.initial_delay_s`` — so `BatchWatchdog` reads ``batch.members()`` in
-  memory and performs zero Kubernetes ``GET``s on warm runs. When a member
-  remains ``PENDING`` past ``initial_delay_s`` and `classify_pod` returns a
-  `StartVerdict`, the verdict is recorded before ``batch.release_member(member)``
-  wakes the blocked `acquire()` call.
+  Warm adoptions reach ``READY`` in under a second, long before
+  ``policy.initial_delay_s``, so `BatchWatchdog` inspects only active in-flight
+  waiters from ``batch._acquire_waiters`` via ``batch.get_member()`` in memory
+  and performs zero Kubernetes ``GET``s on warm runs and ``O(1)`` idle polls
+  when no acquires are in flight. When a member remains ``PENDING`` past
+  ``initial_delay_s`` and `classify_pod` returns a `StartVerdict`,
+  `BatchWatchdog` records the verdict before calling
+  ``batch.release_member(member)`` to wake the blocked `acquire()` call.
   """
 
   def __init__(
@@ -340,7 +342,7 @@ class BatchWatchdog(threading.Thread):
       batch: Any,
       policy: "FailFastPolicy",
       record_verdict: Any,
-  ):
+  ) -> None:
     super().__init__(
         name=f"asrl-batch-failfast-{getattr(batch, 'batch_id', 'batch')}",
         daemon=True,
@@ -351,30 +353,32 @@ class BatchWatchdog(threading.Thread):
     self._record_verdict = record_verdict
     self._stop_evt = threading.Event()
     self._decide_lock = threading.Lock()
-    self._handed_out: set[str] = set()
+    self._in_flight_acquires = 0
     self._last_acquire_at = 0.0
     self._first_seen_at: dict[str, float] = {}
     self._pod_names: dict[str, str] = {}
     self._cond_first_seen: dict[str, dict[str, float]] = {}
     self._cond_last_seen: dict[str, dict[str, float]] = {}
 
-  def note_acquire(self, started_at: float) -> None:
-    self._last_acquire_at = started_at
-
-  def mark_handed_out(self, claim_name: str) -> None:
-    """Mark ``claim_name`` as already returned to a caller.
-
-    Once handed out, a member whose readiness later flips back to ``pending``
-    (for example across ``suspend()``/``resume()`` or an in-place container
-    restart) belongs to the caller's ``is_alive()`` / rollout lifecycle and
-    must never be released by the cold-start watchdog.
-    """
+  def enter_acquire(self, started_at: float | None = None) -> None:
+    ts = time.monotonic() if started_at is None else started_at
     with self._decide_lock:
-      self._handed_out.add(claim_name)
+      self._in_flight_acquires += 1
+      self._last_acquire_at = ts
+
+  def exit_acquire(self, claim_name: str | None = None) -> None:
+    with self._decide_lock:
+      self._in_flight_acquires = max(0, self._in_flight_acquires - 1)
+      if claim_name is not None:
+        self._prune(claim_name)
+      if self._in_flight_acquires == 0:
+        self._first_seen_at.clear()
+        self._pod_names.clear()
+        self._cond_first_seen.clear()
+        self._cond_last_seen.clear()
 
   def stop(self) -> None:
-    with self._decide_lock:
-      self._stop_evt.set()
+    self._stop_evt.set()
 
   def _prune(self, claim_name: str) -> None:
     self._first_seen_at.pop(claim_name, None)
@@ -382,18 +386,35 @@ class BatchWatchdog(threading.Thread):
     self._cond_first_seen.pop(claim_name, None)
     self._cond_last_seen.pop(claim_name, None)
 
+  @staticmethod
+  def _is_pending(member: Any) -> bool:
+    if member is None:
+      return False
+    state = getattr(member, "state", None)
+    return getattr(state, "value", state) == "pending"
+
+  @staticmethod
+  def _has_waiter(waiters: Any, b_lock: Any, claim_name: str) -> bool:
+    if not isinstance(waiters, dict):
+      return True
+    if b_lock is not None:
+      with b_lock:
+        return claim_name in waiters
+    return claim_name in waiters
+
   def run(self) -> None:
     while not self._stop_evt.is_set():
       if (
           self.batch.err() is not None
-          or getattr(self.batch, "released", False)
-          or getattr(self.batch, "_detached", False)
+          or getattr(self.batch, "released", False) is True
+          or getattr(self.batch, "_released", False) is True
+          or getattr(self.batch, "_detached", False) is True
       ):
         return
       sleep_s = self.policy.poll_s
       try:
         sleep_s = self._poll_once()
-      except Exception:  # noqa: BLE001 — best-effort; never disrupt healthy claims
+      except Exception:  # noqa: BLE001 (best-effort; never disrupt healthy claims)
         logger.debug("batch fail-fast watchdog: poll failed for batch %s",
                      getattr(self.batch, "batch_id", "?"), exc_info=True)
       if self._stop_evt.wait(sleep_s):
@@ -401,83 +422,117 @@ class BatchWatchdog(threading.Thread):
 
   def _poll_once(self) -> float:
     with self._decide_lock:
-      members = self.batch.members()
-      self._handed_out &= {m.claim_name for m in members}
-      handed = set(self._handed_out)
-    now = time.monotonic()
-    pending = {
-        m.claim_name: m for m in members
-        if m.claim_name not in handed
-        and str(getattr(m, "state", "")) == "pending"
-    }
-    for gone in list(self._first_seen_at):
-      if gone not in pending:
-        self._prune(gone)
+      if self._in_flight_acquires <= 0 and not self._first_seen_at:
+        return self.policy.poll_s
+      tracked = set(self._first_seen_at)
+      in_flight = self._in_flight_acquires
+      last_acq = self._last_acquire_at
 
-    if not pending:
-      if now - self._last_acquire_at < 0.5:
+    waiters = getattr(self.batch, "_acquire_waiters", None)
+    b_lock = getattr(self.batch, "_lock", None)
+    if in_flight > 0 and isinstance(waiters, dict):
+      if b_lock is not None:
+        with b_lock:
+          tracked.update(waiters.keys())
+      else:
+        tracked.update(list(waiters.keys()))
+
+    now = time.monotonic()
+    if not tracked:
+      if in_flight > 0 and now - last_acq < 0.5:
         return min(self.policy.poll_s, 0.02)
       return self.policy.poll_s
 
-    min_wait: float | None = None
-    for claim_name, member in pending.items():
+    earliest_due: float | None = None
+    for claim_name in tracked:
       if self._stop_evt.is_set():
-        return 0.0
-      seen = self._first_seen_at.setdefault(claim_name, now)
-      elapsed = now - seen
+        return self.policy.poll_s
+      try:
+        member = self.batch.get_member(claim_name)
+      except Exception:  # noqa: BLE001
+        with self._decide_lock:
+          self._prune(claim_name)
+        continue
+      if (
+          not self._is_pending(member)
+          or not self._has_waiter(waiters, b_lock, claim_name)
+      ):
+        with self._decide_lock:
+          self._prune(claim_name)
+        continue
+      with self._decide_lock:
+        if (
+            claim_name not in self._first_seen_at
+            and isinstance(waiters, dict)
+            and self._in_flight_acquires <= 0
+        ):
+          continue
+        first = self._first_seen_at.setdefault(claim_name, now)
+      elapsed = now - first
       if elapsed < self.policy.initial_delay_s:
         rem = self.policy.initial_delay_s - elapsed
-        min_wait = rem if min_wait is None else min(min_wait, rem)
+        earliest_due = rem if earliest_due is None else min(earliest_due, rem)
         continue
       try:
         verdict = self._check_member(claim_name, member, now=now)
-      except Exception:  # noqa: BLE001 — isolated per member
+      except Exception:  # noqa: BLE001 (isolated per member)
         logger.debug("batch fail-fast watchdog: check failed for claim %s",
                      claim_name, exc_info=True)
         continue
       if verdict is None:
         continue
+      if not self._has_waiter(waiters, b_lock, claim_name):
+        with self._decide_lock:
+          self._prune(claim_name)
+        continue
+      try:
+        cur = self.batch.get_member(claim_name)
+      except Exception:  # noqa: BLE001
+        cur = None
+      if not self._is_pending(cur):
+        with self._decide_lock:
+          self._prune(claim_name)
+        continue
+      should_release = False
       with self._decide_lock:
         if self._stop_evt.is_set():
-          return 0.0
-        if claim_name in self._handed_out:
+          return self.policy.poll_s
+        if claim_name in self._first_seen_at:
+          self._record_verdict(claim_name, verdict)
           self._prune(claim_name)
-          continue
-        cur = next(
-            (m for m in self.batch.members(getattr(member, "warmpool", None))
-             if m.claim_name == claim_name),
-            None,
-        )
-        if cur is None or str(getattr(cur, "state", "")) != "pending":
+          should_release = True
+        else:
           self._prune(claim_name)
-          continue
-        self._record_verdict(claim_name, verdict)
-        logger.error(
-            "batch claim %s will not start (%s on pod %s): %s; releasing member",
-            claim_name, verdict.reason, verdict.pod_name, verdict.message)
-        try:
-          self.batch.release_member(member)
-        except Exception as exc:  # noqa: BLE001
-          if any(b.__name__ == "BatchError" for b in type(exc).__mro__):
-            try:
-              self.cluster.resources.delete_claim(
-                  claim_name, request_timeout=_REQUEST_TIMEOUT)
-            except Exception:  # noqa: BLE001
-              logger.warning("batch fail-fast watchdog: failed to delete claim %s",
-                             claim_name, exc_info=True)
-          else:
-            logger.warning("batch fail-fast watchdog: failed to release member %s",
+      if not should_release:
+        continue
+      logger.error(
+          "batch claim %s will not start (%s on pod %s): %s; releasing member",
+          claim_name, verdict.reason, verdict.pod_name, verdict.message)
+      try:
+        self.batch.release_member(cur)
+      except Exception as exc:  # noqa: BLE001
+        if any(b.__name__ == "BatchError" for b in type(exc).__mro__):
+          try:
+            self.cluster.resources.delete_claim(
+                claim_name, request_timeout=_REQUEST_TIMEOUT)
+          except Exception:  # noqa: BLE001
+            logger.warning("batch fail-fast watchdog: failed to delete claim %s",
                            claim_name, exc_info=True)
-      self._prune(claim_name)
+        else:
+          logger.warning("batch fail-fast watchdog: failed to release member %s",
+                         claim_name, exc_info=True)
 
-    if min_wait is not None:
-      return min(self.policy.poll_s, max(0.0, min_wait))
+    if earliest_due is not None:
+      return min(self.policy.poll_s, max(0.0, earliest_due))
     return self.policy.poll_s
 
   def _check_member(
       self, claim_name: str, member: Any, *, now: float
   ) -> StartVerdict | None:
-    pod_name = self._pod_names.get(claim_name)
+    with self._decide_lock:
+      if claim_name not in self._first_seen_at:
+        return None
+      pod_name = self._pod_names.get(claim_name)
     if pod_name is None:
       sb_name = getattr(member, "sandbox_name", None)
       if isinstance(sb_name, str) and sb_name:
@@ -486,14 +541,28 @@ class BatchWatchdog(threading.Thread):
         pod_name = resolve_pod_name_for_claim(self.cluster, claim_name)
       if pod_name is None:
         return None
-      self._pod_names[claim_name] = pod_name
+      with self._decide_lock:
+        if claim_name not in self._first_seen_at:
+          return None
+        self._pod_names[claim_name] = pod_name
     pod = read_pod_status(self.cluster, pod_name)
     if pod is None:
       return None
-    return classify_pod(
+    with self._decide_lock:
+      if claim_name not in self._first_seen_at:
+        return None
+      first_seen = dict(self._cond_first_seen.get(claim_name, {}))
+      last_seen = dict(self._cond_last_seen.get(claim_name, {}))
+    verdict = classify_pod(
         pod,
         now=now,
-        first_seen=self._cond_first_seen.setdefault(claim_name, {}),
-        last_seen=self._cond_last_seen.setdefault(claim_name, {}),
+        first_seen=first_seen,
+        last_seen=last_seen,
         policy=self.policy,
     )
+    with self._decide_lock:
+      if claim_name not in self._first_seen_at:
+        return None
+      self._cond_first_seen[claim_name] = first_seen
+      self._cond_last_seen[claim_name] = last_seen
+    return verdict

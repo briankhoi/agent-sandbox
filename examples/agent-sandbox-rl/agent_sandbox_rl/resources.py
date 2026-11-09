@@ -795,7 +795,7 @@ class Resources:
         label_selector if constants.BATCH_ID_LABEL in keys
         else f"{label_selector.strip()},{constants.BATCH_ID_LABEL}"
     )
-    items = []
+    items: list = []
     cont: str | None = None
     while True:
       extra = {"_continue": cont, "limit": 500} if cont else {}
@@ -824,8 +824,9 @@ class Resources:
         name = getattr(meta, "name", None) if meta is not None else None
         labels = (getattr(meta, "labels", None) if meta is not None else None) or {}
         created = getattr(meta, "creation_timestamp", None) if meta is not None else None
-        if hasattr(created, "isoformat"):
-          created = created.isoformat()
+        iso = getattr(created, "isoformat", None)
+        if callable(iso):
+          created = iso()
       if (
           isinstance(name, str)
           and name

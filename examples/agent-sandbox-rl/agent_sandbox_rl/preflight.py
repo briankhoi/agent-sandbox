@@ -23,7 +23,9 @@ runtime class / image-pull-secret / namespace exist. Hard failures raise
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from kubernetes import client
 
@@ -47,6 +49,11 @@ def _node_api(cluster):
 
 def _networking_api(cluster):
   return client.NetworkingV1Api(cluster.api_client)
+
+
+def _coordination_api(cluster):
+  coord = getattr(cluster, "coordination_api", None)
+  return coord if coord is not None else client.CoordinationV1Api(cluster.api_client)
 
 
 def pod_selector_covers(selector, known_labels: dict) -> bool:
@@ -121,7 +128,8 @@ def preflight_cluster(cluster, *, require_runtime_class: str | None = None,
                       validate_template=None,
                       sample_image: str = "busybox:latest",
                       unmanaged_pod_labels: dict | None = None,
-                      snapshots: bool = False) -> PreflightReport:
+                      snapshots: bool = False,
+                      check_leases: bool = False) -> PreflightReport:
   """Run all checks on one cluster and return a `PreflightReport`.
 
   ``unmanaged_pod_labels`` (the labels every fleet pod carries) is passed when the
@@ -176,13 +184,15 @@ def preflight_cluster(cluster, *, require_runtime_class: str | None = None,
     r.add("controller", False, str(e), warn_only=True)
 
   # 4. namespace exists (warning — callers may create it)
+  ns_missing = False
   try:
     cluster.core_api.read_namespace(ns)
     r.add("namespace", True, ns)
   except client.ApiException as e:
-    # Only a successful read is "ok"; a 404 means missing, anything else (403/500)
-    # is an access problem we should surface rather than report as passing.
-    detail = f"{ns} missing" if e.status == 404 else f"check failed: {e.status}"
+    # Only a successful read passes; 404 means missing while 403/500 indicate
+    # access errors we surface instead of reporting as passing.
+    ns_missing = e.status == 404
+    detail = f"{ns} missing" if ns_missing else f"check failed: {e.status}"
     r.add("namespace", False, detail, warn_only=True)
 
   # 5. runtime class (hard fail if explicitly required)
@@ -225,10 +235,11 @@ def preflight_cluster(cluster, *, require_runtime_class: str | None = None,
       if selecting:
         r.add("networkpolicy", True, ", ".join(selecting))
       else:
-        wanted = ",".join(f"{k}={v}" for k, v in sorted(unmanaged_pod_labels.items()))
+        wanted_labels = ",".join(
+            f"{k}={v}" for k, v in sorted(unmanaged_pod_labels.items()))
         r.add("networkpolicy", False,
               f"templates are Unmanaged but no NetworkPolicy in {ns} selects the "
-              f"fleet's pods ({wanted}); they are not isolated", warn_only=True)
+              f"fleet's pods ({wanted_labels}); they are not isolated", warn_only=True)
     except client.ApiException as e:
       r.add("networkpolicy", False,
             f"could not list NetworkPolicies in {ns}: HTTP {e.status}", warn_only=True)
@@ -284,8 +295,26 @@ def preflight_cluster(cluster, *, require_runtime_class: str | None = None,
         r.add("snapshots:policy", True,
               f"{len(grouped)}/{len(items)} PodSnapshotPolicy in {ns} group by "
               f"{constants.SANDBOX_NAME_HASH_LABEL}: {', '.join(grouped)}")
-    except Exception as e:  # noqa: BLE001 — RBAC etc.; advisory only
+    except Exception as e:  # noqa: BLE001 (RBAC or connectivity, advisory only)
       r.add("snapshots:policy", False, str(e), warn_only=True)
+
+  # Batch mode requires Lease create RBAC in the target namespace before warming pools.
+  if check_leases:
+    try:
+      probe_name = f"asrl-preflight-{uuid.uuid4().hex[:8]}"
+      probe_body = client.V1Lease(
+          metadata=client.V1ObjectMeta(name=probe_name, namespace=ns),
+          spec=client.V1LeaseSpec(
+              holder_identity="preflight", lease_duration_seconds=30),
+      )
+      _coordination_api(cluster).create_namespaced_lease(
+          ns, probe_body, dry_run="All", _request_timeout=(3, 10))
+      r.add("leases", True, "coordination.k8s.io/v1 leases create ok (dry-run)")
+    except client.ApiException as e:
+      r.add("leases", False, f"HTTP {e.status} ({e.reason})",
+            warn_only=(ns_missing and e.status == 404))
+    except Exception as e:  # noqa: BLE001
+      r.add("leases", False, str(e))
 
   return r
 
@@ -294,7 +323,7 @@ def policy_groups_by(policy: dict, label: str) -> bool:
   """Whether a ``PodSnapshotPolicy`` groups snapshots by ``label``
   (``spec.snapshotGroupingRules.groupByLabelValue.labels``). Tolerates a missing
   or malformed spec (False)."""
-  node = policy
+  node: Any = policy
   for key in ("spec", "snapshotGroupingRules", "groupByLabelValue", "labels"):
     if not isinstance(node, dict):
       return False
@@ -305,6 +334,7 @@ def policy_groups_by(policy: dict, label: str) -> bool:
 def preflight(registry, *, runtime_class: str | None = None,
               image_pull_secret: str | None = None,
               namespace: str | None = None,
+              check_leases: bool = False,
               raise_on_error: bool = True) -> dict:
   """Preflight every cluster in ``registry``.
 
@@ -316,7 +346,8 @@ def preflight(registry, *, runtime_class: str | None = None,
     rep = preflight_cluster(
         c, require_runtime_class=runtime_class,
         image_pull_secret=image_pull_secret, namespace=namespace,
-        snapshots=getattr(getattr(c, "config", None), "snapshots", False))
+        snapshots=getattr(getattr(c, "config", None), "snapshots", False),
+        check_leases=check_leases)
     reports[c.name] = rep
     for w in rep.warnings:
       logger.warning("[%s] %s: %s", c.name, w.name, w.detail)

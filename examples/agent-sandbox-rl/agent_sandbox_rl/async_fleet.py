@@ -32,9 +32,11 @@ API.)
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import functools
 import inspect
 import logging
+import threading
 import time
 from typing import Awaitable
 from collections.abc import Callable
@@ -176,86 +178,164 @@ class AsyncSandboxFleet:
     await self._to_thread(self._fleet.setup, prepull)
     return self
 
-  async def acquire(self, task: Task, *, snapshot_uid: str | None = None,
-                    pod_annotations: dict | None = None) -> SandboxHandle:
-    return await self._to_thread(self._fleet.acquire, task, snapshot_uid=snapshot_uid,
-                                 pod_annotations=pod_annotations)
+  def _reclaim_cancelled_future(
+      self,
+      pool: concurrent.futures.ThreadPoolExecutor,
+      loop_thread: threading.Thread,
+      done_fut: concurrent.futures.Future[SandboxHandle],
+      *,
+      caller: str,
+  ) -> None:
+    if done_fut.cancelled() or done_fut.exception() is not None:
+      return
+    handle = done_fut.result()
+
+    def _safe_release() -> None:
+      try:
+        self._fleet.release(handle)
+      except Exception:  # noqa: BLE001
+        logger.warning("%s: failed to reclaim cancelled handle %s",
+                       caller, handle.claim_name, exc_info=True)
+
+    # When done_fut finishes on a ThreadPoolExecutor worker thread (including
+    # while close(wait=True) is waiting in executor.shutdown(wait=True)),
+    # release inline on that worker thread so close(wait=True) blocks until
+    # the reclaim finishes without submitting to a shutting-down pool.
+    if threading.current_thread() is not loop_thread:
+      _safe_release()
+      return
+    try:
+      rel_fut = pool.submit(_safe_release)
+    except RuntimeError:
+      threading.Thread(target=_safe_release, daemon=True).start()
+    else:
+      rel_fut.add_done_callback(
+          lambda f: (
+              threading.Thread(target=_safe_release, daemon=True).start()
+              if f.cancelled() else None
+          )
+      )
+
+  async def acquire(
+      self,
+      task: Task,
+      *,
+      snapshot_uid: str | None = None,
+      pod_annotations: dict | None = None,
+  ) -> SandboxHandle:
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.current_thread()
+    pool = self._thread_pool()
+    cf_fut = pool.submit(
+        self._fleet.acquire,
+        task,
+        snapshot_uid=snapshot_uid,
+        pod_annotations=pod_annotations,
+    )
+    try:
+      return await asyncio.wrap_future(cf_fut, loop=loop)
+    except BaseException:
+      cf_fut.cancel()
+      cf_fut.add_done_callback(
+          functools.partial(
+              self._reclaim_cancelled_future,
+              pool,
+              loop_thread,
+              caller="acquire",
+          )
+      )
+      raise
 
   async def acquire_batch(self, tasks: list[Task]) -> list[SandboxHandle]:
     task_list = list(tasks)
     if not task_list:
       return []
-    loop = asyncio.get_running_loop()
-    pool = self._thread_pool()
     sem = asyncio.Semaphore(max(1, self._fleet.config.max_concurrent))
-    cfuts: list = []
     abort = False
-
-    def _release_late(done_cf) -> None:
-      if done_cf.cancelled() or done_cf.exception() is not None:
-        return
-      h = done_cf.result()
-      try:
-        pool.submit(self._fleet.release, h)
-      except RuntimeError:
-        try:
-          self._fleet.release(h)
-        except Exception:  # noqa: BLE001
-          logger.warning("acquire_batch: failed to roll back handle %s",
-                         h.claim_name, exc_info=True)
+    first_err: BaseException | None = None
+    atasks: list[asyncio.Task[SandboxHandle]] = []
+    started: set[asyncio.Task[SandboxHandle]] = set()
 
     async def _one(t: Task) -> SandboxHandle:
+      nonlocal abort, first_err
       async with sem:
         if abort:
           raise asyncio.CancelledError()
-        cf = pool.submit(self._fleet.acquire, t)
-        cfuts.append(cf)
-        if abort:
-          cf.cancel()
-        return await asyncio.wrap_future(cf, loop=loop)
+        me = asyncio.current_task()
+        if me is not None:
+          started.add(me)
+        try:
+          return await self.acquire(t)
+        except Exception as exc:
+          if first_err is None:
+            first_err = exc
+            abort = True
+            for sibling in atasks:
+              if (
+                  sibling is not me
+                  and sibling not in started
+                  and not sibling.done()
+              ):
+                sibling.cancel()
+          raise
 
     atasks = [asyncio.create_task(_one(t)) for t in task_list]
-    first_err: BaseException | None = None
     try:
       outcomes = await asyncio.gather(*atasks, return_exceptions=True)
-      for o in outcomes:
-        if isinstance(o, BaseException):
-          first_err = o
-          break
     except BaseException as exc:
-      first_err = exc
-
-    if first_err is not None:
       abort = True
-      for at in atasks:
-        if not at.done():
-          at.cancel()
-      for cf in cfuts:
-        cf.cancel()
+      if first_err is None:
+        first_err = exc
+      for sibling in atasks:
+        if not sibling.done():
+          sibling.cancel()
       try:
-        await asyncio.gather(*atasks, return_exceptions=True)
-        still_running = [
-            asyncio.wrap_future(cf, loop=loop) for cf in cfuts if not cf.done()
-        ]
-        if still_running:
-          await asyncio.gather(*still_running, return_exceptions=True)
-        acquired = [
-            cf.result() for cf in cfuts
-            if cf.done() and not cf.cancelled() and cf.exception() is None
-        ]
-        if acquired:
+        outcomes = await asyncio.gather(*atasks, return_exceptions=True)
+      except BaseException:
+        pool = self._thread_pool()
+        loop_thread = threading.current_thread()
+        for sibling in atasks:
+          if (
+              sibling.done()
+              and not sibling.cancelled()
+              and sibling.exception() is None
+          ):
+            h = sibling.result()
+            if isinstance(h, SandboxHandle):
+              drain_h: concurrent.futures.Future[SandboxHandle] = (
+                  concurrent.futures.Future()
+              )
+              drain_h.set_result(h)
+              self._reclaim_cancelled_future(
+                  pool, loop_thread, drain_h, caller="acquire_batch")
+        raise
+
+    if first_err is None:
+      first_err = next((o for o in outcomes if isinstance(o, BaseException)), None)
+    if first_err is not None:
+      acquired = [o for o in outcomes if isinstance(o, SandboxHandle)]
+      if acquired:
+        released_all = False
+        try:
           rb = await asyncio.gather(
               *(self.release(h) for h in acquired), return_exceptions=True)
+          released_all = True
           for h, res in zip(acquired, rb):
             if isinstance(res, BaseException):
               logger.warning("acquire_batch: failed to roll back handle %s: %s",
                              h.claim_name, res)
-      except BaseException:
-        # Even if cleanup itself is interrupted by a second cancellation, ensure
-        # every completed or still-running thread-pool acquire releases its claim.
-        for cf in cfuts:
-          cf.add_done_callback(_release_late)
-        raise
+        except BaseException:
+          if not released_all:
+            pool = self._thread_pool()
+            loop_thread = threading.current_thread()
+            for h in acquired:
+              done_h: concurrent.futures.Future[SandboxHandle] = (
+                  concurrent.futures.Future()
+              )
+              done_h.set_result(h)
+              self._reclaim_cancelled_future(
+                  pool, loop_thread, done_h, caller="acquire_batch")
+          raise
       raise first_err
     return [o for o in outcomes if isinstance(o, SandboxHandle)]
 

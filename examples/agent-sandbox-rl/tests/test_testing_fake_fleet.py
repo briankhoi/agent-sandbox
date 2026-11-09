@@ -350,4 +350,6 @@ def test_fake_fleet_claim_expires_at_matches_claim_mode_and_keeps_imports_clean(
     elif isinstance(node, ast.ImportFrom):
       if node.level == 0:
         root = (node.module or "").split(".")[0]
-        assert root in sys.stdlib_module_names, f"unexpected import from {node.module} in testing.py"
+        assert root in sys.stdlib_module_names, (
+            f"unexpected import from {node.module} in testing.py"
+        )

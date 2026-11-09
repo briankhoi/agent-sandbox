@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from k8s_agent_sandbox import BatchError, BatchGroup
+from k8s_agent_sandbox import BatchError, BatchGroup, Member, SandboxBatch
 from k8s_agent_sandbox.batch_state import still_reaches
 from k8s_agent_sandbox.batch_utils import (
     BATCH_REQUEST_TIMEOUT_SECONDS,
@@ -47,14 +47,14 @@ from .exceptions import FleetError
 from .failfast import BatchWatchdog, StartVerdict
 
 if TYPE_CHECKING:
-  from k8s_agent_sandbox import Member, SandboxBatch
-
   from .cluster import Cluster
   from .config import BatchClaimConfig, FailFastPolicy
 
 logger = logging.getLogger("agent_sandbox_rl.batch_claims")
 
-_RELEASED_MEMBER_RE = re.compile(r"(?:acquired member|while acquiring) '([^']+)'")
+_RELEASED_MEMBER_RE = re.compile(
+    r"(?:acquired member|while acquiring|for claim|batch lost) '([^']+)'"
+)
 
 
 def extract_batch_claim_name(exc: BaseException) -> str | None:
@@ -74,10 +74,10 @@ def extract_batch_claim_name(exc: BaseException) -> str | None:
 class BatchClaim:
   """One acquired batch member and the batch that owns it."""
 
-  batch: "SandboxBatch"
-  member: "Member"
+  batch: SandboxBatch
+  member: Member
   # time.monotonic() by which the controller deletes the claim (its shutdownTime),
-  # measured from before the create, so it is never later than the real one.
+  # measured from before the create with a 1 s margin for sub-second truncation.
   expires_at: float
   cluster: "Cluster" = field(repr=False)
   rebaselined: bool = False
@@ -88,10 +88,7 @@ class BatchClaim:
     # batch's watch no longer updates, so is_alive() checks the pod instead.
     if self.rebaselined or self.batch.err() is not None:
       return True
-    current = next(
-        (m for m in self.batch.members(self.member.warmpool)
-         if m.claim_name == self.member.claim_name),
-        None)
+    current = self.batch.get_member(self.member.claim_name)
     return still_reaches(
         current, self.member.sandbox_name, select_pod_ip(self.member.pod_ips))
 
@@ -114,22 +111,23 @@ class BatchClaims:
 
   def __init__(self, settings: "BatchClaimConfig", *, ready_timeout: int,
                labels: dict[str, str],
-               fail_fast: "FailFastPolicy | None" = None):
+               fail_fast: "FailFastPolicy | None" = None) -> None:
     self._settings = settings
     self._ready_timeout = ready_timeout
     self._labels = labels
     self._fail_fast = fail_fast
     self._lock = threading.Lock()
     self._cluster_locks: dict[str, threading.Lock] = {}
-    self._live: dict[str, "SandboxBatch"] = {}
+    self._live: dict[str, SandboxBatch] = {}
     self._watchdogs: dict[str, BatchWatchdog] = {}
     self._verdicts: dict[tuple[str, str], StartVerdict] = {}
     # Every batch opened, including ones replaced after an error, so teardown
     # releases their remaining claims and Leases.
-    self._opened: list["SandboxBatch"] = []
+    self._opened: list[SandboxBatch] = []
     # Set by release_all, so an acquire racing teardown can't open a batch that
     # no later teardown would release and whose Lease would keep renewing.
     self._closed = False
+    self._epoch: int = 0
 
   def reopen(self) -> None:
     """Lets acquires open batches again after `release_all`, for a new setup()."""
@@ -156,17 +154,18 @@ class BatchClaims:
     with self._lock:
       return self._cluster_locks.setdefault(name, threading.Lock())
 
-  def _batch_for(self, cluster: "Cluster", pool: str) -> "SandboxBatch":
+  def _batch_for(self, cluster: "Cluster", pool: str) -> SandboxBatch:
     # Under the cluster's lock, so concurrent first acquires open one batch.
     with self._cluster_lock(cluster.name):
       with self._lock:
         if self._closed:
           raise FleetError("fleet was torn down; call setup() before acquiring again")
-        batch = self._live.get(cluster.name)
-      if batch is not None:
-        error = batch.err()
+        existing = self._live.get(cluster.name)
+        epoch = self._epoch
+      if existing is not None:
+        error = existing.err()
         if error is None:
-          return batch
+          return existing
         # A stopped batch hands out nothing more, and its Lease may be gone, so
         # its claims are the reaper's. Members already handed out keep working
         # until then, and new acquires go to a fresh batch. It stays open until
@@ -176,8 +175,9 @@ class BatchClaims:
         if old_wd is not None:
           old_wd.stop()
         logger.warning("batch %s on cluster %s stopped (%s); opening a new one "
-                       "for new acquires", batch.batch_id, cluster.name, error)
+                       "for new acquires", existing.batch_id, cluster.name, error)
       s = self._settings
+      batch: SandboxBatch
       batch = cluster.sandbox_client.claim_batch(
           [BatchGroup(warmpool=pool, size=0)],
           namespace=cluster.namespace,
@@ -188,24 +188,54 @@ class BatchClaims:
           # Part of each acquired claim's shutdownTime, which expires_at assumes.
           quorum_timeout=self._ready_timeout,
           lease_duration=s.lease_duration)
+      stale = False
+      registered = False
       wd: BatchWatchdog | None = None
-      with self._lock:
-        closed = self._closed
-        if not closed:
-          self._live[cluster.name] = batch
+      try:
+        with self._lock:
           self._opened.append(batch)
-          if self._fail_fast is not None and self._fail_fast.enabled:
-            wd = BatchWatchdog(
-                cluster, batch, self._fail_fast,
-                record_verdict=lambda cname, v, cn=cluster.name: (
-                    self._record_verdict(cn, cname, v)))
-            self._watchdogs[cluster.name] = wd
-      if closed:
-        # Teardown ran while the batch was opening and won't see it.
-        batch.release()
-        raise FleetError("fleet was torn down; call setup() before acquiring again")
-      if wd is not None:
-        wd.start()
+          registered = True
+          if self._closed or self._epoch != epoch:
+            stale = True
+          else:
+            self._live[cluster.name] = batch
+            if self._fail_fast is not None and self._fail_fast.enabled:
+              cluster_name = cluster.name
+              wd = BatchWatchdog(
+                  cluster, batch, self._fail_fast,
+                  record_verdict=lambda cname, v: (
+                      self._record_verdict(cluster_name, cname, v)))
+              self._watchdogs[cluster.name] = wd
+        if not stale and wd is not None:
+          wd.start()
+      except BaseException:
+        if wd is not None:
+          wd.stop()
+        with self._lock:
+          if self._live.get(cluster.name) is batch:
+            self._live.pop(cluster.name, None)
+          if wd is not None and self._watchdogs.get(cluster.name) is wd:
+            self._watchdogs.pop(cluster.name, None)
+        try:
+          batch.release()
+        except Exception:  # noqa: BLE001
+          pass
+        else:
+          if registered:
+            with self._lock:
+              self._opened = [b for b in self._opened if b is not batch]
+        raise
+      if stale:
+        try:
+          batch.release()
+        except Exception as exc:  # noqa: BLE001
+          logger.warning(
+              "batch_claims: release of raced batch on %s failed (kept for retry): %s",
+              cluster.name, exc)
+        else:
+          with self._lock:
+            self._opened = [b for b in self._opened if b is not batch]
+        raise FleetError(f"fleet has torn down; cannot claim on {cluster.name!r}")
       logger.info("opened batch %s on cluster %s", batch.batch_id, cluster.name)
       return batch
 
@@ -231,13 +261,22 @@ class BatchClaims:
       if wd is not None and wd.batch is not batch:
         wd = None
     if wd is not None:
-      wd.note_acquire(started)
-    member = batch.acquire(
-        pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
-    if wd is not None:
-      wd.mark_handed_out(member.claim_name)
+      wd.enter_acquire(started)
+    acquired_claim: str | None = None
+    try:
+      member = batch.acquire(
+          pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
+      acquired_claim = member.claim_name
+    except BaseException as exc:
+      acquired_claim = extract_batch_claim_name(exc)
+      raise
+    finally:
+      if wd is not None:
+        wd.exit_acquire(acquired_claim)
+    # construct_sandbox_claim_lifecycle_spec formats shutdownTime to whole
+    # seconds via strftime, truncating up to almost 1 s of microseconds.
     expires_at = (started + self._ready_timeout + self._settings.work_budget
-                  + BATCH_SHUTDOWN_MARGIN_SECONDS)
+                  + BATCH_SHUTDOWN_MARGIN_SECONDS - 1.0)
     return BatchClaim(
         batch=batch, member=member, expires_at=expires_at, cluster=cluster)
 
@@ -246,7 +285,8 @@ class BatchClaims:
     failure doesn't keep the others' claims alive."""
     with self._lock:
       self._closed = True
-      opened, self._opened = self._opened, []
+      self._epoch += 1
+      opened = list(self._opened)
       watchdogs = list(self._watchdogs.values())
       self._watchdogs.clear()
       self._verdicts.clear()
@@ -258,3 +298,6 @@ class BatchClaims:
         batch.release()
       except Exception:  # noqa: BLE001 (best effort, like the teardown sweep)
         logger.warning("failed to release batch %s", batch.batch_id, exc_info=True)
+      else:
+        with self._lock:
+          self._opened = [b for b in self._opened if b is not batch]

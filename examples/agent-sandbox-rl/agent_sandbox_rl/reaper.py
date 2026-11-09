@@ -148,7 +148,7 @@ def _reap_with_cluster(cluster: Cluster, run_id: str | None, *,
   for lease_name in leases_to_delete:
     try:
       r.delete_lease(lease_name)
-    except Exception:  # noqa: BLE001 — best-effort; keep going
+    except Exception:  # noqa: BLE001 (best-effort; keep going)
       logger.warning("reap: failed to delete leases %s", lease_name, exc_info=True)
   counts["leases"] = len(leases_to_delete)
   _sweep("warmpools", r.list_warmpools, r.delete_warmpool, keep=protected_pools)

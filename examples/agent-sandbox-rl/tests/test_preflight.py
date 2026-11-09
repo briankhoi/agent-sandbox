@@ -318,3 +318,42 @@ def test_snapshots_served_version_mismatch_is_hard_failure(monkeypatch):
   bad = {ch.name: ch.detail for ch in rep.failures}
   assert set(bad) == {"crd:podsnapshots", "crd:podsnapshotmanualtriggers"}
   assert all(detail == "v1alpha1" for detail in bad.values())
+
+
+def test_check_leases_only_runs_when_requested(monkeypatch):
+  _patch(monkeypatch)
+  coord = MagicMock()
+  monkeypatch.setattr(pf, "_coordination_api", lambda c: coord)
+
+  rep_default = pf.preflight_cluster(_healthy_cluster())
+  assert "leases" not in [ch.name for ch in rep_default.checks]
+  coord.create_namespaced_lease.assert_not_called()
+  coord.list_namespaced_lease.assert_not_called()
+
+  rep_batch = pf.preflight_cluster(_healthy_cluster(), check_leases=True)
+  assert rep_batch.ok
+  assert "leases" in [ch.name for ch in rep_batch.checks]
+  coord.create_namespaced_lease.assert_called_once()
+  assert coord.create_namespaced_lease.call_args.kwargs.get("dry_run") == "All"
+  assert coord.create_namespaced_lease.call_args.kwargs.get("_request_timeout") == (3, 10)
+  coord.list_namespaced_lease.assert_not_called()
+
+  coord.create_namespaced_lease.side_effect = client.ApiException(
+      status=404, reason="Not Found")
+  missing_ns = _healthy_cluster()
+  missing_ns.core_api.read_namespace.side_effect = client.ApiException(
+      status=404, reason="Not Found")
+  rep_ns_missing = pf.preflight_cluster(missing_ns, check_leases=True)
+  assert rep_ns_missing.ok
+  lease_chk = next(ch for ch in rep_ns_missing.checks if ch.name == "leases")
+  assert lease_chk.warn_only is True and lease_chk.ok is False
+
+  rep_existing_ns_404 = pf.preflight_cluster(_healthy_cluster(), check_leases=True)
+  assert not rep_existing_ns_404.ok
+  assert [ch.name for ch in rep_existing_ns_404.failures] == ["leases"]
+
+  coord.create_namespaced_lease.side_effect = client.ApiException(
+      status=403, reason="Forbidden")
+  rep_forbidden = pf.preflight_cluster(missing_ns, check_leases=True)
+  assert not rep_forbidden.ok
+  assert [ch.name for ch in rep_forbidden.failures] == ["leases"]

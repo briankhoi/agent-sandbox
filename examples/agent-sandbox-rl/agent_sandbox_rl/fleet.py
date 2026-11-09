@@ -38,6 +38,8 @@ from collections.abc import Mapping
 from typing import Optional
 from collections.abc import Callable
 
+from k8s_agent_sandbox import BatchError
+from k8s_agent_sandbox.exceptions import SandboxNotReadyError
 from k8s_agent_sandbox.utils import select_pod_ip
 from kubernetes import client
 
@@ -151,7 +153,11 @@ class SandboxFleet:
     self.run_id = self.config.run_id or uuid.uuid4().hex[:12]
     # Other processes may share a caller-supplied id, so the id doesn't mean "mine".
     self._shared_run_id = self.config.run_id is not None
-    self.config.labels = {**self.config.labels, constants.RUN_ID_LABEL: self.run_id}
+    self.config.labels = {
+        **self.config.labels,
+        **constants.DEFAULT_LABELS,
+        constants.RUN_ID_LABEL: self.run_id,
+    }
     # Resolve the run-dependent parts of the config (`{run_id}` in names, the
     # per-run namespace) before the registry is built, so every cluster, template
     # and pool name sees the final values.
@@ -187,7 +193,7 @@ class SandboxFleet:
         ensure_pool = getattr(_c, "ensure_pool_maxsize", None)
         if callable(ensure_pool):
           ensure_pool(needed_pool)
-      except Exception:  # noqa: BLE001 — best-effort for custom test doubles
+      except Exception:  # noqa: BLE001 (best-effort for custom test doubles)
         pass
       try:
         _c.resources.labels.update(self.config.labels)
@@ -209,7 +215,7 @@ class SandboxFleet:
     self.placement = get_placement(self.config.placement)
     self.tasks: list[Task] = []
     self.plan_: FleetPlan | None = None
-    self._handles: list[SandboxHandle] = []
+    self._handles: dict[int, SandboxHandle] = {}
     # Claims live or in flight on this fleet, counted SYNCHRONOUSLY (reserved
     # in acquire() before the remote create, released on failure/release). The
     # async pod-count breaker cannot enforce max_live_sandboxes in adopt mode
@@ -825,7 +831,8 @@ class SandboxFleet:
           image_pull_secret=ts.image_pull_secret, namespace=c.namespace,
           validate_template=ts, sample_image=sample_image,
           unmanaged_pod_labels=unmanaged_labels,
-          snapshots=getattr(c.config, "snapshots", False))
+          snapshots=getattr(c.config, "snapshots", False),
+          check_leases=(self.config.claim_mode == "batch"))
       reports[c.name] = rep
       for w in rep.warnings:
         logger.warning("[%s] %s: %s", c.name, w.name, w.detail)
@@ -1489,6 +1496,8 @@ class SandboxFleet:
     unbounded claim count.
     """
     with self._lock:
+      if self._torndown:
+        raise FleetError("fleet was torn down; call setup() before acquiring again")
       hard = self.config.max_live_sandboxes
       if hard and self._claims_reserved >= hard:
         raise FleetOvercommitError(
@@ -1499,7 +1508,7 @@ class SandboxFleet:
     try:
       return self._acquire_reserved(task, snapshot_uid=snapshot_uid,
                                     pod_annotations=pod_annotations)
-    except Exception:
+    except BaseException:
       with self._lock:
         self._claims_reserved = max(0, self._claims_reserved - 1)
       raise
@@ -1529,57 +1538,64 @@ class SandboxFleet:
           f"that serves it.")
     if on_demand:
       cluster = self.placement.select(task.image, self.registry)
-      key = (cluster.name, task.image)
-      with self._lock:
-        already_ensured = key in self._ondemand
-        if already_ensured:
-          self._ondemand_shared.add(key)
-      if already_ensured:
-        pool = self.config.pool_name(task.image)
-      else:
-        with self._ondemand_lock(key):
-          with self._lock:
-            already_ensured = key in self._ondemand
-            if already_ensured:
-              self._ondemand_shared.add(key)
-          if already_ensured:
-            pool = self.config.pool_name(task.image)
-          else:
-            pool = self._ensure_pool(cluster, task.image, 1)
-            # Reserve the size-1 pool's replica only the first time we create it
-            # for this (cluster, image); repeated acquire()s reuse it in O(1)
-            # memory without re-hitting ensure_template / create_warmpool.
-            cluster.reserve_replicas(1)
-            with self._lock:
-              self._ondemand.add(key)
-            created_pool = True
-            # Once per (cluster, image), not per claim. This path used to be silent,
-            # which is the failure the warning is for: a harness pointed at a cluster
-            # whose warm pools are named differently finds none of them, provisions
-            # its own one replica at a time, and reports a healthy — but far slower —
-            # run over the top of a warm fleet it never touched.
-            logger.warning(
-                "image %s is not in the plan; creating an on-demand size-1 pool "
-                "'%s' on cluster %s. If this image IS already warm here, the pool is "
-                "named something other than %r — set pool_name_format to match, or "
-                "adopt_existing=True to fail instead of provisioning in parallel.",
-                task.image, pool, cluster.name, self.config.pool_name_format)
-
+      pool = self.config.pool_name(task.image)
+    key = (cluster.name, task.image)
     fam = repo_family(task)
     batch_claims = self._batch_claims
-    sandbox = None
-    claim: BatchClaim | None = None
-    claim_name = ""
     watchdog = None
-    if batch_claims is None:
-      # The claim is named here rather than by the SDK so the fail-fast watchdog
-      # can find its pod while the SDK's readiness wait is still blocking. The SDK
-      # does not roll back caller-named claims, so the except path deletes it.
-      claim_name = f"sandbox-claim-{uuid.uuid4().hex[:12]}"
-      if self.config.fail_fast.enabled:
-        watchdog = ClaimWatchdog(cluster, claim_name, self.config.fail_fast)
-        watchdog.start()
+    claim_name = ""
+    claim: BatchClaim | None = None
+    sandbox = None
+    cluster_slot_reserved = False
+    handle: SandboxHandle | None = None
     try:
+      if on_demand:
+        with self._lock:
+          if self._torndown:
+            raise FleetError(
+                f"fleet has torn down; cannot acquire on {cluster.name!r}")
+          already_ensured = key in self._ondemand
+          if already_ensured:
+            self._ondemand_shared.add(key)
+        if not already_ensured:
+          with self._ondemand_lock(key):
+            with self._lock:
+              if self._torndown:
+                raise FleetError(
+                    f"fleet has torn down; cannot acquire on {cluster.name!r}")
+              already_ensured = key in self._ondemand
+              if already_ensured:
+                self._ondemand_shared.add(key)
+            if not already_ensured:
+              pool = self._ensure_pool(cluster, task.image, 1)
+              # Reserve the size-1 pool's replica only the first time we create it
+              # for this (cluster, image); repeated acquire()s reuse it in O(1)
+              # memory without re-hitting ensure_template / create_warmpool.
+              cluster.reserve_replicas(1)
+              created_pool = True
+              with self._lock:
+                if self._torndown:
+                  raise FleetError(
+                      f"fleet has torn down; cannot acquire on {cluster.name!r}")
+                self._ondemand.add(key)
+              # Once per (cluster, image), not per claim. A harness pointed at a
+              # cluster whose warm pools use another naming scheme finds none of
+              # them, provisions its own one replica at a time, and reports a
+              # healthy but far slower run over a warm fleet it never touched.
+              logger.warning(
+                  "image %s is not in the plan; creating an on-demand size-1 pool "
+                  "'%s' on cluster %s. If this image IS already warm here, the pool is "
+                  "named something other than %r; set pool_name_format to match, or "
+                  "adopt_existing=True to fail instead of provisioning in parallel.",
+                  task.image, pool, cluster.name, self.config.pool_name_format)
+
+      if batch_claims is None:
+        # Name the claim up front so the fail-fast watchdog can inspect its pod
+        # while the SDK readiness wait blocks; the except block deletes it on error.
+        claim_name = f"sandbox-claim-{uuid.uuid4().hex[:12]}"
+        if self.config.fail_fast.enabled:
+          watchdog = ClaimWatchdog(cluster, claim_name, self.config.fail_fast)
+          watchdog.start()
       with self._obs.phase("claim", cluster=cluster.name, family=fam):
         if batch_claims is not None:
           claim = batch_claims.acquire(
@@ -1592,7 +1608,12 @@ class SandboxFleet:
           # The batch's watch already reported the member's Sandbox and pod IP,
           # so no GETs here. The pod is named after its Sandbox, and connect()
           # gives the snapshot operations their Sandbox without a request.
-          sandbox = claim.batch.connect(claim.member)
+          try:
+            sandbox = claim.batch.connect(claim.member)
+          except SandboxNotReadyError as exc:
+            raise BatchError(
+                f"batch lost '{claim.member.claim_name}' before connect: {exc}"
+            ) from exc
           pod = sandbox.sandbox_id
           pod_ip = select_pod_ip(claim.member.pod_ips)
         else:
@@ -1612,15 +1633,67 @@ class SandboxFleet:
             pod_ip = sandbox.get_pod_ip()
           except Exception:  # noqa: BLE001
             pod_ip = None
-    except Exception as exc:  # noqa: BLE001 — roll back partial state, then re-raise
+      handle = SandboxHandle(
+          task=task, cluster_name=cluster.name,
+          claim_name=sandbox.claim_name or claim_name,
+          sandbox_id=sandbox.sandbox_id, pod_name=pod, hostname=sandbox.sandbox_id,
+          pod_ip=pod_ip, sandbox=sandbox, _cluster=cluster,
+          runtime_container=((entry.runtime_container if entry is not None else None)
+                             or constants.RUNTIME_CONTAINER),
+          _batch_claim=claim)
+      if claim is None:
+        handle.record_pod_identity()
+      if snapshot_uid:
+        # Warm adoption is the default plan path, and an adopted pod is already
+        # running, so the pin did nothing there. Say so once, and keep it visible
+        # on the handle so the caller can suspend + resume (or restore) to apply it.
+        status = pod_restore_status(cluster.core_api, pod, cluster.namespace)
+        if status.from_snapshot(snapshot_uid):
+          logger.info("claim %s: pod %s was restored from the pinned snapshot %s",
+                      handle.claim_name, pod, snapshot_uid)
+        else:
+          handle.pending_snapshot_uid = snapshot_uid
+          why = ("was adopted already running" if status.restored is False
+                 else f"PodRestored could not be read ({status.message})")
+          logger.info("claim %s: pin to snapshot %s is not applied (pod %s %s); it "
+                      "applies to the sandbox's next pod (fleet.suspend + "
+                      "fleet.resume) or call fleet.restore(handle, %r); see "
+                      "handle.pending_snapshot_uid",
+                      handle.claim_name, snapshot_uid, pod, why, snapshot_uid)
+      # Register the handle under self._lock before returning. _teardown flips
+      # _torndown under this same lock before snapshotting handles, so either the
+      # handle lands before teardown sweeps it or _torndown is already True and
+      # the except block rolls back the claim and sandbox.
+      with self._lock:
+        if self._torndown:
+          raise FleetError(
+              f"fleet has torn down; cannot acquire on {cluster.name!r}")
+        self._handles[id(handle)] = handle
+        cluster.reserve_claim()
+        cluster_slot_reserved = True
+    except BaseException as exc:  # noqa: BLE001 (roll back partial state, then re-raise)
       verdict = watchdog.stop() if watchdog is not None else None
+      if cluster_slot_reserved:
+        with self._lock:
+          if handle is not None:
+            self._handles.pop(id(handle), None)
+          cluster.release_claim()
       if claim is not None:
         try:
           claim.release()
         except Exception:  # noqa: BLE001
           logger.warning("failed to release batch member after acquire error",
                          exc_info=True)
-      elif batch_claims is None:
+        if sandbox is not None:
+          close_conn = getattr(sandbox, "close_connection", None)
+          if callable(close_conn):
+            try:
+              close_conn()
+            except Exception:  # noqa: BLE001
+              logger.warning(
+                  "failed to close sandbox connection after acquire error",
+                  exc_info=True)
+      elif batch_claims is None and claim_name:
         claim_gone = watchdog is not None and watchdog.deleted_claim
         if (
             sandbox is None
@@ -1660,8 +1733,8 @@ class SandboxFleet:
           if not shared_pool:
             if not self._shared_run_id:
               try:
-                # Guarded like `_unwarm_entry`: on a 409 the on-demand create reuses
-                # an existing pool, which may be another run's under the same name.
+                # Match `_unwarm_entry` ownership check since a 409 reuses an
+                # existing pool that may belong to another run under the same name.
                 owned, live = self._pool_ownership(cluster, pool)
                 if owned and live is not None:
                   uid = (live.get("metadata") or {}).get("uid")
@@ -1675,89 +1748,36 @@ class SandboxFleet:
                 logger.warning("failed to remove on-demand pool after acquire error",
                                exc_info=True)
             cluster.release_replicas(1)
-      if batch_claims is not None:
-        if isinstance(exc, SandboxStartError):
+      if isinstance(exc, Exception):
+        if batch_claims is not None:
+          if isinstance(exc, SandboxStartError):
+            self._obs.claim(cluster.name, "start_failed")
+            raise
+          failed_claim = extract_batch_claim_name(exc)
+          b_verdict = (
+              batch_claims.pop_verdict(cluster.name, failed_claim)
+              if failed_claim is not None else None
+          )
+          if failed_claim is not None and b_verdict is not None:
+            self._obs.claim(cluster.name, "start_failed")
+            raise SandboxStartError(
+                b_verdict.reason, b_verdict.message, claim_name=failed_claim,
+                pod_name=b_verdict.pod_name, image=task.image) from exc
+        if batch_claims is None and verdict is not None:
+          # The watchdog deleted the claim, which is what ended the SDK wait; the
+          # error the caller needs is the pod's, not "claim was deleted".
           self._obs.claim(cluster.name, "start_failed")
-          raise
-        failed_claim = extract_batch_claim_name(exc)
-        b_verdict = (
-            batch_claims.pop_verdict(cluster.name, failed_claim)
-            if failed_claim is not None else None
-        )
-        if b_verdict is not None:
-          self._obs.claim(cluster.name, "start_failed")
+          if isinstance(exc, SandboxStartError):
+            raise
           raise SandboxStartError(
-              b_verdict.reason, b_verdict.message, claim_name=failed_claim,
-              pod_name=b_verdict.pod_name, image=task.image) from exc
-      if batch_claims is None and verdict is not None:
-        # The watchdog deleted the claim, which is what ended the SDK wait; the
-        # error the caller needs is the pod's, not "claim was deleted".
-        self._obs.claim(cluster.name, "start_failed")
-        if isinstance(exc, SandboxStartError):
-          raise
-        raise SandboxStartError(
-            verdict.reason, verdict.message, claim_name=claim_name,
-            pod_name=verdict.pod_name, image=task.image) from exc
+              verdict.reason, verdict.message, claim_name=claim_name,
+              pod_name=verdict.pod_name, image=task.image) from exc
       self._obs.claim(cluster.name, "error")
       raise
     finally:
       if watchdog is not None:
         watchdog.stop()
-
-    handle = SandboxHandle(
-        task=task, cluster_name=cluster.name,
-        claim_name=sandbox.claim_name or claim_name,
-        sandbox_id=sandbox.sandbox_id, pod_name=pod, hostname=sandbox.sandbox_id,
-        pod_ip=pod_ip, sandbox=sandbox, _cluster=cluster,
-        runtime_container=((entry.runtime_container if entry is not None else None)
-                           or constants.RUNTIME_CONTAINER),
-        _batch_claim=claim)
-    if claim is None:
-      handle.record_pod_identity()
-    # The remote create ran outside the lock, and the breaker thread can tear
-    # the fleet down in that window. _teardown flips _torndown under this same
-    # lock before it sweeps, so exactly one of two things is true here: the
-    # append lands before the sweep's snapshot (and the sweep releases it), or
-    # _torndown is already visible (and this claim must not outlive the
-    # teardown it missed).
-    with self._lock:
-      torn = self._torndown
-      if not torn:
-        self._handles.append(handle)
-    if torn:
-      try:
-        if claim is not None:
-          claim.release()
-        else:
-          sandbox.terminate()
-      except Exception:  # noqa: BLE001
-        logger.warning("failed to terminate sandbox created during teardown",
-                       exc_info=True)
-      if claim is None:
-        forget_claim_in_client(cluster, claim_name)
-      self._obs.claim(cluster.name, "error")
-      raise FleetError(
-          "fleet was torn down while this claim was in flight; the claim has "
-          "been terminated. Call setup() before acquiring again.")
-    cluster.reserve_claim()
     self._obs.claim(cluster.name, "ok")
-    if snapshot_uid:
-      # Warm adoption is the default plan path, and an adopted pod is already
-      # running, so the pin did nothing there. Say so once, and keep it visible
-      # on the handle so the caller can suspend + resume (or restore) to apply it.
-      status = pod_restore_status(cluster.core_api, pod, cluster.namespace)
-      if status.from_snapshot(snapshot_uid):
-        logger.info("claim %s: pod %s was restored from the pinned snapshot %s",
-                    handle.claim_name, pod, snapshot_uid)
-      else:
-        handle.pending_snapshot_uid = snapshot_uid
-        why = ("was adopted already running" if status.restored is False
-               else f"PodRestored could not be read ({status.message})")
-        logger.info("claim %s: pin to snapshot %s is not applied — pod %s %s; it "
-                    "applies to the sandbox's next pod (fleet.suspend + "
-                    "fleet.resume) or call fleet.restore(handle, %r); see "
-                    "handle.pending_snapshot_uid",
-                    handle.claim_name, snapshot_uid, pod, why, snapshot_uid)
     return handle
 
   def acquire_batch(self, tasks: list[Task]) -> list[SandboxHandle]:
@@ -1777,7 +1797,7 @@ class SandboxFleet:
         for h in acquired:
           try:
             self.release(h)
-          except Exception:  # noqa: BLE001 — best-effort rollback
+          except Exception:  # noqa: BLE001 (best-effort rollback)
             logger.warning("acquire_batch: failed to roll back handle %s",
                            h.claim_name, exc_info=True)
         raise
@@ -1837,13 +1857,14 @@ class SandboxFleet:
     ]
 
   def handles(self) -> list[SandboxHandle]:
-    return list(self._handles)
+    with self._lock:
+      return list(self._handles.values())
 
   def hostnames(self) -> list[str]:
-    return [h.hostname for h in self._handles]
+    return [h.hostname for h in self.handles()]
 
   def endpoints(self, port: int = 8888) -> list[str]:
-    return [h.endpoint(port) for h in self._handles]
+    return [h.endpoint(port) for h in self.handles()]
 
   def release(self, handle: SandboxHandle, *, delete_snapshots: bool = False) -> None:
     """Release ``handle`` (delete its claim). With ``delete_snapshots`` also
@@ -1854,9 +1875,8 @@ class SandboxFleet:
     # Claim the handle under the lock first, so a concurrent double-release of the
     # same handle issues the remote delete (and counter decrement) exactly once.
     with self._lock:
-      if handle not in self._handles:
+      if self._handles.pop(id(handle), None) is None:
         return
-      self._handles.remove(handle)
       c = self.registry.get(handle.cluster_name)
     snapshot_uids: list = []
     delete_snapshot = None
@@ -1874,13 +1894,13 @@ class SandboxFleet:
     try:
       with self._obs.phase("release", cluster=handle.cluster_name):
         handle.release()
-    except Exception:
+    except BaseException:
       # The remote delete failed, so the sandbox is still live: the slot must
       # stay occupied (freeing it would let acquire() exceed the cap over a
       # sandbox that never died) and the handle must go back so the caller can
       # retry the release.
       with self._lock:
-        self._handles.append(handle)
+        self._handles[id(handle)] = handle
       raise
     # A suspended handle gave its slot back at suspend time (see suspend()).
     if not handle._slot_released:
@@ -1989,9 +2009,9 @@ class SandboxFleet:
       with self._obs.phase("resume", cluster=handle.cluster_name,
                            family=repo_family(handle.task)):
         restored = handle.resume(timeout=timeout)
-    except Exception:
+    except BaseException:
       if retaken:
-        self._free_slot_for_suspend(handle)    # still suspended: slot goes back
+        self._free_slot_for_suspend(handle)
       raise
     self._obs.restored(handle.cluster_name, restored)
     return restored
@@ -2006,15 +2026,14 @@ class SandboxFleet:
       with self._obs.phase("restore", cluster=handle.cluster_name,
                            family=repo_family(handle.task)):
         handle.restore(snapshot_uid, timeout=timeout)
-    except Exception:
+    except BaseException:
       if retaken:
         self._free_slot_for_suspend(handle)
       raise
     self._obs.restored(handle.cluster_name, True)
 
   def release_all(self) -> None:
-    with self._lock:
-      handles = list(self._handles)
+    handles = self.handles()
     if not handles:
       return
     if len(handles) == 1:
@@ -2026,7 +2045,7 @@ class SandboxFleet:
       for h in handles:
         try:
           self.release(h)
-        except Exception as exc:  # noqa: BLE001 — drain remaining handles first
+        except Exception as exc:  # noqa: BLE001 (drain remaining handles first)
           if first_err is None:
             first_err = exc
     else:
@@ -2035,7 +2054,7 @@ class SandboxFleet:
         for fut in futs:
           try:
             fut.result()
-          except Exception as exc:  # noqa: BLE001 — drain all futures first
+          except Exception as exc:  # noqa: BLE001 (drain all futures first)
             if first_err is None:
               first_err = exc
     if first_err is not None:
@@ -2166,8 +2185,11 @@ class SandboxFleet:
       with self._lock:
         self._torndown = True
     with self._sweep_lock:
+      release_err: Exception | None = None
       try:
         self.release_all()
+      except Exception as exc:  # noqa: BLE001 (sweep remaining run resources first)
+        release_err = exc
       finally:
         if self._batch_claims is not None:
           # Deletes any member a handle didn't release, and each batch's Lease,
@@ -2236,7 +2258,7 @@ class SandboxFleet:
         if total_items > 0:
           workers = max(1, min(total_items, self.config.max_concurrent))
           with ThreadPoolExecutor(max_workers=workers) as ex:
-            # Phase 1: Sweep stray claims and batch Leases first so adopted sandboxes aren't leaked.
+            # Sweep stray claims and batch Leases before pools so adopted sandboxes aren't leaked.
             if claims or leases:
               claim_futs = [ex.submit(c.resources.delete_claim, claim) for claim in claims]
               claim_futs.extend(ex.submit(c.resources.delete_lease, lease) for lease in leases)
@@ -2282,6 +2304,8 @@ class SandboxFleet:
       self._adopted_templates.clear()
       self.plan_ = None
       self._remove_teardown_hooks()
+      if release_err is not None:
+        raise release_err
 
   def __enter__(self) -> "SandboxFleet":
     return self.setup()
