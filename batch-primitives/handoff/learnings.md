@@ -156,7 +156,7 @@ This is the deep part. Each section is its own page and groups entries around on
 | [Completion and accounting: when is the batch done?](learnings/field-guide/count.md) | `COUNT-` | 15 |
 | [Kubernetes API semantics that bit us (or could have)](learnings/field-guide/k8s.md) | `K8S-` | 22 |
 | [HTTP client and Python runtime quirks](learnings/field-guide/lib.md) | `LIB-` | 23 |
-| [Performance and memory at scale](learnings/field-guide/perf.md) | `PERF-` | 23 |
+| [Performance and memory at scale](learnings/field-guide/perf.md) | `PERF-` | 24 |
 | [API design: making the right thing easy and the wrong thing hard](learnings/field-guide/api.md) | `API-` | 31 |
 
 ## The other pages
@@ -168,10 +168,10 @@ This is the deep part. Each section is its own page and groups entries around on
 | [Best practices we followed, and where they come from](learnings/best-practices.md) | Industry practices (`BP-1`..`BP-37`) we followed, why they scale, and their sources. |
 | [Optimization showcase: how batch claim got fast and lean](learnings/optimizations.md) | The performance wins (`OPT-`) side by side: what each limit protects, why a shortcut may skip it, the guard that keeps it correct, and the measured result. |
 | [Benchmarking and GKE at 1,000-sandbox scale](learnings/gke-benchmarking.md) | Production GKE control-plane, APF, GCFS vs. Secondary Boot Disk, Kubelet ImageGC, and gVisor lessons (`GKE-1`..`GKE-12`) plus benchmark harness engineering (`BENCH-1`..`BENCH-9`) from `148,544` Campaign 2 rollouts. |
-| [Testing techniques for concurrent and distributed code](learnings/testing.md) | Techniques (`TEST-1`..`TEST-34`) for deterministic concurrency testing, stateful Hypothesis fuzzing + `ReferenceBatchModel` shadow oracles, CAS `Barrier` stress & lock-starvation probes, lockstep differential simulation, and in-process OS/wire/clock fault simulation. |
+| [Testing techniques for concurrent and distributed code](learnings/testing.md) | Techniques (`TEST-1`..`TEST-35`) for deterministic concurrency testing, stateful Hypothesis fuzzing + `ReferenceBatchModel` shadow oracles, CAS `Barrier` stress & lock-starvation probes, lockstep differential simulation, and in-process OS/wire/clock fault simulation. |
 | [Verification: checking every interleaving, not just the ones you thought of](learnings/verification.md) | Model checking and strategy selection (`VER-1`..`VER-17`): the 10-strategy verification menu, in-process BFS over lock/signal/cancel interleavings, cross-class AST lock-rank & sync/async parity checks, two-sided `/tmp` negative controls, and `SimKube`/MitM/flight-recorder chaos. |
 | [Verifying the Lease protocol with TLA+](learnings/tla.md) | TLC-checked specs (`TLA-1`..`TLA-10`) covering cross-process Lease fencing (`BatchLease.tla`), 5 decomposed intra-process subsystem specs (`3.27M` states), authority separation, small-scope domains, TLC CLI craft, and next-horizon controller/snapshot specs. |
-| [Automated batch verification and chaos suite](learnings/chaos-verification-suite.md) | A 10-stage deterministic verification pipeline (`CHAOS-1`..`CHAOS-11`) combining 5 subsystem TLA+ specs, transitive AST checks, Hypothesis fuzzing, lockstep sync/async differential tests, 5 rounds of adversarial `/tmp` post-fix audits (`29` verified findings), and `7` audited non-bug contracts. |
+| [Automated batch verification and chaos suite](learnings/chaos-verification-suite.md) | A 10-stage deterministic verification pipeline (`CHAOS-1`..`CHAOS-12`) combining 5 subsystem TLA+ specs, transitive AST checks, Hypothesis fuzzing, lockstep sync/async differential tests, 5 rounds of adversarial `/tmp` post-fix audits (`29` verified findings), and `7` audited non-bug contracts. |
 | [Process, git, and working with agents](learnings/process.md) | Review, git, and subagent lessons (`PROC-`, `GIT-`, `AGENT-`). |
 
 ---

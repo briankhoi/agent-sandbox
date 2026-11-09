@@ -1629,36 +1629,22 @@ def check_pep561_exports(repo_root: pathlib.Path) -> list[Finding]:
 # Check 8: Hot-path complexity (snapshot lookups, quadratic list scans, linear index scans)
 # ---------------------------------------------------------------------------
 
-# BatchState methods that run once per watch event, acquire, or release and must stay O(1) in the
-# batch's member count N and group count G.
-_BATCH_STATE_O1_METHODS = frozenset({
-    "upsert_claim",
-    "mark_lost",
-    "pop_event",
-    "pop_group_outcome",
-    "_check_quorum",
-    "start_acquire",
-    "acquired_member",
-    "release_claim",
-    "note_deleted",
-    "get_member",
-    "release_member",
-    "take_exhausted_pools",
-    "enter_acquire",
-    "exit_acquire",
-    "pool_release_seq",
-    "drop_acquired",
-    # Consumers recheck these on every wake, and every watch event wakes them.
-    "events_done",
-    "groups_done",
-    "fill_settled",
-    "quorum_result",
-    "error",
-    # Per fill create.
-    "group_failed",
-    "record_skipped_create",
-    "delete_seq",
+# BatchState methods that legitimately walk the whole batch, because they run once per batch,
+# per attach, or per watch re-list, or return the whole-batch snapshot. Every other BatchState
+# method runs per watch event, acquire, release, or fill create and must stay O(1) in the batch's
+# member count N and group count G, so a new method is audited by default.
+_BATCH_STATE_WHOLE_BATCH_METHODS = frozenset({
+    "__init__", "seed_from_claims", "resync_from_list", "release_not_ready", "set_mode",
+    "expire_fill", "count_missing_fill_as_unable", "_time_out_undecided_groups", "fail_quorum",
+    "note_error",
 })
+
+
+def _batch_state_o1_methods(
+    methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+) -> frozenset[str]:
+    return frozenset(methods) - _BATCH_STATE_WHOLE_BATCH_METHODS - _BATCH_STATE_PER_POOL_METHODS
+
 
 # BatchState per-pool methods that must scale with the pool's own size K_pool, not with N or G.
 # They run per pool release (the handles' release_group), so a full scan costs O(G * N) across
@@ -1747,9 +1733,17 @@ _PER_ITEM_TABLE_ROOTS = _SET_LIKE_SELF_ROOTS | {
 _HANDLE_WHOLE_BATCH_METHODS = frozenset({
     "__init__", "__enter__", "__exit__", "__aenter__", "__aexit__", "__repr__", "__del__",
     "_start", "release", "detach", "close", "members", "groups",
-    "_close_cached_connections", "_notify_all", "_fail_waiters",
-    "_wait_active_deletes", "_stop_background", "_join_background",
+    "_notify_all", "_fail_waiters",
+    "_wait_active_deletes", "_stop_background_threads", "_stop_background_tasks",
 })
+# Handle helpers that wake every waiter (INV-PERF-HOTPATH-7), the per-item methods that may
+# call them because they run once per batch, and those that may only on a failure.
+_WAKE_ALL_HELPERS = frozenset({"_notify_all", "_fail_waiters"})
+_WAKE_ALL_ALLOWED = frozenset({"_expire_lease_if_due", "_stop_renewal"})
+_WAKE_ALL_ON_FAILURE = frozenset({"_watch_loop"})
+# Handle tables whose size is fixed by the batch's configuration rather than its members, so
+# a per-item method may copy them: the batch's own labels, and one entry per create worker.
+_BOUNDED_HANDLE_TABLES = frozenset({"self._labels", "self._creators"})
 _PER_ITEM_EXEMPT: dict[str, frozenset[str]] = {
     "SandboxBatch": _HANDLE_WHOLE_BATCH_METHODS,
     "AsyncSandboxBatch": _HANDLE_WHOLE_BATCH_METHODS,
@@ -1762,27 +1756,35 @@ _PER_ITEM_EXEMPT: dict[str, frozenset[str]] = {
 _ONCE_PER_BATCH_FLAGS = frozenset({"relist"})
 
 
+# Parameters whose ``None`` selects a method's whole-batch form: ``release_group(None)`` and
+# ``_close_cached_connections(action)`` (every connection) run once per batch, while a named
+# pool or claim list is the per-item form.
+_WHOLE_BATCH_WHEN_NONE = frozenset({"warmpool", "claim_names"})
+
+
 def _once_per_batch_nodes(method: ast.FunctionDef | ast.AsyncFunctionDef) -> set[int]:
     """Returns the ids of every node inside an `if <flag>:` block guarded by one of
-    ``_ONCE_PER_BATCH_FLAGS``, or inside an `if warmpool is None:` block (the whole-batch form
-    of a per-pool method, as release() calls it)."""
+    ``_ONCE_PER_BATCH_FLAGS``, or in the whole-batch branch of an `if <param> is None:` block or
+    `<a> if <param> is None else <b>` expression for a ``_WHOLE_BATCH_WHEN_NONE`` parameter."""
     once: set[int] = set()
     for sub in ast.walk(method):
-        whole_batch_branch = (
-            isinstance(sub, ast.If)
-            and isinstance(sub.test, ast.Compare)
-            and isinstance(sub.test.left, ast.Name)
-            and sub.test.left.id == "warmpool"
-            and len(sub.test.ops) == 1
-            and isinstance(sub.test.ops[0], ast.Is)
-            and isinstance(sub.test.comparators[0], ast.Constant)
-            and sub.test.comparators[0].value is None
-        )
-        if not isinstance(sub, ast.If):
+        if not isinstance(sub, (ast.If, ast.IfExp)):
             continue
-        if whole_batch_branch or (
-            isinstance(sub.test, ast.Name) and sub.test.id in _ONCE_PER_BATCH_FLAGS
-        ):
+        test = sub.test
+        whole_batch_branch = (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id in _WHOLE_BATCH_WHEN_NONE
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Is)
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value is None
+        )
+        if isinstance(sub, ast.IfExp):
+            if whole_batch_branch:
+                once.update(id(n) for n in ast.walk(sub.body))
+            continue
+        if whole_batch_branch or (isinstance(test, ast.Name) and test.id in _ONCE_PER_BATCH_FLAGS):
             for stmt in sub.body:
                 once.update(id(n) for n in ast.walk(stmt))
     return once
@@ -1845,11 +1847,137 @@ def _relational_root(
     return None
 
 
+def _joined_buffer(node: ast.AST) -> str | None:
+    """Returns the buffer a `join` argument copies whole: `buf`, `self._buf`, `buf[:]`,
+    `list(buf)`, or `tuple(buf)` all join every chunk appended so far."""
+    while True:
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
+            node = node.value
+        elif (
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id in ("list", "tuple") and len(node.args) == 1
+        ):
+            node = node.args[0]
+        else:
+            return _attr_chain(node)
+
+
+# Mod is `"%s" % table`, which renders the whole table.
+_WHOLE_BINOPS = (ast.BitOr, ast.Sub, ast.BitAnd, ast.BitXor, ast.Add, ast.Mult, ast.Mod)
+
+
+def _expression_root(
+    sub: ast.AST, roots: frozenset[str], aliases: dict[str, str] | None = None
+) -> str | None:
+    """Returns the root an expression copies or renders whole without a call Check 8 knows:
+    `self._a | {x}`, `{**self._a, k: v}`, `[*self._a]`, an f-string `{self._a}`, or
+    `str(self._a)` / `repr()` / `format()`. Each walks the table in C."""
+    def root_of(node: ast.AST | None) -> str | None:
+        if node is None:
+            return None
+        chain = _attr_chain(node)
+        if chain in roots:
+            return chain
+        if isinstance(node, ast.Name) and aliases and node.id in aliases:
+            return aliases[node.id]
+        return None
+
+    if isinstance(sub, ast.BinOp) and isinstance(sub.op, _WHOLE_BINOPS):
+        return root_of(sub.left) or root_of(sub.right)
+    if isinstance(sub, ast.Starred):
+        return root_of(sub.value)
+    if isinstance(sub, ast.Dict):
+        # `{**x}` has a None key for each unpacked mapping.
+        return next(
+            (r for k, v in zip(sub.keys, sub.values) if k is None and (r := root_of(v))), None
+        )
+    if isinstance(sub, ast.FormattedValue):
+        return root_of(sub.value)
+    if (
+        isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+        and sub.func.id in ("str", "repr", "format", "ascii") and sub.args
+    ):
+        return root_of(sub.args[0])
+    return None
+
+
+# Modules whose loops run per claim, event, episode, or command chunk.
+_HOT_PATH_MODULES = frozenset({
+    f"{SDK_REL}/batch_state.py", f"{SDK_REL}/sandbox_batch.py",
+    f"{SDK_REL}/async_sandbox_batch.py", f"{SDK_REL}/batch_utils.py",
+    f"{SDK_REL}/sandbox_client.py", f"{SDK_REL}/async_sandbox_client.py",
+    f"{RL_REL}/batch_claims.py", f"{RL_REL}/fleet.py", f"{RL_REL}/handles.py",
+    f"{RL_REL}/failfast.py",
+    # The executors fleet.run() drives once per task, the Observer each of them reports to,
+    # and the lookahead warmer that reconciles pools once per training batch.
+    f"{RL_REL}/strategies.py", f"{RL_REL}/recycle.py", f"{RL_REL}/async_fleet.py",
+    f"{RL_REL}/observability.py", f"{RL_REL}/lookahead.py",
+})
+
+
+def _shifts_or_scans_list(call: ast.Call) -> bool:
+    """Whether a method call on a list scans it (`remove`, `index`, `count`) or shifts every
+    element after a position (`insert(i, x)`, `pop(i)` other than `pop()` / `pop(-1)`)."""
+    if not isinstance(call.func, ast.Attribute):
+        return False
+    attr = call.func.attr
+    if attr in ("remove", "index", "count", "insert"):
+        return True
+    if attr == "pop" and call.args:
+        index = call.args[0]
+        is_tail = (
+            isinstance(index, ast.UnaryOp) and isinstance(index.op, ast.USub)
+            and isinstance(index.operand, ast.Constant) and index.operand.value == 1
+        )
+        return not is_tail
+    return False
+
+
+def _conditional_nodes(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[int]:
+    """Returns the ids of nodes that run only on some calls: inside an `if` branch, or after an
+    `if ...: return` guard in the same block (the early-return style)."""
+    conditional: set[int] = set()
+
+    def visit(block: list[ast.stmt]) -> None:
+        guarded = False
+        for stmt in block:
+            if guarded:
+                conditional.update(id(node) for node in ast.walk(stmt))
+            # A branch taken every K calls (`if self._calls % K == 0:`) is periodic
+            # housekeeping, O(N / K) per call, so its walks still count.
+            periodic = isinstance(stmt, ast.If) and any(
+                isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mod) for n in ast.walk(stmt.test))
+            if isinstance(stmt, ast.If) and not periodic:
+                for inner in [*stmt.body, *stmt.orelse]:
+                    conditional.update(id(node) for node in ast.walk(inner))
+                if stmt.body and isinstance(stmt.body[-1], ast.Return) and not stmt.orelse:
+                    guarded = True
+            for field in ("body", "orelse", "finalbody"):
+                inner_block = getattr(stmt, field, None)
+                if isinstance(inner_block, list) and not isinstance(stmt, ast.If):
+                    visit(inner_block)
+
+    visit(fn.body)
+    return conditional
+
+
 def _module_function_names(tree: ast.Module) -> frozenset[str]:
-    return frozenset(
+    """The file's module-level functions, plus ``<module>.`` for every module of the same
+    package it imports (``from . import batch_utils``), whose helpers Check 8 doesn't follow
+    either."""
+    names = {
         node.name for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    )
+    }
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and (
+            node.level > 0 or (node.module or "").split(".")[0] in _PACKAGE_NAMES
+        ):
+            names.update(f"{alias.asname or alias.name}." for alias in node.names)
+    return frozenset(names)
+
+
+_PACKAGE_NAMES = frozenset({"k8s_agent_sandbox", "agent_sandbox_rl"})
 
 
 def _root_passed_to_module_helper(
@@ -1857,12 +1985,21 @@ def _root_passed_to_module_helper(
     aliases: dict[str, str] | None = None,
 ) -> str | None:
     """Returns the root when ``sub`` calls a module-level function of the same file with a
-    whole table (or a ``.values()``/``.items()``/``.keys()`` view of one) as an argument. Check 8
-    analyzes methods, not module functions, so such a helper could walk the table unseen."""
-    if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-            and sub.func.id in module_funcs):
+    whole table (or a ``.values()``/``.items()``/``.keys()`` view of one) as an argument, or
+    ``self`` when it passes the whole object. Check 8 analyzes methods, not module functions,
+    so such a helper could walk the table unseen."""
+    if not isinstance(sub, ast.Call):
         return None
+    if isinstance(sub.func, ast.Name):
+        if sub.func.id not in module_funcs:
+            return None
+    else:
+        helper = _attr_chain(sub.func) or ""
+        if helper.count(".") != 1 or f"{helper.split('.')[0]}." not in module_funcs:
+            return None
     for arg in [*sub.args, *(kw.value for kw in sub.keywords)]:
+        if isinstance(arg, ast.Name) and arg.id == "self":
+            return "self"
         if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) and (
             arg.func.attr in ("values", "items", "keys")
         ):
@@ -2032,6 +2169,14 @@ def _whole_collection_call(
         return _iter_collection_root(
             node.func.value, roots, aliases=aliases, pool_slices_ok=pool_slices_ok
         )
+    # `dict.fromkeys(t)`, `copy.copy(t)`, and `", ".join(t)` copy or render all of `t` in C.
+    copier = _attr_chain(node.func) or ""
+    joins = (isinstance(node.func, ast.Attribute) and node.func.attr == "join"
+             and isinstance(node.func.value, ast.Constant))
+    if (copier in {"dict.fromkeys", "copy.copy", "set.union"} or joins) and node.args:
+        return _iter_collection_root(
+            node.args[0], roots, aliases=aliases, pool_slices_ok=pool_slices_ok
+        )
     return None
 
 
@@ -2040,20 +2185,26 @@ def _self_call_closure(
     seeds: frozenset[str],
     stop: frozenset[str],
 ) -> set[str]:
-    """Returns ``seeds`` plus every method they reach through ``self.<method>(...)`` calls,
-    without expanding through ``stop``."""
+    """Returns ``seeds`` plus every method they reach through ``self.<method>(...)`` calls or
+    by handing ``self.<method>`` to another call (``create_task``, ``call_soon``, ``submit``,
+    ``Thread(target=...)``, ``partial``), whose work is still the caller's, without expanding
+    through ``stop``."""
     reached = {m for m in seeds if m in methods}
     stack = list(reached)
     while stack:
         cur = stack.pop()
         for sub in _iter_no_nested_defs(methods[cur]):
-            if isinstance(sub, ast.Call):
-                chain = _attr_chain(sub.func)
-                if chain and chain.startswith("self.") and chain.count(".") == 1:
-                    callee = chain[5:]
-                    if callee in methods and callee not in reached and callee not in stop:
-                        reached.add(callee)
-                        stack.append(callee)
+            if not isinstance(sub, ast.Call):
+                continue
+            targets = [sub.func, *sub.args, *(kw.value for kw in sub.keywords)]
+            for target in targets:
+                chain = _attr_chain(target)
+                if not (chain and chain.startswith("self.") and chain.count(".") == 1):
+                    continue
+                callee = chain[5:]
+                if callee in methods and callee not in reached and callee not in stop:
+                    reached.add(callee)
+                    stack.append(callee)
     return reached
 
 
@@ -2266,7 +2417,7 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
                     in_state_hot_path = (
                         rel_path.endswith("batch_state.py")
                         and cls_name == "BatchState"
-                        and mname in _BATCH_STATE_O1_METHODS
+                        and mname in _batch_state_o1_methods(methods)
                     )
                     in_watch_loop = mname == "_watch_loop"
                     in_poll_loop = mname == "_poll_once" and not sub.args and not sub.keywords
@@ -2333,20 +2484,27 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
         per_item = _per_item_methods(cls_name, class_methods)
+        # A handle's own tables come from its __init__, like the batch state's, so a new
+        # per-member table is audited without being listed here.
+        class_roots = item_roots | (
+            (_state_collection_roots(class_methods) - _BOUNDED_HANDLE_TABLES)
+            if cls_name in _PER_ITEM_EXEMPT else frozenset())
         for item in class_methods.values():
             if item.name not in per_item:
                 continue
             once = _once_per_batch_nodes(item)
             # A per-pool method may walk its own pool's slice of a per-pool index.
             per_pool = any(a.arg == "warmpool" for a in item.args.args)
-            item_aliases = _collection_aliases(item, item_roots, per_pool)
+            item_aliases = _collection_aliases(item, class_roots, per_pool)
             item_kw: dict[str, Any] = {"aliases": item_aliases, "pool_slices_ok": per_pool}
             for sub in ast.walk(item):
                 if id(sub) in once:
                     continue
-                copied = _whole_collection_call(sub, item_roots, **item_kw)
+                copied = _whole_collection_call(sub, class_roots, **item_kw)
                 if copied is None:
-                    copied = _relational_root(sub, item_roots, _whole_aliases(item, item_roots))
+                    copied = _relational_root(sub, class_roots, _whole_aliases(item, class_roots))
+                if copied is None:
+                    copied = _expression_root(sub, class_roots, _whole_aliases(item, class_roots))
                 if copied is None and isinstance(sub, ast.Compare) and any(
                     isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
                 ):
@@ -2359,21 +2517,21 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
                             if isinstance(comp, ast.Call)
                             and isinstance(comp.func, ast.Attribute)
                             and comp.func.attr in ("values", "items", "keys")
-                            and (root := _iter_collection_root(comp, item_roots, **item_kw))
+                            and (root := _iter_collection_root(comp, class_roots, **item_kw))
                         ),
                         None,
                     )
                 if copied is None:
                     copied = _root_passed_to_module_helper(
-                        sub, item_roots, module_funcs, item_aliases
+                        sub, class_roots, module_funcs, item_aliases
                     )
                 if copied is None and isinstance(sub, ast.Call):
                     # operator.countOf / operator.indexOf walk the whole iterable in C.
                     callee = _attr_chain(sub.func) or ""
                     if callee.split(".")[-1] in ("countOf", "indexOf") and sub.args:
-                        copied = _iter_collection_root(sub.args[0], item_roots, **item_kw)
+                        copied = _iter_collection_root(sub.args[0], class_roots, **item_kw)
                 if copied is None and isinstance(sub, ast.For):
-                    copied = _iter_collection_root(sub.iter, item_roots, **item_kw)
+                    copied = _iter_collection_root(sub.iter, class_roots, **item_kw)
                 if copied is None and isinstance(
                     sub, (ast.GeneratorExp, ast.ListComp, ast.SetComp, ast.DictComp)
                 ):
@@ -2381,7 +2539,7 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
                         (
                             root
                             for gen in sub.generators
-                            if (root := _iter_collection_root(gen.iter, item_roots, **item_kw))
+                            if (root := _iter_collection_root(gen.iter, class_roots, **item_kw))
                         ),
                         None,
                     )
@@ -2410,14 +2568,19 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
                 continue
             for sub in _iter_no_nested_defs(body_item):
                 hit: str | None = None
-                if (
-                    isinstance(sub, ast.Call)
-                    and isinstance(sub.func, ast.Attribute)
-                    and sub.func.attr in {"remove", "index", "count"}
-                ):
+                if isinstance(sub, ast.Call) and _shifts_or_scans_list(sub):
+                    assert isinstance(sub.func, ast.Attribute)
                     chain = _attr_chain(sub.func.value)
                     if chain and chain.startswith("self.") and chain[5:] in list_attrs:
                         hit = f"`{chain}.{sub.func.attr}(...)`"
+                elif isinstance(sub, ast.Delete):
+                    for target in sub.targets:
+                        chain = (
+                            _attr_chain(target.value) if isinstance(target, ast.Subscript)
+                            else None
+                        )
+                        if chain and chain.startswith("self.") and chain[5:] in list_attrs:
+                            hit = f"`{ast.unparse(sub)}`"
                 elif isinstance(sub, ast.Compare) and any(
                     isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
                 ):
@@ -2454,7 +2617,8 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
         bs_methods = _class_methods(bs_parsed[0]).get("BatchState", {})
         # Helpers reached from an O(1) transition inherit its O(1) budget.
         o1_closure = _self_call_closure(
-            bs_methods, _BATCH_STATE_O1_METHODS, _BATCH_STATE_PER_POOL_METHODS
+            bs_methods, _batch_state_o1_methods(bs_methods),
+            _BATCH_STATE_PER_POOL_METHODS | _BATCH_STATE_WHOLE_BATCH_METHODS
         )
         state_roots = _state_collection_roots(bs_methods)
         bs_funcs = _module_function_names(bs_parsed[0])
@@ -2465,9 +2629,11 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
             if mname not in o1_closure and not per_pool:
                 continue
             seen_roots: set[tuple[int, str]] = set()
+            branch_nodes = _conditional_nodes(mnode)
             aliases = _collection_aliases(mnode, state_roots, per_pool)
             kw: dict[str, Any] = {"aliases": aliases, "pool_slices_ok": per_pool}
-            for sub in _iter_no_nested_defs(mnode):
+            # Lambdas and nested defs too: a helper defined in the method runs in it.
+            for sub in ast.walk(mnode):
                 roots: list[str] = []
                 copied = _whole_collection_call(sub, state_roots, **kw)
                 if copied:
@@ -2478,6 +2644,9 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
                 compared = _relational_root(sub, state_roots, _whole_aliases(mnode, state_roots))
                 if compared:
                     roots.append(compared)
+                rendered = _expression_root(sub, state_roots, _whole_aliases(mnode, state_roots))
+                if rendered:
+                    roots.append(rendered)
                 if isinstance(sub, ast.For):
                     root = _iter_collection_root(sub.iter, state_roots, **kw)
                     if root:
@@ -2504,7 +2673,12 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
                 for root in roots:
                     if (_lineno(sub), root) in seen_roots:
                         continue
-                    if (mname, root.removesuffix(".values()")) in _ONE_SHOT_WALKS:
+                    # A one-shot walk is allowed only inside a branch (the one that decides the
+                    # outcome); the same walk before the check would run on every event.
+                    if (
+                        (mname, root.removesuffix(".values()")) in _ONE_SHOT_WALKS
+                        and id(sub) in branch_nodes
+                    ):
                         continue
                     seen_roots.add((_lineno(sub), root))
                     if per_pool:
@@ -2564,6 +2738,50 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
                     )
                 )
 
+    # INV-PERF-HOTPATH-7: a per-item handle method that wakes every waiter. One acquire,
+    # release, event, or fill create that calls _notify_all() (or fails every waiter) wakes all
+    # W waiting acquires, which each retake the lock: O(W) per item. Only once-per-batch paths
+    # may: the Lease expiring, renewal stopping, and the watch failing (its except branches).
+    for rel_path, cls_name in ((f"{SDK_REL}/sandbox_batch.py", "SandboxBatch"),
+                               (f"{SDK_REL}/async_sandbox_batch.py", "AsyncSandboxBatch")):
+        parsed = _parse_if_exists(repo_root, rel_path)
+        if parsed is None:
+            continue
+        cls_node = next((n for n in parsed[0].body
+                         if isinstance(n, ast.ClassDef) and n.name == cls_name), None)
+        if cls_node is None:
+            continue
+        handle_methods = {m.name: m for m in cls_node.body
+                          if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        for method_name in sorted(_per_item_methods(cls_name, handle_methods)):
+            if method_name in _WAKE_ALL_ALLOWED:
+                continue
+            method = handle_methods[method_name]
+            allowed = _once_per_batch_nodes(method)
+            if method_name in _WAKE_ALL_ON_FAILURE:
+                allowed |= {id(n) for handler in ast.walk(method)
+                            if isinstance(handler, ast.ExceptHandler) for n in ast.walk(handler)}
+            for sub in ast.walk(method):
+                wake = _attr_chain(sub.func) if isinstance(sub, ast.Call) else None
+                if (not wake or not wake.startswith("self.") or wake.count(".") != 1
+                        or wake[5:] not in _WAKE_ALL_HELPERS or id(sub) in allowed):
+                    continue
+                findings.append(
+                    Finding(
+                        check="HOT_PATH_COMPLEXITY",
+                        severity="MEDIUM",
+                        invariant="INV-PERF-HOTPATH-7",
+                        rel_path=rel_path,
+                        line=_lineno(sub),
+                        symbol=f"{cls_name}.{method_name}",
+                        message=(
+                            f"`{ast.unparse(sub)}` in `{cls_name}.{method_name}`, which runs "
+                            f"once per item, wakes every waiting acquire, so W waiters each "
+                            f"retake the lock per item. Wake only the waiters the change concerns."
+                        ),
+                    )
+                )
+
     # INV-PERF-HOTPATH-5: a loop that appends to a buffer and re-joins the whole buffer on every
     # pass copies (and usually re-scans) O(K^2) bytes for K chunks; the copying happens in C, so
     # neither instruction counts nor peak memory show it.
@@ -2578,49 +2796,136 @@ def check_hot_path_complexity(repo_root: pathlib.Path) -> list[Finding]:
             parsed = _parse_if_exists(repo_root, rel_path)
             if parsed is None:
                 continue
-            for loop in ast.walk(parsed[0]):
-                if not isinstance(loop, (ast.For, ast.While, ast.AsyncFor)):
+            for fn in ast.walk(parsed[0]):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                appended = {
-                    sub.func.value.id for sub in ast.walk(loop)
-                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-                    and sub.func.attr in ("append", "extend")
-                    and isinstance(sub.func.value, ast.Name)
-                }
-                # A join inside an `if` that then leaves the loop runs once, not per pass.
-                exits_once = {
-                    id(node)
-                    for branch in ast.walk(loop)
-                    if isinstance(branch, ast.If)
-                    and any(isinstance(stmt, (ast.Return, ast.Break)) for stmt in branch.body)
-                    for stmt in branch.body
-                    for node in ast.walk(stmt)
-                }
-                for sub in ast.walk(loop):
-                    if id(sub) in exits_once:
-                        continue
-                    if not (
-                        isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-                        and sub.func.attr == "join" and len(sub.args) == 1
-                        and isinstance(sub.args[0], ast.Name) and sub.args[0].id in appended
-                    ):
-                        continue
-                    findings.append(
-                        Finding(
-                            check="HOT_PATH_COMPLEXITY",
-                            severity="MEDIUM",
-                            invariant="INV-PERF-HOTPATH-5",
-                            rel_path=rel_path,
-                            line=_lineno(sub),
-                            symbol=sub.args[0].id,
-                            message=(
-                                f"`{ast.unparse(sub)}` re-joins the whole `{sub.args[0].id}` "
-                                f"buffer on every pass of the loop that appends to it, so K "
-                                f"chunks copy O(K^2) bytes. Check only the new chunk (plus any "
-                                f"overlap a match can span) and join once."
-                            ),
+                joined: set[int] = set()
+                join_loops = [
+                    node for node in _iter_no_nested_defs(fn)
+                    if isinstance(node, (ast.For, ast.While, ast.AsyncFor))
+                ]
+                for join_loop in join_loops:
+                    appended = {
+                        chain for sub in ast.walk(join_loop)
+                        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr in ("append", "extend")
+                        and (chain := _attr_chain(sub.func.value)) is not None
+                    }
+                    # A join inside an `if` that then leaves the loop runs once, not per pass.
+                    exits_once = {
+                        id(node)
+                        for branch in ast.walk(join_loop)
+                        if isinstance(branch, ast.If)
+                        and any(isinstance(stmt, (ast.Return, ast.Break)) for stmt in branch.body)
+                        for stmt in branch.body
+                        for node in ast.walk(stmt)
+                    }
+                    for sub in ast.walk(join_loop):
+                        if id(sub) in exits_once or id(sub) in joined:
+                            continue
+                        if not (
+                            isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                            and sub.func.attr == "join" and len(sub.args) == 1
+                        ):
+                            continue
+                        buffer = _joined_buffer(sub.args[0])
+                        if buffer not in appended:
+                            continue
+                        joined.add(id(sub))
+                        findings.append(
+                            Finding(
+                                check="HOT_PATH_COMPLEXITY",
+                                severity="MEDIUM",
+                                invariant="INV-PERF-HOTPATH-5",
+                                rel_path=rel_path,
+                                line=_lineno(sub),
+                                symbol=fn.name,
+                                message=(
+                                    f"`{ast.unparse(sub)}` re-joins the whole `{buffer}` buffer "
+                                    f"on every pass of the loop in `{fn.name}` that appends to "
+                                    f"it, so K chunks copy O(K^2) bytes. Check only the new "
+                                    f"chunk (plus any overlap a match can span) and join once."
+                                ),
+                            )
                         )
-                    )
+
+    # INV-PERF-HOTPATH-6: membership tests, `.index()`, `.remove()`, or `.count()` on a local
+    # `list` inside a loop: each is a C-level scan, so a loop over N items costs O(N^2) with no
+    # bytecode or lasting allocation to show for it (attach and the watch's 410 resync handle
+    # every claim in such a loop).
+    for package in (SDK_REL, RL_REL):
+        package_dir = repo_root / package
+        if not package_dir.is_dir():
+            continue
+        for path in sorted(package_dir.rglob("*.py")):
+            rel_path = str(path.relative_to(repo_root))
+            if "/test/" in rel_path or "/tests/" in rel_path:
+                continue
+            parsed = _parse_if_exists(repo_root, rel_path)
+            if parsed is None:
+                continue
+            for fn in ast.walk(parsed[0]):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                local_lists = {
+                    sub.targets[0].id for sub in _iter_no_nested_defs(fn)
+                    if isinstance(sub, ast.Assign) and len(sub.targets) == 1
+                    and isinstance(sub.targets[0], ast.Name)
+                    and (isinstance(sub.value, ast.List) or (
+                        isinstance(sub.value, ast.Call) and isinstance(sub.value.func, ast.Name)
+                        and sub.value.func.id == "list") or (
+                        # A comprehension's size follows its input: per-task or per-member on
+                        # a hot path, a handful of API versions in one-shot setup (preflight).
+                        isinstance(sub.value, ast.ListComp) and rel_path in _HOT_PATH_MODULES))
+                }
+                if not local_lists:
+                    continue
+                loops = [
+                    node for node in _iter_no_nested_defs(fn)
+                    if isinstance(node, (ast.For, ast.While, ast.AsyncFor, ast.ListComp,
+                                         ast.SetComp, ast.DictComp, ast.GeneratorExp))
+                ]
+                flagged: set[int] = set()
+                for loop in loops:
+                    for sub in ast.walk(loop):
+                        name: str | None = None
+                        if isinstance(sub, ast.Compare) and any(
+                            isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
+                        ):
+                            name = next(
+                                (c.id for c in sub.comparators
+                                 if isinstance(c, ast.Name) and c.id in local_lists), None)
+                        elif (
+                            isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                            and isinstance(sub.func.value, ast.Name)
+                            and sub.func.value.id in local_lists
+                            and (
+                                sub.func.attr in ("index", "remove", "count")
+                                # Head shifts (`pop(0)`, `insert`) only on the batch hot
+                                # paths; one-shot setup loops (prepull's few DaemonSet
+                                # batches, each an API round trip) don't scale with N.
+                                or (rel_path in _HOT_PATH_MODULES and _shifts_or_scans_list(sub))
+                            )
+                        ):
+                            name = sub.func.value.id
+                        if name is None or _lineno(sub) in flagged:
+                            continue
+                        flagged.add(_lineno(sub))
+                        findings.append(
+                            Finding(
+                                check="HOT_PATH_COMPLEXITY",
+                                severity="MEDIUM",
+                                invariant="INV-PERF-HOTPATH-6",
+                                rel_path=rel_path,
+                                line=_lineno(sub),
+                                symbol=fn.name,
+                                message=(
+                                    f"`{ast.unparse(sub)}` scans the local list `{name}` inside "
+                                    f"a loop in `{fn.name}`, so N iterations cost O(N^2) in C. "
+                                    f"Use a set or dict for the lookups."
+                                ),
+                            )
+                        )
     return findings
 
 

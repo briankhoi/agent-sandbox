@@ -33,14 +33,31 @@ unit test affords. These tests measure cost in units that don't depend on the ma
     a broken counter fails instead of passing a 0 / 0 ratio. Suite A also counts ``__eq__``
     calls to expose O(S^2) list scans that run inside C.
   - Suite B pins outbound Kubernetes request counts to their algebraic lower bounds in the
-    number of groups G, distinct templates T, and Lease renewals R, and pins batch create and
-    delete call sites to DEBUG logging.
+    number of groups G, distinct templates T, and Lease renewals R, pins batch create and
+    delete call sites to DEBUG logging, requires per-episode requests to run with the batch
+    lock free and per-event and per-episode paths to log nothing at INFO or above, and pins
+    every wait (renewal, idle consumer, pending acquire, create_rps pacing) to the deadline or
+    interval it is for, so none of them polls.
   - Suite C bounds memory with ``tracemalloc`` peaks, ``weakref`` liveness of list pages, a
-    fully drained deletecollection stream, and the retained bytes per acquire and release
-    episode of a long-lived dynamic batch, both in the batch state and in the handles.
+    fully drained deletecollection stream, a watch wrapper that streams rather than buffers, and
+    the retained bytes per acquire and release episode of a long-lived dynamic batch, both in
+    the batch state and in the handles.
 
 A failing gate prints the measured counts at both sizes, so a regression from O(1) to O(N) is
 reported as a ratio rather than a timeout, and a fix that restores O(1) turns the gate green.
+
+Every measuring window also owns the work its call hands off. An async call is awaited through
+``_settled``, which finishes the tasks and callbacks it scheduled inside the window, and any
+window fails if its call starts a thread, submits to an executor, or leaves a task pending, so
+deferred work is counted or rejected, never missed (timers due within a second included).
+Per-item paths are gated on their failure outcomes too (a refused fill create, a refused
+delete), which run once per item in an outage, on batches that also carry refused deletes and
+booting claims, and each handle gate counts a burst of consecutive calls one by one, so work
+done every few calls is sampled; rarer periodic work is the static check's.
+
+Out of scope: a constant-factor slowdown of a path that stays O(1) (one more fixed-size copy or
+string format per call). The gates bound how cost grows with size, never its absolute amount,
+which would differ across Python versions and change with every unrelated edit.
 """
 
 from __future__ import annotations
@@ -49,8 +66,10 @@ import ast
 import asyncio
 import collections
 import contextlib
+import functools
 import gc
 import inspect
+import itertools
 import logging
 import os
 import pathlib
@@ -61,17 +80,20 @@ import time
 import tracemalloc
 import unittest
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sized
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, SupportsIndex
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from kubernetes import client as k8s_client
+from kubernetes.client.exceptions import ApiException
 
 from k8s_agent_sandbox import async_sandbox_batch as async_sandbox_batch_module
 from k8s_agent_sandbox import batch_state as batch_state_module
 from k8s_agent_sandbox import sandbox_batch as sandbox_batch_module
 from k8s_agent_sandbox.async_sandbox_batch import AsyncSandboxBatch
+from k8s_agent_sandbox.async_sandbox_client import AsyncSandboxClient
 from k8s_agent_sandbox.batch_state import BatchState, ConsumerMode
 from k8s_agent_sandbox.constants import (
     BATCH_GROUP_MIN_READY_ANNOTATION,
@@ -80,6 +102,7 @@ from k8s_agent_sandbox.constants import (
 from k8s_agent_sandbox.k8s_helper import K8sHelper
 from k8s_agent_sandbox.models import BatchGroup, MemberState
 from k8s_agent_sandbox.sandbox_batch import SandboxBatch
+from k8s_agent_sandbox.sandbox_client import SandboxClient
 from k8s_agent_sandbox.test.unit.test_batch_fault_injection import (
     _new_stopped_async_batch,
     _new_stopped_sync_batch,
@@ -104,6 +127,152 @@ PEAK_SLACK_BYTES = 4096
 # Every gated operation executes well over this many instructions. A smaller count means the
 # counter is broken, and a broken counter must fail rather than pass a 0 / 0 ratio.
 MIN_PLAUSIBLE_COUNT = 20
+
+
+class _LoopWork:
+    """The tasks and timer callbacks created on the event loop inside a block."""
+
+    # A timer due this soon is deferred work of the call, not a timeout guarding it.
+    DUE_SOON_S = 1.0
+
+    def __init__(self) -> None:
+        self.tasks: set[asyncio.Task[Any]] = set()
+        self.timers: list[tuple[asyncio.TimerHandle, list[bool]]] = []
+
+    def due_timers(self, loop: asyncio.AbstractEventLoop) -> list[asyncio.TimerHandle]:
+        """Timers neither run nor cancelled that fall due within ``DUE_SOON_S``."""
+        horizon = loop.time() + self.DUE_SOON_S
+        return [handle for handle, ran in self.timers
+                if not ran[0] and not handle.cancelled() and handle.when() <= horizon]
+
+
+# Every open recorder; the loop's task factory and call_at add each new task or timer to all.
+_LOOP_RECORDERS: list[_LoopWork] = []
+
+
+def _recording_task_factory(
+    loop: asyncio.AbstractEventLoop, coro: Any, **kwargs: Any
+) -> asyncio.Task[Any]:
+    task: asyncio.Task[Any] = asyncio.Task(coro, loop=loop, **kwargs)
+    for recorder in _LOOP_RECORDERS:
+        recorder.tasks.add(task)
+    return task
+
+
+@contextlib.contextmanager
+def _recording_loop_work() -> Iterator[_LoopWork]:
+    """Collects the tasks (through the loop's task factory) and timer callbacks (through its
+    ``call_at``, which ``call_later`` uses) created on the running event loop inside the block,
+    so finding them never walks the loop's other tasks (a gate's N waiting acquires). Off an
+    event loop it collects nothing."""
+    work = _LoopWork()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        yield work
+        return
+    outermost = not _LOOP_RECORDERS
+    if outermost:
+        previous = loop.get_task_factory()
+        assert previous is None, previous
+        loop.set_task_factory(_recording_task_factory)
+        real_call_at = loop.call_at
+
+        def call_at(when: float, callback: Callable[..., Any], *args: Any,
+                    context: Any = None) -> asyncio.TimerHandle:
+            ran = [False]
+
+            def run(*run_args: Any) -> None:
+                ran[0] = True
+                callback(*run_args)
+
+            handle = real_call_at(when, run, *args, context=context)
+            for recorder in _LOOP_RECORDERS:
+                recorder.timers.append((handle, ran))
+            return handle
+
+        timers = patch.object(loop, "call_at", call_at)
+        timers.start()
+    _LOOP_RECORDERS.append(work)
+    try:
+        yield work
+    finally:
+        _LOOP_RECORDERS.remove(work)
+        if outermost:
+            timers.stop()
+            loop.set_task_factory(None)
+
+
+class _HandOffWatch:
+    """Records work a measured block hands off: a thread it starts, a callable it submits to an
+    executor, or a task or soon-due timer it leaves pending. That work runs outside the block, so no
+    instruction count, peak, or walk count would see it; the measuring windows fail on it
+    instead of undercounting. (Async gates await through ``_settled``, which finishes the
+    tasks and callbacks a call schedules inside the window, so that work is counted.)"""
+
+    def __init__(self) -> None:
+        self.handed_off: list[str] = []
+        self._patches: list[Any] = []
+        self._loop_work: contextlib.ExitStack = contextlib.ExitStack()
+        self._work = _LoopWork()
+
+    def start(self) -> None:
+        real_start = threading.Thread.start
+        real_submit = ThreadPoolExecutor.submit
+        handed_off = self.handed_off
+
+        def start(thread: threading.Thread) -> None:
+            handed_off.append(f"started thread {thread.name}")
+            real_start(thread)
+
+        def submit(executor: ThreadPoolExecutor, fn: Callable[..., Any], /, *args: Any,
+                   **kwargs: Any) -> Any:
+            handed_off.append(f"submitted {getattr(fn, '__qualname__', fn)} to an executor")
+            return real_submit(executor, fn, *args, **kwargs)
+
+        self._patches = [patch.object(threading.Thread, "start", start),
+                         patch.object(ThreadPoolExecutor, "submit", submit)]
+        for patcher in self._patches:
+            patcher.start()
+        self._work = self._loop_work.enter_context(_recording_loop_work())
+
+    def stop(self, failing: bool) -> None:
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            self.handed_off.extend(
+                f"left a timer callback due at {handle.when():.3f} pending"
+                for handle in self._work.due_timers(loop))
+        self._loop_work.close()
+        for patcher in reversed(self._patches):
+            patcher.stop()
+        self.handed_off.extend(
+            f"left task {task.get_name()} pending" for task in self._work.tasks if not task.done())
+        if self.handed_off and not failing:
+            raise AssertionError(
+                f"the measured call handed work off where no count sees it: {self.handed_off[:3]}")
+
+
+async def _settled(run: Callable[[], Awaitable[object]]) -> None:
+    """Awaits ``run()``, then the tasks, callbacks, and soon-due timers it left on the event
+    loop, so the measuring window around this call counts that deferred work as part of it.
+    A call that schedules nothing pays for no loop pass (each costs thousands of instructions
+    in asyncio's debug mode)."""
+    loop = asyncio.get_running_loop()
+    # _ready is the loop's queue of callbacks due on its next pass (call_soon, a resolved
+    # future's done callbacks); only growth in it is this call's.
+    ready: Any = getattr(loop, "_ready", ())
+    queued = len(ready)
+    with _recording_loop_work() as work:
+        await run()
+        due = work.due_timers(loop)
+        if due:
+            await asyncio.sleep(max(0.0, max(handle.when() for handle in due) - loop.time()))
+        if due or len(ready) > queued:
+            await asyncio.sleep(0)
+        pending = {task for task in work.tasks if not task.done()}
+        if pending:
+            # Unfinished ones fail the window's hand-off check.
+            await asyncio.wait(pending, timeout=5)
 
 
 class InstructionCounter:
@@ -141,6 +310,8 @@ class InstructionCounter:
 
     def __enter__(self) -> InstructionCounter:
         self._owner = threading.get_ident()
+        self._hand_offs = _HandOffWatch()
+        self._hand_offs.start()
         if self.backend == "monitoring":
             monitoring: Any = getattr(sys, "monitoring")
             for candidate in (5, 4, 3, 2, 0):
@@ -160,7 +331,7 @@ class InstructionCounter:
             sys.settrace(self._tracer)
         return self
 
-    def __exit__(self, *_exc: object) -> None:
+    def __exit__(self, exc_type: object, *_exc: object) -> None:
         if self.backend == "monitoring":
             monitoring: Any = getattr(sys, "monitoring")
             assert self._tool_id is not None
@@ -170,6 +341,7 @@ class InstructionCounter:
             self._tool_id = None
         else:
             sys.settrace(self._previous_trace)
+        self._hand_offs.stop(failing=exc_type is not None)
 
 
 def count_bytecode_instructions(fn: Callable[[], object], backend: str | None = None) -> int:
@@ -310,6 +482,27 @@ def _seed_release_history(state: BatchState, pool: str, releases: int) -> None:
         state.note_deleted(name, state.delete_seq(name))
 
 
+def _seed_outage(state: BatchState, n: int) -> None:
+    """Leaves ``n`` releases whose delete the apiserver refused (still pending a delete) and
+    ``n`` claims still booting (pending their launch), as a batch carries them through an
+    outage or a cold start, so per-event and per-episode work can't walk them unseen."""
+    for i in range(n):
+        name = state.start_acquire("pool-refused")
+        obj = _ready_claim("refused", i, "pool-refused", 0)
+        obj["metadata"] = {"name": name, "uid": f"uid-{name}", "resourceVersion": str(i + 1)}
+        state.upsert_claim(obj)
+        state.acquired_member(name)
+        state.release_member(name)
+        booting = _ready_claim("booting", i, "pool-booting", 0)
+        booting["metadata"] = {"name": f"booting-{i}", "uid": f"uid-booting-{i}",
+                               "resourceVersion": str(i + 1)}
+        booting["status"]["conditions"] = [{"type": "Ready", "status": "False"}]
+        state.upsert_claim(booting)
+    state_any: Any = state
+    assert len(state_any._pending_deletes) >= n and len(state_any._pending_launch) >= n, (
+        len(state_any._pending_deletes), len(state_any._pending_launch))
+
+
 def _single_group_ready(n: int) -> Callable[[], object]:
     state = _filled_state(n, 1, skip_last=True)
     obj = _ready_claim("bperf", n - 1, "pool-0", n)
@@ -319,6 +512,20 @@ def _single_group_ready(n: int) -> Callable[[], object]:
 def _single_group_flap(n: int) -> Callable[[], object]:
     state = _filled_state(n, 1)
     obj = _not_ready(_ready_claim("bperf", n // 2, "pool-0", n))
+    return lambda: state.upsert_claim(obj)
+
+
+def _single_group_consumer(n: int, mode: ConsumerMode) -> Callable[[], object]:
+    """One group of ``n`` with ``min_ready = n`` in consumer ``mode``, two members short; the
+    measured Ready event leaves it one short, so the group's outcome (or the quorum) is checked
+    but not yet decided, as for every fill event but the last."""
+    groups = [BatchGroup(warmpool="pool-0", size=n, min_ready=n)]
+    state = BatchState("bperf", groups)
+    for idx in range(n - 2):
+        state.upsert_claim(_ready_claim("bperf", idx, "pool-0", n))
+    state.set_mode(mode)
+    _count_walks_of_large_tables([state], 20)
+    obj = _ready_claim("bperf", n - 2, "pool-0", n)
     return lambda: state.upsert_claim(obj)
 
 
@@ -458,6 +665,9 @@ class TestSuiteABatchStateComplexity(unittest.TestCase):
             ("upsert_claim(Ready flap, 1 group)", _single_group_flap),
             ("mark_lost(1 group)", _single_group_lost),
         ]
+        for mode in (ConsumerMode.STREAM, ConsumerMode.GROUP, ConsumerMode.QUORUM):
+            cases.append((f"upsert_claim(Ready, 1 group, {mode.value} mode)",
+                          functools.partial(_single_group_consumer, mode=mode)))
         for label, single in cases:
 
             def build(
@@ -640,7 +850,21 @@ _count_walks_through(
 
 
 class _WalkCountingList(list[Any]):
-    pass
+    # Removing or inserting anywhere but the tail shifts every later element in C.
+    def pop(self, index: SupportsIndex = -1) -> Any:
+        if index not in (-1, len(self) - 1):
+            _WalkCountingDict.walks += 1
+        return super().pop(index)
+
+    def insert(self, index: Any, value: Any) -> None:
+        if index < len(self):
+            _WalkCountingDict.walks += 1
+        super().insert(index, value)
+
+    def __delitem__(self, index: Any) -> None:
+        if not (isinstance(index, int) and index in (-1, len(self) - 1)):
+            _WalkCountingDict.walks += 1
+        super().__delitem__(index)
 
 
 _count_walks_through(
@@ -652,13 +876,29 @@ _count_walks_through(
 
 
 class _WalkCountingDeque(collections.deque[Any]):
-    pass
+    def _away_from_ends(self, index: Any) -> bool:
+        return not (isinstance(index, int) and index in (0, -1, len(self) - 1))
+
+    def __getitem__(self, index: Any) -> Any:
+        if self._away_from_ends(index):
+            _WalkCountingDict.walks += 1
+        return super().__getitem__(index)
+
+    def __delitem__(self, index: Any) -> None:
+        if self._away_from_ends(index):
+            _WalkCountingDict.walks += 1
+        super().__delitem__(index)
+
+    def insert(self, index: int, value: Any) -> None:
+        if self._away_from_ends(index):
+            _WalkCountingDict.walks += 1
+        super().insert(index, value)
 
 
 _count_walks_through(
     _WalkCountingDeque,
     ("__iter__", "copy", "__contains__", "index", "count", "remove", "__reversed__", "reverse",
-     "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"),
+     "rotate", "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"),
 )
 
 
@@ -673,25 +913,102 @@ def _seed_known_pools(batch: Any, p: int) -> None:
         else:
             batch._checked_pools.append(pool)
         batch._warm_credit.record(pool, 1)
-    _count_walks_of_large_tables([batch, batch._warm_credit, batch._state], p)
+    _count_walks_of_large_tables(
+        [batch, batch._warm_credit, batch._state], max(p, _MIN_COUNTED_TABLE)
+    )
 
 
-def _count_walks_of_large_tables(owners: list[Any], at_least: int) -> list[str]:
-    """Swaps every plain dict, set, list, or deque attribute of ``owners`` holding at least
-    ``at_least`` entries for a walk-counting copy, and returns the swapped attribute names."""
+# Tables smaller than this are never swapped: fixed-size ones (the batch's labels, its
+# settings) would otherwise count as walks when a gate's small size is tiny. The large size of
+# every gate is well above it, so a table that grows with the gate is still counted there.
+_MIN_COUNTED_TABLE = 32
+
+
+# Walks of a dict subclass (Counter, defaultdict, OrderedDict) beyond the plain dict's.
+_DICT_SUBCLASS_WALKS = ("most_common", "elements", "total", "__add__", "__sub__", "__and__")
+_COUNTING_SUBCLASSES: dict[type, type] = {}
+
+
+def _counting_copy(value: Any) -> Any:
+    """A walk-counting copy of ``value`` (``None`` for a type with no counting form): the
+    matching counting class for a plain dict, set, list, or deque, and a counting subclass,
+    built once per type, for a dict subclass such as ``Counter`` or ``defaultdict``."""
     counting: dict[type, type] = {
         dict: _WalkCountingDict, set: _WalkCountingSet, list: _WalkCountingList,
         collections.deque: _WalkCountingDeque,
     }
+    base = type(value)
+    if base in counting.values() or base in _COUNTING_SUBCLASSES.values():
+        return None                             # already counting
+    wrapper = counting.get(base)
+    if wrapper is None and isinstance(value, dict):
+        wrapper = _COUNTING_SUBCLASSES.get(base)
+        if wrapper is None:
+            wrapper = type(f"_WalkCounting{base.__name__}", (base,), {})
+            names = ("__iter__", "keys", "values", "items", "copy", "__or__", "__ror__",
+                     "__reversed__", "__eq__", "__ne__", *_DICT_SUBCLASS_WALKS)
+            _count_walks_through(wrapper, tuple(n for n in names if hasattr(base, n)))
+            _COUNTING_SUBCLASSES[base] = wrapper
+    if wrapper is None:
+        return None
+    if isinstance(value, collections.defaultdict):
+        return wrapper(value.default_factory, value)
+    return wrapper(value)
+
+
+def _count_walks_of_large_tables(owners: list[Any], at_least: int) -> list[str]:
+    """Swaps every dict (subclasses included), set, list, or deque attribute of ``owners``
+    holding at least ``at_least`` entries for a walk-counting copy, and returns the swapped
+    attribute names."""
     swapped = []
     for owner in owners:
         for attr, value in list(vars(owner).items()):
-            wrapper = counting.get(type(value))
-            if wrapper is None or len(value) < at_least:
+            if isinstance(value, dict):
+                # Per-pool indexes hold one table per pool (`_waiting[pool]`); a walk of one
+                # large pool's table is as unseen as a walk of the whole index.
+                for key, inner in list(value.items()):
+                    if isinstance(inner, Sized) and len(inner) >= at_least:
+                        inner_copy = _counting_copy(inner)
+                        if inner_copy is not None:
+                            value[key] = inner_copy
+                            swapped.append(f"{type(owner).__name__}.{attr}[{key!r}]")
+            if not isinstance(value, Sized) or len(value) < at_least:
                 continue
-            setattr(owner, attr, wrapper(value))
+            copy = _counting_copy(value)
+            if copy is None:
+                continue
+            setattr(owner, attr, copy)
             swapped.append(f"{type(owner).__name__}.{attr}")
     return swapped
+
+
+class _StuckConnection:
+    """A cached connection whose earlier close failed, so it waits in the handle's stale
+    backlog; closing it again fails again, and counts the attempt."""
+
+    attempts = 0
+
+    def close_connection(self) -> None:
+        # Always the base class's counter: `type(self).attempts += 1` on a subclass would
+        # start a separate counter that the gates never read.
+        _StuckConnection.attempts += 1
+        raise RuntimeError("still stuck")
+
+
+class _StuckAsyncConnection(_StuckConnection):
+    async def close_connection(self) -> None:  # type: ignore[override]
+        _StuckConnection.attempts += 1
+        raise RuntimeError("still stuck")
+
+
+def _seed_stale_backlog(batch: Any, n: int, cls: type) -> None:
+    """Puts ``n`` connections whose close failed into the handle's stale backlog."""
+    for _ in range(n):
+        stuck = cls()
+        if isinstance(batch._stale_connections, dict):
+            batch._stale_connections[stuck] = None
+        else:
+            batch._stale_connections.append(stuck)
 
 
 def _groups_for(n: int) -> list[BatchGroup]:
@@ -710,16 +1027,24 @@ class _HandleGateBase(unittest.IsolatedAsyncioTestCase):
     for every run, for transitions that happen only once per batch (a DELETED event, a pool's
     release), so each counted run does the real work rather than a repeat that finds nothing
     to do.
+
+    Every gate also fails if the handle logs at INFO or above: these are per-event and
+    per-episode paths, where that is a driver log line per claim (PERF-9).
     """
 
     SIZES = (100, 2000)
     REPEATS = 3
+    # Consecutive calls counted one by one on the same handle, keeping the most expensive, so
+    # work done every K <= BURST calls (periodic housekeeping) lands in a counted call. Rarer
+    # periodic work is the static check's: a walk under `if ... % K` is never one-shot.
+    BURST = 24
 
     def _sync_batch(self, n: int) -> tuple[Any, SandboxBatch, list[str]]:
         """Returns a batch of ``n // 5`` groups with ``n`` acquired, connected members in
-        ``pool-a``, ``n`` other known pools, and ``n`` past releases, so every handle gate
-        scales the member, connection, group, pool, and release-history counts together, and
-        every table holding ``n`` entries (or the ``n // 5`` groups) counts its whole walks."""
+        ``pool-a``, ``n`` other known pools, ``n`` past releases, ``n`` stuck connections in
+        the stale backlog, and ``n`` refused deletes and booting claims (``_seed_outage``), so
+        every handle gate scales all of those together, and every table
+        holding ``n`` entries (or the ``n // 5`` groups) counts its whole walks."""
         _client, helper, batch = _new_stopped_sync_batch(_groups_for(n), batch_id="b-hot")
         names = _seed_acquired(batch._state, n, "pool-a")
         for name in names:
@@ -727,9 +1052,12 @@ class _HandleGateBase(unittest.IsolatedAsyncioTestCase):
             assert member is not None
             batch.connect(member)
         _seed_known_pools(batch, n)
-        # Release history (tombstones, delete sequences) grows with n too.
+        # Release history (tombstones, delete sequences) and a backlog of connections whose
+        # close failed grow with n too.
         _seed_release_history(batch._state, "pool-history", n)
-        _count_walks_of_large_tables([batch._state], n // 5)
+        _seed_stale_backlog(batch, n, _StuckConnection)
+        _seed_outage(batch._state, n)
+        _count_walks_of_large_tables([batch, batch._state], max(n // 5, _MIN_COUNTED_TABLE))
         helper.reset_mock()
         return helper, batch, names
 
@@ -741,19 +1069,21 @@ class _HandleGateBase(unittest.IsolatedAsyncioTestCase):
             assert member is not None
             await batch.connect(member)
         _seed_known_pools(batch, n)
-        # Release history (tombstones, delete sequences) grows with n too.
         _seed_release_history(batch._state, "pool-history", n)
-        _count_walks_of_large_tables([batch._state], n // 5)
+        _seed_stale_backlog(batch, n, _StuckAsyncConnection)
+        _seed_outage(batch._state, n)
+        _count_walks_of_large_tables([batch, batch._state], max(n // 5, _MIN_COUNTED_TABLE))
         helper.reset_mock()
         return helper, batch, names
 
     def _waiters(self, batch: Any, n: int, cls: type) -> None:
         """Puts ``n`` other acquires in flight, each with its parked waiter, as concurrent RL
-        workers would, so both the batch state's in-flight table and the handle's waiters
-        grow with ``n``."""
-        for _ in range(n):
+        workers would, and ``n`` more still checking their own pools, so the batch state's
+        in-flight tables and the handle's waiters all grow with ``n``."""
+        for i in range(n):
             name = batch._state.start_acquire("pool-waiting")
             batch._acquire_waiters[name] = cls()
+            batch._state.enter_acquire(f"pool-checking-{i}")
         _count_walks_of_large_tables([batch, batch._state], n)
 
     def _sample_sync(self, run: Callable[[], object]) -> tuple[int, int]:
@@ -761,9 +1091,9 @@ class _HandleGateBase(unittest.IsolatedAsyncioTestCase):
         run()
         counts, peaks = [], []
         _WalkCountingDict.walks = 0
-        # Back-to-back runs, keeping the largest, so work done on only some calls (every other
-        # one, say) can't hide in an uncounted run or behind a cheaper sample.
-        for _ in range(self.REPEATS):
+        # Back-to-back runs, keeping the largest, so work done on only some calls (every K-th
+        # one, for K up to BURST) can't hide in an uncounted run or behind a cheaper sample.
+        for _ in range(self.BURST):
             counts.append(count_bytecode_instructions(run))
         for _ in range(self.REPEATS):
             with MemoryWindow() as window:
@@ -776,13 +1106,13 @@ class _HandleGateBase(unittest.IsolatedAsyncioTestCase):
         await run()
         counts, peaks = [], []
         _WalkCountingDict.walks = 0
-        for _ in range(self.REPEATS):
+        for _ in range(self.BURST):
             with InstructionCounter() as counter:
-                await run()
+                await _settled(run)
             counts.append(counter.count)
         for _ in range(self.REPEATS):
             with MemoryWindow() as window:
-                await run()
+                await _settled(run)
                 peaks.append(window.peak())
         self._walks.append(_WalkCountingDict.walks)
         return max(counts), max(peaks)
@@ -816,13 +1146,13 @@ class _HandleGateBase(unittest.IsolatedAsyncioTestCase):
             run = await build()
             _WalkCountingDict.walks = 0
             with InstructionCounter() as counter:
-                await run()
+                await _settled(run)
             counts.append(counter.count)
             walks += _WalkCountingDict.walks
             run = await build()
             _WalkCountingDict.walks = 0
             with MemoryWindow() as window:
-                await run()
+                await _settled(run)
                 peaks.append(window.peak())
             walks += _WalkCountingDict.walks
         self._walks.append(walks)
@@ -832,6 +1162,9 @@ class _HandleGateBase(unittest.IsolatedAsyncioTestCase):
         super().setUp()
         # Whole-table walks seen during each sample's measured runs (see _WalkCountingDict).
         self._walks: list[int] = []
+        quiet = self.assertNoLogs("k8s_agent_sandbox", level=logging.INFO)
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
 
     def _assert_flat(
         self, label: str, small: tuple[int, int], large: tuple[int, int]
@@ -840,6 +1173,8 @@ class _HandleGateBase(unittest.IsolatedAsyncioTestCase):
         assert_scaling(self, label, small[0], large[0], O1_MAX_RATIO, sizes)
         assert_peak_scaling(self, label, small[1], large[1], sizes)
         self._assert_no_walks(label)
+        retried, _StuckConnection.attempts = _StuckConnection.attempts, 0
+        self.assertEqual(retried, 0, f"{label}: retried {retried} stuck connection closes")
 
     def _assert_no_walks(self, label: str) -> None:
         walks, self._walks = self._walks, []
@@ -972,7 +1307,7 @@ class TestSuiteAEpisodeHotPaths(_HandleGateBase):
 
     # A warm-covered acquire skips pacing; an uncovered one reserves a pacing slot. Pacing is
     # set to no delay, so the uncovered path's own work is measured without sleeping.
-    COVERAGE = (("warm-covered", 10 * 3), ("paced", 0))
+    COVERAGE = (("warm-covered", 10 * _HandleGateBase.BURST), ("paced", 0))
 
     def test_sync_acquire_is_o1(self) -> None:
         for label, credit in self.COVERAGE:
@@ -994,7 +1329,7 @@ class TestSuiteAEpisodeHotPaths(_HandleGateBase):
                 self.assertEqual(_CountingEvent.sets, 0, "an acquire woke other acquires")
                 self.assertEqual(
                     [name for name, _a, _k in helper.method_calls],
-                    ["create_sandbox_claim"] * (1 + 2 * self.REPEATS),
+                    ["create_sandbox_claim"] * (1 + self.BURST + self.REPEATS),
                     f"a {label} acquire sent requests besides its create",
                 )
             with self.subTest(coverage=label):
@@ -1017,7 +1352,7 @@ class TestSuiteAEpisodeHotPaths(_HandleGateBase):
                 samples.append(await self._sample_async(run))
                 self.assertEqual(_CountingAsyncEvent.sets, 0, "an acquire woke other acquires")
                 self.assertEqual(
-                    helper.create_sandbox_claim.await_count, 1 + 2 * self.REPEATS,
+                    helper.create_sandbox_claim.await_count, 1 + self.BURST + self.REPEATS,
                     f"a {label} acquire sent a create count other than one",
                 )
             with self.subTest(coverage=label):
@@ -1027,8 +1362,9 @@ class TestSuiteAEpisodeHotPaths(_HandleGateBase):
 
     def _known_pools(self, batch: Any, p: int) -> None:
         _seed_known_pools(batch, p)
-        # A rename must not silently stop the walk counting.
-        self.assertIsInstance(batch._warm_credit._credit, _WalkCountingDict)
+        if p >= _MIN_COUNTED_TABLE:
+            # A rename must not silently stop the walk counting.
+            self.assertIsInstance(batch._warm_credit._credit, _WalkCountingDict)
         _WalkCountingDict.walks = 0
 
     def _assert_no_pool_walks(self, label: str) -> None:
@@ -1050,7 +1386,7 @@ class TestSuiteAEpisodeHotPaths(_HandleGateBase):
                     ready(*args, **kwargs)
 
             helper.create_sandbox_claim.side_effect = ready_locked
-            batch._warm_credit.record("pool-a", 10 * self.REPEATS)
+            batch._warm_credit.record("pool-a", 10 * self.BURST)
             _WalkCountingDict.walks = 0
             samples.append(self._sample_sync(lambda: batch.acquire("pool-a", timeout=5)))
             self._assert_no_pool_walks(f"SandboxBatch.acquire at P={p}")
@@ -1066,7 +1402,7 @@ class TestSuiteAEpisodeHotPaths(_HandleGateBase):
             helper, batch, _names = await self._async_batch(10)
             self._known_pools(batch, p)
             helper.create_sandbox_claim = AsyncMock(side_effect=_ready_on_create(batch))
-            batch._warm_credit.record("pool-a", 10 * self.REPEATS)
+            batch._warm_credit.record("pool-a", 10 * self.BURST)
 
             async def run() -> None:
                 await batch.acquire("pool-a", timeout=5)
@@ -1080,48 +1416,154 @@ class TestSuiteAEpisodeHotPaths(_HandleGateBase):
         assert_peak_scaling(self, "AsyncSandboxBatch.acquire vs pools", samples[0][1],
                             samples[1][1], sizes)
 
-    def test_sync_release_member_is_o1_and_wakes_no_other_waiter(self) -> None:
+    def _forbidden(self) -> ApiException:
+        return ApiException(status=403, reason="Forbidden")
+
+    def test_sync_failed_acquire_is_o1_and_wakes_no_other_waiter(self) -> None:
+        # An acquire whose create fails drops its claim; that must not wake (or walk) the
+        # other waiting acquires.
         samples = []
         for n in self.SIZES:
-            _helper, batch, names = self._sync_batch(n)
+            helper, batch, _names = self._sync_batch(n)
+            helper.create_sandbox_claim.side_effect = self._forbidden()
+            batch._warm_credit.record("pool-a", 10**6)
             self._waiters(batch, n, _CountingEvent)
-            members = [batch._state.get_member(name) for name in names]
             _CountingEvent.sets = 0
 
             def run() -> None:
-                member = members.pop()
-                assert member is not None
-                batch.release_member(member)
-                batch._wait_active_deletes()
+                with self.assertRaises(Exception):
+                    batch.acquire("pool-a", timeout=5)
 
-            released = len(members)
             samples.append(self._sample_sync(run))
-            released -= len(members)
-            self.assertGreater(released, 0)
-            # No parked waiter belongs to a released member, so none may wake.
-            self.assertEqual(_CountingEvent.sets, 0, "release woke other waiters")
-        self._assert_flat("SandboxBatch.release_member", *samples)
+            self.assertEqual(_CountingEvent.sets, 0, "a failed acquire woke other acquires")
+        self._assert_flat("SandboxBatch.acquire (create fails)", *samples)
 
-    async def test_async_release_member_is_o1_and_wakes_no_other_waiter(self) -> None:
+    async def test_async_failed_acquire_is_o1_and_wakes_no_other_waiter(self) -> None:
         samples = []
         for n in self.SIZES:
-            _helper, batch, names = await self._async_batch(n)
+            helper, batch, _names = await self._async_batch(n)
+            helper.create_sandbox_claim = AsyncMock(side_effect=self._forbidden())
+            batch._warm_credit.record("pool-a", 10**6)
             self._waiters(batch, n, _CountingAsyncEvent)
-            members = [batch._state.get_member(name) for name in names]
             _CountingAsyncEvent.sets = 0
 
             async def run() -> None:
-                member = members.pop()
-                assert member is not None
-                await batch.release_member(member)
-                await batch._wait_active_deletes()
+                with self.assertRaises(Exception):
+                    await batch.acquire("pool-a", timeout=5)
 
-            released = len(members)
             samples.append(await self._sample_async(run))
-            released -= len(members)
-            self.assertGreater(released, 0)
-            self.assertEqual(_CountingAsyncEvent.sets, 0, "release woke other waiters")
-        self._assert_flat("AsyncSandboxBatch.release_member", *samples)
+            self.assertEqual(_CountingAsyncEvent.sets, 0, "a failed acquire woke other acquires")
+        self._assert_flat("AsyncSandboxBatch.acquire (create fails)", *samples)
+
+    def _new_pool_budget(self, runs: int) -> dict[str, int]:
+        # One warm-pool read and its template per new pool, then the claim's create.
+        return {"get_sandbox_warmpool": runs, "get_sandbox_template": runs,
+                "create_sandbox_claim": runs}
+
+    def test_sync_first_acquire_of_a_new_pool_is_o1_in_known_pool_count(self) -> None:
+        # RL batch mode's first acquire per image checks a pool the batch hasn't used: one
+        # warm-pool read, then its credit and checked-pool entries. That must not grow with the
+        # pools already known, or acquiring across P images costs O(P^2).
+        samples = []
+        for p in self.POOLS:
+            helper, batch, _names = self._sync_batch(10)
+            self._known_pools(batch, p)
+            ready = _ready_on_create(batch)
+
+            def ready_locked(*args: Any, **kwargs: Any) -> None:
+                with batch._lock:
+                    ready(*args, **kwargs)
+
+            helper.create_sandbox_claim.side_effect = ready_locked
+            fresh = itertools.count()
+            samples.append(self._sample_sync(
+                lambda: batch.acquire(f"new-pool-{next(fresh)}", timeout=5)
+            ))
+            _assert_requests_within(self, f"first acquire of a new pool (P={p})", helper,
+                                    self._new_pool_budget(1 + self.BURST + self.REPEATS))
+        sizes = f"P={self.POOLS[0]}|P={self.POOLS[1]}"
+        label = "SandboxBatch.acquire (new pool) vs pools"
+        assert_scaling(self, label, samples[0][0], samples[1][0], O1_MAX_RATIO, sizes)
+        assert_peak_scaling(self, label, samples[0][1], samples[1][1], sizes)
+        self._assert_no_walks(label)
+
+    async def test_async_first_acquire_of_a_new_pool_is_o1_in_known_pool_count(self) -> None:
+        samples = []
+        for p in self.POOLS:
+            helper, batch, _names = await self._async_batch(10)
+            self._known_pools(batch, p)
+            helper.create_sandbox_claim = AsyncMock(side_effect=_ready_on_create(batch))
+            fresh = itertools.count()
+
+            async def run() -> None:
+                await batch.acquire(f"new-pool-{next(fresh)}", timeout=5)
+
+            samples.append(await self._sample_async(run))
+            _assert_requests_within(self, f"first acquire of a new pool (P={p})", helper,
+                                    self._new_pool_budget(1 + self.BURST + self.REPEATS))
+        sizes = f"P={self.POOLS[0]}|P={self.POOLS[1]}"
+        label = "AsyncSandboxBatch.acquire (new pool) vs pools"
+        assert_scaling(self, label, samples[0][0], samples[1][0], O1_MAX_RATIO, sizes)
+        assert_peak_scaling(self, label, samples[0][1], samples[1][1], sizes)
+        self._assert_no_walks(label)
+
+    # A release whose delete lands, and one the apiserver refuses (non-transient, so it
+    # raises without retrying); either way it runs once per episode.
+    RELEASE_OUTCOMES = ("deleted", "forbidden")
+
+    def test_sync_release_member_is_o1_and_wakes_no_other_waiter(self) -> None:
+        for outcome in self.RELEASE_OUTCOMES:
+            samples = []
+            for n in self.SIZES:
+                helper, batch, names = self._sync_batch(n)
+                if outcome == "forbidden":
+                    helper.delete_sandbox_claim.side_effect = self._forbidden()
+                self._waiters(batch, n, _CountingEvent)
+                members = [batch._state.get_member(name) for name in names]
+                _CountingEvent.sets = 0
+
+                def run() -> None:
+                    member = members.pop()
+                    assert member is not None
+                    with contextlib.suppress(ApiException):
+                        batch.release_member(member)
+                    batch._wait_active_deletes()
+
+                released = len(members)
+                samples.append(self._sample_sync(run))
+                released -= len(members)
+                self.assertGreater(released, 0)
+                # No parked waiter belongs to a released member, so none may wake.
+                self.assertEqual(_CountingEvent.sets, 0, f"a {outcome} release woke waiters")
+            with self.subTest(outcome=outcome):
+                self._assert_flat(f"SandboxBatch.release_member ({outcome})", *samples)
+
+    async def test_async_release_member_is_o1_and_wakes_no_other_waiter(self) -> None:
+        for outcome in self.RELEASE_OUTCOMES:
+            samples = []
+            for n in self.SIZES:
+                helper, batch, names = await self._async_batch(n)
+                if outcome == "forbidden":
+                    helper.delete_sandbox_claim = AsyncMock(side_effect=self._forbidden())
+                self._waiters(batch, n, _CountingAsyncEvent)
+                members = [batch._state.get_member(name) for name in names]
+                _CountingAsyncEvent.sets = 0
+
+                async def run() -> None:
+                    member = members.pop()
+                    assert member is not None
+                    with contextlib.suppress(ApiException):
+                        await batch.release_member(member)
+                    await batch._wait_active_deletes()
+
+                released = len(members)
+                samples.append(await self._sample_async(run))
+                released -= len(members)
+                self.assertGreater(released, 0)
+                self.assertEqual(
+                    _CountingAsyncEvent.sets, 0, f"a {outcome} release woke waiters")
+            with self.subTest(outcome=outcome):
+                self._assert_flat(f"AsyncSandboxBatch.release_member ({outcome})", *samples)
 
 
 FILL_GROUP_SIZE = 5
@@ -1140,7 +1582,15 @@ def _credit_every_group(batch: Any, credit: int = 10**6) -> None:
     batch._create_interval = 0.0
 
 
-FILL_COVERAGE = (("warm", 10**6), ("cold", 0))
+# Warm or cold creates, in a batch of n // 5 groups of 5 or in one group of n.
+FILL_CASES = [
+    (f"{credit_label}, {shape_label}", credit, groups_for)
+    for credit_label, credit in (("warm", 10**6), ("cold", 0))
+    for shape_label, groups_for in (
+        ("n // 5 groups", lambda n: _fill_groups(n)),
+        ("1 group", lambda n: [BatchGroup(warmpool="pool-0", size=n)]),
+    )
+]
 
 
 class TestSuiteAFillAndConnectMiss(_HandleGateBase):
@@ -1157,7 +1607,8 @@ class TestSuiteAFillAndConnectMiss(_HandleGateBase):
 
         def land(claim_name: str, warmpool: str, *_a: object, **_k: object) -> None:
             nonlocal landed
-            obj = _ready_claim(batch.batch_id, landed, warmpool, FILL_GROUP_SIZE)
+            size = next(g.size for g in batch._state.groups if g.warmpool == warmpool)
+            obj = _ready_claim(batch.batch_id, landed, warmpool, size)
             obj["metadata"]["name"] = claim_name
             batch._state.upsert_claim(obj)
             landed += 1
@@ -1181,7 +1632,8 @@ class TestSuiteAFillAndConnectMiss(_HandleGateBase):
 
         async def land(claim_name: str, warmpool: str, *_a: object, **_k: object) -> None:
             nonlocal landed
-            obj = _ready_claim(batch.batch_id, landed, warmpool, FILL_GROUP_SIZE)
+            size = next(g.size for g in batch._state.groups if g.warmpool == warmpool)
+            obj = _ready_claim(batch.batch_id, landed, warmpool, size)
             obj["metadata"]["name"] = claim_name
             batch._state.upsert_claim(obj)
             landed += 1
@@ -1200,23 +1652,34 @@ class TestSuiteAFillAndConnectMiss(_HandleGateBase):
         _seed_known_pools(batch, n)
         _count_walks_of_large_tables([batch, batch._state], n // FILL_GROUP_SIZE)
 
+    # A fill create that lands, and one the apiserver refuses (a quota or RBAC storm fails
+    # every create, so the failure path runs once per planned claim too).
+    OUTCOMES = ("sent", "forbidden")
+
+    def _create_outcome(self, batch: Any, outcome: str) -> Callable[..., None]:
+        # Stop the worker after each create, so every run does exactly one.
+        def create(*_a: object, **_k: object) -> None:
+            batch._stop_creating.set()
+            if outcome == "forbidden":
+                raise ApiException(status=403, reason="Forbidden")
+
+        return create
+
     def test_sync_fill_create_is_o1(self) -> None:
-        for label, credit in FILL_COVERAGE:
+        for (label, credit, groups_for), outcome in itertools.product(FILL_CASES, self.OUTCOMES):
             samples = []
             for n in self.SIZES:
                 # claim_batch plans the groups' n fill creates (its worker is stubbed until
                 # now), so per-create work can't hide a scan of the plan; half have landed.
                 _client, helper, batch = _new_stopped_sync_batch(
-                    _fill_groups(n), batch_id="b-fill"
+                    groups_for(n), batch_id="b-fill"
                 )
                 self._land_half_sync(batch, helper, n)
                 batch._stop_creating.clear()
                 helper.reset_mock()
                 _credit_every_group(batch, credit)
-                # Stop the worker after each create, so every run does exactly one.
-                helper.create_sandbox_claim.side_effect = (
-                    lambda *_a, **_k: batch._stop_creating.set()
-                )
+                helper.create_sandbox_claim.side_effect = self._create_outcome(batch, outcome)
+                _CountingEvent.sets = 0
 
                 def run() -> None:
                     batch._stop_creating.clear()
@@ -1225,41 +1688,45 @@ class TestSuiteAFillAndConnectMiss(_HandleGateBase):
                 samples.append(self._sample_sync(run))
                 self.assertEqual(
                     [name for name, _a, _k in helper.method_calls],
-                    ["create_sandbox_claim"] * (1 + 2 * self.REPEATS),
+                    ["create_sandbox_claim"] * (1 + self.BURST + self.REPEATS),
                 )
-            with self.subTest(fill=label):
-                self._assert_flat(f"SandboxBatch._create_worker (1 {label} fill create)",
-                                  *samples)
+                self.assertEqual(_CountingEvent.sets, 0, f"a {outcome} fill create woke acquires")
+            with self.subTest(fill=label, outcome=outcome):
+                self._assert_flat(
+                    f"SandboxBatch._create_worker (1 {outcome} {label} fill create)", *samples)
 
     async def test_async_fill_create_is_o1(self) -> None:
-        for label, credit in FILL_COVERAGE:
+        for (label, credit, groups_for), outcome in itertools.product(FILL_CASES, self.OUTCOMES):
             samples = []
             for n in self.SIZES:
                 _client, helper, batch = await _new_stopped_async_batch(
-                    _fill_groups(n), batch_id="b-fill"
+                    groups_for(n), batch_id="b-fill"
                 )
                 await self._land_half_async(batch, helper, n)
                 batch._stop_creating.clear()
                 helper.reset_mock()
                 helper.create_sandbox_claim = AsyncMock(
-                    side_effect=lambda *_a, **_k: batch._stop_creating.set()
-                )
+                    side_effect=self._create_outcome(batch, outcome))
                 _credit_every_group(batch, credit)
+                _CountingAsyncEvent.sets = 0
 
                 async def run() -> None:
                     batch._stop_creating.clear()
                     await batch._create_worker()
 
                 samples.append(await self._sample_async(run))
-                self.assertEqual(helper.create_sandbox_claim.await_count, 1 + 2 * self.REPEATS)
+                self.assertEqual(
+                    helper.create_sandbox_claim.await_count, 1 + self.BURST + self.REPEATS)
                 self.assertEqual(
                     [str(c).split("(")[0] for c in helper.mock_calls],
-                    ["call.create_sandbox_claim"] * (1 + 2 * self.REPEATS),
+                    ["call.create_sandbox_claim"] * (1 + self.BURST + self.REPEATS),
                 )
-            with self.subTest(fill=label):
+                self.assertEqual(
+                    _CountingAsyncEvent.sets, 0, f"a {outcome} fill create woke acquires")
+            with self.subTest(fill=label, outcome=outcome):
                 self._assert_flat(
-                    f"AsyncSandboxBatch._create_worker (1 {label} fill create)", *samples
-                )
+                    f"AsyncSandboxBatch._create_worker (1 {outcome} {label} fill create)",
+                    *samples)
 
     def test_sync_connect_cache_miss_is_o1(self) -> None:
         samples = []
@@ -1588,12 +2055,17 @@ class TestSuiteAWatchEventKinds(_HandleGateBase):
     Each sample gets a fresh batch, since most of these change the batch only the first time.
     """
 
-    KINDS = ("HEARTBEAT", "ADDED", "FLAP", "IP_CHANGE", "DELETED")
+    KINDS = ("HEARTBEAT", "ADDED", "COLD_ADDED", "FLAP", "IP_CHANGE", "DELETED")
 
     def _event(self, batch: Any, names: list[str], kind: str, n: int) -> dict[str, Any]:
-        if kind == "ADDED":
+        if kind in ("ADDED", "COLD_ADDED"):
             obj = _ready_claim("seed", 0, "pool-a", 0)
             obj["metadata"] = {"name": "b-hot-new", "uid": "uid-new", "resourceVersion": "7"}
+            if kind == "COLD_ADDED":
+                # A claim the warm pool couldn't cover: its pool's warm credit is exhausted.
+                obj["status"]["conditions"] = [
+                    {"type": "Ready", "status": "False", "reason": "SandboxNotReady"}
+                ]
             return {"type": "ADDED", "object": obj}
         event = _modified_event(batch._state, names[n // 2])
         event["object"]["metadata"]["resourceVersion"] = "999999"
@@ -1610,6 +2082,8 @@ class TestSuiteAWatchEventKinds(_HandleGateBase):
         member = batch._state.get_member(name)
         if kind == "ADDED":
             self.assertIsNotNone(batch._state.get_member("b-hot-new"))
+        elif kind == "COLD_ADDED":
+            self.assertEqual(batch._warm_credit._credit.get("pool-a"), 0)
         elif kind == "FLAP":
             assert member is not None
             self.assertIsNot(member.state, MemberState.READY)
@@ -1619,6 +2093,7 @@ class TestSuiteAWatchEventKinds(_HandleGateBase):
             self.assertTrue(member is None or member.state is not MemberState.READY)
 
     def _prepare(self, batch: Any, n: int, cls: type) -> None:
+        batch._warm_credit.record("pool-a", 5)
         self._waiters(batch, n, cls)
         # A rename must not silently stop the walk counting.
         self.assertIsInstance(batch._connected, _WalkCountingDict)
@@ -1882,7 +2357,8 @@ class TestSuiteAStaleConnectionScans(unittest.IsolatedAsyncioTestCase):
             _CountingConnection.eq_calls = 0
             with patch.object(AsyncSandboxBatch, "_close_one", close_one):
                 with InstructionCounter() as counter:
-                    await abatch._close_connections(closing, "re-list")  # type: ignore[arg-type]
+                    await _settled(lambda: abatch._close_connections(
+                        closing, "re-list"))  # type: ignore[arg-type]
         else:
             _sclient, _shelper, sbatch = _new_stopped_sync_batch(batch_id="b-f32")
             batch_any = sbatch
@@ -1954,6 +2430,293 @@ def _assert_requests_within(
     sent = collections.Counter(name for name, _a, _k in helper.method_calls)
     over = {name: count for name, count in sent.items() if count > budget.get(name, 0)}
     case.assertEqual(over, {}, f"{label} sent requests beyond {budget}: {dict(sent)}")
+
+
+class TestSuiteAClientRegistry(unittest.TestCase):
+    """Suite A: per-claim terminate untracks one handle from the client's registry, which a
+    long-lived per_claim RL run keeps at H live sandboxes, so it must not walk the registry."""
+
+    def test_untrack_is_o1_in_tracked_handles(self) -> None:
+        for cls in (SandboxClient, AsyncSandboxClient):
+
+            def build(h: int, _g: int, cls: Any = cls) -> Callable[[], object]:
+                handles = [MagicMock(namespace="ns", claim_name=f"c-{i}") for i in range(h)]
+                registry = _WalkCountingDict({("ns", f"c-{i}"): handles[i] for i in range(h)})
+                target = handles[-1]
+
+                def run() -> None:
+                    cls._untrack(registry, target)
+                    assert ("ns", target.claim_name) not in registry
+
+                return run
+
+            with self.subTest(client=cls.__name__):
+                _MEASURED_WALKS.clear()
+                small = measure(lambda: build(50, 0))
+                large = measure(lambda: build(2000, 0))
+                label = f"{cls.__name__}._untrack"
+                assert_scaling(self, label, small, large, O1_MAX_RATIO, "H=50|H=2000")
+                _assert_no_measured_walks(self, label)
+
+
+class _StopAtPacingWait(Exception):
+    """Ends a paced create at its first pacing wait, once the wait's timeout is recorded."""
+
+
+class TestSuiteBPacingCadence(unittest.IsolatedAsyncioTestCase):
+    """Suite B: a create that create_rps pacing delays (a paced acquire, or a fill create)
+    sleeps once until its slot, rather than polling in short waits until the slot comes."""
+
+    SLOT_DELAY_S = 20.0
+    POOL = {"spec": {"sandboxTemplateRef": {"name": "t"}}, "status": {"readyReplicas": 0}}
+
+    def _pace(self, batch: Any) -> list[float]:
+        # No warm credit (an empty pool), and the next pacing slot well ahead.
+        batch._warm_credit._credit.clear()
+        batch._next_create_at = time.monotonic() + self.SLOT_DELAY_S
+        return []
+
+    def _assert_waited_until_slot(self, label: str, waits: list[float], helper: Any) -> None:
+        # Before it waits, a paced create may refresh its pool's warm credit (one pool read),
+        # and send nothing else.
+        sent = [str(call).split("(")[0] for call in helper.mock_calls]
+        self.assertLessEqual(len(sent), 1, f"{label} sent {sent} before its pacing wait")
+        self.assertLessEqual(set(sent), {"call.get_sandbox_warmpool"}, f"{label}: {sent}")
+        self.assertEqual(len(waits), 1, f"{label}: {waits}")
+        self.assertGreaterEqual(
+            waits[0], self.SLOT_DELAY_S - WAIT_DEADLINE_SLACK_SECONDS,
+            f"{label}: waited {waits[0]:.2f}s for a slot {self.SLOT_DELAY_S:.0f}s away (a poll)",
+        )
+
+    def test_sync_paced_creates_wait_once_until_their_slot(self) -> None:
+        for case in ("acquire", "fill"):
+            with self.subTest(case=case):
+                groups = [BatchGroup(warmpool="pool-a", size=1 if case == "fill" else 0)]
+                _client, helper, batch = _new_stopped_sync_batch(groups, batch_id="b-pace")
+                helper.get_sandbox_warmpool.return_value = self.POOL
+                helper.reset_mock()
+                waits = self._pace(batch)
+
+                def record(timeout: float | None = None, waits: list[float] = waits) -> bool:
+                    waits.append(float("inf") if timeout is None else timeout)
+                    raise _StopAtPacingWait
+
+                stop_any: Any = batch._stop_creating
+                stop_any.wait = record
+                with contextlib.suppress(_StopAtPacingWait):
+                    if case == "acquire":
+                        batch.acquire("pool-a", timeout=60)
+                    else:
+                        batch._create_worker()
+                self._assert_waited_until_slot(f"SandboxBatch paced {case}", waits, helper)
+
+    async def test_async_paced_creates_wait_once_until_their_slot(self) -> None:
+        for case in ("acquire", "fill"):
+            with self.subTest(case=case):
+                groups = [BatchGroup(warmpool="pool-a", size=1 if case == "fill" else 0)]
+                _client, helper, batch = await _new_stopped_async_batch(
+                    groups, batch_id="b-pace")
+                helper.get_sandbox_warmpool = AsyncMock(return_value=self.POOL)
+                helper.reset_mock()
+                waits = self._pace(batch)
+
+                async def record(timeout: float, waits: list[float] = waits) -> bool:
+                    waits.append(timeout)
+                    raise _StopAtPacingWait
+
+                batch_any: Any = batch
+                batch_any._wait_for_stop = record
+                with contextlib.suppress(_StopAtPacingWait):
+                    if case == "acquire":
+                        await batch.acquire("pool-a", timeout=60)
+                    else:
+                        await batch._create_worker()
+                self._assert_waited_until_slot(f"AsyncSandboxBatch paced {case}", waits, helper)
+
+
+class TestSuiteBRenewCadence(unittest.IsolatedAsyncioTestCase):
+    """Suite B: the Lease renewal loop sleeps a whole renewal interval between renewals (one
+    wakeup per renewal), rather than polling until a renewal is due."""
+
+    def test_sync_renew_loop_waits_a_whole_interval(self) -> None:
+        _client, _helper, batch = _new_stopped_sync_batch(batch_id="b-renew")
+        waits: list[float] = []
+
+        def first_wait_then_stop(timeout: float | None = None) -> bool:
+            waits.append(float("inf") if timeout is None else timeout)
+            return True
+
+        stop_any: Any = batch._renew_stop
+        stop_any.wait = first_wait_then_stop
+        batch._renew_loop()
+        self.assertEqual(len(waits), 1)
+        self._assert_renews_every_third_of_lease(batch, waits[0])
+
+    def _assert_renews_every_third_of_lease(self, batch: Any, wait: float) -> None:
+        # One renewal (one Lease PUT) per third of the Lease duration; more often multiplies the
+        # PUTs, waking up more often without renewing is a poll.
+        self.assertGreaterEqual(batch._renew_interval, batch._lease_duration / 3 - 1,
+                                f"renews every {batch._renew_interval}s of a "
+                                f"{batch._lease_duration}s Lease")
+        self.assertGreaterEqual(wait, 0.9 * batch._renew_interval,
+                                f"the renew loop waits {wait:.2f}s at a time (a poll)")
+
+    async def test_async_renew_loop_waits_a_whole_interval(self) -> None:
+        _client, _helper, batch = await _new_stopped_async_batch(batch_id="b-renew")
+        waits: list[float] = []
+
+        async def first_sleep_then_stop(delay: float, *_a: object) -> None:
+            waits.append(delay)
+            raise asyncio.CancelledError()
+
+        with patch.object(async_sandbox_batch_module, "asyncio",
+                          _ModuleProxy(asyncio, sleep=first_sleep_then_stop)):
+            with contextlib.suppress(asyncio.CancelledError):
+                await batch._renew_loop()
+        self.assertEqual(len(waits), 1)
+        self._assert_renews_every_third_of_lease(batch, waits[0])
+
+
+class TestSuiteAClientCreate(unittest.IsolatedAsyncioTestCase):
+    """Suite A and B: a per-claim create tracks one handle in the client's registry, which
+    holds every live per-claim sandbox, and a caller-named claim (RL's per_claim mode always
+    names its claims) also records its name in ``_explicit_claims``. Neither may be walked
+    or copied by a create or a delete_sandbox, and the create sends only its claim create
+    and its readiness watch."""
+
+    SIZES = (50, 2000)
+    NAMING = ("generated", "explicit")
+    # What the apiserver returns for the create: a caller-named claim is validated against it.
+    CLAIM = {"metadata": {"resourceVersion": "1", "uid": "u-1"},
+             "spec": {"warmPoolRef": {"name": "pool-a"}}}
+
+    def _track(self, client: Any, h: int) -> Any:
+        client.sandbox_class = lambda **kw: MagicMock(
+            claim_name=kw["claim_name"], sandbox_id=kw["sandbox_id"], is_active=True)
+        client._active_connection_sandboxes = _WalkCountingDict({
+            ("default", f"c-{i}"): MagicMock(is_active=True) for i in range(h)
+        })
+        client._explicit_claims = _WalkCountingSet({("default", f"c-{i}") for i in range(h)})
+        client.k8s_helper.reset_mock()
+        return client
+
+    def _create_kwargs(self, naming: str, names: Iterator[int]) -> dict[str, Any]:
+        if naming == "generated":
+            return {"warmpool": "pool-a"}
+        return {"warmpool": "pool-a", "claim_name": f"named-{next(names)}"}
+
+    def _assert_o1_call(self, label: str, client: Any, samples: list[tuple[int, int]]) -> None:
+        self.assertEqual(
+            _WalkCountingDict.walks, 0, f"{label} walked the registry or _explicit_claims")
+        self.assertEqual(
+            [name for name, _a, _k in client.k8s_helper.method_calls], [],
+            f"{label} sent requests besides the stubbed create and watch",
+        )
+        if len(samples) == 2:
+            sizes = "H=50|H=2000"
+            assert_scaling(self, label, samples[0][0], samples[1][0], O1_MAX_RATIO, sizes)
+            assert_peak_scaling(self, label, samples[0][1], samples[1][1], sizes)
+
+    def test_sync_create_sandbox_is_o1_in_tracked_handles(self) -> None:
+        for naming in self.NAMING:
+            with self.subTest(naming=naming):
+                label = f"SandboxClient.create_sandbox ({naming} name)"
+                names = itertools.count()
+                samples: list[tuple[int, int]] = []
+                for h in self.SIZES:
+                    client = self._track(_new_stopped_sync_batch(batch_id="b-create")[0], h)
+                    client._create_claim = lambda *a, **k: self.CLAIM
+                    client._wait_for_claim_ready = lambda *a, **k: "sbx"
+                    client.create_sandbox(**self._create_kwargs(naming, names))
+                    _WalkCountingDict.walks = 0
+                    counts, peaks = [], []
+                    for _ in range(3):
+                        kwargs = self._create_kwargs(naming, names)
+                        counts.append(count_bytecode_instructions(
+                            functools.partial(client.create_sandbox, **kwargs)))
+                        kwargs = self._create_kwargs(naming, names)
+                        with MemoryWindow() as window:
+                            client.create_sandbox(**kwargs)
+                            peaks.append(window.peak())
+                    samples.append((max(counts), min(peaks)))
+                    self._assert_o1_call(label, client, samples)
+
+    async def test_async_create_sandbox_is_o1_in_tracked_handles(self) -> None:
+        async def create(*_a: object, **_k: object) -> dict[str, Any]:
+            return self.CLAIM
+
+        async def wait(*_a: object, **_k: object) -> str:
+            return "sbx"
+
+        for naming in self.NAMING:
+            with self.subTest(naming=naming):
+                label = f"AsyncSandboxClient.create_sandbox ({naming} name)"
+                names = itertools.count()
+                samples: list[tuple[int, int]] = []
+                for h in self.SIZES:
+                    batch = (await _new_stopped_async_batch(batch_id="b-create"))[0]
+                    client = self._track(batch, h)
+                    client._create_claim = create
+                    client._wait_for_claim_ready = wait
+                    await client.create_sandbox(**self._create_kwargs(naming, names))
+                    _WalkCountingDict.walks = 0
+                    counts, peaks = [], []
+                    for _ in range(3):
+                        kwargs = self._create_kwargs(naming, names)
+                        with InstructionCounter() as counter:
+                            await _settled(lambda: client.create_sandbox(**kwargs))
+                        counts.append(counter.count)
+                        kwargs = self._create_kwargs(naming, names)
+                        with MemoryWindow() as window:
+                            await _settled(lambda: client.create_sandbox(**kwargs))
+                            peaks.append(window.peak())
+                    samples.append((max(counts), min(peaks)))
+                    self._assert_o1_call(label, client, samples)
+
+    def test_sync_delete_sandbox_is_o1_in_tracked_handles(self) -> None:
+        # The per-claim episode's other half: deleting one tracked sandbox (RL per_claim
+        # release, or a caller's cleanup) must not walk the registry either.
+        samples: list[tuple[int, int]] = []
+        label = "SandboxClient.delete_sandbox"
+        for h in self.SIZES:
+            client = self._track(_new_stopped_sync_batch(batch_id="b-delete")[0], h)
+            targets = iter(range(h))
+            client.delete_sandbox(f"c-{next(targets)}")
+            _WalkCountingDict.walks = 0
+            counts, peaks = [], []
+            for _ in range(3):
+                counts.append(count_bytecode_instructions(
+                    functools.partial(client.delete_sandbox, f"c-{next(targets)}")))
+                with MemoryWindow() as window:
+                    client.delete_sandbox(f"c-{next(targets)}")
+                    peaks.append(window.peak())
+            self.assertEqual(len(client._active_connection_sandboxes), h - 7)
+            samples.append((max(counts), min(peaks)))
+            self._assert_o1_call(label, client, samples)
+
+    async def test_async_delete_sandbox_is_o1_in_tracked_handles(self) -> None:
+        samples: list[tuple[int, int]] = []
+        label = "AsyncSandboxClient.delete_sandbox"
+        for h in self.SIZES:
+            client = self._track((await _new_stopped_async_batch(batch_id="b-delete"))[0], h)
+            for key in client._active_connection_sandboxes:
+                client._active_connection_sandboxes[key].terminate = AsyncMock()
+            targets = iter(range(h))
+            await client.delete_sandbox(f"c-{next(targets)}")
+            _WalkCountingDict.walks = 0
+            counts, peaks = [], []
+            for _ in range(3):
+                with InstructionCounter() as counter:
+                    target = f"c-{next(targets)}"
+                    await _settled(lambda: client.delete_sandbox(target))
+                counts.append(counter.count)
+                with MemoryWindow() as window:
+                    target = f"c-{next(targets)}"
+                    await _settled(lambda: client.delete_sandbox(target))
+                    peaks.append(window.peak())
+            self.assertEqual(len(client._active_connection_sandboxes), h - 7)
+            samples.append((max(counts), min(peaks)))
+            self._assert_o1_call(label, client, samples)
 
 
 class TestSuiteBLifecycleRequests(unittest.IsolatedAsyncioTestCase):
@@ -2055,6 +2818,42 @@ class TestSuiteAAttachComplexity(unittest.TestCase):
 
         return run
 
+    TIMED_SIZES = (2000, 20000)
+
+    def _seconds(self, run: Callable[[], object]) -> float:
+        # CPU time of this process, so other processes competing for the cores don't count.
+        best = float("inf")
+        for _ in range(5):
+            started = time.process_time()
+            run()
+            best = min(best, time.process_time() - started)
+        return best
+
+    def test_attach_and_resync_time_is_linear(self) -> None:
+        # Attach and the watch's 410 resync handle every claim once. A scan of a local list or
+        # set per claim runs in C (no bytecode, no lasting allocation), so only time shows it.
+        # The sizes differ 10x: linear is about 10x, quadratic about 100x, so the 40x bound
+        # leaves 4x of room for timer noise either way.
+        def resync(n: int) -> Callable[[], object]:
+            claims = [_ready_claim("b1", i, "pool-0", n) for i in range(n)]
+            state = BatchState("b1", [BatchGroup(warmpool="pool-0", size=n)])
+            state.seed_from_claims(claims)
+            return lambda: state.resync_from_list(claims)
+
+        small_n, large_n = self.TIMED_SIZES
+        for label, build in (
+            ("reconstruct_groups + seed_from_claims", lambda n: self._attach_state(n, n // 5)),
+            ("resync_from_list", resync),
+        ):
+            small = self._seconds(build(small_n))
+            large = self._seconds(build(large_n))
+            with self.subTest(op=label):
+                self.assertLessEqual(
+                    large / small, 4 * large_n / small_n,
+                    f"{label}: {small * 1e3:.1f} ms at N={small_n} vs {large * 1e3:.1f} ms at "
+                    f"N={large_n} ({large / small:.0f}x for {large_n // small_n}x the claims)",
+                )
+
     def test_attach_rebuild_is_linear_in_claims_and_groups(self) -> None:
         (n_small, g_small), (n_large, g_large) = self.SIZES
         small = measure(lambda: self._attach_state(n_small, g_small))
@@ -2085,6 +2884,84 @@ class TestSuiteCReleasedTombstonesTarget(unittest.TestCase):
         self.assertLessEqual(len(state_any._released), 100)
 
 
+class _TerminatingSandbox:
+    """A per-claim sandbox whose terminate() reports back to the client, as the real
+    Sandbox's does."""
+
+    def __init__(self, **kw: Any) -> None:
+        self.claim_name, self.namespace = kw["claim_name"], kw["namespace"]
+        self.sandbox_id, self.is_active = kw["sandbox_id"], True
+        self.connector = MagicMock()        # the async client sets its TLS context on it
+        self._on_terminated: Callable[[Any], None] | None = None
+
+    def _terminated(self) -> None:
+        if self._on_terminated is not None:
+            self._on_terminated(self)
+            self._on_terminated = None
+
+    def terminate(self) -> None:
+        self._terminated()
+
+    def close_connection(self) -> None:
+        pass
+
+
+class _AsyncTerminatingSandbox(_TerminatingSandbox):
+    async def terminate(self) -> None:  # type: ignore[override]
+        self._terminated()
+
+    async def close_connection(self) -> None:  # type: ignore[override]
+        pass
+
+
+class TestSuiteCExplicitClaimsTarget(unittest.IsolatedAsyncioTestCase):
+    """Suite C, target for F-41: a caller-named claim (RL's per_claim mode names every claim)
+    adds its name to the client's ``_explicit_claims``, and neither delete_sandbox nor the
+    sandbox's own terminate() removes it, so a long-lived client grows by one entry per
+    episode. Expected to fail until F-41 is fixed; an unexpected pass then fails the run, so
+    the fix removes these markers."""
+
+    EPISODES = 200
+    CLAIM = TestSuiteAClientCreate.CLAIM
+
+    @unittest.expectedFailure
+    def test_sync_explicit_claims_stay_bounded(self) -> None:
+        client: Any = _new_stopped_sync_batch(batch_id="b-named")[0]
+        client.sandbox_class = _TerminatingSandbox
+        client._create_claim = lambda *a, **k: self.CLAIM
+        client._wait_for_claim_ready = lambda *a, **k: "sbx"
+        for ep in range(self.EPISODES):
+            sandbox = client.create_sandbox("pool-a", claim_name=f"named-{ep}")
+            if ep % 2:
+                sandbox.terminate()
+            else:
+                client.delete_sandbox(sandbox.claim_name)
+        self.assertEqual(len(client._active_connection_sandboxes), 0)
+        self.assertEqual(len(client._explicit_claims), 0)
+
+    @unittest.expectedFailure
+    async def test_async_explicit_claims_stay_bounded(self) -> None:
+        client: Any = (await _new_stopped_async_batch(batch_id="b-named"))[0]
+
+        async def create(*_a: object, **_k: object) -> dict[str, Any]:
+            return self.CLAIM
+
+        async def wait(*_a: object, **_k: object) -> str:
+            return "sbx"
+
+        client.sandbox_class = _AsyncTerminatingSandbox
+        client._create_claim = create
+        client._wait_for_claim_ready = wait
+        for ep in range(self.EPISODES):
+            sandbox = await client.create_sandbox("pool-a", claim_name=f"named-{ep}")
+            if ep % 2:
+                await sandbox.terminate()
+            else:
+                await client.delete_sandbox(sandbox.claim_name)
+        self.assertEqual(len(client._active_connection_sandboxes), 0)
+        self.assertEqual(len(client._explicit_claims), 0)
+
+
 class _ModuleProxy:
     """Stands in for a stdlib module inside one SDK module, overriding only the given names,
     so a wait can be recorded without patching the module for the whole process."""
@@ -2097,20 +2974,31 @@ class _ModuleProxy:
         return getattr(self._real, name)
 
 
-# A healthy wait sleeps until the acquire or Lease deadline (tens of seconds here); a poll caps
-# it. Anything shorter than this is a poll, however long the observed idle window is.
-MIN_IDLE_WAIT_SECONDS = 5.0
+# A healthy wait sleeps until the deadline the code computed (the acquire timeout, or the fill or
+# Lease deadline); a poll caps it. The slack covers the time between reading the deadline here and
+# the wait starting, so any cap below the deadline fails, however long the idle window is.
+WAIT_DEADLINE_SLACK_SECONDS = 2.0
 IDLE_WINDOW_SECONDS = 1.0
+PENDING_ACQUIRE_TIMEOUT_S = 30.0
 
 
-def _assert_waits_unbounded_by_poll(test: unittest.TestCase, label: str,
-                                    waits: list[float | None]) -> None:
+def _assert_waits_until_deadline(test: unittest.TestCase, label: str,
+                                 waits: list[float | None], deadline_s: float) -> None:
     test.assertTrue(waits, f"{label}: never waited on its wakeup (sleeps or spins instead)")
     shortest = min(float("inf") if w is None else w for w in waits)
     test.assertGreaterEqual(
-        shortest, MIN_IDLE_WAIT_SECONDS,
-        f"{label}: waited at most {shortest:.2f}s at a time while nothing changed (a poll)",
+        shortest, deadline_s - WAIT_DEADLINE_SLACK_SECONDS,
+        f"{label}: waited at most {shortest:.2f}s at a time while nothing changed, though its "
+        f"deadline was {deadline_s:.0f}s away (a poll)",
     )
+
+
+def _next_deadline_s(batch: Any) -> float:
+    """Seconds until the deadline an idle ``_next`` must wake for: the fill or Lease deadline."""
+    deadline = batch._lease_expires_at
+    if batch._fill_deadline is not None:
+        deadline = min(deadline, batch._fill_deadline)
+    return float(deadline - time.monotonic())
 
 
 class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
@@ -2206,31 +3094,46 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
     def test_sync_acquire_and_release_send_one_create_and_one_delete_each(self) -> None:
         # An acquire covered by warm credit and a release_member are the per-episode RL path:
         # one claim create and one claim delete each, with no pool, template, or claim reads.
+        # Both requests run with the batch lock free (a request under it stalls every other
+        # acquire, release, and lookup for a round trip), and an episode logs nothing at INFO
+        # or above, which would be a driver log line per claim (PERF-9).
         _client, helper, batch = _new_stopped_sync_batch(batch_id="b-req")
         ready = _ready_on_create(batch)
+        under_lock: list[str] = []
 
-        def ready_locked(*args: Any, **kwargs: Any) -> None:
+        def lock_free(request: str) -> None:
+            # Deletes run on worker threads, so a failed assert there would only be logged.
+            if not batch._lock.acquire(timeout=5):
+                under_lock.append(request)
+                return
+            batch._lock.release()
+
+        def ready_unlocked(*args: Any, **kwargs: Any) -> None:
+            lock_free("create_sandbox_claim")
             with batch._lock:
                 ready(*args, **kwargs)
 
-        helper.create_sandbox_claim.side_effect = ready_locked
+        helper.create_sandbox_claim.side_effect = ready_unlocked
+        helper.delete_sandbox_claim.side_effect = lambda *_a, **_k: lock_free(
+            "delete_sandbox_claim")
         batch._warm_credit.record("pool-a", 100)
         batch.acquire("pool-a", timeout=5)
         helper.reset_mock()
-        helper.create_sandbox_claim.side_effect = ready_locked
-        members = [batch.acquire("pool-a", timeout=5) for _ in range(self.EPISODES)]
-        self.assertEqual(
-            [name for name, _a, _k in helper.method_calls],
-            ["create_sandbox_claim"] * self.EPISODES,
-        )
-        helper.reset_mock()
-        for member in members:
-            batch.release_member(member)
-        batch._wait_active_deletes()
+        with self.assertNoLogs("k8s_agent_sandbox", level=logging.INFO):
+            members = [batch.acquire("pool-a", timeout=5) for _ in range(self.EPISODES)]
+            self.assertEqual(
+                [name for name, _a, _k in helper.method_calls],
+                ["create_sandbox_claim"] * self.EPISODES,
+            )
+            helper.reset_mock()
+            for member in members:
+                batch.release_member(member)
+            batch._wait_active_deletes()
         self.assertEqual(
             [name for name, _a, _k in helper.method_calls],
             ["delete_sandbox_claim"] * self.EPISODES,
         )
+        self.assertEqual(under_lock, [], "requests sent while holding the batch lock")
 
     def test_sync_blocked_acquire_rechecks_only_when_woken(self) -> None:
         # An acquire waiting on a pending claim should sleep until the watch wakes it, not
@@ -2272,7 +3175,7 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
 
         def acquire() -> None:
             try:
-                result.append(batch.acquire("pool-a", timeout=30))
+                result.append(batch.acquire("pool-a", timeout=PENDING_ACQUIRE_TIMEOUT_S))
             except BaseException as e:  # surfaced below instead of hanging the test
                 errors.append(e)
 
@@ -2305,7 +3208,8 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
         # Nothing changed while it waited, so it must not have rechecked; allow one spurious
         # wakeup. The recorded wait timeouts catch slower polls that this window can't.
         self.assertLessEqual(idle_checks, 1, f"{idle_checks} rechecks in 1 s with no change")
-        _assert_waits_unbounded_by_poll(self, "SandboxBatch.acquire (pending claim)", waits)
+        _assert_waits_until_deadline(self, "SandboxBatch.acquire (pending claim)", waits,
+                                     PENDING_ACQUIRE_TIMEOUT_S)
 
     async def test_async_blocked_acquire_rechecks_only_when_woken(self) -> None:
         _client, helper, batch = await _new_stopped_async_batch(batch_id="b-wait")
@@ -2348,7 +3252,7 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
             async_sandbox_batch_module, "asyncio",
             _ModuleProxy(asyncio, wait_for=recording_wait_for),
         ))
-        task = asyncio.ensure_future(batch.acquire("pool-a", timeout=30))
+        task = asyncio.ensure_future(batch.acquire("pool-a", timeout=PENDING_ACQUIRE_TIMEOUT_S))
         give_up = time.monotonic() + 10
         while not created and not task.done() and time.monotonic() < give_up:
             await asyncio.sleep(0.01)
@@ -2367,7 +3271,8 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(task, 10)
         stack.close()
         self.assertLessEqual(idle_checks, 1, f"{idle_checks} rechecks in 1 s with no change")
-        _assert_waits_unbounded_by_poll(self, "AsyncSandboxBatch.acquire (pending claim)", waits)
+        _assert_waits_until_deadline(self, "AsyncSandboxBatch.acquire (pending claim)", waits,
+                                     PENDING_ACQUIRE_TIMEOUT_S)
 
     def test_sync_idle_consumer_rechecks_only_when_woken(self) -> None:
         # events(), group_outcomes(), and wait_for_quorum() wait in _next for the next change;
@@ -2398,6 +3303,7 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
             target=lambda: result.append(batch._next(counted_pop, state.events_done)),
             daemon=True,
         )
+        deadline_s = _next_deadline_s(batch)
         consumer.start()
         time.sleep(0.05)
         idle_start = pops
@@ -2410,7 +3316,7 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result), 1)
         self.assertIsNotNone(result[0])
         self.assertLessEqual(idle_pops, 1, f"{idle_pops} rechecks in 1 s with no change")
-        _assert_waits_unbounded_by_poll(self, "SandboxBatch._next (idle)", waits)
+        _assert_waits_until_deadline(self, "SandboxBatch._next (idle)", waits, deadline_s)
 
     async def test_async_idle_consumer_rechecks_only_when_woken(self) -> None:
         _client, _helper, batch = await _new_stopped_async_batch(
@@ -2439,6 +3345,7 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
             async_sandbox_batch_module, "asyncio",
             _ModuleProxy(asyncio, wait_for=recording_wait_for),
         ))
+        deadline_s = _next_deadline_s(batch)
         task = asyncio.ensure_future(batch._next(counted_pop, state.events_done))
         await asyncio.sleep(0.05)
         idle_start = pops
@@ -2450,7 +3357,7 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(await asyncio.wait_for(task, 10))
         stack.close()
         self.assertLessEqual(idle_pops, 1, f"{idle_pops} rechecks in 1 s with no change")
-        _assert_waits_unbounded_by_poll(self, "AsyncSandboxBatch._next (idle)", waits)
+        _assert_waits_until_deadline(self, "AsyncSandboxBatch._next (idle)", waits, deadline_s)
 
     def test_sync_watch_reconnects_never_relist(self) -> None:
         # A watch that ends at its timeout reconnects from its resourceVersion; only a 410
@@ -2545,23 +3452,38 @@ class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
     async def test_async_acquire_and_release_send_one_create_and_one_delete_each(self) -> None:
         _client, helper, batch = await _new_stopped_async_batch(batch_id="b-req")
         ready = _ready_on_create(batch)
-        helper.create_sandbox_claim = AsyncMock(side_effect=ready)
+        under_lock: list[str] = []
+
+        def ready_unlocked(*args: Any, **kwargs: Any) -> None:
+            # On one event loop, a lock held while a request runs is held across its await.
+            if batch._lock.locked():
+                under_lock.append("create_sandbox_claim")
+            ready(*args, **kwargs)
+
+        def delete_unlocked(*_a: object, **_k: object) -> None:
+            if batch._lock.locked():
+                under_lock.append("delete_sandbox_claim")
+
+        helper.create_sandbox_claim = AsyncMock(side_effect=ready_unlocked)
+        helper.delete_sandbox_claim = AsyncMock(side_effect=delete_unlocked)
         batch._warm_credit.record("pool-a", 100)
         await batch.acquire("pool-a", timeout=5)
         helper.reset_mock()
-        members = [await batch.acquire("pool-a", timeout=5) for _ in range(self.EPISODES)]
-        self.assertEqual(
-            [str(c).split("(")[0] for c in helper.mock_calls],
-            ["call.create_sandbox_claim"] * self.EPISODES,
-        )
-        helper.reset_mock()
-        for member in members:
-            await batch.release_member(member)
-        await batch._wait_active_deletes()
+        with self.assertNoLogs("k8s_agent_sandbox", level=logging.INFO):
+            members = [await batch.acquire("pool-a", timeout=5) for _ in range(self.EPISODES)]
+            self.assertEqual(
+                [str(c).split("(")[0] for c in helper.mock_calls],
+                ["call.create_sandbox_claim"] * self.EPISODES,
+            )
+            helper.reset_mock()
+            for member in members:
+                await batch.release_member(member)
+            await batch._wait_active_deletes()
         self.assertEqual(
             [str(c).split("(")[0] for c in helper.mock_calls],
             ["call.delete_sandbox_claim"] * self.EPISODES,
         )
+        self.assertEqual(under_lock, [], "requests sent while holding the batch lock")
 
     def test_batch_create_and_delete_call_sites_log_at_debug(self) -> None:
         # PERF-9: an INFO record per claim turns a 2,000-claim batch into 4,000 driver log lines.
@@ -2625,6 +3547,8 @@ class MemoryWindow:
 
     def __enter__(self) -> MemoryWindow:
         gc.collect()
+        self._hand_offs = _HandOffWatch()
+        self._hand_offs.start()
         self._started = not tracemalloc.is_tracing()
         if self._started:
             tracemalloc.start()
@@ -2638,9 +3562,10 @@ class MemoryWindow:
     def peak(self) -> int:
         return tracemalloc.get_traced_memory()[1] - self._base
 
-    def __exit__(self, *_exc: object) -> None:
+    def __exit__(self, exc_type: object, *_exc: object) -> None:
         if self._started:
             tracemalloc.stop()
+        self._hand_offs.stop(failing=exc_type is not None)
 
 
 class _Page(dict[str, Any]):
@@ -2661,6 +3586,90 @@ def _claim_page(start: int, size: int, cont: str | None) -> _Page:
         for i in range(start, start + size)
     ]
     return _Page({"items": items, "metadata": {"continue": cont} if cont else {}})
+
+
+class _LazyWatch:
+    """A watch whose stream makes one claim event at a time, recording how many it has made, so
+    a test can tell a wrapper that streams from one that reads ahead or buffers."""
+
+    def __init__(self, events: int) -> None:
+        self.events, self.produced = events, 0
+
+    def _event(self, i: int) -> dict[str, Any]:
+        self.produced += 1
+        return {"type": "MODIFIED", "object": _ready_claim("b-watch", i, "pool-a", 0)}
+
+    def stream(self, **_kw: object) -> Iterator[dict[str, Any]]:
+        for i in range(self.events):
+            yield self._event(i)
+
+    def stop(self) -> None:
+        pass
+
+
+class _LazyAsyncWatch(_LazyWatch):
+    async def stream(  # type: ignore[override]
+        self, **_kw: object
+    ) -> AsyncIterator[dict[str, Any]]:
+        for i in range(self.events):
+            yield self._event(i)
+
+    async def close(self) -> None:
+        pass
+
+
+class TestSuiteCWatchStreaming(unittest.IsolatedAsyncioTestCase):
+    """Suite C: the helpers' watch_sandbox_claims, which carries every watch event of a batch,
+    hands each event on as it arrives: it reads nothing ahead, and its peak memory stays one
+    event whatever the stream's length."""
+
+    EVENTS = (100, 2000)
+
+    def _assert_streams(self, label: str, peaks: list[int], lags: list[int]) -> None:
+        self.assertEqual(max(lags), 0, f"{label} read {max(lags)} events ahead of its caller")
+        assert_peak_scaling(self, label, peaks[0], peaks[1], "E=100|E=2000")
+
+    def test_sync_watch_streams_events(self) -> None:
+        peaks, lags = [], []
+        with (
+            patch("k8s_agent_sandbox.k8s_helper.config"),
+            patch("k8s_agent_sandbox.k8s_helper.client.CustomObjectsApi"),
+            patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api"),
+        ):
+            helper = K8sHelper()
+        for events in self.EVENTS:
+            lazy = _LazyWatch(events)
+            consumed = 0
+            with patch("k8s_agent_sandbox.k8s_helper.watch.Watch", return_value=lazy):
+                with MemoryWindow() as window:
+                    for _event in helper.watch_sandbox_claims("ns", "sel", "1", 60):
+                        consumed += 1
+                        lags.append(lazy.produced - consumed)
+                    peaks.append(window.peak())
+            self.assertEqual(consumed, events)
+        self._assert_streams("K8sHelper.watch_sandbox_claims", peaks, lags)
+
+    async def test_async_watch_streams_events(self) -> None:
+        from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
+
+        async def initialized() -> None:
+            return None
+
+        helper: Any = object.__new__(AsyncK8sHelper)
+        helper.custom_objects_api = MagicMock()
+        helper._ensure_initialized = initialized
+        peaks, lags = [], []
+        for events in self.EVENTS:
+            lazy = _LazyAsyncWatch(events)
+            consumed = 0
+            with patch("k8s_agent_sandbox.async_k8s_helper.watch.Watch", return_value=lazy):
+                with MemoryWindow() as window:
+                    async for _event in helper.watch_sandbox_claims("ns", "sel", "1", 60):
+                        consumed += 1
+                        lags.append(lazy.produced - consumed)
+                    peaks.append(window.peak())
+            self.assertEqual(consumed, events)
+        self._assert_streams("AsyncK8sHelper.watch_sandbox_claims", peaks, lags)
 
 
 @patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api")
@@ -2696,6 +3705,10 @@ class TestSuiteCMemoryBounds(unittest.TestCase):
             live = helper.count_live_sandbox_claims("default", "agents.x-k8s.io/batch-id=b1")
             peak = window.peak()
         self.assertEqual(live, pages * page_size)
+        # One LIST per page of at least 500 claims, so counting N claims costs N / 500 requests.
+        calls = mock_api.list_namespaced_custom_object.call_args_list
+        self.assertEqual(len(calls), pages)
+        self.assertGreaterEqual(min(c.kwargs["limit"] for c in calls), page_size)
         return peak
 
     def test_count_live_sandbox_claims_holds_one_page_at_a_time(
@@ -2790,10 +3803,11 @@ class TestSuiteCLongLivedChurn(unittest.TestCase):
             gc.collect()
             without_tombstones = window.current()
         self.assertLessEqual(tombstones, warmup + episodes)
-        # One short name per tombstone measures about 156 B/episode; a heavier tombstone (e.g.
-        # a whole Member per released claim) multiplies that.
+        # One short name per tombstone measures 156 B/episode on CPython 3.13; the bound leaves
+        # 25%, so a heavier tombstone (a second string, a whole Member per released claim)
+        # fails it.
         self.assertLess(
-            with_tombstones / episodes, 320, f"{with_tombstones / episodes:.1f} B/episode"
+            with_tombstones / episodes, 195, f"{with_tombstones / episodes:.1f} B/episode"
         )
         per_episode = without_tombstones / episodes
         self.assertLess(

@@ -8,6 +8,7 @@
 
 - **Verification harness, TLA+, AST, and fuzzing architecture (`CHAOS-1` to `CHAOS-4`, `CHAOS-10`):** why negative-only reproductions lie until post-fix `/tmp` simulation passes, how to split subsystem TLA+ specs without exponential state blowup or inverted TLC flags, how to share one structural invariant oracle across Hypothesis and lockstep sync/async differential testing, and how to write non-brittle AST and import-binding checks.
 - **Non-obvious distributed, concurrency, and lifecycle bugs caught (`CHAOS-5` to `CHAOS-9`):** subsystem authority separation (`watch` vs. `renew`), post-stop watch `ADDED` tombstoning (`needs_delete=False`) and popped pacing-slot stalls, dynamic `acquire()` escaping `release()`/`detach()` drain barriers, `get_batch()` Lease timeout and GC rollback traps, Lease `PUT` `404` TOCTOU, `concurrent.futures.Future` cancellation leaks, `.strftime` sub-second floor truncation, and `recycle.py` `-1` warm-pool scale-up underflow.
+- **Performance as a verifiable invariant (`CHAOS-12`):** complexity, request, memory, and wakeup gates with the same two-sided proof as correctness gates, and how to converge an adversarial audit in fewer rounds.
 
 ## 10-stage verification pipeline scoreboard (`e84e964ce2d87987ec2443a5b5edccc84a374289`)
 
@@ -275,6 +276,40 @@
   - Flagging `AsyncK8sHelper._init_lock` and per-warmpool `refresh_lock` for `await`ing under a lock (`C-06`) confuses intentional single-flight I/O coalescing locks with shared state locks (`self._lock` / `self._changed`), while flagging `async with self._changed:` inside `wait_for_quorum` and `_drop_acquired` cancel handlers (`C-07`) overlooks that `INV-LOCK-ASYNC-1` guarantees zero `await`s inside `_changed`, keeping `asyncio.Lock.acquire()` synchronous (`verify_cancel5_exercise.py`: `19` states, `0` leaks).
 - **What we do:** Require every candidate finding to pass a three-step filter before entering the defect catalog: (1) check git blame, PR notes, and existing unit tests for an explicit contract, (2) build a runnable reproduction or formal counterexample, and (3) document subtle intentional designs in a dedicated "Verified Intended Contracts (`NO Production Change`)" section so downstream builders never "fix" working invariants.
 - **Related:** [AGENT-1](process.md#agent-1), [AGENT-6](process.md#agent-6), [VER-16](verification.md#ver-16), [WATCH-10](field-guide/watch.md#watch-10).
+
+</details>
+
+<a id="chaos-12"></a>
+
+## CHAOS-12 Treat performance as a verifiable invariant: complexity gates need the same two-sided proof, severity audit, and unrelated-detection diff as correctness gates
+
+**Takeaway:** "Is our implementation doing anything silly?" has a testable answer. Static AST checks find O(N) work on hot paths, machine-independent counters (bytecode instructions, `__eq__` calls, requests, allocated bytes) measure scaling between two sizes, and candidate fixes in `/tmp` prove each gate turns green. Three things bit us that a correctness-only suite never hit: a fix's new data shape silently disabled an unrelated static detection, white-box tests pinned the old container type, and the first severity estimates overstated two findings.
+
+<details>
+<summary>The full story (Pipeline 8: Stage 1 Check 8 + Stages 10a/10b, iterative adversarial rounds)</summary>
+
+- **Situation:** After the correctness sweep (`F-01..F-29`), we asked whether the batch stack does O(N) work where O(1) is possible, and whether CI would notice a future regression.
+- **What goes wrong:**
+  1. **A fix hid an unrelated finding.** Re-keying `SandboxFleet._handles` as an `id`-keyed `dict` (the `F-33` fix) replaced `self._handles.append(handle)` in the rollback handler with a subscript assignment, and Check 5 stopped reporting `F-06` (`INV-LEAK-2`), which the fix had not touched.
+  2. **White-box tests pin containers.** Eight assertions compared `_stale_connections` to `[]` or called `.append` on it, a test fake lacked `get_member`, and `test_adopt.py` asserted the redundant `create_warmpool` count (`2`). Each looks like a regression in a naive pass/fail diff.
+  3. **Severity by pattern, not by caller.** The first draft rated `has_pool` per-event (its only callers are the per-pool `release_group`) and rated `_close_connections` quadratic in general (`Sandbox` has identity `__eq__`, so it is quadratic only behind a backlog of failed closes).
+  4. **Coverage blind spots.** Bytecode gates miss work done by C builtins, and Check 8 first matched only inline comprehensions, not `for` loops, aliased snapshots, or `list()`/`sorted()` wrappers.
+- **What we do:**
+  1. Diff the full non-target static findings before and after every candidate fix. They must be identical, and any difference is a bug in the checker. Check 5 now recognizes `self._handles[...] = handle` as the re-insert.
+  2. Classify every new failure under the candidate fix as either a production regression or a white-box coupling, update the coupled tests in `/tmp`, and list them in the finding, so the remediation PR knows which tests to change (`26/N`'s own `F-34` fix made the same `test_adopt.py` edit).
+  3. Rate each finding by its real callers and frequency (`F-31`, `F-32` -> `LOW`; the watchdog's per-verdict re-check -> `MEDIUM`), and record the measured ratio next to it.
+  4. Close the blind spots with allocation-peak gates and `_whole_collection_call`, compute Check 8's O(1) set as the transitive self-call closure, and inject each auditor-reported mutation to confirm it now goes red.
+  5. Run adversarial rounds until a round reports zero material findings, with every auditor told the goal: catch regressions, surface existing bugs, and confirm improvements. Each round's auditor injected regressions that survived. Round 2 found C-level copies, round 3 extra requests and a relative peak bound, and round 4 the missing consumer-mode, group-size, and release-history axes. Round 5 found Check 8 blind to slices and aliases, and round 6 found the RL acquire and SDK per-episode request paths ungated. Rounds 7 through 17 kept finding whole uncovered areas (client create, background poll cadence, the executors, logging), and round 17 surfaced the last two product bugs (`F-40`, `F-41`). Rounds 18 through 20 found no product bugs, only blind spots in the instrument itself: work handed off to the event loop or a thread, failure branches, code behind test stubs, and work done every `K` calls. We stopped after round 20 with the owner's agreement. We kept every surviving mutant in `perf_mutants.py` (`162`) as a permanent regression check of the suite itself.
+- **How to converge in fewer rounds:** This suite took `20` adversarial rounds, because each one surfaced the next axis only after the previous fix landed, and because fixes targeted the reported instance instead of its category. Next time, do this before building anything:
+  1. **Write the coverage matrix first.** Rows are every per-event, per-call, and per-item hot path, sync and async. Columns are every regression class: Python O(N), C copy, non-allocating C walk, extra request, retained memory. Add every scaling axis: `N`, `G`, one group's size `K`, consumer mode, release history, live handles `H`, stale connections `S`.
+  2. **Write one mutant per cell**, then build gates until every mutant fails. Keep the mutants in `perf_mutants.py`, a permanent self-test of the suite.
+  3. **Agree on the stopping rule with the owner up front, tied to their goal.** An adversary can always build one more contrived mutant (housekeeping every `1,000` calls, a constant-factor slowdown), so "zero findings" may never arrive on its own. Stop when rounds stop finding product bugs and what remains is documented as a limit of the suite.
+  4. **Have auditors fill in the matrix exhaustively in one pass**, and confirm each mutant really changes cost. One round reported a "re-check the pool on every acquire" mutant that was a no-op, because `_check_pool` returns early for a checked pool.
+  5. **Never delete or rebuild a shared `/tmp` tree while an auditor may still be using it.** Give each auditor its own copy.
+  6. **Don't bias auditors.** Give each round only the code, the files under review, the goal, and the evidence bar. Leave out the author's list of fixes, claimed coverage, and coverage matrix, since these anchor the auditor toward treating those paths as done. Keep the method the same every round. Run at least one fully blind auditor alongside any auditor given context, and stop only when every auditor reports zero findings. Verifying the author's own fixes is the author's job, done with the mutant sweep before each round, not the auditor's.
+  7. **Put the instrument in the matrix, not only the code.** Add columns for what a gate can't see: work its call hands off (threads, executors, tasks, timers), work done only every `K` calls, failure branches, the real code behind every stub, tables the fixture never seeds, and the instrument's own cost. Each of these surfaced as a late round's MAJOR finding.
+  8. **Fix the category, not the instance.** When a round reports a gap, list every place of the same kind (every stub, every outcome branch, every wait) and close all of them before the next round.
+- **Related:** [CHAOS-1](#chaos-1), [CHAOS-4](#chaos-4), [PERF-24](field-guide/perf.md#perf-24), [TEST-35](testing.md#test-35).
 
 </details>
 

@@ -717,6 +717,59 @@ This section covers how we tested code that runs on several threads or asyncio t
 
 </details>
 
+<a id="test-35"></a>
+
+## TEST-35 Gate complexity with thread-filtered bytecode counts and allocation peaks, pin request counts to algebraic lower bounds, and calibrate the counter itself
+
+**Takeaway:** Wall-clock benchmarks can't tell O(1) from O(N) at unit-test sizes and flake on shared runners. Count the bytecode instructions the test thread executes (`sys.monitoring` INSTRUCTION events on 3.12+, `settrace` opcode events on 3.11) and the peak bytes it allocates (`tracemalloc`) at a small and a large size, and require the ratio to stay near `1`. Pin outbound requests to exact formulas in the inputs. Then prove the counter can fail: calibrate it, filter other threads out, and reject implausibly small counts.
+
+<details>
+<summary>The full story (test_batch_performance_invariants.py, test_batch_performance_rl.py, verify_batch_static.py Check 8)</summary>
+
+- **Situation:** We wanted CI to catch a regression from O(1) to O(N) (or O(N) to O(N^2)) without timers, and to confirm that a performance fix actually restores O(1).
+- **What goes wrong:**
+  1. **`LINE` events hide comprehensions.** A one-line `any(m.warmpool == pool for m in self._members.values())` emits a single `LINE` event at any N. Only `INSTRUCTION` events expose the `46x` scan.
+  2. **`sys.monitoring` is process-wide.** A leftover `serve_forever` thread from another test in the same process added instructions to either size. In a stress probe this gave `8/20` false REDs and `2/20` inverted ratios (`0.09x`), and an inverted ratio hides a real regression.
+  3. **A dead counter passes.** On 3.12+, `settrace` only counts opcodes once `frame.f_trace` is set, so a fallback counter can return `0` at both sizes, and a `large / max(small, 1)` ratio of `0` passes every gate.
+  4. **C builtins are invisible to bytecode counts.** `dict(self._members)`, `sorted(...)`, `list.copy()`, and `x in some_list` walk N entries without executing Python bytecode, so `upsert_claim` with an injected `dict(self._members)` kept a flat instruction count.
+  5. **Memory tests that pass vacuously.** Patching `json.loads` in a module that never imports `json` asserts nothing. A `tracemalloc` window opened while tracing is already on (`PYTHONTRACEMALLOC=1`) reports the whole process's peak.
+  6. **Work a call hands off escapes every window.** A coroutine that `create_task`s (or `call_later`s) its O(N) sweep, or a call that starts a thread, finishes that work outside the instruction count, the peak, and the walk counter: the measured call stays flat.
+  7. **Small samples miss periodic work.** Gates that ran at most `7` calls per handle never sampled housekeeping done every `64` calls (`O(N / 64)` per call, `O(N^2 / 64)` per run).
+  8. **The instrument can cost O(N) itself.** Enumerating `asyncio.all_tasks()` inside the window (a gate's `N` waiting acquires) or running a debug-mode event-loop pass on every call turned `12` correct gates red; a probe class's `setUp` was silently replaced by a second `setUp`, making a "passing" probe vacuous until `mypy`'s `no-redef` flagged it. An expected failure that fails for the wrong reason (`AttributeError` in a stand-in) is just as vacuous.
+- **What we do:**
+  1. `InstructionCounter` drops events whose `threading.get_ident()` differs from the owner's, sets `frame.f_trace` before `f_trace_opcodes`, and takes the minimum over `3` fresh builds after a warmup run (to absorb lazy imports and pydantic schema caches). Every gate asserts `small >= 20`. A calibration test requires a `1,000`-iteration loop to count at least `1,000` instructions, and a `2x` loop to count about `2x`, on every available backend, unchanged under a spinning background thread.
+  2. Every O(1) gate also bounds peak allocation with an absolute `large - small <= 4 KiB`. A relative bound (`1.5x`) let a per-event `sorted(self._connected)` hide inside the watch loop's `28 KB` baseline, while the measured noise is under `600 B`. The `MemoryWindow` reuses tracing that is already on through `reset_peak()` and a subtracted base. It never calls `clear_traces()`, which hung pytest under `PYTHONTRACEMALLOC=1` on CPython `3.13`. Scans that allocate nothing and run in C stay visible only to Check 8 (`_whole_collection_call` in `verify_batch_static.py`).
+  3. The handle gates also assert zero Kubernetes requests per watch event, `connect()` cache hit, and `still_reaches()`/`is_alive()` (`helper.method_calls`, `cluster.mock_calls`), since an extra `GET` per event is the costliest regression of all and changes no instruction ratio.
+  4. For list scans whose comparisons run in C, give the stand-in element a Python `__eq__` that counts calls: closing `S=800` connections behind an equal backlog made `1,280,000` comparisons, against `5,000` at `S=50`. Pair that with an instruction-ratio bound, so a quadratic loop written with `is` still fails. Then assert the work actually happened (every requested connection closed, the backlog kept), so a fix that skips the work can't pass.
+  5. Request counts are exact: `G` warm-pool `GET`s and `T` template `GET`s for `G` pools sharing `T` templates, `R` Lease `PUT`s and `0` `GET`s for `R` conflict-free renewals, and `1` `ensure_template` plus `1` `create_warmpool` for repeat on-demand acquires of one image.
+  6. Measure every axis a hot path scales with, not just the batch size N:
+     - group count `G`;
+     - one group's size `K` (the common single-image batch is one group of `N`);
+     - the consumer mode (`events()`, `group_outcomes()`, and `wait_for_quorum()` each route fill events differently);
+     - release history (tombstones only grow).
+
+     Place the measured event at the worst case. A quorum check that scans groups in order short-circuits at the first short group, so the fixture completes group `0` while the last group holds the quorum back.
+  7. Two-sided proof plus a mutant matrix: every gate is RED on the unfixed tree and GREEN after the candidate fix in `/tmp`, and each of `12` injected regressions turns at least one gate red:
+     - a Python scan in `upsert_claim` (`27.3x`);
+     - a `dict()` copy in it (`+100 KB` peak);
+     - an O(G) quorum scan (`19.0x`);
+     - a per-event `sort` of one group (`+47 KB`);
+     - an O(R) copy of release history (`+258 KB`);
+     - a per-event `sorted()` in the watch loop (`+21 KB`);
+     - a list copy under the fleet lock (`+7.5 KB`);
+     - an extra `GET` on `connect()`, on each watch event, or in `still_reaches()`;
+     - an `8 B`/episode reference leak;
+     - a non-allocating `max()` over a per-group dict, which only Check 8 catches.
+  8. Every measuring window owns its call's hand-offs: async calls are awaited through `_settled`, which finishes the tasks, callbacks, and soon-due timers the call scheduled (found through the loop's task factory and a wrapped `call_at`, never by walking all tasks, and with a loop pass only when the call queued something), and the window fails on a thread start, an executor submit, or a task or timer left pending.
+  9. Each handle gate counts a burst of `24` consecutive calls one by one and keeps the maximum; Check 8 treats a walk under an `if ... % K` branch as per-item, for rarer periods.
+  10. Gate every per-item path on its outcome branches (a refused create, delete, or acquire runs once per item in an outage), seed every table the path could walk (refused deletes, booting claims, still-checking acquires, `Counter`/`defaultdict` tables swapped by a subclass-aware walk counter), and gate the real code behind every stub a gate uses (pool operations, git-restore resets).
+  11. For C-level work instruction counts can't see (output re-joins, executor bookkeeping), compare process CPU time at sizes `20x` apart against an `80x` bound, stopping early once a run is already over.
+  12. Check side effects per episode too: requests run with the batch and fleet locks free (a lock acquire with a timeout inside the stubbed request), and per-event paths log nothing at INFO or above (`assertNoLogs` in the base class's `setUp`).
+  13. Validate every expected failure both ways: confirm it fails for the right reason on today's code and turns into an unexpected success under a probe fix.
+- **Related:** [TEST-1](#test-1), [TEST-29](#test-29), [TEST-32](#test-32), [PERF-24](field-guide/perf.md#perf-24), [CHAOS-12](chaos-verification-suite.md#chaos-12).
+
+</details>
+
 ---
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)

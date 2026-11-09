@@ -499,6 +499,28 @@ This section covers how the batch handle stays fast and lean when a batch holds 
 
 </details>
 
+<a id="perf-24"></a>
+
+## PERF-24 Look up one member by name, keep per-pool and membership indexes, and never scan or copy a whole collection on a per-event or per-item path
+
+**Takeaway:** On a path that runs once per watch event, RL step, release, or closed connection, every operation must cost O(1) in the batch size: `get_member(name)` instead of filtering `members(pool)`, an index keyed by warmpool instead of scanning `_members`, and an insertion-ordered `dict` instead of `list` membership plus `remove`. A full snapshot (`members()` copies, filters, and sorts under the batch lock) is for callers that want the whole batch, not one entry.
+
+<details>
+<summary>The full story (Pipeline 8: F-30..F-41 at e84e964c and bb443e71)</summary>
+
+- **Situation:** `BatchState` keeps its per-event transitions O(1) ([PERF-1](#perf-1)), and Pipeline 8 confirmed that by instruction count: `upsert_claim` costs `475` instructions at both `N=100` and `N=5,000`, and one watch event through `SandboxBatch._watch_loop` costs `3,358` vs `3,364` at `N=100` vs `2,000`. The layers around it did not keep that discipline.
+- **What goes wrong:**
+  1. `BatchClaim.still_reaches()` (called by `SandboxHandle.is_alive()` at every RL step boundary) found its member with `next(m for m in batch.members(pool) if m.claim_name == name)`. That costs `4,399` instructions at `N=50` and `146,761` at `N=2,000` (`33.4x`), all under `batch._lock`, which the watch thread needs for every event (`F-30`). On `26/N`, `BatchWatchdog._poll_once` sorts the whole batch on every idle poll, up to `50` times per second during acquire bursts (`38.9x`).
+  2. `has_pool`, `members(pool)`, and `release_group` walk every member and group (`44.9x`, `44.6x`, `39.7x`), so releasing all `G` pools of a multi-image batch costs `O(G * N)` (`F-31`).
+  3. `list` membership plus `remove` turns `S` closes behind a backlog of failed ones into `O(S^2)` comparisons (`F-32`), and `SandboxFleet.release` runs the generated 16-field dataclass `__eq__` on every handle ahead of the target, twice (`19.5x`, `F-33`).
+  4. Tombstones that are never pruned (`BatchState._released`) grow by `156 B` per episode for the life of a dynamic batch (`F-35`), and the SDK client keeps every caller-named claim name in `_explicit_claims` forever (`F-41`, also on `origin/main`).
+  5. Per-pool work that reaches the whole batch: `release_group()` walks the entire fill plan to drop one pool's creates (`F-36`) and wakes every waiting acquire rather than that pool's (`F-37`).
+  6. Per-call work that grows with history or output: `SandboxFleet.add_tasks` re-sums every planned image on each streamed batch (`F-40`, `14.5x` at `3,000` images), and `SandboxSession.run` re-joins its whole output buffer per chunk (`F-39`, `10x` the output costs `107x` the time). A per-claim acquire also reads the Sandbox twice where one read returns both values (`F-38`).
+- **What we do:** Add `get_member(name)` to both handles; keep `_members_by_pool` / `_acquiring_by_pool` next to `_members` / `_acquiring`, maintained through one insert helper and one pop helper; store `_stale_connections` as `dict[Sandbox, None]` and fleet handles as `dict[int, SandboxHandle]` keyed by `id(handle)`; index planned creates per pool and wake only the released pool's acquires; keep per-cluster task totals on `FleetPlan`; match a session's end marker against the tail plus the new chunk and join once. Each candidate fix turned its gate green at a ratio of `1.000`, with zero production test regressions. The only tests that changed were white-box assertions on the old container types ([TEST-35](../testing.md#test-35)).
+- **Related:** [PERF-1](#perf-1), [PERF-22](#perf-22), [PERF-23](#perf-23), [TEST-35](../testing.md#test-35), [CHAOS-12](../chaos-verification-suite.md#chaos-12).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

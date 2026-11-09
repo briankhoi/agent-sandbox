@@ -4,7 +4,7 @@
 - **Verified Commit SHA:** `e84e964ce2d87987ec2443a5b5edccc84a374289`
 - **Verified Git Tree SHA:** `f798166c129e24f4f0ae59b842a0a32ce40fe177`
 - **Verification Strategy Reference:** `batch-primitives/comprehensive_verification_strategy.md` (`e72f7347`)
-- **Drop-In Verification Suite Patch:** `/usr/local/google/home/brianknguyen/agent-sandbox-notes/batch-primitives/deliverables/verification_suite/verification_suite.patch` (`12,419` lines across `12` repository files; verified with `git apply --check --whitespace=error` both full and `--exclude='examples/agent-sandbox-rl/*'` against tree `f798166c129e24f4f0ae59b842a0a32ce40fe177`)
+- **Drop-In Verification Suite Patch:** `/usr/local/google/home/brianknguyen/agent-sandbox-notes/batch-primitives/deliverables/verification_suite/verification_suite.patch` (`14,445` lines across `12` repository files; verified with `git apply --check --whitespace=error` both full and `--exclude='examples/agent-sandbox-rl/*'` against tree `f798166c129e24f4f0ae59b842a0a32ce40fe177`)
 
 ---
 
@@ -18,7 +18,7 @@ Before sweeping for new defects, we ran our pipelines against both known PR `#21
 
 All `1,100` pre-existing batch SDK (`399`) and RL (`701`) unit tests passed on `e84e964ce2d87987ec2443a5b5edccc84a374289` without detecting any of the defects below. Across the full verification sweep and iterative multi-agent adversarial audit rounds, the correctness pipelines uncovered **29 distinct verified findings** (`4 CRITICAL`, `9 HIGH`, `14 MEDIUM`, `2 LOW`) backed by **48 executable failing test reproductions**, **21 static AST/call-graph detections**, and **14 deterministic TLA+ negative-control counterexamples** (`8` baseline bug reproductions + `6` protocol mutation controls), alongside **7 audited intended contracts** (`Section 3.13`, where we recommend zero production changes):
 
-Pipeline 8 then added **10 performance findings** (`F-30`..`F-39`: `1 HIGH`, `3 MEDIUM`, `6 LOW`; [Section 3.14](#perf-findings)), each red in a deterministic gate on `e84e964c`, green under its candidate fix, and re-confirmed by a standalone wall-clock and request-count repro on real SDK and RL objects. The largest: `F-30` (every RL step's liveness check sorts the whole batch under its lock, `41x` slower at `2,000` members), `F-33` (`SandboxFleet.release` is `O(H)` under the fleet lock), `F-39` (session command output costs quadratic time), and `F-34` (`25/N` only, fixed on `26/N`).
+Pipeline 8 then added **12 performance findings** (`F-30`..`F-41`: `1 HIGH`, `3 MEDIUM`, `8 LOW`; [Section 3.14](#perf-findings)), each red in a deterministic gate on `e84e964c`, green under its candidate fix, and re-confirmed by a standalone wall-clock and request-count repro on real SDK and RL objects. The largest: `F-30` (every RL step's liveness check sorts the whole batch under its lock, `41x` slower at `2,000` members), `F-33` (`SandboxFleet.release` is `O(H)` under the fleet lock), `F-39` (session command output costs quadratic time), and `F-34` (`25/N` only, fixed on `26/N`). `F-41` (the SDK client keeps every caller-named claim name forever) is also on `origin/main`.
 
 | ID | Severity | Invariant / Rule | Verified Location (`file:line`) | Owning Commit & Stack Target | Active-Voice Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -61,14 +61,16 @@ Pipeline 8 then added **10 performance findings** (`F-30`..`F-39`: `1 HIGH`, `3 
 | **F-37** | `LOW` | No needless wakeups | `sandbox_batch.py:1210`, `async_sandbox_batch.py:1243` | SDK (both) | `release_group()` wakes every waiting acquire, including other pools' (`100` of `100`). |
 | **F-38** | `LOW` | Minimum requests | `fleet.py:1562,1564` (`25/N`), `:1610,1612` (`26/N`) | `25/N` and `26/N` | A per-claim acquire `GET`s the Sandbox twice (`get_pod_name`, `get_pod_ip`) where one read returns both. |
 | **F-39** | `MEDIUM` | `INV-PERF-HOTPATH-5` | `handles.py:186-222` (`:217`) | `25/N` and `26/N` | `SandboxSession.run` re-joins and re-scans its whole output buffer per chunk: `10x` the output costs `107x` the time. |
+| **F-40** | `LOW` | `INV-PERF` constant cost | `fleet.py:499-501` (`25/N`), `:525-527` (`26/N`) | `25/N` and `26/N` | `SandboxFleet.add_tasks` re-sums every planned image's tasks on each call: `14.5x` slower at `3,000` vs `100` planned images. |
+| **F-41** | `LOW` | `INV-PERF` retained memory | `sandbox_client.py:225`, `async_sandbox_client.py:369` | `origin/main` (claim adoption) and every branch | `SandboxClient._explicit_claims` gains one entry per caller-named create and nothing removes it; RL `per_claim` works around it with `forget_claim_in_client`. |
 
 ### Master 12-Stage Sweep Summary (`dev/tools/run_batch_verification.sh`)
 
 | Stage | Pipeline | Wall Time | Result on `e84e964c` | Measured Output |
 | :--- | :--- | :--- | :--- | :--- |
-| `0` | Harness Self-Check (`Import & Mypy`) | `39s` (`~6s` warm) | `PASS` | Verifies `k8s_agent_sandbox` resolves inside `REPO_ROOT`; `0` `mypy` errors across `6` SDK harness files, `1` RL test module, and `2` BFS model scripts. |
+| `0` | Harness Self-Check (`Import & Mypy`) | `39s` (`~6s` warm) | `PASS` | Verifies `k8s_agent_sandbox` resolves inside `REPO_ROOT`; `0` `mypy` errors across `7` SDK harness files, `2` RL test modules, and `2` BFS model scripts. |
 | `1` | Static AST & Call-Graph Auditor (`verify_batch_static.py`) | `1s` | `FAIL` (expected on unfixed code) | `Summary: 21 finding(s) (CRITICAL=4, HIGH=9, MEDIUM=5, LOW=3)`, `0` false positives. |
-| `1b` | Static Hot-Path Complexity (Check 8 alone) | `1s` | `FAIL` (expected on unfixed code) | `16` findings on `25/N` (`F-30`..`F-33`, `F-36`, `F-39`), `18` on `26/N`, `0` with the candidate fixes. |
+| `1b` | Static Hot-Path Complexity (Check 8 alone) | `~20s` | `FAIL` (expected on unfixed code) | `18` findings on `25/N` (`F-30`..`F-33`, `F-36`, `F-39`), `20` on `26/N`, `0` with the candidate fixes. |
 | `2` | Modular TLA+ Suite (`runall_subsystems.sh`, `22` TLC runs) | `56s` | `PASS` (`22/22` expected outcomes) | `8` positive specs pass (`3,272,848` distinct / `17,866,937` generated states); `14` deterministic `-workers 1` negative controls violate target invariants (`2,499` distinct / `6,296` generated states; `3,275,347` total distinct states, `0` subsystem deadlocks). |
 | `3` | BFS Lock & Cancel State Models (`verify_delete_lifecycle_model.py`, `verify_cancel5_exercise.py`) | `4s` | `PASS` | `62,579` total reachable states across `15` sync/async lock/signal models (`7` positive safety models = `26,053` states with `0` violations + `8` expected negative-control models = `36,526` states) + `19` explored states across `3` `CANCEL-5` assertions (`4 + 9 + 6`). |
 | `4` | BSD/macOS Socket Portability (`test_k8s_helper.py`) | `2s` | `FAIL` (reproduces **F-02**) | `1 failed, 80 deselected in 1.35s` (`ConnectTimeoutError` at `test_k8s_helper.py:1243`). |
@@ -78,8 +80,8 @@ Pipeline 8 then added **10 performance findings** (`F-30`..`F-39`: `1 HIGH`, `3 
 | `7` | Sync/Async Lockstep Differential Fuzzer (`test_batch_differential.py`) | `3s` | `FAIL` (reproduces **F-12**) | `1 failed, 51 passed in 2.55s` (`50` seeded lockstep traces + `CANCEL-5` interruption parity pass; `F-12` fails identically on sync and async). |
 | `8` | Concurrency & CAS Stress Suite (`test_batch_concurrency_stress.py`) | `4s` | `FAIL` (reproduces **F-15**) | `1 failed, 4 passed in 3.63s` (`50`-worker sync/async churn, `15`-round `9`-thread Lease CAS, and creator flood pass; `0.250s` lock starvation fails). |
 | `9` | Production Mypy & PEP 561 (`SDK + RL`) | `32s` (`~8s` warm) | `FAIL` (reproduces **F-13** & **F-22**) | SDK internal: `0` errors (`44` files); PEP 561 `--strict -c`: `Found 3 errors in 1 file`; RL `--ignore-missing-imports`: `Found 41 errors in 10 files (checked 29 source files)`. |
-| `10a` | SDK Performance & Complexity Suite (`test_batch_performance_invariants.py`) | `~3 min` (`-n 8`) | `FAIL` (reproduces **F-31, F-32, F-36, F-37**) | `9` red gates on `25/N`; `66 passed, 1 xfailed` (`F-35` target) with the candidate fixes. |
-| `10b` | RL Performance & Complexity Suite (`test_batch_performance_rl.py`) | `~15s` | `FAIL` (reproduces **F-30, F-33, F-34, F-39**) | `12` red gates on `25/N`, `8` on `26/N` (including the watchdog); `20 passed, 2 skipped, 1 xfailed` (`F-38` target) with the candidate fixes. |
+| `10a` | SDK Performance & Complexity Suite (`test_batch_performance_invariants.py`) | `~5 min` (`-n 4`) | `FAIL` (reproduces **F-31, F-32, F-36, F-37**) | `11` red gates on `25/N`; `82 passed, 3 xfailed` (`F-35`, `F-41` targets) with the candidate fixes. |
+| `10b` | RL Performance & Complexity Suite (`test_batch_performance_rl.py`) | `~90s` (`-n 2`) | `FAIL` (reproduces **F-30, F-33, F-34, F-39, F-40**) | `20` red gates on `25/N`, `14` on `26/N` (including the watchdog); `42 passed, 2 skipped, 1 xfailed` (`F-38` target) with the candidate fixes. |
 
 ---
 
@@ -142,7 +144,7 @@ A verification harness that starts green proves nothing about its defect-detecti
 
 ---
 
-## 3. Complete Findings Catalog (`F-01` .. `F-39` at `e84e964ce2d87987ec2443a5b5edccc84a374289`)
+## 3. Complete Findings Catalog (`F-01` .. `F-41` at `e84e964ce2d87987ec2443a5b5edccc84a374289`)
 
 Every finding below cites exact `file:line` coordinates and `git blame` SHAs verified against `e84e964ce2d87987ec2443a5b5edccc84a374289`, paired with a deterministic single-command reproduction and surgical fix recommendation.
 
@@ -790,7 +792,7 @@ Per `working_rules.md` line 73, we audited seven candidate behaviors flagged dur
 
 <a id="perf-findings"></a>
 
-### 3.14 Performance & Complexity Findings (`F-30` .. `F-39`, Pipeline 8)
+### 3.14 Performance & Complexity Findings (`F-30` .. `F-41`, Pipeline 8)
 
 Pipeline 8 (Stage `1b` Check 8 `HOT_PATH_COMPLEXITY`, Stages `10a`/`10b`) measures cost in machine-independent units: executed Python bytecode instructions of the test thread at a small and a large size, whole-table walks inside C builtins, `__eq__` comparisons, outbound request counts, and `tracemalloc` bytes. Line numbers are at `e84e964c` (`25/N`) unless marked `26/N` (`bb443e71`, `origin/feat/rl-batch-hardening`). The SDK is byte-identical on both branches, so every SDK finding applies to both. Every finding was re-confirmed outside the suite by a standalone wall-clock and request-count repro on real `SandboxClient` / `SandboxBatch` / `SandboxFleet` objects (last column).
 
@@ -806,6 +808,8 @@ Pipeline 8 (Stage `1b` Check 8 `HOT_PATH_COMPLEXITY`, Stages `10a`/`10b`) measur
 | **F-37** | `LOW` | Present | Present | `::test_sync_release_group_wakes_only_its_pool`, `::test_async_release_group_wakes_only_its_pool` | `release_group('pool-a')` wakes `100` of `100` acquires waiting on another pool | `100` of `100` woken |
 | **F-38** | `LOW` | Present | Present | Strict expected failure: `test_batch_performance_rl.py::test_per_claim_acquire_reads_the_sandbox_once` | `2` Sandbox `GET`s per per-claim acquire where `1` returns both values | `18` Sandbox `GET`s across `9` acquires |
 | **F-39** | `MEDIUM` | Present | Present | `test_batch_performance_rl.py::test_session_run_cost_is_linear_in_output_size`; Check 8 `INV-PERF-HOTPATH-5` | `0.62` vs `1,075.55 ms` for `50` vs `2,000` 1 KiB output chunks (`1,737x` for `40x` the output) | `10.9` vs `1,165.5 ms` for `400 KiB` vs `4 MB` (`106.6x` for `10x`) |
+| **F-40** | `LOW` | Present | Present | `test_batch_performance_rl.py::test_add_tasks_is_o1_in_plan_size[planned,fresh]` | `1,849` vs `29,709` instructions for `8` tasks of a planned image at `10` vs `2,000` planned images (`16.1x`); fresh image `13.4x` | `20.6` vs `298.3 us` at `100` vs `3,000` planned images (`14.5x`; `26/N` `14.8x`; `1.1x` with the fix) |
+| **F-41** | `LOW` | Present | Present | Strict expected failure: `test_batch_performance_invariants.py::TestSuiteCExplicitClaimsTarget` (sync and async) | `_explicit_claims` holds `200` names after `200` caller-named create and delete episodes | `2,100` names after `2,100` episodes, with the registry back at `0` |
 
 #### `F-30` [`HIGH`]: `BatchClaim.still_reaches()` (and `26/N` `BatchWatchdog._poll_once`) Look Up One Member Through a Full `batch.members(warmpool)` Snapshot
 
@@ -862,6 +866,18 @@ Pipeline 8 (Stage `1b` Check 8 `HOT_PATH_COMPLEXITY`, Stages `10a`/`10b`) measur
 - **Root Cause:** Each stdout chunk runs `"".join(buf)` and `marker in text` over everything received so far, so `K` chunks copy and scan `O(K^2)` bytes. The copying happens in C: instruction counts and peak memory stay linear, so only time (and Check 8's `INV-PERF-HOTPATH-5`) shows it.
 - **Recommended Fix:** Keep the last `len(marker) - 1` characters, test `marker in tail + chunk`, and join once when the marker arrives.
 - **Two-Sided Proof:** With that fix, the repro scales linearly (`0.6`, `2.6`, `9.3 ms` for `1x`, `4x`, `10x` the output) and all `21` session unit tests pass.
+
+#### `F-40` [`LOW`]: `SandboxFleet.add_tasks` Re-Sums Every Planned Image's Tasks on Each Call
+
+- **Verified Locations:** `fleet.py:499-501` (`25/N`), `:525-527` (`26/N`). `LookaheadWarmer._register` calls `add_tasks` for every training batch that brings a new image.
+- **Root Cause:** Each call rebuilds `cluster_totals` by walking every plan entry, so streaming `K` batches into a plan of `I` images costs `O(K * I)`.
+- **Recommended Fix:** Keep per-cluster task totals on `FleetPlan`, updated in `add()` and where `add_tasks` bumps an entry. The `self.tasks = list(self.tasks) + list(new_tasks)` copy is a deliberate copy-on-write snapshot (`load_tasks` hands out the list and the strategies index results by it), so it stays.
+
+#### `F-41` [`LOW`]: The SDK Client Keeps Every Caller-Named Claim Name Forever
+
+- **Verified Locations:** `sandbox_client.py:225` and `async_sandbox_client.py:369` add `(namespace, claim_name)` to `_explicit_claims`; no `delete_sandbox`, `terminate`, or `_untrack` path removes it. Present on `origin/main` since claim adoption.
+- **Impact:** A long-lived client that names its claims (RL `per_claim` mode names every one) grows by one entry per episode. RL works around it with `forget_claim_in_client`; direct SDK users do not.
+- **Recommended Fix:** Discard the name in `delete_sandbox` and in the handle's terminate callback. The strict expected-failure gates then pass, so remove their markers.
 
 ## 4. Coverage Matrices: Master Invariants, Chaos Suites, & 22-Run TLA+ Suite
 

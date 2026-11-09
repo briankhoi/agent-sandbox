@@ -98,7 +98,9 @@ else
   export MYPYPATH="${SDK_SRC_DIR}${MYPYPATH:+:${MYPYPATH}}"
 fi
 
-CACHE_ROOT="${TMPDIR:-/tmp}/batch_verify_cache_${UID:-0}"
+# Keyed by checkout too, so runs on different worktrees don't share (and race on) caches.
+REPO_KEY="$(printf '%s' "${REPO_ROOT}" | cksum | cut -d' ' -f1)"
+CACHE_ROOT="${TMPDIR:-/tmp}/batch_verify_cache_${UID:-0}_${REPO_KEY}"
 export HYPOTHESIS_STORAGE_DIRECTORY="${CACHE_ROOT}/hypothesis"
 PYTEST_CACHE_DIR="${CACHE_ROOT}/pytest"
 MYPY_CACHE_SDK="${CACHE_ROOT}/mypy_sdk"

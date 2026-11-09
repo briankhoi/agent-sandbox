@@ -3853,10 +3853,10 @@ index 0000000..af03e48
 +    unittest.main()
 diff --git a/clients/python/agentic-sandbox-client/k8s_agent_sandbox/test/unit/test_batch_performance_invariants.py b/clients/python/agentic-sandbox-client/k8s_agent_sandbox/test/unit/test_batch_performance_invariants.py
 new file mode 100644
-index 0000000..0c101f0
+index 0000000..3c16c2f
 --- /dev/null
 +++ b/clients/python/agentic-sandbox-client/k8s_agent_sandbox/test/unit/test_batch_performance_invariants.py
-@@ -0,0 +1,2808 @@
+@@ -0,0 +1,3822 @@
 +# Copyright 2026 The Kubernetes Authors.
 +#
 +# Licensed under the Apache License, Version 2.0 (the "License");
@@ -3892,14 +3892,31 @@ index 0000000..0c101f0
 +    a broken counter fails instead of passing a 0 / 0 ratio. Suite A also counts ``__eq__``
 +    calls to expose O(S^2) list scans that run inside C.
 +  - Suite B pins outbound Kubernetes request counts to their algebraic lower bounds in the
-+    number of groups G, distinct templates T, and Lease renewals R, and pins batch create and
-+    delete call sites to DEBUG logging.
++    number of groups G, distinct templates T, and Lease renewals R, pins batch create and
++    delete call sites to DEBUG logging, requires per-episode requests to run with the batch
++    lock free and per-event and per-episode paths to log nothing at INFO or above, and pins
++    every wait (renewal, idle consumer, pending acquire, create_rps pacing) to the deadline or
++    interval it is for, so none of them polls.
 +  - Suite C bounds memory with ``tracemalloc`` peaks, ``weakref`` liveness of list pages, a
-+    fully drained deletecollection stream, and the retained bytes per acquire and release
-+    episode of a long-lived dynamic batch, both in the batch state and in the handles.
++    fully drained deletecollection stream, a watch wrapper that streams rather than buffers, and
++    the retained bytes per acquire and release episode of a long-lived dynamic batch, both in
++    the batch state and in the handles.
 +
 +A failing gate prints the measured counts at both sizes, so a regression from O(1) to O(N) is
 +reported as a ratio rather than a timeout, and a fix that restores O(1) turns the gate green.
++
++Every measuring window also owns the work its call hands off. An async call is awaited through
++``_settled``, which finishes the tasks and callbacks it scheduled inside the window, and any
++window fails if its call starts a thread, submits to an executor, or leaves a task pending, so
++deferred work is counted or rejected, never missed (timers due within a second included).
++Per-item paths are gated on their failure outcomes too (a refused fill create, a refused
++delete), which run once per item in an outage, on batches that also carry refused deletes and
++booting claims, and each handle gate counts a burst of consecutive calls one by one, so work
++done every few calls is sampled; rarer periodic work is the static check's.
++
++Out of scope: a constant-factor slowdown of a path that stays O(1) (one more fixed-size copy or
++string format per call). The gates bound how cost grows with size, never its absolute amount,
++which would differ across Python versions and change with every unrelated edit.
 +"""
 +
 +from __future__ import annotations
@@ -3908,8 +3925,10 @@ index 0000000..0c101f0
 +import asyncio
 +import collections
 +import contextlib
++import functools
 +import gc
 +import inspect
++import itertools
 +import logging
 +import os
 +import pathlib
@@ -3920,17 +3939,20 @@ index 0000000..0c101f0
 +import tracemalloc
 +import unittest
 +import weakref
-+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
++from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sized
++from concurrent.futures import ThreadPoolExecutor
 +from datetime import UTC, datetime
-+from typing import Any
++from typing import Any, SupportsIndex
 +from unittest.mock import AsyncMock, MagicMock, patch
 +
 +from kubernetes import client as k8s_client
++from kubernetes.client.exceptions import ApiException
 +
 +from k8s_agent_sandbox import async_sandbox_batch as async_sandbox_batch_module
 +from k8s_agent_sandbox import batch_state as batch_state_module
 +from k8s_agent_sandbox import sandbox_batch as sandbox_batch_module
 +from k8s_agent_sandbox.async_sandbox_batch import AsyncSandboxBatch
++from k8s_agent_sandbox.async_sandbox_client import AsyncSandboxClient
 +from k8s_agent_sandbox.batch_state import BatchState, ConsumerMode
 +from k8s_agent_sandbox.constants import (
 +    BATCH_GROUP_MIN_READY_ANNOTATION,
@@ -3939,6 +3961,7 @@ index 0000000..0c101f0
 +from k8s_agent_sandbox.k8s_helper import K8sHelper
 +from k8s_agent_sandbox.models import BatchGroup, MemberState
 +from k8s_agent_sandbox.sandbox_batch import SandboxBatch
++from k8s_agent_sandbox.sandbox_client import SandboxClient
 +from k8s_agent_sandbox.test.unit.test_batch_fault_injection import (
 +    _new_stopped_async_batch,
 +    _new_stopped_sync_batch,
@@ -3963,6 +3986,152 @@ index 0000000..0c101f0
 +# Every gated operation executes well over this many instructions. A smaller count means the
 +# counter is broken, and a broken counter must fail rather than pass a 0 / 0 ratio.
 +MIN_PLAUSIBLE_COUNT = 20
++
++
++class _LoopWork:
++    """The tasks and timer callbacks created on the event loop inside a block."""
++
++    # A timer due this soon is deferred work of the call, not a timeout guarding it.
++    DUE_SOON_S = 1.0
++
++    def __init__(self) -> None:
++        self.tasks: set[asyncio.Task[Any]] = set()
++        self.timers: list[tuple[asyncio.TimerHandle, list[bool]]] = []
++
++    def due_timers(self, loop: asyncio.AbstractEventLoop) -> list[asyncio.TimerHandle]:
++        """Timers neither run nor cancelled that fall due within ``DUE_SOON_S``."""
++        horizon = loop.time() + self.DUE_SOON_S
++        return [handle for handle, ran in self.timers
++                if not ran[0] and not handle.cancelled() and handle.when() <= horizon]
++
++
++# Every open recorder; the loop's task factory and call_at add each new task or timer to all.
++_LOOP_RECORDERS: list[_LoopWork] = []
++
++
++def _recording_task_factory(
++    loop: asyncio.AbstractEventLoop, coro: Any, **kwargs: Any
++) -> asyncio.Task[Any]:
++    task: asyncio.Task[Any] = asyncio.Task(coro, loop=loop, **kwargs)
++    for recorder in _LOOP_RECORDERS:
++        recorder.tasks.add(task)
++    return task
++
++
++@contextlib.contextmanager
++def _recording_loop_work() -> Iterator[_LoopWork]:
++    """Collects the tasks (through the loop's task factory) and timer callbacks (through its
++    ``call_at``, which ``call_later`` uses) created on the running event loop inside the block,
++    so finding them never walks the loop's other tasks (a gate's N waiting acquires). Off an
++    event loop it collects nothing."""
++    work = _LoopWork()
++    try:
++        loop = asyncio.get_running_loop()
++    except RuntimeError:
++        yield work
++        return
++    outermost = not _LOOP_RECORDERS
++    if outermost:
++        previous = loop.get_task_factory()
++        assert previous is None, previous
++        loop.set_task_factory(_recording_task_factory)
++        real_call_at = loop.call_at
++
++        def call_at(when: float, callback: Callable[..., Any], *args: Any,
++                    context: Any = None) -> asyncio.TimerHandle:
++            ran = [False]
++
++            def run(*run_args: Any) -> None:
++                ran[0] = True
++                callback(*run_args)
++
++            handle = real_call_at(when, run, *args, context=context)
++            for recorder in _LOOP_RECORDERS:
++                recorder.timers.append((handle, ran))
++            return handle
++
++        timers = patch.object(loop, "call_at", call_at)
++        timers.start()
++    _LOOP_RECORDERS.append(work)
++    try:
++        yield work
++    finally:
++        _LOOP_RECORDERS.remove(work)
++        if outermost:
++            timers.stop()
++            loop.set_task_factory(None)
++
++
++class _HandOffWatch:
++    """Records work a measured block hands off: a thread it starts, a callable it submits to an
++    executor, or a task or soon-due timer it leaves pending. That work runs outside the block, so no
++    instruction count, peak, or walk count would see it; the measuring windows fail on it
++    instead of undercounting. (Async gates await through ``_settled``, which finishes the
++    tasks and callbacks a call schedules inside the window, so that work is counted.)"""
++
++    def __init__(self) -> None:
++        self.handed_off: list[str] = []
++        self._patches: list[Any] = []
++        self._loop_work: contextlib.ExitStack = contextlib.ExitStack()
++        self._work = _LoopWork()
++
++    def start(self) -> None:
++        real_start = threading.Thread.start
++        real_submit = ThreadPoolExecutor.submit
++        handed_off = self.handed_off
++
++        def start(thread: threading.Thread) -> None:
++            handed_off.append(f"started thread {thread.name}")
++            real_start(thread)
++
++        def submit(executor: ThreadPoolExecutor, fn: Callable[..., Any], /, *args: Any,
++                   **kwargs: Any) -> Any:
++            handed_off.append(f"submitted {getattr(fn, '__qualname__', fn)} to an executor")
++            return real_submit(executor, fn, *args, **kwargs)
++
++        self._patches = [patch.object(threading.Thread, "start", start),
++                         patch.object(ThreadPoolExecutor, "submit", submit)]
++        for patcher in self._patches:
++            patcher.start()
++        self._work = self._loop_work.enter_context(_recording_loop_work())
++
++    def stop(self, failing: bool) -> None:
++        with contextlib.suppress(RuntimeError):
++            loop = asyncio.get_running_loop()
++            self.handed_off.extend(
++                f"left a timer callback due at {handle.when():.3f} pending"
++                for handle in self._work.due_timers(loop))
++        self._loop_work.close()
++        for patcher in reversed(self._patches):
++            patcher.stop()
++        self.handed_off.extend(
++            f"left task {task.get_name()} pending" for task in self._work.tasks if not task.done())
++        if self.handed_off and not failing:
++            raise AssertionError(
++                f"the measured call handed work off where no count sees it: {self.handed_off[:3]}")
++
++
++async def _settled(run: Callable[[], Awaitable[object]]) -> None:
++    """Awaits ``run()``, then the tasks, callbacks, and soon-due timers it left on the event
++    loop, so the measuring window around this call counts that deferred work as part of it.
++    A call that schedules nothing pays for no loop pass (each costs thousands of instructions
++    in asyncio's debug mode)."""
++    loop = asyncio.get_running_loop()
++    # _ready is the loop's queue of callbacks due on its next pass (call_soon, a resolved
++    # future's done callbacks); only growth in it is this call's.
++    ready: Any = getattr(loop, "_ready", ())
++    queued = len(ready)
++    with _recording_loop_work() as work:
++        await run()
++        due = work.due_timers(loop)
++        if due:
++            await asyncio.sleep(max(0.0, max(handle.when() for handle in due) - loop.time()))
++        if due or len(ready) > queued:
++            await asyncio.sleep(0)
++        pending = {task for task in work.tasks if not task.done()}
++        if pending:
++            # Unfinished ones fail the window's hand-off check.
++            await asyncio.wait(pending, timeout=5)
 +
 +
 +class InstructionCounter:
@@ -4000,6 +4169,8 @@ index 0000000..0c101f0
 +
 +    def __enter__(self) -> InstructionCounter:
 +        self._owner = threading.get_ident()
++        self._hand_offs = _HandOffWatch()
++        self._hand_offs.start()
 +        if self.backend == "monitoring":
 +            monitoring: Any = getattr(sys, "monitoring")
 +            for candidate in (5, 4, 3, 2, 0):
@@ -4019,7 +4190,7 @@ index 0000000..0c101f0
 +            sys.settrace(self._tracer)
 +        return self
 +
-+    def __exit__(self, *_exc: object) -> None:
++    def __exit__(self, exc_type: object, *_exc: object) -> None:
 +        if self.backend == "monitoring":
 +            monitoring: Any = getattr(sys, "monitoring")
 +            assert self._tool_id is not None
@@ -4029,6 +4200,7 @@ index 0000000..0c101f0
 +            self._tool_id = None
 +        else:
 +            sys.settrace(self._previous_trace)
++        self._hand_offs.stop(failing=exc_type is not None)
 +
 +
 +def count_bytecode_instructions(fn: Callable[[], object], backend: str | None = None) -> int:
@@ -4169,6 +4341,27 @@ index 0000000..0c101f0
 +        state.note_deleted(name, state.delete_seq(name))
 +
 +
++def _seed_outage(state: BatchState, n: int) -> None:
++    """Leaves ``n`` releases whose delete the apiserver refused (still pending a delete) and
++    ``n`` claims still booting (pending their launch), as a batch carries them through an
++    outage or a cold start, so per-event and per-episode work can't walk them unseen."""
++    for i in range(n):
++        name = state.start_acquire("pool-refused")
++        obj = _ready_claim("refused", i, "pool-refused", 0)
++        obj["metadata"] = {"name": name, "uid": f"uid-{name}", "resourceVersion": str(i + 1)}
++        state.upsert_claim(obj)
++        state.acquired_member(name)
++        state.release_member(name)
++        booting = _ready_claim("booting", i, "pool-booting", 0)
++        booting["metadata"] = {"name": f"booting-{i}", "uid": f"uid-booting-{i}",
++                               "resourceVersion": str(i + 1)}
++        booting["status"]["conditions"] = [{"type": "Ready", "status": "False"}]
++        state.upsert_claim(booting)
++    state_any: Any = state
++    assert len(state_any._pending_deletes) >= n and len(state_any._pending_launch) >= n, (
++        len(state_any._pending_deletes), len(state_any._pending_launch))
++
++
 +def _single_group_ready(n: int) -> Callable[[], object]:
 +    state = _filled_state(n, 1, skip_last=True)
 +    obj = _ready_claim("bperf", n - 1, "pool-0", n)
@@ -4178,6 +4371,20 @@ index 0000000..0c101f0
 +def _single_group_flap(n: int) -> Callable[[], object]:
 +    state = _filled_state(n, 1)
 +    obj = _not_ready(_ready_claim("bperf", n // 2, "pool-0", n))
++    return lambda: state.upsert_claim(obj)
++
++
++def _single_group_consumer(n: int, mode: ConsumerMode) -> Callable[[], object]:
++    """One group of ``n`` with ``min_ready = n`` in consumer ``mode``, two members short; the
++    measured Ready event leaves it one short, so the group's outcome (or the quorum) is checked
++    but not yet decided, as for every fill event but the last."""
++    groups = [BatchGroup(warmpool="pool-0", size=n, min_ready=n)]
++    state = BatchState("bperf", groups)
++    for idx in range(n - 2):
++        state.upsert_claim(_ready_claim("bperf", idx, "pool-0", n))
++    state.set_mode(mode)
++    _count_walks_of_large_tables([state], 20)
++    obj = _ready_claim("bperf", n - 2, "pool-0", n)
 +    return lambda: state.upsert_claim(obj)
 +
 +
@@ -4317,6 +4524,9 @@ index 0000000..0c101f0
 +            ("upsert_claim(Ready flap, 1 group)", _single_group_flap),
 +            ("mark_lost(1 group)", _single_group_lost),
 +        ]
++        for mode in (ConsumerMode.STREAM, ConsumerMode.GROUP, ConsumerMode.QUORUM):
++            cases.append((f"upsert_claim(Ready, 1 group, {mode.value} mode)",
++                          functools.partial(_single_group_consumer, mode=mode)))
 +        for label, single in cases:
 +
 +            def build(
@@ -4499,7 +4709,21 @@ index 0000000..0c101f0
 +
 +
 +class _WalkCountingList(list[Any]):
-+    pass
++    # Removing or inserting anywhere but the tail shifts every later element in C.
++    def pop(self, index: SupportsIndex = -1) -> Any:
++        if index not in (-1, len(self) - 1):
++            _WalkCountingDict.walks += 1
++        return super().pop(index)
++
++    def insert(self, index: Any, value: Any) -> None:
++        if index < len(self):
++            _WalkCountingDict.walks += 1
++        super().insert(index, value)
++
++    def __delitem__(self, index: Any) -> None:
++        if not (isinstance(index, int) and index in (-1, len(self) - 1)):
++            _WalkCountingDict.walks += 1
++        super().__delitem__(index)
 +
 +
 +_count_walks_through(
@@ -4511,13 +4735,29 @@ index 0000000..0c101f0
 +
 +
 +class _WalkCountingDeque(collections.deque[Any]):
-+    pass
++    def _away_from_ends(self, index: Any) -> bool:
++        return not (isinstance(index, int) and index in (0, -1, len(self) - 1))
++
++    def __getitem__(self, index: Any) -> Any:
++        if self._away_from_ends(index):
++            _WalkCountingDict.walks += 1
++        return super().__getitem__(index)
++
++    def __delitem__(self, index: Any) -> None:
++        if self._away_from_ends(index):
++            _WalkCountingDict.walks += 1
++        super().__delitem__(index)
++
++    def insert(self, index: int, value: Any) -> None:
++        if self._away_from_ends(index):
++            _WalkCountingDict.walks += 1
++        super().insert(index, value)
 +
 +
 +_count_walks_through(
 +    _WalkCountingDeque,
 +    ("__iter__", "copy", "__contains__", "index", "count", "remove", "__reversed__", "reverse",
-+     "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"),
++     "rotate", "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"),
 +)
 +
 +
@@ -4532,25 +4772,102 @@ index 0000000..0c101f0
 +        else:
 +            batch._checked_pools.append(pool)
 +        batch._warm_credit.record(pool, 1)
-+    _count_walks_of_large_tables([batch, batch._warm_credit, batch._state], p)
++    _count_walks_of_large_tables(
++        [batch, batch._warm_credit, batch._state], max(p, _MIN_COUNTED_TABLE)
++    )
 +
 +
-+def _count_walks_of_large_tables(owners: list[Any], at_least: int) -> list[str]:
-+    """Swaps every plain dict, set, list, or deque attribute of ``owners`` holding at least
-+    ``at_least`` entries for a walk-counting copy, and returns the swapped attribute names."""
++# Tables smaller than this are never swapped: fixed-size ones (the batch's labels, its
++# settings) would otherwise count as walks when a gate's small size is tiny. The large size of
++# every gate is well above it, so a table that grows with the gate is still counted there.
++_MIN_COUNTED_TABLE = 32
++
++
++# Walks of a dict subclass (Counter, defaultdict, OrderedDict) beyond the plain dict's.
++_DICT_SUBCLASS_WALKS = ("most_common", "elements", "total", "__add__", "__sub__", "__and__")
++_COUNTING_SUBCLASSES: dict[type, type] = {}
++
++
++def _counting_copy(value: Any) -> Any:
++    """A walk-counting copy of ``value`` (``None`` for a type with no counting form): the
++    matching counting class for a plain dict, set, list, or deque, and a counting subclass,
++    built once per type, for a dict subclass such as ``Counter`` or ``defaultdict``."""
 +    counting: dict[type, type] = {
 +        dict: _WalkCountingDict, set: _WalkCountingSet, list: _WalkCountingList,
 +        collections.deque: _WalkCountingDeque,
 +    }
++    base = type(value)
++    if base in counting.values() or base in _COUNTING_SUBCLASSES.values():
++        return None                             # already counting
++    wrapper = counting.get(base)
++    if wrapper is None and isinstance(value, dict):
++        wrapper = _COUNTING_SUBCLASSES.get(base)
++        if wrapper is None:
++            wrapper = type(f"_WalkCounting{base.__name__}", (base,), {})
++            names = ("__iter__", "keys", "values", "items", "copy", "__or__", "__ror__",
++                     "__reversed__", "__eq__", "__ne__", *_DICT_SUBCLASS_WALKS)
++            _count_walks_through(wrapper, tuple(n for n in names if hasattr(base, n)))
++            _COUNTING_SUBCLASSES[base] = wrapper
++    if wrapper is None:
++        return None
++    if isinstance(value, collections.defaultdict):
++        return wrapper(value.default_factory, value)
++    return wrapper(value)
++
++
++def _count_walks_of_large_tables(owners: list[Any], at_least: int) -> list[str]:
++    """Swaps every dict (subclasses included), set, list, or deque attribute of ``owners``
++    holding at least ``at_least`` entries for a walk-counting copy, and returns the swapped
++    attribute names."""
 +    swapped = []
 +    for owner in owners:
 +        for attr, value in list(vars(owner).items()):
-+            wrapper = counting.get(type(value))
-+            if wrapper is None or len(value) < at_least:
++            if isinstance(value, dict):
++                # Per-pool indexes hold one table per pool (`_waiting[pool]`); a walk of one
++                # large pool's table is as unseen as a walk of the whole index.
++                for key, inner in list(value.items()):
++                    if isinstance(inner, Sized) and len(inner) >= at_least:
++                        inner_copy = _counting_copy(inner)
++                        if inner_copy is not None:
++                            value[key] = inner_copy
++                            swapped.append(f"{type(owner).__name__}.{attr}[{key!r}]")
++            if not isinstance(value, Sized) or len(value) < at_least:
 +                continue
-+            setattr(owner, attr, wrapper(value))
++            copy = _counting_copy(value)
++            if copy is None:
++                continue
++            setattr(owner, attr, copy)
 +            swapped.append(f"{type(owner).__name__}.{attr}")
 +    return swapped
++
++
++class _StuckConnection:
++    """A cached connection whose earlier close failed, so it waits in the handle's stale
++    backlog; closing it again fails again, and counts the attempt."""
++
++    attempts = 0
++
++    def close_connection(self) -> None:
++        # Always the base class's counter: `type(self).attempts += 1` on a subclass would
++        # start a separate counter that the gates never read.
++        _StuckConnection.attempts += 1
++        raise RuntimeError("still stuck")
++
++
++class _StuckAsyncConnection(_StuckConnection):
++    async def close_connection(self) -> None:  # type: ignore[override]
++        _StuckConnection.attempts += 1
++        raise RuntimeError("still stuck")
++
++
++def _seed_stale_backlog(batch: Any, n: int, cls: type) -> None:
++    """Puts ``n`` connections whose close failed into the handle's stale backlog."""
++    for _ in range(n):
++        stuck = cls()
++        if isinstance(batch._stale_connections, dict):
++            batch._stale_connections[stuck] = None
++        else:
++            batch._stale_connections.append(stuck)
 +
 +
 +def _groups_for(n: int) -> list[BatchGroup]:
@@ -4569,16 +4886,24 @@ index 0000000..0c101f0
 +    for every run, for transitions that happen only once per batch (a DELETED event, a pool's
 +    release), so each counted run does the real work rather than a repeat that finds nothing
 +    to do.
++
++    Every gate also fails if the handle logs at INFO or above: these are per-event and
++    per-episode paths, where that is a driver log line per claim (PERF-9).
 +    """
 +
 +    SIZES = (100, 2000)
 +    REPEATS = 3
++    # Consecutive calls counted one by one on the same handle, keeping the most expensive, so
++    # work done every K <= BURST calls (periodic housekeeping) lands in a counted call. Rarer
++    # periodic work is the static check's: a walk under `if ... % K` is never one-shot.
++    BURST = 24
 +
 +    def _sync_batch(self, n: int) -> tuple[Any, SandboxBatch, list[str]]:
 +        """Returns a batch of ``n // 5`` groups with ``n`` acquired, connected members in
-+        ``pool-a``, ``n`` other known pools, and ``n`` past releases, so every handle gate
-+        scales the member, connection, group, pool, and release-history counts together, and
-+        every table holding ``n`` entries (or the ``n // 5`` groups) counts its whole walks."""
++        ``pool-a``, ``n`` other known pools, ``n`` past releases, ``n`` stuck connections in
++        the stale backlog, and ``n`` refused deletes and booting claims (``_seed_outage``), so
++        every handle gate scales all of those together, and every table
++        holding ``n`` entries (or the ``n // 5`` groups) counts its whole walks."""
 +        _client, helper, batch = _new_stopped_sync_batch(_groups_for(n), batch_id="b-hot")
 +        names = _seed_acquired(batch._state, n, "pool-a")
 +        for name in names:
@@ -4586,9 +4911,12 @@ index 0000000..0c101f0
 +            assert member is not None
 +            batch.connect(member)
 +        _seed_known_pools(batch, n)
-+        # Release history (tombstones, delete sequences) grows with n too.
++        # Release history (tombstones, delete sequences) and a backlog of connections whose
++        # close failed grow with n too.
 +        _seed_release_history(batch._state, "pool-history", n)
-+        _count_walks_of_large_tables([batch._state], n // 5)
++        _seed_stale_backlog(batch, n, _StuckConnection)
++        _seed_outage(batch._state, n)
++        _count_walks_of_large_tables([batch, batch._state], max(n // 5, _MIN_COUNTED_TABLE))
 +        helper.reset_mock()
 +        return helper, batch, names
 +
@@ -4600,19 +4928,21 @@ index 0000000..0c101f0
 +            assert member is not None
 +            await batch.connect(member)
 +        _seed_known_pools(batch, n)
-+        # Release history (tombstones, delete sequences) grows with n too.
 +        _seed_release_history(batch._state, "pool-history", n)
-+        _count_walks_of_large_tables([batch._state], n // 5)
++        _seed_stale_backlog(batch, n, _StuckAsyncConnection)
++        _seed_outage(batch._state, n)
++        _count_walks_of_large_tables([batch, batch._state], max(n // 5, _MIN_COUNTED_TABLE))
 +        helper.reset_mock()
 +        return helper, batch, names
 +
 +    def _waiters(self, batch: Any, n: int, cls: type) -> None:
 +        """Puts ``n`` other acquires in flight, each with its parked waiter, as concurrent RL
-+        workers would, so both the batch state's in-flight table and the handle's waiters
-+        grow with ``n``."""
-+        for _ in range(n):
++        workers would, and ``n`` more still checking their own pools, so the batch state's
++        in-flight tables and the handle's waiters all grow with ``n``."""
++        for i in range(n):
 +            name = batch._state.start_acquire("pool-waiting")
 +            batch._acquire_waiters[name] = cls()
++            batch._state.enter_acquire(f"pool-checking-{i}")
 +        _count_walks_of_large_tables([batch, batch._state], n)
 +
 +    def _sample_sync(self, run: Callable[[], object]) -> tuple[int, int]:
@@ -4620,9 +4950,9 @@ index 0000000..0c101f0
 +        run()
 +        counts, peaks = [], []
 +        _WalkCountingDict.walks = 0
-+        # Back-to-back runs, keeping the largest, so work done on only some calls (every other
-+        # one, say) can't hide in an uncounted run or behind a cheaper sample.
-+        for _ in range(self.REPEATS):
++        # Back-to-back runs, keeping the largest, so work done on only some calls (every K-th
++        # one, for K up to BURST) can't hide in an uncounted run or behind a cheaper sample.
++        for _ in range(self.BURST):
 +            counts.append(count_bytecode_instructions(run))
 +        for _ in range(self.REPEATS):
 +            with MemoryWindow() as window:
@@ -4635,13 +4965,13 @@ index 0000000..0c101f0
 +        await run()
 +        counts, peaks = [], []
 +        _WalkCountingDict.walks = 0
-+        for _ in range(self.REPEATS):
++        for _ in range(self.BURST):
 +            with InstructionCounter() as counter:
-+                await run()
++                await _settled(run)
 +            counts.append(counter.count)
 +        for _ in range(self.REPEATS):
 +            with MemoryWindow() as window:
-+                await run()
++                await _settled(run)
 +                peaks.append(window.peak())
 +        self._walks.append(_WalkCountingDict.walks)
 +        return max(counts), max(peaks)
@@ -4675,13 +5005,13 @@ index 0000000..0c101f0
 +            run = await build()
 +            _WalkCountingDict.walks = 0
 +            with InstructionCounter() as counter:
-+                await run()
++                await _settled(run)
 +            counts.append(counter.count)
 +            walks += _WalkCountingDict.walks
 +            run = await build()
 +            _WalkCountingDict.walks = 0
 +            with MemoryWindow() as window:
-+                await run()
++                await _settled(run)
 +                peaks.append(window.peak())
 +            walks += _WalkCountingDict.walks
 +        self._walks.append(walks)
@@ -4691,6 +5021,9 @@ index 0000000..0c101f0
 +        super().setUp()
 +        # Whole-table walks seen during each sample's measured runs (see _WalkCountingDict).
 +        self._walks: list[int] = []
++        quiet = self.assertNoLogs("k8s_agent_sandbox", level=logging.INFO)
++        quiet.__enter__()
++        self.addCleanup(quiet.__exit__, None, None, None)
 +
 +    def _assert_flat(
 +        self, label: str, small: tuple[int, int], large: tuple[int, int]
@@ -4699,6 +5032,8 @@ index 0000000..0c101f0
 +        assert_scaling(self, label, small[0], large[0], O1_MAX_RATIO, sizes)
 +        assert_peak_scaling(self, label, small[1], large[1], sizes)
 +        self._assert_no_walks(label)
++        retried, _StuckConnection.attempts = _StuckConnection.attempts, 0
++        self.assertEqual(retried, 0, f"{label}: retried {retried} stuck connection closes")
 +
 +    def _assert_no_walks(self, label: str) -> None:
 +        walks, self._walks = self._walks, []
@@ -4831,7 +5166,7 @@ index 0000000..0c101f0
 +
 +    # A warm-covered acquire skips pacing; an uncovered one reserves a pacing slot. Pacing is
 +    # set to no delay, so the uncovered path's own work is measured without sleeping.
-+    COVERAGE = (("warm-covered", 10 * 3), ("paced", 0))
++    COVERAGE = (("warm-covered", 10 * _HandleGateBase.BURST), ("paced", 0))
 +
 +    def test_sync_acquire_is_o1(self) -> None:
 +        for label, credit in self.COVERAGE:
@@ -4853,7 +5188,7 @@ index 0000000..0c101f0
 +                self.assertEqual(_CountingEvent.sets, 0, "an acquire woke other acquires")
 +                self.assertEqual(
 +                    [name for name, _a, _k in helper.method_calls],
-+                    ["create_sandbox_claim"] * (1 + 2 * self.REPEATS),
++                    ["create_sandbox_claim"] * (1 + self.BURST + self.REPEATS),
 +                    f"a {label} acquire sent requests besides its create",
 +                )
 +            with self.subTest(coverage=label):
@@ -4876,7 +5211,7 @@ index 0000000..0c101f0
 +                samples.append(await self._sample_async(run))
 +                self.assertEqual(_CountingAsyncEvent.sets, 0, "an acquire woke other acquires")
 +                self.assertEqual(
-+                    helper.create_sandbox_claim.await_count, 1 + 2 * self.REPEATS,
++                    helper.create_sandbox_claim.await_count, 1 + self.BURST + self.REPEATS,
 +                    f"a {label} acquire sent a create count other than one",
 +                )
 +            with self.subTest(coverage=label):
@@ -4886,8 +5221,9 @@ index 0000000..0c101f0
 +
 +    def _known_pools(self, batch: Any, p: int) -> None:
 +        _seed_known_pools(batch, p)
-+        # A rename must not silently stop the walk counting.
-+        self.assertIsInstance(batch._warm_credit._credit, _WalkCountingDict)
++        if p >= _MIN_COUNTED_TABLE:
++            # A rename must not silently stop the walk counting.
++            self.assertIsInstance(batch._warm_credit._credit, _WalkCountingDict)
 +        _WalkCountingDict.walks = 0
 +
 +    def _assert_no_pool_walks(self, label: str) -> None:
@@ -4909,7 +5245,7 @@ index 0000000..0c101f0
 +                    ready(*args, **kwargs)
 +
 +            helper.create_sandbox_claim.side_effect = ready_locked
-+            batch._warm_credit.record("pool-a", 10 * self.REPEATS)
++            batch._warm_credit.record("pool-a", 10 * self.BURST)
 +            _WalkCountingDict.walks = 0
 +            samples.append(self._sample_sync(lambda: batch.acquire("pool-a", timeout=5)))
 +            self._assert_no_pool_walks(f"SandboxBatch.acquire at P={p}")
@@ -4925,7 +5261,7 @@ index 0000000..0c101f0
 +            helper, batch, _names = await self._async_batch(10)
 +            self._known_pools(batch, p)
 +            helper.create_sandbox_claim = AsyncMock(side_effect=_ready_on_create(batch))
-+            batch._warm_credit.record("pool-a", 10 * self.REPEATS)
++            batch._warm_credit.record("pool-a", 10 * self.BURST)
 +
 +            async def run() -> None:
 +                await batch.acquire("pool-a", timeout=5)
@@ -4939,48 +5275,154 @@ index 0000000..0c101f0
 +        assert_peak_scaling(self, "AsyncSandboxBatch.acquire vs pools", samples[0][1],
 +                            samples[1][1], sizes)
 +
-+    def test_sync_release_member_is_o1_and_wakes_no_other_waiter(self) -> None:
++    def _forbidden(self) -> ApiException:
++        return ApiException(status=403, reason="Forbidden")
++
++    def test_sync_failed_acquire_is_o1_and_wakes_no_other_waiter(self) -> None:
++        # An acquire whose create fails drops its claim; that must not wake (or walk) the
++        # other waiting acquires.
 +        samples = []
 +        for n in self.SIZES:
-+            _helper, batch, names = self._sync_batch(n)
++            helper, batch, _names = self._sync_batch(n)
++            helper.create_sandbox_claim.side_effect = self._forbidden()
++            batch._warm_credit.record("pool-a", 10**6)
 +            self._waiters(batch, n, _CountingEvent)
-+            members = [batch._state.get_member(name) for name in names]
 +            _CountingEvent.sets = 0
 +
 +            def run() -> None:
-+                member = members.pop()
-+                assert member is not None
-+                batch.release_member(member)
-+                batch._wait_active_deletes()
++                with self.assertRaises(Exception):
++                    batch.acquire("pool-a", timeout=5)
 +
-+            released = len(members)
 +            samples.append(self._sample_sync(run))
-+            released -= len(members)
-+            self.assertGreater(released, 0)
-+            # No parked waiter belongs to a released member, so none may wake.
-+            self.assertEqual(_CountingEvent.sets, 0, "release woke other waiters")
-+        self._assert_flat("SandboxBatch.release_member", *samples)
++            self.assertEqual(_CountingEvent.sets, 0, "a failed acquire woke other acquires")
++        self._assert_flat("SandboxBatch.acquire (create fails)", *samples)
 +
-+    async def test_async_release_member_is_o1_and_wakes_no_other_waiter(self) -> None:
++    async def test_async_failed_acquire_is_o1_and_wakes_no_other_waiter(self) -> None:
 +        samples = []
 +        for n in self.SIZES:
-+            _helper, batch, names = await self._async_batch(n)
++            helper, batch, _names = await self._async_batch(n)
++            helper.create_sandbox_claim = AsyncMock(side_effect=self._forbidden())
++            batch._warm_credit.record("pool-a", 10**6)
 +            self._waiters(batch, n, _CountingAsyncEvent)
-+            members = [batch._state.get_member(name) for name in names]
 +            _CountingAsyncEvent.sets = 0
 +
 +            async def run() -> None:
-+                member = members.pop()
-+                assert member is not None
-+                await batch.release_member(member)
-+                await batch._wait_active_deletes()
++                with self.assertRaises(Exception):
++                    await batch.acquire("pool-a", timeout=5)
 +
-+            released = len(members)
 +            samples.append(await self._sample_async(run))
-+            released -= len(members)
-+            self.assertGreater(released, 0)
-+            self.assertEqual(_CountingAsyncEvent.sets, 0, "release woke other waiters")
-+        self._assert_flat("AsyncSandboxBatch.release_member", *samples)
++            self.assertEqual(_CountingAsyncEvent.sets, 0, "a failed acquire woke other acquires")
++        self._assert_flat("AsyncSandboxBatch.acquire (create fails)", *samples)
++
++    def _new_pool_budget(self, runs: int) -> dict[str, int]:
++        # One warm-pool read and its template per new pool, then the claim's create.
++        return {"get_sandbox_warmpool": runs, "get_sandbox_template": runs,
++                "create_sandbox_claim": runs}
++
++    def test_sync_first_acquire_of_a_new_pool_is_o1_in_known_pool_count(self) -> None:
++        # RL batch mode's first acquire per image checks a pool the batch hasn't used: one
++        # warm-pool read, then its credit and checked-pool entries. That must not grow with the
++        # pools already known, or acquiring across P images costs O(P^2).
++        samples = []
++        for p in self.POOLS:
++            helper, batch, _names = self._sync_batch(10)
++            self._known_pools(batch, p)
++            ready = _ready_on_create(batch)
++
++            def ready_locked(*args: Any, **kwargs: Any) -> None:
++                with batch._lock:
++                    ready(*args, **kwargs)
++
++            helper.create_sandbox_claim.side_effect = ready_locked
++            fresh = itertools.count()
++            samples.append(self._sample_sync(
++                lambda: batch.acquire(f"new-pool-{next(fresh)}", timeout=5)
++            ))
++            _assert_requests_within(self, f"first acquire of a new pool (P={p})", helper,
++                                    self._new_pool_budget(1 + self.BURST + self.REPEATS))
++        sizes = f"P={self.POOLS[0]}|P={self.POOLS[1]}"
++        label = "SandboxBatch.acquire (new pool) vs pools"
++        assert_scaling(self, label, samples[0][0], samples[1][0], O1_MAX_RATIO, sizes)
++        assert_peak_scaling(self, label, samples[0][1], samples[1][1], sizes)
++        self._assert_no_walks(label)
++
++    async def test_async_first_acquire_of_a_new_pool_is_o1_in_known_pool_count(self) -> None:
++        samples = []
++        for p in self.POOLS:
++            helper, batch, _names = await self._async_batch(10)
++            self._known_pools(batch, p)
++            helper.create_sandbox_claim = AsyncMock(side_effect=_ready_on_create(batch))
++            fresh = itertools.count()
++
++            async def run() -> None:
++                await batch.acquire(f"new-pool-{next(fresh)}", timeout=5)
++
++            samples.append(await self._sample_async(run))
++            _assert_requests_within(self, f"first acquire of a new pool (P={p})", helper,
++                                    self._new_pool_budget(1 + self.BURST + self.REPEATS))
++        sizes = f"P={self.POOLS[0]}|P={self.POOLS[1]}"
++        label = "AsyncSandboxBatch.acquire (new pool) vs pools"
++        assert_scaling(self, label, samples[0][0], samples[1][0], O1_MAX_RATIO, sizes)
++        assert_peak_scaling(self, label, samples[0][1], samples[1][1], sizes)
++        self._assert_no_walks(label)
++
++    # A release whose delete lands, and one the apiserver refuses (non-transient, so it
++    # raises without retrying); either way it runs once per episode.
++    RELEASE_OUTCOMES = ("deleted", "forbidden")
++
++    def test_sync_release_member_is_o1_and_wakes_no_other_waiter(self) -> None:
++        for outcome in self.RELEASE_OUTCOMES:
++            samples = []
++            for n in self.SIZES:
++                helper, batch, names = self._sync_batch(n)
++                if outcome == "forbidden":
++                    helper.delete_sandbox_claim.side_effect = self._forbidden()
++                self._waiters(batch, n, _CountingEvent)
++                members = [batch._state.get_member(name) for name in names]
++                _CountingEvent.sets = 0
++
++                def run() -> None:
++                    member = members.pop()
++                    assert member is not None
++                    with contextlib.suppress(ApiException):
++                        batch.release_member(member)
++                    batch._wait_active_deletes()
++
++                released = len(members)
++                samples.append(self._sample_sync(run))
++                released -= len(members)
++                self.assertGreater(released, 0)
++                # No parked waiter belongs to a released member, so none may wake.
++                self.assertEqual(_CountingEvent.sets, 0, f"a {outcome} release woke waiters")
++            with self.subTest(outcome=outcome):
++                self._assert_flat(f"SandboxBatch.release_member ({outcome})", *samples)
++
++    async def test_async_release_member_is_o1_and_wakes_no_other_waiter(self) -> None:
++        for outcome in self.RELEASE_OUTCOMES:
++            samples = []
++            for n in self.SIZES:
++                helper, batch, names = await self._async_batch(n)
++                if outcome == "forbidden":
++                    helper.delete_sandbox_claim = AsyncMock(side_effect=self._forbidden())
++                self._waiters(batch, n, _CountingAsyncEvent)
++                members = [batch._state.get_member(name) for name in names]
++                _CountingAsyncEvent.sets = 0
++
++                async def run() -> None:
++                    member = members.pop()
++                    assert member is not None
++                    with contextlib.suppress(ApiException):
++                        await batch.release_member(member)
++                    await batch._wait_active_deletes()
++
++                released = len(members)
++                samples.append(await self._sample_async(run))
++                released -= len(members)
++                self.assertGreater(released, 0)
++                self.assertEqual(
++                    _CountingAsyncEvent.sets, 0, f"a {outcome} release woke waiters")
++            with self.subTest(outcome=outcome):
++                self._assert_flat(f"AsyncSandboxBatch.release_member ({outcome})", *samples)
 +
 +
 +FILL_GROUP_SIZE = 5
@@ -4999,7 +5441,15 @@ index 0000000..0c101f0
 +    batch._create_interval = 0.0
 +
 +
-+FILL_COVERAGE = (("warm", 10**6), ("cold", 0))
++# Warm or cold creates, in a batch of n // 5 groups of 5 or in one group of n.
++FILL_CASES = [
++    (f"{credit_label}, {shape_label}", credit, groups_for)
++    for credit_label, credit in (("warm", 10**6), ("cold", 0))
++    for shape_label, groups_for in (
++        ("n // 5 groups", lambda n: _fill_groups(n)),
++        ("1 group", lambda n: [BatchGroup(warmpool="pool-0", size=n)]),
++    )
++]
 +
 +
 +class TestSuiteAFillAndConnectMiss(_HandleGateBase):
@@ -5016,7 +5466,8 @@ index 0000000..0c101f0
 +
 +        def land(claim_name: str, warmpool: str, *_a: object, **_k: object) -> None:
 +            nonlocal landed
-+            obj = _ready_claim(batch.batch_id, landed, warmpool, FILL_GROUP_SIZE)
++            size = next(g.size for g in batch._state.groups if g.warmpool == warmpool)
++            obj = _ready_claim(batch.batch_id, landed, warmpool, size)
 +            obj["metadata"]["name"] = claim_name
 +            batch._state.upsert_claim(obj)
 +            landed += 1
@@ -5040,7 +5491,8 @@ index 0000000..0c101f0
 +
 +        async def land(claim_name: str, warmpool: str, *_a: object, **_k: object) -> None:
 +            nonlocal landed
-+            obj = _ready_claim(batch.batch_id, landed, warmpool, FILL_GROUP_SIZE)
++            size = next(g.size for g in batch._state.groups if g.warmpool == warmpool)
++            obj = _ready_claim(batch.batch_id, landed, warmpool, size)
 +            obj["metadata"]["name"] = claim_name
 +            batch._state.upsert_claim(obj)
 +            landed += 1
@@ -5059,23 +5511,34 @@ index 0000000..0c101f0
 +        _seed_known_pools(batch, n)
 +        _count_walks_of_large_tables([batch, batch._state], n // FILL_GROUP_SIZE)
 +
++    # A fill create that lands, and one the apiserver refuses (a quota or RBAC storm fails
++    # every create, so the failure path runs once per planned claim too).
++    OUTCOMES = ("sent", "forbidden")
++
++    def _create_outcome(self, batch: Any, outcome: str) -> Callable[..., None]:
++        # Stop the worker after each create, so every run does exactly one.
++        def create(*_a: object, **_k: object) -> None:
++            batch._stop_creating.set()
++            if outcome == "forbidden":
++                raise ApiException(status=403, reason="Forbidden")
++
++        return create
++
 +    def test_sync_fill_create_is_o1(self) -> None:
-+        for label, credit in FILL_COVERAGE:
++        for (label, credit, groups_for), outcome in itertools.product(FILL_CASES, self.OUTCOMES):
 +            samples = []
 +            for n in self.SIZES:
 +                # claim_batch plans the groups' n fill creates (its worker is stubbed until
 +                # now), so per-create work can't hide a scan of the plan; half have landed.
 +                _client, helper, batch = _new_stopped_sync_batch(
-+                    _fill_groups(n), batch_id="b-fill"
++                    groups_for(n), batch_id="b-fill"
 +                )
 +                self._land_half_sync(batch, helper, n)
 +                batch._stop_creating.clear()
 +                helper.reset_mock()
 +                _credit_every_group(batch, credit)
-+                # Stop the worker after each create, so every run does exactly one.
-+                helper.create_sandbox_claim.side_effect = (
-+                    lambda *_a, **_k: batch._stop_creating.set()
-+                )
++                helper.create_sandbox_claim.side_effect = self._create_outcome(batch, outcome)
++                _CountingEvent.sets = 0
 +
 +                def run() -> None:
 +                    batch._stop_creating.clear()
@@ -5084,41 +5547,45 @@ index 0000000..0c101f0
 +                samples.append(self._sample_sync(run))
 +                self.assertEqual(
 +                    [name for name, _a, _k in helper.method_calls],
-+                    ["create_sandbox_claim"] * (1 + 2 * self.REPEATS),
++                    ["create_sandbox_claim"] * (1 + self.BURST + self.REPEATS),
 +                )
-+            with self.subTest(fill=label):
-+                self._assert_flat(f"SandboxBatch._create_worker (1 {label} fill create)",
-+                                  *samples)
++                self.assertEqual(_CountingEvent.sets, 0, f"a {outcome} fill create woke acquires")
++            with self.subTest(fill=label, outcome=outcome):
++                self._assert_flat(
++                    f"SandboxBatch._create_worker (1 {outcome} {label} fill create)", *samples)
 +
 +    async def test_async_fill_create_is_o1(self) -> None:
-+        for label, credit in FILL_COVERAGE:
++        for (label, credit, groups_for), outcome in itertools.product(FILL_CASES, self.OUTCOMES):
 +            samples = []
 +            for n in self.SIZES:
 +                _client, helper, batch = await _new_stopped_async_batch(
-+                    _fill_groups(n), batch_id="b-fill"
++                    groups_for(n), batch_id="b-fill"
 +                )
 +                await self._land_half_async(batch, helper, n)
 +                batch._stop_creating.clear()
 +                helper.reset_mock()
 +                helper.create_sandbox_claim = AsyncMock(
-+                    side_effect=lambda *_a, **_k: batch._stop_creating.set()
-+                )
++                    side_effect=self._create_outcome(batch, outcome))
 +                _credit_every_group(batch, credit)
++                _CountingAsyncEvent.sets = 0
 +
 +                async def run() -> None:
 +                    batch._stop_creating.clear()
 +                    await batch._create_worker()
 +
 +                samples.append(await self._sample_async(run))
-+                self.assertEqual(helper.create_sandbox_claim.await_count, 1 + 2 * self.REPEATS)
++                self.assertEqual(
++                    helper.create_sandbox_claim.await_count, 1 + self.BURST + self.REPEATS)
 +                self.assertEqual(
 +                    [str(c).split("(")[0] for c in helper.mock_calls],
-+                    ["call.create_sandbox_claim"] * (1 + 2 * self.REPEATS),
++                    ["call.create_sandbox_claim"] * (1 + self.BURST + self.REPEATS),
 +                )
-+            with self.subTest(fill=label):
++                self.assertEqual(
++                    _CountingAsyncEvent.sets, 0, f"a {outcome} fill create woke acquires")
++            with self.subTest(fill=label, outcome=outcome):
 +                self._assert_flat(
-+                    f"AsyncSandboxBatch._create_worker (1 {label} fill create)", *samples
-+                )
++                    f"AsyncSandboxBatch._create_worker (1 {outcome} {label} fill create)",
++                    *samples)
 +
 +    def test_sync_connect_cache_miss_is_o1(self) -> None:
 +        samples = []
@@ -5447,12 +5914,17 @@ index 0000000..0c101f0
 +    Each sample gets a fresh batch, since most of these change the batch only the first time.
 +    """
 +
-+    KINDS = ("HEARTBEAT", "ADDED", "FLAP", "IP_CHANGE", "DELETED")
++    KINDS = ("HEARTBEAT", "ADDED", "COLD_ADDED", "FLAP", "IP_CHANGE", "DELETED")
 +
 +    def _event(self, batch: Any, names: list[str], kind: str, n: int) -> dict[str, Any]:
-+        if kind == "ADDED":
++        if kind in ("ADDED", "COLD_ADDED"):
 +            obj = _ready_claim("seed", 0, "pool-a", 0)
 +            obj["metadata"] = {"name": "b-hot-new", "uid": "uid-new", "resourceVersion": "7"}
++            if kind == "COLD_ADDED":
++                # A claim the warm pool couldn't cover: its pool's warm credit is exhausted.
++                obj["status"]["conditions"] = [
++                    {"type": "Ready", "status": "False", "reason": "SandboxNotReady"}
++                ]
 +            return {"type": "ADDED", "object": obj}
 +        event = _modified_event(batch._state, names[n // 2])
 +        event["object"]["metadata"]["resourceVersion"] = "999999"
@@ -5469,6 +5941,8 @@ index 0000000..0c101f0
 +        member = batch._state.get_member(name)
 +        if kind == "ADDED":
 +            self.assertIsNotNone(batch._state.get_member("b-hot-new"))
++        elif kind == "COLD_ADDED":
++            self.assertEqual(batch._warm_credit._credit.get("pool-a"), 0)
 +        elif kind == "FLAP":
 +            assert member is not None
 +            self.assertIsNot(member.state, MemberState.READY)
@@ -5478,6 +5952,7 @@ index 0000000..0c101f0
 +            self.assertTrue(member is None or member.state is not MemberState.READY)
 +
 +    def _prepare(self, batch: Any, n: int, cls: type) -> None:
++        batch._warm_credit.record("pool-a", 5)
 +        self._waiters(batch, n, cls)
 +        # A rename must not silently stop the walk counting.
 +        self.assertIsInstance(batch._connected, _WalkCountingDict)
@@ -5741,7 +6216,8 @@ index 0000000..0c101f0
 +            _CountingConnection.eq_calls = 0
 +            with patch.object(AsyncSandboxBatch, "_close_one", close_one):
 +                with InstructionCounter() as counter:
-+                    await abatch._close_connections(closing, "re-list")  # type: ignore[arg-type]
++                    await _settled(lambda: abatch._close_connections(
++                        closing, "re-list"))  # type: ignore[arg-type]
 +        else:
 +            _sclient, _shelper, sbatch = _new_stopped_sync_batch(batch_id="b-f32")
 +            batch_any = sbatch
@@ -5813,6 +6289,293 @@ index 0000000..0c101f0
 +    sent = collections.Counter(name for name, _a, _k in helper.method_calls)
 +    over = {name: count for name, count in sent.items() if count > budget.get(name, 0)}
 +    case.assertEqual(over, {}, f"{label} sent requests beyond {budget}: {dict(sent)}")
++
++
++class TestSuiteAClientRegistry(unittest.TestCase):
++    """Suite A: per-claim terminate untracks one handle from the client's registry, which a
++    long-lived per_claim RL run keeps at H live sandboxes, so it must not walk the registry."""
++
++    def test_untrack_is_o1_in_tracked_handles(self) -> None:
++        for cls in (SandboxClient, AsyncSandboxClient):
++
++            def build(h: int, _g: int, cls: Any = cls) -> Callable[[], object]:
++                handles = [MagicMock(namespace="ns", claim_name=f"c-{i}") for i in range(h)]
++                registry = _WalkCountingDict({("ns", f"c-{i}"): handles[i] for i in range(h)})
++                target = handles[-1]
++
++                def run() -> None:
++                    cls._untrack(registry, target)
++                    assert ("ns", target.claim_name) not in registry
++
++                return run
++
++            with self.subTest(client=cls.__name__):
++                _MEASURED_WALKS.clear()
++                small = measure(lambda: build(50, 0))
++                large = measure(lambda: build(2000, 0))
++                label = f"{cls.__name__}._untrack"
++                assert_scaling(self, label, small, large, O1_MAX_RATIO, "H=50|H=2000")
++                _assert_no_measured_walks(self, label)
++
++
++class _StopAtPacingWait(Exception):
++    """Ends a paced create at its first pacing wait, once the wait's timeout is recorded."""
++
++
++class TestSuiteBPacingCadence(unittest.IsolatedAsyncioTestCase):
++    """Suite B: a create that create_rps pacing delays (a paced acquire, or a fill create)
++    sleeps once until its slot, rather than polling in short waits until the slot comes."""
++
++    SLOT_DELAY_S = 20.0
++    POOL = {"spec": {"sandboxTemplateRef": {"name": "t"}}, "status": {"readyReplicas": 0}}
++
++    def _pace(self, batch: Any) -> list[float]:
++        # No warm credit (an empty pool), and the next pacing slot well ahead.
++        batch._warm_credit._credit.clear()
++        batch._next_create_at = time.monotonic() + self.SLOT_DELAY_S
++        return []
++
++    def _assert_waited_until_slot(self, label: str, waits: list[float], helper: Any) -> None:
++        # Before it waits, a paced create may refresh its pool's warm credit (one pool read),
++        # and send nothing else.
++        sent = [str(call).split("(")[0] for call in helper.mock_calls]
++        self.assertLessEqual(len(sent), 1, f"{label} sent {sent} before its pacing wait")
++        self.assertLessEqual(set(sent), {"call.get_sandbox_warmpool"}, f"{label}: {sent}")
++        self.assertEqual(len(waits), 1, f"{label}: {waits}")
++        self.assertGreaterEqual(
++            waits[0], self.SLOT_DELAY_S - WAIT_DEADLINE_SLACK_SECONDS,
++            f"{label}: waited {waits[0]:.2f}s for a slot {self.SLOT_DELAY_S:.0f}s away (a poll)",
++        )
++
++    def test_sync_paced_creates_wait_once_until_their_slot(self) -> None:
++        for case in ("acquire", "fill"):
++            with self.subTest(case=case):
++                groups = [BatchGroup(warmpool="pool-a", size=1 if case == "fill" else 0)]
++                _client, helper, batch = _new_stopped_sync_batch(groups, batch_id="b-pace")
++                helper.get_sandbox_warmpool.return_value = self.POOL
++                helper.reset_mock()
++                waits = self._pace(batch)
++
++                def record(timeout: float | None = None, waits: list[float] = waits) -> bool:
++                    waits.append(float("inf") if timeout is None else timeout)
++                    raise _StopAtPacingWait
++
++                stop_any: Any = batch._stop_creating
++                stop_any.wait = record
++                with contextlib.suppress(_StopAtPacingWait):
++                    if case == "acquire":
++                        batch.acquire("pool-a", timeout=60)
++                    else:
++                        batch._create_worker()
++                self._assert_waited_until_slot(f"SandboxBatch paced {case}", waits, helper)
++
++    async def test_async_paced_creates_wait_once_until_their_slot(self) -> None:
++        for case in ("acquire", "fill"):
++            with self.subTest(case=case):
++                groups = [BatchGroup(warmpool="pool-a", size=1 if case == "fill" else 0)]
++                _client, helper, batch = await _new_stopped_async_batch(
++                    groups, batch_id="b-pace")
++                helper.get_sandbox_warmpool = AsyncMock(return_value=self.POOL)
++                helper.reset_mock()
++                waits = self._pace(batch)
++
++                async def record(timeout: float, waits: list[float] = waits) -> bool:
++                    waits.append(timeout)
++                    raise _StopAtPacingWait
++
++                batch_any: Any = batch
++                batch_any._wait_for_stop = record
++                with contextlib.suppress(_StopAtPacingWait):
++                    if case == "acquire":
++                        await batch.acquire("pool-a", timeout=60)
++                    else:
++                        await batch._create_worker()
++                self._assert_waited_until_slot(f"AsyncSandboxBatch paced {case}", waits, helper)
++
++
++class TestSuiteBRenewCadence(unittest.IsolatedAsyncioTestCase):
++    """Suite B: the Lease renewal loop sleeps a whole renewal interval between renewals (one
++    wakeup per renewal), rather than polling until a renewal is due."""
++
++    def test_sync_renew_loop_waits_a_whole_interval(self) -> None:
++        _client, _helper, batch = _new_stopped_sync_batch(batch_id="b-renew")
++        waits: list[float] = []
++
++        def first_wait_then_stop(timeout: float | None = None) -> bool:
++            waits.append(float("inf") if timeout is None else timeout)
++            return True
++
++        stop_any: Any = batch._renew_stop
++        stop_any.wait = first_wait_then_stop
++        batch._renew_loop()
++        self.assertEqual(len(waits), 1)
++        self._assert_renews_every_third_of_lease(batch, waits[0])
++
++    def _assert_renews_every_third_of_lease(self, batch: Any, wait: float) -> None:
++        # One renewal (one Lease PUT) per third of the Lease duration; more often multiplies the
++        # PUTs, waking up more often without renewing is a poll.
++        self.assertGreaterEqual(batch._renew_interval, batch._lease_duration / 3 - 1,
++                                f"renews every {batch._renew_interval}s of a "
++                                f"{batch._lease_duration}s Lease")
++        self.assertGreaterEqual(wait, 0.9 * batch._renew_interval,
++                                f"the renew loop waits {wait:.2f}s at a time (a poll)")
++
++    async def test_async_renew_loop_waits_a_whole_interval(self) -> None:
++        _client, _helper, batch = await _new_stopped_async_batch(batch_id="b-renew")
++        waits: list[float] = []
++
++        async def first_sleep_then_stop(delay: float, *_a: object) -> None:
++            waits.append(delay)
++            raise asyncio.CancelledError()
++
++        with patch.object(async_sandbox_batch_module, "asyncio",
++                          _ModuleProxy(asyncio, sleep=first_sleep_then_stop)):
++            with contextlib.suppress(asyncio.CancelledError):
++                await batch._renew_loop()
++        self.assertEqual(len(waits), 1)
++        self._assert_renews_every_third_of_lease(batch, waits[0])
++
++
++class TestSuiteAClientCreate(unittest.IsolatedAsyncioTestCase):
++    """Suite A and B: a per-claim create tracks one handle in the client's registry, which
++    holds every live per-claim sandbox, and a caller-named claim (RL's per_claim mode always
++    names its claims) also records its name in ``_explicit_claims``. Neither may be walked
++    or copied by a create or a delete_sandbox, and the create sends only its claim create
++    and its readiness watch."""
++
++    SIZES = (50, 2000)
++    NAMING = ("generated", "explicit")
++    # What the apiserver returns for the create: a caller-named claim is validated against it.
++    CLAIM = {"metadata": {"resourceVersion": "1", "uid": "u-1"},
++             "spec": {"warmPoolRef": {"name": "pool-a"}}}
++
++    def _track(self, client: Any, h: int) -> Any:
++        client.sandbox_class = lambda **kw: MagicMock(
++            claim_name=kw["claim_name"], sandbox_id=kw["sandbox_id"], is_active=True)
++        client._active_connection_sandboxes = _WalkCountingDict({
++            ("default", f"c-{i}"): MagicMock(is_active=True) for i in range(h)
++        })
++        client._explicit_claims = _WalkCountingSet({("default", f"c-{i}") for i in range(h)})
++        client.k8s_helper.reset_mock()
++        return client
++
++    def _create_kwargs(self, naming: str, names: Iterator[int]) -> dict[str, Any]:
++        if naming == "generated":
++            return {"warmpool": "pool-a"}
++        return {"warmpool": "pool-a", "claim_name": f"named-{next(names)}"}
++
++    def _assert_o1_call(self, label: str, client: Any, samples: list[tuple[int, int]]) -> None:
++        self.assertEqual(
++            _WalkCountingDict.walks, 0, f"{label} walked the registry or _explicit_claims")
++        self.assertEqual(
++            [name for name, _a, _k in client.k8s_helper.method_calls], [],
++            f"{label} sent requests besides the stubbed create and watch",
++        )
++        if len(samples) == 2:
++            sizes = "H=50|H=2000"
++            assert_scaling(self, label, samples[0][0], samples[1][0], O1_MAX_RATIO, sizes)
++            assert_peak_scaling(self, label, samples[0][1], samples[1][1], sizes)
++
++    def test_sync_create_sandbox_is_o1_in_tracked_handles(self) -> None:
++        for naming in self.NAMING:
++            with self.subTest(naming=naming):
++                label = f"SandboxClient.create_sandbox ({naming} name)"
++                names = itertools.count()
++                samples: list[tuple[int, int]] = []
++                for h in self.SIZES:
++                    client = self._track(_new_stopped_sync_batch(batch_id="b-create")[0], h)
++                    client._create_claim = lambda *a, **k: self.CLAIM
++                    client._wait_for_claim_ready = lambda *a, **k: "sbx"
++                    client.create_sandbox(**self._create_kwargs(naming, names))
++                    _WalkCountingDict.walks = 0
++                    counts, peaks = [], []
++                    for _ in range(3):
++                        kwargs = self._create_kwargs(naming, names)
++                        counts.append(count_bytecode_instructions(
++                            functools.partial(client.create_sandbox, **kwargs)))
++                        kwargs = self._create_kwargs(naming, names)
++                        with MemoryWindow() as window:
++                            client.create_sandbox(**kwargs)
++                            peaks.append(window.peak())
++                    samples.append((max(counts), min(peaks)))
++                    self._assert_o1_call(label, client, samples)
++
++    async def test_async_create_sandbox_is_o1_in_tracked_handles(self) -> None:
++        async def create(*_a: object, **_k: object) -> dict[str, Any]:
++            return self.CLAIM
++
++        async def wait(*_a: object, **_k: object) -> str:
++            return "sbx"
++
++        for naming in self.NAMING:
++            with self.subTest(naming=naming):
++                label = f"AsyncSandboxClient.create_sandbox ({naming} name)"
++                names = itertools.count()
++                samples: list[tuple[int, int]] = []
++                for h in self.SIZES:
++                    batch = (await _new_stopped_async_batch(batch_id="b-create"))[0]
++                    client = self._track(batch, h)
++                    client._create_claim = create
++                    client._wait_for_claim_ready = wait
++                    await client.create_sandbox(**self._create_kwargs(naming, names))
++                    _WalkCountingDict.walks = 0
++                    counts, peaks = [], []
++                    for _ in range(3):
++                        kwargs = self._create_kwargs(naming, names)
++                        with InstructionCounter() as counter:
++                            await _settled(lambda: client.create_sandbox(**kwargs))
++                        counts.append(counter.count)
++                        kwargs = self._create_kwargs(naming, names)
++                        with MemoryWindow() as window:
++                            await _settled(lambda: client.create_sandbox(**kwargs))
++                            peaks.append(window.peak())
++                    samples.append((max(counts), min(peaks)))
++                    self._assert_o1_call(label, client, samples)
++
++    def test_sync_delete_sandbox_is_o1_in_tracked_handles(self) -> None:
++        # The per-claim episode's other half: deleting one tracked sandbox (RL per_claim
++        # release, or a caller's cleanup) must not walk the registry either.
++        samples: list[tuple[int, int]] = []
++        label = "SandboxClient.delete_sandbox"
++        for h in self.SIZES:
++            client = self._track(_new_stopped_sync_batch(batch_id="b-delete")[0], h)
++            targets = iter(range(h))
++            client.delete_sandbox(f"c-{next(targets)}")
++            _WalkCountingDict.walks = 0
++            counts, peaks = [], []
++            for _ in range(3):
++                counts.append(count_bytecode_instructions(
++                    functools.partial(client.delete_sandbox, f"c-{next(targets)}")))
++                with MemoryWindow() as window:
++                    client.delete_sandbox(f"c-{next(targets)}")
++                    peaks.append(window.peak())
++            self.assertEqual(len(client._active_connection_sandboxes), h - 7)
++            samples.append((max(counts), min(peaks)))
++            self._assert_o1_call(label, client, samples)
++
++    async def test_async_delete_sandbox_is_o1_in_tracked_handles(self) -> None:
++        samples: list[tuple[int, int]] = []
++        label = "AsyncSandboxClient.delete_sandbox"
++        for h in self.SIZES:
++            client = self._track((await _new_stopped_async_batch(batch_id="b-delete"))[0], h)
++            for key in client._active_connection_sandboxes:
++                client._active_connection_sandboxes[key].terminate = AsyncMock()
++            targets = iter(range(h))
++            await client.delete_sandbox(f"c-{next(targets)}")
++            _WalkCountingDict.walks = 0
++            counts, peaks = [], []
++            for _ in range(3):
++                with InstructionCounter() as counter:
++                    target = f"c-{next(targets)}"
++                    await _settled(lambda: client.delete_sandbox(target))
++                counts.append(counter.count)
++                with MemoryWindow() as window:
++                    target = f"c-{next(targets)}"
++                    await _settled(lambda: client.delete_sandbox(target))
++                    peaks.append(window.peak())
++            self.assertEqual(len(client._active_connection_sandboxes), h - 7)
++            samples.append((max(counts), min(peaks)))
++            self._assert_o1_call(label, client, samples)
 +
 +
 +class TestSuiteBLifecycleRequests(unittest.IsolatedAsyncioTestCase):
@@ -5914,6 +6677,42 @@ index 0000000..0c101f0
 +
 +        return run
 +
++    TIMED_SIZES = (2000, 20000)
++
++    def _seconds(self, run: Callable[[], object]) -> float:
++        # CPU time of this process, so other processes competing for the cores don't count.
++        best = float("inf")
++        for _ in range(5):
++            started = time.process_time()
++            run()
++            best = min(best, time.process_time() - started)
++        return best
++
++    def test_attach_and_resync_time_is_linear(self) -> None:
++        # Attach and the watch's 410 resync handle every claim once. A scan of a local list or
++        # set per claim runs in C (no bytecode, no lasting allocation), so only time shows it.
++        # The sizes differ 10x: linear is about 10x, quadratic about 100x, so the 40x bound
++        # leaves 4x of room for timer noise either way.
++        def resync(n: int) -> Callable[[], object]:
++            claims = [_ready_claim("b1", i, "pool-0", n) for i in range(n)]
++            state = BatchState("b1", [BatchGroup(warmpool="pool-0", size=n)])
++            state.seed_from_claims(claims)
++            return lambda: state.resync_from_list(claims)
++
++        small_n, large_n = self.TIMED_SIZES
++        for label, build in (
++            ("reconstruct_groups + seed_from_claims", lambda n: self._attach_state(n, n // 5)),
++            ("resync_from_list", resync),
++        ):
++            small = self._seconds(build(small_n))
++            large = self._seconds(build(large_n))
++            with self.subTest(op=label):
++                self.assertLessEqual(
++                    large / small, 4 * large_n / small_n,
++                    f"{label}: {small * 1e3:.1f} ms at N={small_n} vs {large * 1e3:.1f} ms at "
++                    f"N={large_n} ({large / small:.0f}x for {large_n // small_n}x the claims)",
++                )
++
 +    def test_attach_rebuild_is_linear_in_claims_and_groups(self) -> None:
 +        (n_small, g_small), (n_large, g_large) = self.SIZES
 +        small = measure(lambda: self._attach_state(n_small, g_small))
@@ -5944,6 +6743,84 @@ index 0000000..0c101f0
 +        self.assertLessEqual(len(state_any._released), 100)
 +
 +
++class _TerminatingSandbox:
++    """A per-claim sandbox whose terminate() reports back to the client, as the real
++    Sandbox's does."""
++
++    def __init__(self, **kw: Any) -> None:
++        self.claim_name, self.namespace = kw["claim_name"], kw["namespace"]
++        self.sandbox_id, self.is_active = kw["sandbox_id"], True
++        self.connector = MagicMock()        # the async client sets its TLS context on it
++        self._on_terminated: Callable[[Any], None] | None = None
++
++    def _terminated(self) -> None:
++        if self._on_terminated is not None:
++            self._on_terminated(self)
++            self._on_terminated = None
++
++    def terminate(self) -> None:
++        self._terminated()
++
++    def close_connection(self) -> None:
++        pass
++
++
++class _AsyncTerminatingSandbox(_TerminatingSandbox):
++    async def terminate(self) -> None:  # type: ignore[override]
++        self._terminated()
++
++    async def close_connection(self) -> None:  # type: ignore[override]
++        pass
++
++
++class TestSuiteCExplicitClaimsTarget(unittest.IsolatedAsyncioTestCase):
++    """Suite C, target for F-41: a caller-named claim (RL's per_claim mode names every claim)
++    adds its name to the client's ``_explicit_claims``, and neither delete_sandbox nor the
++    sandbox's own terminate() removes it, so a long-lived client grows by one entry per
++    episode. Expected to fail until F-41 is fixed; an unexpected pass then fails the run, so
++    the fix removes these markers."""
++
++    EPISODES = 200
++    CLAIM = TestSuiteAClientCreate.CLAIM
++
++    @unittest.expectedFailure
++    def test_sync_explicit_claims_stay_bounded(self) -> None:
++        client: Any = _new_stopped_sync_batch(batch_id="b-named")[0]
++        client.sandbox_class = _TerminatingSandbox
++        client._create_claim = lambda *a, **k: self.CLAIM
++        client._wait_for_claim_ready = lambda *a, **k: "sbx"
++        for ep in range(self.EPISODES):
++            sandbox = client.create_sandbox("pool-a", claim_name=f"named-{ep}")
++            if ep % 2:
++                sandbox.terminate()
++            else:
++                client.delete_sandbox(sandbox.claim_name)
++        self.assertEqual(len(client._active_connection_sandboxes), 0)
++        self.assertEqual(len(client._explicit_claims), 0)
++
++    @unittest.expectedFailure
++    async def test_async_explicit_claims_stay_bounded(self) -> None:
++        client: Any = (await _new_stopped_async_batch(batch_id="b-named"))[0]
++
++        async def create(*_a: object, **_k: object) -> dict[str, Any]:
++            return self.CLAIM
++
++        async def wait(*_a: object, **_k: object) -> str:
++            return "sbx"
++
++        client.sandbox_class = _AsyncTerminatingSandbox
++        client._create_claim = create
++        client._wait_for_claim_ready = wait
++        for ep in range(self.EPISODES):
++            sandbox = await client.create_sandbox("pool-a", claim_name=f"named-{ep}")
++            if ep % 2:
++                await sandbox.terminate()
++            else:
++                await client.delete_sandbox(sandbox.claim_name)
++        self.assertEqual(len(client._active_connection_sandboxes), 0)
++        self.assertEqual(len(client._explicit_claims), 0)
++
++
 +class _ModuleProxy:
 +    """Stands in for a stdlib module inside one SDK module, overriding only the given names,
 +    so a wait can be recorded without patching the module for the whole process."""
@@ -5956,20 +6833,31 @@ index 0000000..0c101f0
 +        return getattr(self._real, name)
 +
 +
-+# A healthy wait sleeps until the acquire or Lease deadline (tens of seconds here); a poll caps
-+# it. Anything shorter than this is a poll, however long the observed idle window is.
-+MIN_IDLE_WAIT_SECONDS = 5.0
++# A healthy wait sleeps until the deadline the code computed (the acquire timeout, or the fill or
++# Lease deadline); a poll caps it. The slack covers the time between reading the deadline here and
++# the wait starting, so any cap below the deadline fails, however long the idle window is.
++WAIT_DEADLINE_SLACK_SECONDS = 2.0
 +IDLE_WINDOW_SECONDS = 1.0
++PENDING_ACQUIRE_TIMEOUT_S = 30.0
 +
 +
-+def _assert_waits_unbounded_by_poll(test: unittest.TestCase, label: str,
-+                                    waits: list[float | None]) -> None:
++def _assert_waits_until_deadline(test: unittest.TestCase, label: str,
++                                 waits: list[float | None], deadline_s: float) -> None:
 +    test.assertTrue(waits, f"{label}: never waited on its wakeup (sleeps or spins instead)")
 +    shortest = min(float("inf") if w is None else w for w in waits)
 +    test.assertGreaterEqual(
-+        shortest, MIN_IDLE_WAIT_SECONDS,
-+        f"{label}: waited at most {shortest:.2f}s at a time while nothing changed (a poll)",
++        shortest, deadline_s - WAIT_DEADLINE_SLACK_SECONDS,
++        f"{label}: waited at most {shortest:.2f}s at a time while nothing changed, though its "
++        f"deadline was {deadline_s:.0f}s away (a poll)",
 +    )
++
++
++def _next_deadline_s(batch: Any) -> float:
++    """Seconds until the deadline an idle ``_next`` must wake for: the fill or Lease deadline."""
++    deadline = batch._lease_expires_at
++    if batch._fill_deadline is not None:
++        deadline = min(deadline, batch._fill_deadline)
++    return float(deadline - time.monotonic())
 +
 +
 +class TestSuiteBRequestLowerBounds(unittest.IsolatedAsyncioTestCase):
@@ -6065,31 +6953,46 @@ index 0000000..0c101f0
 +    def test_sync_acquire_and_release_send_one_create_and_one_delete_each(self) -> None:
 +        # An acquire covered by warm credit and a release_member are the per-episode RL path:
 +        # one claim create and one claim delete each, with no pool, template, or claim reads.
++        # Both requests run with the batch lock free (a request under it stalls every other
++        # acquire, release, and lookup for a round trip), and an episode logs nothing at INFO
++        # or above, which would be a driver log line per claim (PERF-9).
 +        _client, helper, batch = _new_stopped_sync_batch(batch_id="b-req")
 +        ready = _ready_on_create(batch)
++        under_lock: list[str] = []
 +
-+        def ready_locked(*args: Any, **kwargs: Any) -> None:
++        def lock_free(request: str) -> None:
++            # Deletes run on worker threads, so a failed assert there would only be logged.
++            if not batch._lock.acquire(timeout=5):
++                under_lock.append(request)
++                return
++            batch._lock.release()
++
++        def ready_unlocked(*args: Any, **kwargs: Any) -> None:
++            lock_free("create_sandbox_claim")
 +            with batch._lock:
 +                ready(*args, **kwargs)
 +
-+        helper.create_sandbox_claim.side_effect = ready_locked
++        helper.create_sandbox_claim.side_effect = ready_unlocked
++        helper.delete_sandbox_claim.side_effect = lambda *_a, **_k: lock_free(
++            "delete_sandbox_claim")
 +        batch._warm_credit.record("pool-a", 100)
 +        batch.acquire("pool-a", timeout=5)
 +        helper.reset_mock()
-+        helper.create_sandbox_claim.side_effect = ready_locked
-+        members = [batch.acquire("pool-a", timeout=5) for _ in range(self.EPISODES)]
-+        self.assertEqual(
-+            [name for name, _a, _k in helper.method_calls],
-+            ["create_sandbox_claim"] * self.EPISODES,
-+        )
-+        helper.reset_mock()
-+        for member in members:
-+            batch.release_member(member)
-+        batch._wait_active_deletes()
++        with self.assertNoLogs("k8s_agent_sandbox", level=logging.INFO):
++            members = [batch.acquire("pool-a", timeout=5) for _ in range(self.EPISODES)]
++            self.assertEqual(
++                [name for name, _a, _k in helper.method_calls],
++                ["create_sandbox_claim"] * self.EPISODES,
++            )
++            helper.reset_mock()
++            for member in members:
++                batch.release_member(member)
++            batch._wait_active_deletes()
 +        self.assertEqual(
 +            [name for name, _a, _k in helper.method_calls],
 +            ["delete_sandbox_claim"] * self.EPISODES,
 +        )
++        self.assertEqual(under_lock, [], "requests sent while holding the batch lock")
 +
 +    def test_sync_blocked_acquire_rechecks_only_when_woken(self) -> None:
 +        # An acquire waiting on a pending claim should sleep until the watch wakes it, not
@@ -6131,7 +7034,7 @@ index 0000000..0c101f0
 +
 +        def acquire() -> None:
 +            try:
-+                result.append(batch.acquire("pool-a", timeout=30))
++                result.append(batch.acquire("pool-a", timeout=PENDING_ACQUIRE_TIMEOUT_S))
 +            except BaseException as e:  # surfaced below instead of hanging the test
 +                errors.append(e)
 +
@@ -6164,7 +7067,8 @@ index 0000000..0c101f0
 +        # Nothing changed while it waited, so it must not have rechecked; allow one spurious
 +        # wakeup. The recorded wait timeouts catch slower polls that this window can't.
 +        self.assertLessEqual(idle_checks, 1, f"{idle_checks} rechecks in 1 s with no change")
-+        _assert_waits_unbounded_by_poll(self, "SandboxBatch.acquire (pending claim)", waits)
++        _assert_waits_until_deadline(self, "SandboxBatch.acquire (pending claim)", waits,
++                                     PENDING_ACQUIRE_TIMEOUT_S)
 +
 +    async def test_async_blocked_acquire_rechecks_only_when_woken(self) -> None:
 +        _client, helper, batch = await _new_stopped_async_batch(batch_id="b-wait")
@@ -6207,7 +7111,7 @@ index 0000000..0c101f0
 +            async_sandbox_batch_module, "asyncio",
 +            _ModuleProxy(asyncio, wait_for=recording_wait_for),
 +        ))
-+        task = asyncio.ensure_future(batch.acquire("pool-a", timeout=30))
++        task = asyncio.ensure_future(batch.acquire("pool-a", timeout=PENDING_ACQUIRE_TIMEOUT_S))
 +        give_up = time.monotonic() + 10
 +        while not created and not task.done() and time.monotonic() < give_up:
 +            await asyncio.sleep(0.01)
@@ -6226,7 +7130,8 @@ index 0000000..0c101f0
 +        await asyncio.wait_for(task, 10)
 +        stack.close()
 +        self.assertLessEqual(idle_checks, 1, f"{idle_checks} rechecks in 1 s with no change")
-+        _assert_waits_unbounded_by_poll(self, "AsyncSandboxBatch.acquire (pending claim)", waits)
++        _assert_waits_until_deadline(self, "AsyncSandboxBatch.acquire (pending claim)", waits,
++                                     PENDING_ACQUIRE_TIMEOUT_S)
 +
 +    def test_sync_idle_consumer_rechecks_only_when_woken(self) -> None:
 +        # events(), group_outcomes(), and wait_for_quorum() wait in _next for the next change;
@@ -6257,6 +7162,7 @@ index 0000000..0c101f0
 +            target=lambda: result.append(batch._next(counted_pop, state.events_done)),
 +            daemon=True,
 +        )
++        deadline_s = _next_deadline_s(batch)
 +        consumer.start()
 +        time.sleep(0.05)
 +        idle_start = pops
@@ -6269,7 +7175,7 @@ index 0000000..0c101f0
 +        self.assertEqual(len(result), 1)
 +        self.assertIsNotNone(result[0])
 +        self.assertLessEqual(idle_pops, 1, f"{idle_pops} rechecks in 1 s with no change")
-+        _assert_waits_unbounded_by_poll(self, "SandboxBatch._next (idle)", waits)
++        _assert_waits_until_deadline(self, "SandboxBatch._next (idle)", waits, deadline_s)
 +
 +    async def test_async_idle_consumer_rechecks_only_when_woken(self) -> None:
 +        _client, _helper, batch = await _new_stopped_async_batch(
@@ -6298,6 +7204,7 @@ index 0000000..0c101f0
 +            async_sandbox_batch_module, "asyncio",
 +            _ModuleProxy(asyncio, wait_for=recording_wait_for),
 +        ))
++        deadline_s = _next_deadline_s(batch)
 +        task = asyncio.ensure_future(batch._next(counted_pop, state.events_done))
 +        await asyncio.sleep(0.05)
 +        idle_start = pops
@@ -6309,7 +7216,7 @@ index 0000000..0c101f0
 +        self.assertIsNotNone(await asyncio.wait_for(task, 10))
 +        stack.close()
 +        self.assertLessEqual(idle_pops, 1, f"{idle_pops} rechecks in 1 s with no change")
-+        _assert_waits_unbounded_by_poll(self, "AsyncSandboxBatch._next (idle)", waits)
++        _assert_waits_until_deadline(self, "AsyncSandboxBatch._next (idle)", waits, deadline_s)
 +
 +    def test_sync_watch_reconnects_never_relist(self) -> None:
 +        # A watch that ends at its timeout reconnects from its resourceVersion; only a 410
@@ -6404,23 +7311,38 @@ index 0000000..0c101f0
 +    async def test_async_acquire_and_release_send_one_create_and_one_delete_each(self) -> None:
 +        _client, helper, batch = await _new_stopped_async_batch(batch_id="b-req")
 +        ready = _ready_on_create(batch)
-+        helper.create_sandbox_claim = AsyncMock(side_effect=ready)
++        under_lock: list[str] = []
++
++        def ready_unlocked(*args: Any, **kwargs: Any) -> None:
++            # On one event loop, a lock held while a request runs is held across its await.
++            if batch._lock.locked():
++                under_lock.append("create_sandbox_claim")
++            ready(*args, **kwargs)
++
++        def delete_unlocked(*_a: object, **_k: object) -> None:
++            if batch._lock.locked():
++                under_lock.append("delete_sandbox_claim")
++
++        helper.create_sandbox_claim = AsyncMock(side_effect=ready_unlocked)
++        helper.delete_sandbox_claim = AsyncMock(side_effect=delete_unlocked)
 +        batch._warm_credit.record("pool-a", 100)
 +        await batch.acquire("pool-a", timeout=5)
 +        helper.reset_mock()
-+        members = [await batch.acquire("pool-a", timeout=5) for _ in range(self.EPISODES)]
-+        self.assertEqual(
-+            [str(c).split("(")[0] for c in helper.mock_calls],
-+            ["call.create_sandbox_claim"] * self.EPISODES,
-+        )
-+        helper.reset_mock()
-+        for member in members:
-+            await batch.release_member(member)
-+        await batch._wait_active_deletes()
++        with self.assertNoLogs("k8s_agent_sandbox", level=logging.INFO):
++            members = [await batch.acquire("pool-a", timeout=5) for _ in range(self.EPISODES)]
++            self.assertEqual(
++                [str(c).split("(")[0] for c in helper.mock_calls],
++                ["call.create_sandbox_claim"] * self.EPISODES,
++            )
++            helper.reset_mock()
++            for member in members:
++                await batch.release_member(member)
++            await batch._wait_active_deletes()
 +        self.assertEqual(
 +            [str(c).split("(")[0] for c in helper.mock_calls],
 +            ["call.delete_sandbox_claim"] * self.EPISODES,
 +        )
++        self.assertEqual(under_lock, [], "requests sent while holding the batch lock")
 +
 +    def test_batch_create_and_delete_call_sites_log_at_debug(self) -> None:
 +        # PERF-9: an INFO record per claim turns a 2,000-claim batch into 4,000 driver log lines.
@@ -6484,6 +7406,8 @@ index 0000000..0c101f0
 +
 +    def __enter__(self) -> MemoryWindow:
 +        gc.collect()
++        self._hand_offs = _HandOffWatch()
++        self._hand_offs.start()
 +        self._started = not tracemalloc.is_tracing()
 +        if self._started:
 +            tracemalloc.start()
@@ -6497,9 +7421,10 @@ index 0000000..0c101f0
 +    def peak(self) -> int:
 +        return tracemalloc.get_traced_memory()[1] - self._base
 +
-+    def __exit__(self, *_exc: object) -> None:
++    def __exit__(self, exc_type: object, *_exc: object) -> None:
 +        if self._started:
 +            tracemalloc.stop()
++        self._hand_offs.stop(failing=exc_type is not None)
 +
 +
 +class _Page(dict[str, Any]):
@@ -6520,6 +7445,90 @@ index 0000000..0c101f0
 +        for i in range(start, start + size)
 +    ]
 +    return _Page({"items": items, "metadata": {"continue": cont} if cont else {}})
++
++
++class _LazyWatch:
++    """A watch whose stream makes one claim event at a time, recording how many it has made, so
++    a test can tell a wrapper that streams from one that reads ahead or buffers."""
++
++    def __init__(self, events: int) -> None:
++        self.events, self.produced = events, 0
++
++    def _event(self, i: int) -> dict[str, Any]:
++        self.produced += 1
++        return {"type": "MODIFIED", "object": _ready_claim("b-watch", i, "pool-a", 0)}
++
++    def stream(self, **_kw: object) -> Iterator[dict[str, Any]]:
++        for i in range(self.events):
++            yield self._event(i)
++
++    def stop(self) -> None:
++        pass
++
++
++class _LazyAsyncWatch(_LazyWatch):
++    async def stream(  # type: ignore[override]
++        self, **_kw: object
++    ) -> AsyncIterator[dict[str, Any]]:
++        for i in range(self.events):
++            yield self._event(i)
++
++    async def close(self) -> None:
++        pass
++
++
++class TestSuiteCWatchStreaming(unittest.IsolatedAsyncioTestCase):
++    """Suite C: the helpers' watch_sandbox_claims, which carries every watch event of a batch,
++    hands each event on as it arrives: it reads nothing ahead, and its peak memory stays one
++    event whatever the stream's length."""
++
++    EVENTS = (100, 2000)
++
++    def _assert_streams(self, label: str, peaks: list[int], lags: list[int]) -> None:
++        self.assertEqual(max(lags), 0, f"{label} read {max(lags)} events ahead of its caller")
++        assert_peak_scaling(self, label, peaks[0], peaks[1], "E=100|E=2000")
++
++    def test_sync_watch_streams_events(self) -> None:
++        peaks, lags = [], []
++        with (
++            patch("k8s_agent_sandbox.k8s_helper.config"),
++            patch("k8s_agent_sandbox.k8s_helper.client.CustomObjectsApi"),
++            patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api"),
++        ):
++            helper = K8sHelper()
++        for events in self.EVENTS:
++            lazy = _LazyWatch(events)
++            consumed = 0
++            with patch("k8s_agent_sandbox.k8s_helper.watch.Watch", return_value=lazy):
++                with MemoryWindow() as window:
++                    for _event in helper.watch_sandbox_claims("ns", "sel", "1", 60):
++                        consumed += 1
++                        lags.append(lazy.produced - consumed)
++                    peaks.append(window.peak())
++            self.assertEqual(consumed, events)
++        self._assert_streams("K8sHelper.watch_sandbox_claims", peaks, lags)
++
++    async def test_async_watch_streams_events(self) -> None:
++        from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
++
++        async def initialized() -> None:
++            return None
++
++        helper: Any = object.__new__(AsyncK8sHelper)
++        helper.custom_objects_api = MagicMock()
++        helper._ensure_initialized = initialized
++        peaks, lags = [], []
++        for events in self.EVENTS:
++            lazy = _LazyAsyncWatch(events)
++            consumed = 0
++            with patch("k8s_agent_sandbox.async_k8s_helper.watch.Watch", return_value=lazy):
++                with MemoryWindow() as window:
++                    async for _event in helper.watch_sandbox_claims("ns", "sel", "1", 60):
++                        consumed += 1
++                        lags.append(lazy.produced - consumed)
++                    peaks.append(window.peak())
++            self.assertEqual(consumed, events)
++        self._assert_streams("AsyncK8sHelper.watch_sandbox_claims", peaks, lags)
 +
 +
 +@patch("k8s_agent_sandbox.k8s_helper.client.CoreV1Api")
@@ -6555,6 +7564,10 @@ index 0000000..0c101f0
 +            live = helper.count_live_sandbox_claims("default", "agents.x-k8s.io/batch-id=b1")
 +            peak = window.peak()
 +        self.assertEqual(live, pages * page_size)
++        # One LIST per page of at least 500 claims, so counting N claims costs N / 500 requests.
++        calls = mock_api.list_namespaced_custom_object.call_args_list
++        self.assertEqual(len(calls), pages)
++        self.assertGreaterEqual(min(c.kwargs["limit"] for c in calls), page_size)
 +        return peak
 +
 +    def test_count_live_sandbox_claims_holds_one_page_at_a_time(
@@ -6649,10 +7662,11 @@ index 0000000..0c101f0
 +            gc.collect()
 +            without_tombstones = window.current()
 +        self.assertLessEqual(tombstones, warmup + episodes)
-+        # One short name per tombstone measures about 156 B/episode; a heavier tombstone (e.g.
-+        # a whole Member per released claim) multiplies that.
++        # One short name per tombstone measures 156 B/episode on CPython 3.13; the bound leaves
++        # 25%, so a heavier tombstone (a second string, a whole Member per released claim)
++        # fails it.
 +        self.assertLess(
-+            with_tombstones / episodes, 320, f"{with_tombstones / episodes:.1f} B/episode"
++            with_tombstones / episodes, 195, f"{with_tombstones / episodes:.1f} B/episode"
 +        )
 +        per_episode = without_tombstones / episodes
 +        self.assertLess(
@@ -7387,10 +8401,10 @@ index 68c8a5b..30451e7 100644
      "kubernetes_asyncio<37.0.0",
 diff --git a/dev/tools/run_batch_verification.sh b/dev/tools/run_batch_verification.sh
 new file mode 100755
-index 0000000..8eb995d
+index 0000000..f417361
 --- /dev/null
 +++ b/dev/tools/run_batch_verification.sh
-@@ -0,0 +1,321 @@
+@@ -0,0 +1,323 @@
 +#!/usr/bin/env bash
 +# Copyright 2026 The Kubernetes Authors.
 +#
@@ -7491,7 +8505,9 @@ index 0000000..8eb995d
 +  export MYPYPATH="${SDK_SRC_DIR}${MYPYPATH:+:${MYPYPATH}}"
 +fi
 +
-+CACHE_ROOT="${TMPDIR:-/tmp}/batch_verify_cache_${UID:-0}"
++# Keyed by checkout too, so runs on different worktrees don't share (and race on) caches.
++REPO_KEY="$(printf '%s' "${REPO_ROOT}" | cksum | cut -d' ' -f1)"
++CACHE_ROOT="${TMPDIR:-/tmp}/batch_verify_cache_${UID:-0}_${REPO_KEY}"
 +export HYPOTHESIS_STORAGE_DIRECTORY="${CACHE_ROOT}/hypothesis"
 +PYTEST_CACHE_DIR="${CACHE_ROOT}/pytest"
 +MYPY_CACHE_SDK="${CACHE_ROOT}/mypy_sdk"
@@ -7714,10 +8730,10 @@ index 0000000..8eb995d
 +exit "${OVERALL_RC}"
 diff --git a/dev/tools/verify_batch_static.py b/dev/tools/verify_batch_static.py
 new file mode 100755
-index 0000000..fe5bbf1
+index 0000000..531baf4
 --- /dev/null
 +++ b/dev/tools/verify_batch_static.py
-@@ -0,0 +1,2767 @@
+@@ -0,0 +1,3072 @@
 +#!/usr/bin/env python3
 +# Copyright 2026 The Kubernetes Authors.
 +#
@@ -9349,36 +10365,22 @@ index 0000000..fe5bbf1
 +# Check 8: Hot-path complexity (snapshot lookups, quadratic list scans, linear index scans)
 +# ---------------------------------------------------------------------------
 +
-+# BatchState methods that run once per watch event, acquire, or release and must stay O(1) in the
-+# batch's member count N and group count G.
-+_BATCH_STATE_O1_METHODS = frozenset({
-+    "upsert_claim",
-+    "mark_lost",
-+    "pop_event",
-+    "pop_group_outcome",
-+    "_check_quorum",
-+    "start_acquire",
-+    "acquired_member",
-+    "release_claim",
-+    "note_deleted",
-+    "get_member",
-+    "release_member",
-+    "take_exhausted_pools",
-+    "enter_acquire",
-+    "exit_acquire",
-+    "pool_release_seq",
-+    "drop_acquired",
-+    # Consumers recheck these on every wake, and every watch event wakes them.
-+    "events_done",
-+    "groups_done",
-+    "fill_settled",
-+    "quorum_result",
-+    "error",
-+    # Per fill create.
-+    "group_failed",
-+    "record_skipped_create",
-+    "delete_seq",
++# BatchState methods that legitimately walk the whole batch, because they run once per batch,
++# per attach, or per watch re-list, or return the whole-batch snapshot. Every other BatchState
++# method runs per watch event, acquire, release, or fill create and must stay O(1) in the batch's
++# member count N and group count G, so a new method is audited by default.
++_BATCH_STATE_WHOLE_BATCH_METHODS = frozenset({
++    "__init__", "seed_from_claims", "resync_from_list", "release_not_ready", "set_mode",
++    "expire_fill", "count_missing_fill_as_unable", "_time_out_undecided_groups", "fail_quorum",
++    "note_error",
 +})
++
++
++def _batch_state_o1_methods(
++    methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
++) -> frozenset[str]:
++    return frozenset(methods) - _BATCH_STATE_WHOLE_BATCH_METHODS - _BATCH_STATE_PER_POOL_METHODS
++
 +
 +# BatchState per-pool methods that must scale with the pool's own size K_pool, not with N or G.
 +# They run per pool release (the handles' release_group), so a full scan costs O(G * N) across
@@ -9467,9 +10469,17 @@ index 0000000..fe5bbf1
 +_HANDLE_WHOLE_BATCH_METHODS = frozenset({
 +    "__init__", "__enter__", "__exit__", "__aenter__", "__aexit__", "__repr__", "__del__",
 +    "_start", "release", "detach", "close", "members", "groups",
-+    "_close_cached_connections", "_notify_all", "_fail_waiters",
-+    "_wait_active_deletes", "_stop_background", "_join_background",
++    "_notify_all", "_fail_waiters",
++    "_wait_active_deletes", "_stop_background_threads", "_stop_background_tasks",
 +})
++# Handle helpers that wake every waiter (INV-PERF-HOTPATH-7), the per-item methods that may
++# call them because they run once per batch, and those that may only on a failure.
++_WAKE_ALL_HELPERS = frozenset({"_notify_all", "_fail_waiters"})
++_WAKE_ALL_ALLOWED = frozenset({"_expire_lease_if_due", "_stop_renewal"})
++_WAKE_ALL_ON_FAILURE = frozenset({"_watch_loop"})
++# Handle tables whose size is fixed by the batch's configuration rather than its members, so
++# a per-item method may copy them: the batch's own labels, and one entry per create worker.
++_BOUNDED_HANDLE_TABLES = frozenset({"self._labels", "self._creators"})
 +_PER_ITEM_EXEMPT: dict[str, frozenset[str]] = {
 +    "SandboxBatch": _HANDLE_WHOLE_BATCH_METHODS,
 +    "AsyncSandboxBatch": _HANDLE_WHOLE_BATCH_METHODS,
@@ -9482,27 +10492,35 @@ index 0000000..fe5bbf1
 +_ONCE_PER_BATCH_FLAGS = frozenset({"relist"})
 +
 +
++# Parameters whose ``None`` selects a method's whole-batch form: ``release_group(None)`` and
++# ``_close_cached_connections(action)`` (every connection) run once per batch, while a named
++# pool or claim list is the per-item form.
++_WHOLE_BATCH_WHEN_NONE = frozenset({"warmpool", "claim_names"})
++
++
 +def _once_per_batch_nodes(method: ast.FunctionDef | ast.AsyncFunctionDef) -> set[int]:
 +    """Returns the ids of every node inside an `if <flag>:` block guarded by one of
-+    ``_ONCE_PER_BATCH_FLAGS``, or inside an `if warmpool is None:` block (the whole-batch form
-+    of a per-pool method, as release() calls it)."""
++    ``_ONCE_PER_BATCH_FLAGS``, or in the whole-batch branch of an `if <param> is None:` block or
++    `<a> if <param> is None else <b>` expression for a ``_WHOLE_BATCH_WHEN_NONE`` parameter."""
 +    once: set[int] = set()
 +    for sub in ast.walk(method):
-+        whole_batch_branch = (
-+            isinstance(sub, ast.If)
-+            and isinstance(sub.test, ast.Compare)
-+            and isinstance(sub.test.left, ast.Name)
-+            and sub.test.left.id == "warmpool"
-+            and len(sub.test.ops) == 1
-+            and isinstance(sub.test.ops[0], ast.Is)
-+            and isinstance(sub.test.comparators[0], ast.Constant)
-+            and sub.test.comparators[0].value is None
-+        )
-+        if not isinstance(sub, ast.If):
++        if not isinstance(sub, (ast.If, ast.IfExp)):
 +            continue
-+        if whole_batch_branch or (
-+            isinstance(sub.test, ast.Name) and sub.test.id in _ONCE_PER_BATCH_FLAGS
-+        ):
++        test = sub.test
++        whole_batch_branch = (
++            isinstance(test, ast.Compare)
++            and isinstance(test.left, ast.Name)
++            and test.left.id in _WHOLE_BATCH_WHEN_NONE
++            and len(test.ops) == 1
++            and isinstance(test.ops[0], ast.Is)
++            and isinstance(test.comparators[0], ast.Constant)
++            and test.comparators[0].value is None
++        )
++        if isinstance(sub, ast.IfExp):
++            if whole_batch_branch:
++                once.update(id(n) for n in ast.walk(sub.body))
++            continue
++        if whole_batch_branch or (isinstance(test, ast.Name) and test.id in _ONCE_PER_BATCH_FLAGS):
 +            for stmt in sub.body:
 +                once.update(id(n) for n in ast.walk(stmt))
 +    return once
@@ -9565,11 +10583,137 @@ index 0000000..fe5bbf1
 +    return None
 +
 +
++def _joined_buffer(node: ast.AST) -> str | None:
++    """Returns the buffer a `join` argument copies whole: `buf`, `self._buf`, `buf[:]`,
++    `list(buf)`, or `tuple(buf)` all join every chunk appended so far."""
++    while True:
++        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
++            node = node.value
++        elif (
++            isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
++            and node.func.id in ("list", "tuple") and len(node.args) == 1
++        ):
++            node = node.args[0]
++        else:
++            return _attr_chain(node)
++
++
++# Mod is `"%s" % table`, which renders the whole table.
++_WHOLE_BINOPS = (ast.BitOr, ast.Sub, ast.BitAnd, ast.BitXor, ast.Add, ast.Mult, ast.Mod)
++
++
++def _expression_root(
++    sub: ast.AST, roots: frozenset[str], aliases: dict[str, str] | None = None
++) -> str | None:
++    """Returns the root an expression copies or renders whole without a call Check 8 knows:
++    `self._a | {x}`, `{**self._a, k: v}`, `[*self._a]`, an f-string `{self._a}`, or
++    `str(self._a)` / `repr()` / `format()`. Each walks the table in C."""
++    def root_of(node: ast.AST | None) -> str | None:
++        if node is None:
++            return None
++        chain = _attr_chain(node)
++        if chain in roots:
++            return chain
++        if isinstance(node, ast.Name) and aliases and node.id in aliases:
++            return aliases[node.id]
++        return None
++
++    if isinstance(sub, ast.BinOp) and isinstance(sub.op, _WHOLE_BINOPS):
++        return root_of(sub.left) or root_of(sub.right)
++    if isinstance(sub, ast.Starred):
++        return root_of(sub.value)
++    if isinstance(sub, ast.Dict):
++        # `{**x}` has a None key for each unpacked mapping.
++        return next(
++            (r for k, v in zip(sub.keys, sub.values) if k is None and (r := root_of(v))), None
++        )
++    if isinstance(sub, ast.FormattedValue):
++        return root_of(sub.value)
++    if (
++        isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
++        and sub.func.id in ("str", "repr", "format", "ascii") and sub.args
++    ):
++        return root_of(sub.args[0])
++    return None
++
++
++# Modules whose loops run per claim, event, episode, or command chunk.
++_HOT_PATH_MODULES = frozenset({
++    f"{SDK_REL}/batch_state.py", f"{SDK_REL}/sandbox_batch.py",
++    f"{SDK_REL}/async_sandbox_batch.py", f"{SDK_REL}/batch_utils.py",
++    f"{SDK_REL}/sandbox_client.py", f"{SDK_REL}/async_sandbox_client.py",
++    f"{RL_REL}/batch_claims.py", f"{RL_REL}/fleet.py", f"{RL_REL}/handles.py",
++    f"{RL_REL}/failfast.py",
++    # The executors fleet.run() drives once per task, the Observer each of them reports to,
++    # and the lookahead warmer that reconciles pools once per training batch.
++    f"{RL_REL}/strategies.py", f"{RL_REL}/recycle.py", f"{RL_REL}/async_fleet.py",
++    f"{RL_REL}/observability.py", f"{RL_REL}/lookahead.py",
++})
++
++
++def _shifts_or_scans_list(call: ast.Call) -> bool:
++    """Whether a method call on a list scans it (`remove`, `index`, `count`) or shifts every
++    element after a position (`insert(i, x)`, `pop(i)` other than `pop()` / `pop(-1)`)."""
++    if not isinstance(call.func, ast.Attribute):
++        return False
++    attr = call.func.attr
++    if attr in ("remove", "index", "count", "insert"):
++        return True
++    if attr == "pop" and call.args:
++        index = call.args[0]
++        is_tail = (
++            isinstance(index, ast.UnaryOp) and isinstance(index.op, ast.USub)
++            and isinstance(index.operand, ast.Constant) and index.operand.value == 1
++        )
++        return not is_tail
++    return False
++
++
++def _conditional_nodes(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[int]:
++    """Returns the ids of nodes that run only on some calls: inside an `if` branch, or after an
++    `if ...: return` guard in the same block (the early-return style)."""
++    conditional: set[int] = set()
++
++    def visit(block: list[ast.stmt]) -> None:
++        guarded = False
++        for stmt in block:
++            if guarded:
++                conditional.update(id(node) for node in ast.walk(stmt))
++            # A branch taken every K calls (`if self._calls % K == 0:`) is periodic
++            # housekeeping, O(N / K) per call, so its walks still count.
++            periodic = isinstance(stmt, ast.If) and any(
++                isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mod) for n in ast.walk(stmt.test))
++            if isinstance(stmt, ast.If) and not periodic:
++                for inner in [*stmt.body, *stmt.orelse]:
++                    conditional.update(id(node) for node in ast.walk(inner))
++                if stmt.body and isinstance(stmt.body[-1], ast.Return) and not stmt.orelse:
++                    guarded = True
++            for field in ("body", "orelse", "finalbody"):
++                inner_block = getattr(stmt, field, None)
++                if isinstance(inner_block, list) and not isinstance(stmt, ast.If):
++                    visit(inner_block)
++
++    visit(fn.body)
++    return conditional
++
++
 +def _module_function_names(tree: ast.Module) -> frozenset[str]:
-+    return frozenset(
++    """The file's module-level functions, plus ``<module>.`` for every module of the same
++    package it imports (``from . import batch_utils``), whose helpers Check 8 doesn't follow
++    either."""
++    names = {
 +        node.name for node in tree.body
 +        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-+    )
++    }
++    for node in tree.body:
++        if isinstance(node, ast.ImportFrom) and (
++            node.level > 0 or (node.module or "").split(".")[0] in _PACKAGE_NAMES
++        ):
++            names.update(f"{alias.asname or alias.name}." for alias in node.names)
++    return frozenset(names)
++
++
++_PACKAGE_NAMES = frozenset({"k8s_agent_sandbox", "agent_sandbox_rl"})
 +
 +
 +def _root_passed_to_module_helper(
@@ -9577,12 +10721,21 @@ index 0000000..fe5bbf1
 +    aliases: dict[str, str] | None = None,
 +) -> str | None:
 +    """Returns the root when ``sub`` calls a module-level function of the same file with a
-+    whole table (or a ``.values()``/``.items()``/``.keys()`` view of one) as an argument. Check 8
-+    analyzes methods, not module functions, so such a helper could walk the table unseen."""
-+    if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-+            and sub.func.id in module_funcs):
++    whole table (or a ``.values()``/``.items()``/``.keys()`` view of one) as an argument, or
++    ``self`` when it passes the whole object. Check 8 analyzes methods, not module functions,
++    so such a helper could walk the table unseen."""
++    if not isinstance(sub, ast.Call):
 +        return None
++    if isinstance(sub.func, ast.Name):
++        if sub.func.id not in module_funcs:
++            return None
++    else:
++        helper = _attr_chain(sub.func) or ""
++        if helper.count(".") != 1 or f"{helper.split('.')[0]}." not in module_funcs:
++            return None
 +    for arg in [*sub.args, *(kw.value for kw in sub.keywords)]:
++        if isinstance(arg, ast.Name) and arg.id == "self":
++            return "self"
 +        if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) and (
 +            arg.func.attr in ("values", "items", "keys")
 +        ):
@@ -9752,6 +10905,14 @@ index 0000000..fe5bbf1
 +        return _iter_collection_root(
 +            node.func.value, roots, aliases=aliases, pool_slices_ok=pool_slices_ok
 +        )
++    # `dict.fromkeys(t)`, `copy.copy(t)`, and `", ".join(t)` copy or render all of `t` in C.
++    copier = _attr_chain(node.func) or ""
++    joins = (isinstance(node.func, ast.Attribute) and node.func.attr == "join"
++             and isinstance(node.func.value, ast.Constant))
++    if (copier in {"dict.fromkeys", "copy.copy", "set.union"} or joins) and node.args:
++        return _iter_collection_root(
++            node.args[0], roots, aliases=aliases, pool_slices_ok=pool_slices_ok
++        )
 +    return None
 +
 +
@@ -9760,20 +10921,26 @@ index 0000000..fe5bbf1
 +    seeds: frozenset[str],
 +    stop: frozenset[str],
 +) -> set[str]:
-+    """Returns ``seeds`` plus every method they reach through ``self.<method>(...)`` calls,
-+    without expanding through ``stop``."""
++    """Returns ``seeds`` plus every method they reach through ``self.<method>(...)`` calls or
++    by handing ``self.<method>`` to another call (``create_task``, ``call_soon``, ``submit``,
++    ``Thread(target=...)``, ``partial``), whose work is still the caller's, without expanding
++    through ``stop``."""
 +    reached = {m for m in seeds if m in methods}
 +    stack = list(reached)
 +    while stack:
 +        cur = stack.pop()
 +        for sub in _iter_no_nested_defs(methods[cur]):
-+            if isinstance(sub, ast.Call):
-+                chain = _attr_chain(sub.func)
-+                if chain and chain.startswith("self.") and chain.count(".") == 1:
-+                    callee = chain[5:]
-+                    if callee in methods and callee not in reached and callee not in stop:
-+                        reached.add(callee)
-+                        stack.append(callee)
++            if not isinstance(sub, ast.Call):
++                continue
++            targets = [sub.func, *sub.args, *(kw.value for kw in sub.keywords)]
++            for target in targets:
++                chain = _attr_chain(target)
++                if not (chain and chain.startswith("self.") and chain.count(".") == 1):
++                    continue
++                callee = chain[5:]
++                if callee in methods and callee not in reached and callee not in stop:
++                    reached.add(callee)
++                    stack.append(callee)
 +    return reached
 +
 +
@@ -9986,7 +11153,7 @@ index 0000000..fe5bbf1
 +                    in_state_hot_path = (
 +                        rel_path.endswith("batch_state.py")
 +                        and cls_name == "BatchState"
-+                        and mname in _BATCH_STATE_O1_METHODS
++                        and mname in _batch_state_o1_methods(methods)
 +                    )
 +                    in_watch_loop = mname == "_watch_loop"
 +                    in_poll_loop = mname == "_poll_once" and not sub.args and not sub.keywords
@@ -10053,20 +11220,27 @@ index 0000000..fe5bbf1
 +            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
 +        }
 +        per_item = _per_item_methods(cls_name, class_methods)
++        # A handle's own tables come from its __init__, like the batch state's, so a new
++        # per-member table is audited without being listed here.
++        class_roots = item_roots | (
++            (_state_collection_roots(class_methods) - _BOUNDED_HANDLE_TABLES)
++            if cls_name in _PER_ITEM_EXEMPT else frozenset())
 +        for item in class_methods.values():
 +            if item.name not in per_item:
 +                continue
 +            once = _once_per_batch_nodes(item)
 +            # A per-pool method may walk its own pool's slice of a per-pool index.
 +            per_pool = any(a.arg == "warmpool" for a in item.args.args)
-+            item_aliases = _collection_aliases(item, item_roots, per_pool)
++            item_aliases = _collection_aliases(item, class_roots, per_pool)
 +            item_kw: dict[str, Any] = {"aliases": item_aliases, "pool_slices_ok": per_pool}
 +            for sub in ast.walk(item):
 +                if id(sub) in once:
 +                    continue
-+                copied = _whole_collection_call(sub, item_roots, **item_kw)
++                copied = _whole_collection_call(sub, class_roots, **item_kw)
 +                if copied is None:
-+                    copied = _relational_root(sub, item_roots, _whole_aliases(item, item_roots))
++                    copied = _relational_root(sub, class_roots, _whole_aliases(item, class_roots))
++                if copied is None:
++                    copied = _expression_root(sub, class_roots, _whole_aliases(item, class_roots))
 +                if copied is None and isinstance(sub, ast.Compare) and any(
 +                    isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
 +                ):
@@ -10079,21 +11253,21 @@ index 0000000..fe5bbf1
 +                            if isinstance(comp, ast.Call)
 +                            and isinstance(comp.func, ast.Attribute)
 +                            and comp.func.attr in ("values", "items", "keys")
-+                            and (root := _iter_collection_root(comp, item_roots, **item_kw))
++                            and (root := _iter_collection_root(comp, class_roots, **item_kw))
 +                        ),
 +                        None,
 +                    )
 +                if copied is None:
 +                    copied = _root_passed_to_module_helper(
-+                        sub, item_roots, module_funcs, item_aliases
++                        sub, class_roots, module_funcs, item_aliases
 +                    )
 +                if copied is None and isinstance(sub, ast.Call):
 +                    # operator.countOf / operator.indexOf walk the whole iterable in C.
 +                    callee = _attr_chain(sub.func) or ""
 +                    if callee.split(".")[-1] in ("countOf", "indexOf") and sub.args:
-+                        copied = _iter_collection_root(sub.args[0], item_roots, **item_kw)
++                        copied = _iter_collection_root(sub.args[0], class_roots, **item_kw)
 +                if copied is None and isinstance(sub, ast.For):
-+                    copied = _iter_collection_root(sub.iter, item_roots, **item_kw)
++                    copied = _iter_collection_root(sub.iter, class_roots, **item_kw)
 +                if copied is None and isinstance(
 +                    sub, (ast.GeneratorExp, ast.ListComp, ast.SetComp, ast.DictComp)
 +                ):
@@ -10101,7 +11275,7 @@ index 0000000..fe5bbf1
 +                        (
 +                            root
 +                            for gen in sub.generators
-+                            if (root := _iter_collection_root(gen.iter, item_roots, **item_kw))
++                            if (root := _iter_collection_root(gen.iter, class_roots, **item_kw))
 +                        ),
 +                        None,
 +                    )
@@ -10130,14 +11304,19 @@ index 0000000..fe5bbf1
 +                continue
 +            for sub in _iter_no_nested_defs(body_item):
 +                hit: str | None = None
-+                if (
-+                    isinstance(sub, ast.Call)
-+                    and isinstance(sub.func, ast.Attribute)
-+                    and sub.func.attr in {"remove", "index", "count"}
-+                ):
++                if isinstance(sub, ast.Call) and _shifts_or_scans_list(sub):
++                    assert isinstance(sub.func, ast.Attribute)
 +                    chain = _attr_chain(sub.func.value)
 +                    if chain and chain.startswith("self.") and chain[5:] in list_attrs:
 +                        hit = f"`{chain}.{sub.func.attr}(...)`"
++                elif isinstance(sub, ast.Delete):
++                    for target in sub.targets:
++                        chain = (
++                            _attr_chain(target.value) if isinstance(target, ast.Subscript)
++                            else None
++                        )
++                        if chain and chain.startswith("self.") and chain[5:] in list_attrs:
++                            hit = f"`{ast.unparse(sub)}`"
 +                elif isinstance(sub, ast.Compare) and any(
 +                    isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
 +                ):
@@ -10174,7 +11353,8 @@ index 0000000..fe5bbf1
 +        bs_methods = _class_methods(bs_parsed[0]).get("BatchState", {})
 +        # Helpers reached from an O(1) transition inherit its O(1) budget.
 +        o1_closure = _self_call_closure(
-+            bs_methods, _BATCH_STATE_O1_METHODS, _BATCH_STATE_PER_POOL_METHODS
++            bs_methods, _batch_state_o1_methods(bs_methods),
++            _BATCH_STATE_PER_POOL_METHODS | _BATCH_STATE_WHOLE_BATCH_METHODS
 +        )
 +        state_roots = _state_collection_roots(bs_methods)
 +        bs_funcs = _module_function_names(bs_parsed[0])
@@ -10185,9 +11365,11 @@ index 0000000..fe5bbf1
 +            if mname not in o1_closure and not per_pool:
 +                continue
 +            seen_roots: set[tuple[int, str]] = set()
++            branch_nodes = _conditional_nodes(mnode)
 +            aliases = _collection_aliases(mnode, state_roots, per_pool)
 +            kw: dict[str, Any] = {"aliases": aliases, "pool_slices_ok": per_pool}
-+            for sub in _iter_no_nested_defs(mnode):
++            # Lambdas and nested defs too: a helper defined in the method runs in it.
++            for sub in ast.walk(mnode):
 +                roots: list[str] = []
 +                copied = _whole_collection_call(sub, state_roots, **kw)
 +                if copied:
@@ -10198,6 +11380,9 @@ index 0000000..fe5bbf1
 +                compared = _relational_root(sub, state_roots, _whole_aliases(mnode, state_roots))
 +                if compared:
 +                    roots.append(compared)
++                rendered = _expression_root(sub, state_roots, _whole_aliases(mnode, state_roots))
++                if rendered:
++                    roots.append(rendered)
 +                if isinstance(sub, ast.For):
 +                    root = _iter_collection_root(sub.iter, state_roots, **kw)
 +                    if root:
@@ -10224,7 +11409,12 @@ index 0000000..fe5bbf1
 +                for root in roots:
 +                    if (_lineno(sub), root) in seen_roots:
 +                        continue
-+                    if (mname, root.removesuffix(".values()")) in _ONE_SHOT_WALKS:
++                    # A one-shot walk is allowed only inside a branch (the one that decides the
++                    # outcome); the same walk before the check would run on every event.
++                    if (
++                        (mname, root.removesuffix(".values()")) in _ONE_SHOT_WALKS
++                        and id(sub) in branch_nodes
++                    ):
 +                        continue
 +                    seen_roots.add((_lineno(sub), root))
 +                    if per_pool:
@@ -10284,6 +11474,50 @@ index 0000000..fe5bbf1
 +                    )
 +                )
 +
++    # INV-PERF-HOTPATH-7: a per-item handle method that wakes every waiter. One acquire,
++    # release, event, or fill create that calls _notify_all() (or fails every waiter) wakes all
++    # W waiting acquires, which each retake the lock: O(W) per item. Only once-per-batch paths
++    # may: the Lease expiring, renewal stopping, and the watch failing (its except branches).
++    for rel_path, cls_name in ((f"{SDK_REL}/sandbox_batch.py", "SandboxBatch"),
++                               (f"{SDK_REL}/async_sandbox_batch.py", "AsyncSandboxBatch")):
++        parsed = _parse_if_exists(repo_root, rel_path)
++        if parsed is None:
++            continue
++        cls_node = next((n for n in parsed[0].body
++                         if isinstance(n, ast.ClassDef) and n.name == cls_name), None)
++        if cls_node is None:
++            continue
++        handle_methods = {m.name: m for m in cls_node.body
++                          if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
++        for method_name in sorted(_per_item_methods(cls_name, handle_methods)):
++            if method_name in _WAKE_ALL_ALLOWED:
++                continue
++            method = handle_methods[method_name]
++            allowed = _once_per_batch_nodes(method)
++            if method_name in _WAKE_ALL_ON_FAILURE:
++                allowed |= {id(n) for handler in ast.walk(method)
++                            if isinstance(handler, ast.ExceptHandler) for n in ast.walk(handler)}
++            for sub in ast.walk(method):
++                wake = _attr_chain(sub.func) if isinstance(sub, ast.Call) else None
++                if (not wake or not wake.startswith("self.") or wake.count(".") != 1
++                        or wake[5:] not in _WAKE_ALL_HELPERS or id(sub) in allowed):
++                    continue
++                findings.append(
++                    Finding(
++                        check="HOT_PATH_COMPLEXITY",
++                        severity="MEDIUM",
++                        invariant="INV-PERF-HOTPATH-7",
++                        rel_path=rel_path,
++                        line=_lineno(sub),
++                        symbol=f"{cls_name}.{method_name}",
++                        message=(
++                            f"`{ast.unparse(sub)}` in `{cls_name}.{method_name}`, which runs "
++                            f"once per item, wakes every waiting acquire, so W waiters each "
++                            f"retake the lock per item. Wake only the waiters the change concerns."
++                        ),
++                    )
++                )
++
 +    # INV-PERF-HOTPATH-5: a loop that appends to a buffer and re-joins the whole buffer on every
 +    # pass copies (and usually re-scans) O(K^2) bytes for K chunks; the copying happens in C, so
 +    # neither instruction counts nor peak memory show it.
@@ -10298,49 +11532,136 @@ index 0000000..fe5bbf1
 +            parsed = _parse_if_exists(repo_root, rel_path)
 +            if parsed is None:
 +                continue
-+            for loop in ast.walk(parsed[0]):
-+                if not isinstance(loop, (ast.For, ast.While, ast.AsyncFor)):
++            for fn in ast.walk(parsed[0]):
++                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
 +                    continue
-+                appended = {
-+                    sub.func.value.id for sub in ast.walk(loop)
-+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-+                    and sub.func.attr in ("append", "extend")
-+                    and isinstance(sub.func.value, ast.Name)
-+                }
-+                # A join inside an `if` that then leaves the loop runs once, not per pass.
-+                exits_once = {
-+                    id(node)
-+                    for branch in ast.walk(loop)
-+                    if isinstance(branch, ast.If)
-+                    and any(isinstance(stmt, (ast.Return, ast.Break)) for stmt in branch.body)
-+                    for stmt in branch.body
-+                    for node in ast.walk(stmt)
-+                }
-+                for sub in ast.walk(loop):
-+                    if id(sub) in exits_once:
-+                        continue
-+                    if not (
-+                        isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-+                        and sub.func.attr == "join" and len(sub.args) == 1
-+                        and isinstance(sub.args[0], ast.Name) and sub.args[0].id in appended
-+                    ):
-+                        continue
-+                    findings.append(
-+                        Finding(
-+                            check="HOT_PATH_COMPLEXITY",
-+                            severity="MEDIUM",
-+                            invariant="INV-PERF-HOTPATH-5",
-+                            rel_path=rel_path,
-+                            line=_lineno(sub),
-+                            symbol=sub.args[0].id,
-+                            message=(
-+                                f"`{ast.unparse(sub)}` re-joins the whole `{sub.args[0].id}` "
-+                                f"buffer on every pass of the loop that appends to it, so K "
-+                                f"chunks copy O(K^2) bytes. Check only the new chunk (plus any "
-+                                f"overlap a match can span) and join once."
-+                            ),
++                joined: set[int] = set()
++                join_loops = [
++                    node for node in _iter_no_nested_defs(fn)
++                    if isinstance(node, (ast.For, ast.While, ast.AsyncFor))
++                ]
++                for join_loop in join_loops:
++                    appended = {
++                        chain for sub in ast.walk(join_loop)
++                        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
++                        and sub.func.attr in ("append", "extend")
++                        and (chain := _attr_chain(sub.func.value)) is not None
++                    }
++                    # A join inside an `if` that then leaves the loop runs once, not per pass.
++                    exits_once = {
++                        id(node)
++                        for branch in ast.walk(join_loop)
++                        if isinstance(branch, ast.If)
++                        and any(isinstance(stmt, (ast.Return, ast.Break)) for stmt in branch.body)
++                        for stmt in branch.body
++                        for node in ast.walk(stmt)
++                    }
++                    for sub in ast.walk(join_loop):
++                        if id(sub) in exits_once or id(sub) in joined:
++                            continue
++                        if not (
++                            isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
++                            and sub.func.attr == "join" and len(sub.args) == 1
++                        ):
++                            continue
++                        buffer = _joined_buffer(sub.args[0])
++                        if buffer not in appended:
++                            continue
++                        joined.add(id(sub))
++                        findings.append(
++                            Finding(
++                                check="HOT_PATH_COMPLEXITY",
++                                severity="MEDIUM",
++                                invariant="INV-PERF-HOTPATH-5",
++                                rel_path=rel_path,
++                                line=_lineno(sub),
++                                symbol=fn.name,
++                                message=(
++                                    f"`{ast.unparse(sub)}` re-joins the whole `{buffer}` buffer "
++                                    f"on every pass of the loop in `{fn.name}` that appends to "
++                                    f"it, so K chunks copy O(K^2) bytes. Check only the new "
++                                    f"chunk (plus any overlap a match can span) and join once."
++                                ),
++                            )
 +                        )
-+                    )
++
++    # INV-PERF-HOTPATH-6: membership tests, `.index()`, `.remove()`, or `.count()` on a local
++    # `list` inside a loop: each is a C-level scan, so a loop over N items costs O(N^2) with no
++    # bytecode or lasting allocation to show for it (attach and the watch's 410 resync handle
++    # every claim in such a loop).
++    for package in (SDK_REL, RL_REL):
++        package_dir = repo_root / package
++        if not package_dir.is_dir():
++            continue
++        for path in sorted(package_dir.rglob("*.py")):
++            rel_path = str(path.relative_to(repo_root))
++            if "/test/" in rel_path or "/tests/" in rel_path:
++                continue
++            parsed = _parse_if_exists(repo_root, rel_path)
++            if parsed is None:
++                continue
++            for fn in ast.walk(parsed[0]):
++                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                    continue
++                local_lists = {
++                    sub.targets[0].id for sub in _iter_no_nested_defs(fn)
++                    if isinstance(sub, ast.Assign) and len(sub.targets) == 1
++                    and isinstance(sub.targets[0], ast.Name)
++                    and (isinstance(sub.value, ast.List) or (
++                        isinstance(sub.value, ast.Call) and isinstance(sub.value.func, ast.Name)
++                        and sub.value.func.id == "list") or (
++                        # A comprehension's size follows its input: per-task or per-member on
++                        # a hot path, a handful of API versions in one-shot setup (preflight).
++                        isinstance(sub.value, ast.ListComp) and rel_path in _HOT_PATH_MODULES))
++                }
++                if not local_lists:
++                    continue
++                loops = [
++                    node for node in _iter_no_nested_defs(fn)
++                    if isinstance(node, (ast.For, ast.While, ast.AsyncFor, ast.ListComp,
++                                         ast.SetComp, ast.DictComp, ast.GeneratorExp))
++                ]
++                flagged: set[int] = set()
++                for loop in loops:
++                    for sub in ast.walk(loop):
++                        name: str | None = None
++                        if isinstance(sub, ast.Compare) and any(
++                            isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
++                        ):
++                            name = next(
++                                (c.id for c in sub.comparators
++                                 if isinstance(c, ast.Name) and c.id in local_lists), None)
++                        elif (
++                            isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
++                            and isinstance(sub.func.value, ast.Name)
++                            and sub.func.value.id in local_lists
++                            and (
++                                sub.func.attr in ("index", "remove", "count")
++                                # Head shifts (`pop(0)`, `insert`) only on the batch hot
++                                # paths; one-shot setup loops (prepull's few DaemonSet
++                                # batches, each an API round trip) don't scale with N.
++                                or (rel_path in _HOT_PATH_MODULES and _shifts_or_scans_list(sub))
++                            )
++                        ):
++                            name = sub.func.value.id
++                        if name is None or _lineno(sub) in flagged:
++                            continue
++                        flagged.add(_lineno(sub))
++                        findings.append(
++                            Finding(
++                                check="HOT_PATH_COMPLEXITY",
++                                severity="MEDIUM",
++                                invariant="INV-PERF-HOTPATH-6",
++                                rel_path=rel_path,
++                                line=_lineno(sub),
++                                symbol=fn.name,
++                                message=(
++                                    f"`{ast.unparse(sub)}` scans the local list `{name}` inside "
++                                    f"a loop in `{fn.name}`, so N iterations cost O(N^2) in C. "
++                                    f"Use a set or dict for the lookups."
++                                ),
++                            )
++                        )
 +    return findings
 +
 +
@@ -11334,10 +12655,10 @@ index 0000000..65bed3b
 +    )
 diff --git a/examples/agent-sandbox-rl/tests/test_batch_performance_rl.py b/examples/agent-sandbox-rl/tests/test_batch_performance_rl.py
 new file mode 100644
-index 0000000..709a115
+index 0000000..2f4d0ae
 --- /dev/null
 +++ b/examples/agent-sandbox-rl/tests/test_batch_performance_rl.py
-@@ -0,0 +1,1079 @@
+@@ -0,0 +1,1784 @@
 +# Copyright 2026 The Kubernetes Authors.
 +#
 +# Licensed under the Apache License, Version 2.0 (the "License");
@@ -11356,11 +12677,20 @@ index 0000000..709a115
 +
 +Counts executed Python bytecode instructions and peak allocated bytes (machine independent,
 +unlike wall-clock time) for per-worker operations at a small and a large fleet, asserts that
-+the liveness, BatchClaim, batch-mode acquire, and idle-watchdog paths send no Kubernetes
-+request, pins repeat on-demand acquires to their minimum number of requests (pod reads included),
-+bounds the memory a long-lived fleet retains per episode with run recording off and on, and
-+requires session command output to cost time linear in its size. See the SDK counterpart
-+``k8s_agent_sandbox/test/unit/test_batch_performance_invariants.py`` for the counting method.
++liveness on a lost claim, the BatchClaim and batch-mode acquire paths, and the idle
++watchdog send no Kubernetes request, pins repeat on-demand acquires to their minimum number of
++requests (pod reads included),
++bounds the memory a long-lived fleet retains per episode (each episode run through
++``process_parallel``, the async fleet's executor, or the recycle executor) with run recording
++off and on, requires session command output and every executor to cost time linear in their
++size (with claims at one per task, or one per image per ``max_reuses`` tasks when recycling),
++holds the lookahead warmer to one pool request per changed image with no table or memory
++growth over the stream, gates the real pool operations and git-restore reset the executors
++stub out (constant cost in plan size, one exec per reset), pins background polls to their
++configured intervals, requires per-episode requests to run with the fleet's locks free, and
++requires steady-state paths to log nothing at INFO or above. See the SDK counterpart
++``k8s_agent_sandbox/test/unit/test_batch_performance_invariants.py`` for the counting method
++and the scope (cost growth, not constant factors).
 +
 +Behavior already pinned elsewhere is not repeated here: ``test_batch_claims.py`` covers the
 +zero-GET ``is_alive()`` on claim loss (WATCH-10) and the single ``size=0`` seed group on the
@@ -11369,7 +12699,12 @@ index 0000000..709a115
 +
 +from __future__ import annotations
 +
++import asyncio
++import collections
++import contextlib
 +import gc
++import itertools
++import logging
 +import os
 +import time
 +import pathlib
@@ -11378,13 +12713,15 @@ index 0000000..709a115
 +import threading
 +import tracemalloc
 +import types
-+from collections.abc import Callable
++from collections.abc import Callable, Sized
++from concurrent.futures import ThreadPoolExecutor
 +from datetime import datetime, timezone
 +from typing import Any, cast
 +from unittest.mock import MagicMock, patch
 +
 +import pytest
 +from kubernetes import client as k8s_client
++from kubernetes.client.exceptions import ApiException
 +
 +from k8s_agent_sandbox.batch_state import BatchState
 +from k8s_agent_sandbox.constants import (BATCH_GROUP_MIN_READY_ANNOTATION,
@@ -11403,6 +12740,45 @@ index 0000000..709a115
 +# Absolute, so a whole-collection copy can't hide inside a large constant peak; measured noise
 +# between sizes is under 600 B.
 +PEAK_SLACK_BYTES = 4096
++
++
++# A cold per_claim acquire starts its fail-fast ClaimWatchdog thread by design; that thread's
++# per-poll requests and its poll cadence have gates of their own.
++_EXPECTED_THREADS = ("asrl-failfast-",)
++
++
++class _HandOffs:
++  """Records work a measured call hands to another thread (a thread it starts, a callable it
++  submits to an executor). No instruction count, peak, or walk count sees that work, so the
++  measuring helpers fail on it instead of undercounting. Only ``_EXPECTED_THREADS`` pass."""
++
++  def __enter__(self) -> "_HandOffs":
++    self.handed_off: list[str] = []
++    real_start, real_submit = threading.Thread.start, ThreadPoolExecutor.submit
++    handed_off = self.handed_off
++
++    def start(thread: threading.Thread) -> None:
++      if not thread.name.startswith(_EXPECTED_THREADS):
++        handed_off.append(f"started thread {thread.name}")
++      real_start(thread)
++
++    def submit(executor: ThreadPoolExecutor, fn: Callable[..., Any], /, *args: Any,
++               **kwargs: Any) -> Any:
++      handed_off.append(f"submitted {getattr(fn, '__qualname__', fn)} to an executor")
++      return real_submit(executor, fn, *args, **kwargs)
++
++    self._patches: list[Any] = [patch.object(threading.Thread, "start", start),
++                                patch.object(ThreadPoolExecutor, "submit", submit)]
++    for patcher in self._patches:
++      patcher.start()
++    return self
++
++  def __exit__(self, exc_type: object, *_exc: object) -> None:
++    for patcher in reversed(self._patches):
++      patcher.stop()
++    if self.handed_off and exc_type is None:
++      raise AssertionError(
++          f"the measured call handed work off where no count sees it: {self.handed_off[:3]}")
 +
 +
 +def count_bytecode_instructions(fn: Callable[[], object]) -> int:
@@ -11430,7 +12806,8 @@ index 0000000..709a115
 +      monitoring.register_callback(tool_id, instruction, on_instruction)
 +      monitoring.set_events(tool_id, instruction)
 +      try:
-+        fn()
++        with _HandOffs():
++          fn()
 +      finally:
 +        monitoring.set_events(tool_id, 0)
 +        monitoring.register_callback(tool_id, instruction, None)
@@ -11451,7 +12828,8 @@ index 0000000..709a115
 +  previous = sys.gettrace()
 +  sys.settrace(tracer)
 +  try:
-+    fn()
++    with _HandOffs():
++      fn()
 +  finally:
 +    sys.settrace(previous)
 +  return count
@@ -11476,24 +12854,69 @@ index 0000000..709a115
 +  return cls
 +
 +
-+# Only operations whose cost grows with the container itself (`s.update(x)` walks x).
++# Only operations whose cost grows with the container itself (`s.update(x)` walks x). The
++# same lists as the SDK suite's _count_walks_through.
++_ORDER = ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__")
++_DICT_WALKS = ("__iter__", "keys", "values", "items", "copy", "__or__", "__ror__",
++               "__reversed__", "__eq__", "__ne__")
 +_COUNTING: dict[type, type] = {
-+    dict: _counting(dict, ("__iter__", "keys", "values", "items", "copy", "__or__", "__eq__")),
-+    set: _counting(set, ("__iter__", "copy", "issubset", "__le__", "__lt__", "__eq__", "union",
-+                         "__or__", "difference", "__sub__")),
++    dict: _counting(dict, _DICT_WALKS),
++    set: _counting(set, ("__iter__", "copy", "issubset", "__le__", "__lt__", "__eq__", "__ne__",
++                         "union", "__or__", "__ror__", "difference", "__sub__",
++                         "symmetric_difference", "__xor__", "__rxor__", "intersection_update",
++                         "__iand__")),
 +    list: _counting(list, ("__iter__", "copy", "__contains__", "index", "count", "remove",
-+                           "__eq__")),
++                           "__reversed__", "sort", "reverse", "__add__", "__mul__", *_ORDER)),
++    collections.deque: _counting(collections.deque, (
++        "__iter__", "copy", "__contains__", "index", "count", "remove", "__reversed__",
++        "reverse", *_ORDER)),
 +}
 +
 +
++# Walks of a dict subclass (Counter, defaultdict, OrderedDict) beyond the plain dict's.
++_DICT_SUBCLASS_WALKS = ("most_common", "elements", "total", "__add__", "__sub__", "__and__")
++
++
++def _counting_copy(value: Any) -> Any:
++  """A walk-counting copy of ``value`` (``None`` for a type with no counting form), building
++  a counting subclass once per dict subclass such as ``Counter`` or ``defaultdict``."""
++  base = type(value)
++  if base in _COUNTING.values():
++    return None                                 # already counting
++  counting = _COUNTING.get(base)
++  if counting is None and isinstance(value, dict):
++    names = (*_DICT_WALKS, *_DICT_SUBCLASS_WALKS)
++    counting = _COUNTING[base] = _counting(base, tuple(n for n in names if hasattr(base, n)))
++  if counting is None:
++    return None
++  if isinstance(value, collections.defaultdict):
++    return counting(value.default_factory, value)
++  return counting(value)
++
++
 +def _count_walks(*owners: Any, at_least: int) -> None:
-+  """Swaps every plain dict, set, or list attribute of ``owners`` holding at least
-+  ``at_least`` entries for a walk-counting copy."""
++  """Swaps every dict (subclasses included), set, list, or deque attribute of ``owners``
++  holding at least ``at_least`` entries for a walk-counting copy."""
 +  for owner in owners:
 +    for attr, value in list(vars(owner).items()):
-+      counting = _COUNTING.get(type(value))
-+      if counting is not None and len(value) >= at_least:
-+        setattr(owner, attr, counting(value))
++      if isinstance(value, dict):
++        # Per-pool indexes (`_members_by_pool[pool]`) hold one table per pool.
++        for key, inner in list(value.items()):
++          if isinstance(inner, Sized) and len(inner) >= at_least:
++            inner_copy = _counting_copy(inner)
++            if inner_copy is not None:
++              value[key] = inner_copy
++      if not isinstance(value, Sized) or len(value) < at_least:
++        continue
++      copy = _counting_copy(value)
++      if copy is None:
++        continue
++      if isinstance(copy, list):
++        # The copy is sized exactly, unlike a list grown by appends; without spare
++        # capacity the next append's realloc would read as a whole-table copy.
++        list.append(copy, None)
++        list.pop(copy)
++      setattr(owner, attr, copy)
 +
 +
 +def measure(build: Callable[[], Callable[[], object]], repeats: int = 3) -> int:
@@ -11525,7 +12948,8 @@ index 0000000..709a115
 +    tracemalloc.reset_peak()
 +    base = tracemalloc.get_traced_memory()[0]
 +    try:
-+      fn()
++      with _HandOffs():
++        fn()
 +      peaks.append(tracemalloc.get_traced_memory()[1] - base)
 +    finally:
 +      if started:
@@ -11533,10 +12957,37 @@ index 0000000..709a115
 +  return min(peaks)
 +
 +
++def _assert_quiet(label: str, run: Callable[[], object]) -> None:
++  """Fails if ``run`` logs at INFO or above from the SDK or the RL package: on a per-episode
++  path that is a driver log line per claim (PERF-9). The loggers are lowered to INFO for the
++  run, so records the default WARNING level would drop are still seen."""
++  records: list[logging.LogRecord] = []
++
++  class Recorder(logging.Handler):
++    def emit(self, record: logging.LogRecord) -> None:
++      records.append(record)
++
++  handler = Recorder()
++  loggers = [logging.getLogger(name) for name in ("agent_sandbox_rl", "k8s_agent_sandbox")]
++  levels = [logger.level for logger in loggers]
++  for logger in loggers:
++    logger.addHandler(handler)
++    logger.setLevel(logging.INFO)
++  try:
++    run()
++  finally:
++    for logger, level in zip(loggers, levels):
++      logger.removeHandler(handler)
++      logger.setLevel(level)
++  loud = [f"{r.levelname} {r.name}: {r.getMessage()}" for r in records]
++  assert loud == [], f"{label} logged at INFO or above on a steady-state path: {loud[:3]}"
++
++
 +def assert_o1(label: str, build: Callable[[int], Callable[[], object]],
-+              sizes: tuple[int, int]) -> None:
++              sizes: tuple[int, int], *, quiet: bool = True) -> None:
 +  """Asserts flat instruction counts, flat peak allocation, and no whole-table walks between
-+  the two sizes."""
++  the two sizes, and (unless ``quiet`` is False) that one more run logs nothing at INFO or
++  above."""
 +  _Walks.measured.clear()
 +  small = measure(lambda: build(sizes[0]))
 +  large = measure(lambda: build(sizes[1]))
@@ -11548,6 +12999,8 @@ index 0000000..709a115
 +  assert large_peak - small_peak <= PEAK_SLACK_BYTES, (
 +      f"{label}: peak {small_peak:,} B at {sizes[0]} vs {large_peak:,} B at {sizes[1]} "
 +      f"(a C-level copy or sort of the whole collection)")
++  if quiet:
++    _assert_quiet(label, build(sizes[0]))
 +
 +
 +def assert_scaling(label: str, small: int, large: int, sizes: tuple[int, int]) -> None:
@@ -11596,6 +13049,14 @@ index 0000000..709a115
 +      get_member=state.get_member,
 +      batch_id=state.batch_id,
 +  )
++
++
++def _assert_unlocked(label: str, *locks: Any) -> None:
++  """Fails if the calling thread (or any other) holds one of ``locks``: a lock held across a
++  Kubernetes request stalls every worker that needs it for a round trip."""
++  for lock in locks:
++    assert lock.acquire(timeout=1), f"{label} ran while holding {lock!r}"
++    lock.release()
 +
 +
 +def _route_pod_reads(cluster: Any) -> None:
@@ -11778,6 +13239,9 @@ index 0000000..709a115
 +
 +    def acquire(warmpool: str, timeout: float | None = None, *,
 +                pod_annotations: dict[str, str] | None = None) -> Any:
++      # The batch's acquire may wait out a claim create, so no fleet lock may be held.
++      fleet_any: Any = fleet
++      _assert_unlocked("the batch-mode acquire", fleet_any._lock, fleet_any._batch_claims._lock)
 +      name = state.start_acquire(warmpool)
 +      state.upsert_claim({
 +          "metadata": {"name": name, "uid": f"uid-{name}", "resourceVersion": "1"},
@@ -11839,6 +13303,93 @@ index 0000000..709a115
 +  assert_o1("SandboxFleet.acquire (planned image)", build, sizes)
 +
 +
++@pytest.mark.parametrize("image", ["planned", "fresh"])
++def test_add_tasks_is_o1_in_plan_size(make_cluster: Any, image: str) -> None:
++  # F-40: add_tasks streams each training batch's tasks into a planned fleet (the lookahead
++  # warmer calls it for every batch with a new image), so it must not re-sum every planned
++  # image's tasks per call. Copying fleet.tasks is a deliberate copy-on-write snapshot:
++  # load_tasks hands out the list itself and the strategies index results by it, so the
++  # gate holds the task count fixed and scales only the plan.
++  sizes = (10, 2000)
++  fresh = itertools.count()
++
++  def build(i: int) -> Callable[[], object]:
++    cluster = make_cluster("solo")
++    fleet = SandboxFleet(FleetConfig(install_teardown_hooks=False, max_concurrent=4),
++                         registry=ClusterRegistry([cluster]))
++    fleet.load_tasks([f"img-{k}" for k in range(i)])
++    plan = fleet.plan()
++    fleet.tasks = []
++    _count_walks(fleet, plan, at_least=i)
++
++    def run() -> None:
++      name = plan.entries[-1].image if image == "planned" else f"new-{next(fresh)}"
++      fleet.add_tasks([Task(id=f"{name}-{k}", image=name) for k in range(8)])
++
++    return run
++
++  # add_tasks logs one INFO line per call by design: one per streamed training batch, not
++  # per episode.
++  assert_o1(f"SandboxFleet.add_tasks ({image} image)", build, sizes, quiet=False)
++
++
++def test_fleet_pool_ops_are_o1_in_plan_size(make_cluster: Any) -> None:
++  # The executors and the lookahead warmer stub these out, so they are gated here on a real
++  # planned fleet: set_pool_replicas runs once per held recycle claim, warm_image and
++  # unwarm_image once per changed image per training batch. Each looks its image up in the
++  # plan (one per SWE-bench repo, thousands per run) and sends the same pool requests at any
++  # plan size.
++  sizes = (10, 2000)
++  sent: dict[int, list[str]] = {}
++
++  def build(i: int) -> Callable[[], object]:
++    cluster = make_cluster("solo")
++    fleet = SandboxFleet(FleetConfig(install_teardown_hooks=False, max_concurrent=4),
++                         registry=ClusterRegistry([cluster]))
++    fleet.load_tasks([f"img-{k}" for k in range(i)])
++    plan = fleet.plan()
++    image = plan.entries[-1].image
++    fleet.warm_image(image, wait=False)
++    _count_walks(fleet, plan, at_least=i)
++
++    def run() -> None:
++      before = len(_cluster_requests(cluster))
++      fleet.set_pool_replicas(image, 3)
++      fleet.set_pool_replicas(image, 1)
++      fleet.unwarm_image(image)
++      fleet.warm_image(image, wait=False)
++      sent.setdefault(i, _cluster_requests(cluster)[before:])
++
++    return run
++
++  # Pool ops log one INFO line each by design: once per pool change, not per episode.
++  assert_o1("SandboxFleet set_pool_replicas, unwarm_image, warm_image", build, sizes,
++            quiet=False)
++  assert sent[sizes[0]] == sent[sizes[1]], (
++      f"pool ops sent {sent[sizes[0]]} at {sizes[0]} images vs {sent[sizes[1]]} at {sizes[1]}")
++
++
++def test_git_restore_reset_sends_one_exec_each() -> None:
++  # The recycle executors prime each claimed sandbox once and reset it between every two of
++  # its tasks; each must be a single exec (one round trip through the held session), so a
++  # recycled task costs one request beyond its own work.
++  from agent_sandbox_rl.recycle import GitRestoreReset
++  execs: list[object] = []
++  output = "SHA=abc\nDIRTY=0\nPROCS=1\n"
++
++  def exec_(command: object, **_kwargs: object) -> str:
++    execs.append(command)
++    return output
++
++  handle = types.SimpleNamespace(exec=exec_, runtime_container=None, pod_name="p")
++  reset = GitRestoreReset()
++  baseline = reset.prime(cast(Any, handle))
++  assert len(execs) == 1, f"prime sent {len(execs)} execs"
++  for k in range(1, 6):
++    reset.reset(cast(Any, handle), baseline, timeout=5.0)
++    assert len(execs) == 1 + k, f"{k} resets sent {len(execs) - 1} execs"
++
++
 +def test_exec_clients_are_cached_per_thread() -> None:
 +  # Each exec on a thread reuses that thread's CoreV1Api; building a client per exec
 +  # leaks a urllib3 pool and its threads every step.
@@ -11881,18 +13432,36 @@ index 0000000..709a115
 +  assert_o1("SandboxFleet.acquire (on-demand, known image)", build, sizes)
 +
 +
-+def _fleet_with_handles(make_cluster: Any,
-+                        h: int) -> tuple[SandboxFleet, list[SandboxHandle]]:
++def _refuse(*_args: Any, **_kwargs: Any) -> None:
++  raise ApiException(status=403, reason="Forbidden")
++
++
++def _fleet_with_handles(make_cluster: Any, h: int, mode: str = "batch",
++                        refuse: bool = False) -> tuple[SandboxFleet, list[SandboxHandle]]:
++  """A fleet with ``h`` live handles: batch-mode handles (released through their batch
++  claim), or per_claim handles (each terminates its own Sandbox, then forgets its claim in
++  the SDK client, whose registries hold all ``h``). With ``refuse``, each handle's delete is
++  refused (403)."""
++  release_claim = _refuse if refuse else (lambda: None)
 +  cluster = make_cluster("solo")
 +  _route_pod_reads(cluster)
 +  fleet = SandboxFleet(FleetConfig(install_teardown_hooks=False),
 +                       registry=ClusterRegistry([cluster]))
++  per_claim = mode == "per_claim"
++  if per_claim:
++    keys = [(cluster.namespace, f"c-{i}") for i in range(h)]
++    cluster.sandbox_client = types.SimpleNamespace(
++        _active_connection_sandboxes={key: object() for key in keys},
++        _explicit_claims=set(keys))
++    _count_walks(cluster.sandbox_client, at_least=h)
 +  handles = [
 +      SandboxHandle(
 +          task=Task(id=f"t-{i}", image="img"), cluster_name="solo",
 +          claim_name=f"c-{i}", sandbox_id=f"s-{i}", pod_name=f"p-{i}",
 +          hostname=f"s-{i}", _cluster=cluster,
-+          _batch_claim=cast(Any, types.SimpleNamespace(release=lambda: None)))
++          sandbox=cast(Any, types.SimpleNamespace(terminate=release_claim)) if per_claim else None,
++          _batch_claim=None if per_claim else cast(
++              Any, types.SimpleNamespace(release=release_claim)))
 +      for i in range(h)
 +  ]
 +  fleet_any: Any = fleet
@@ -11907,32 +13476,45 @@ index 0000000..709a115
 +  return fleet, handles
 +
 +
-+def test_fleet_release_is_o1_in_active_handles(make_cluster: Any) -> None:
++@pytest.mark.parametrize("outcome", ["deleted", "refused"])
++@pytest.mark.parametrize("mode", ["batch", "per_claim"])
++def test_fleet_release_is_o1_in_active_handles(make_cluster: Any, mode: str,
++                                               outcome: str) -> None:
 +  # F-33: release() runs `handle not in self._handles` and
 +  # `self._handles.remove(handle)` under fleet._lock, and each comparison runs the
-+  # generated dataclass __eq__ of SandboxHandle (including Task.__eq__).
++  # generated dataclass __eq__ of SandboxHandle (including Task.__eq__). A per_claim
++  # release also untracks its claim from the SDK client's registries (H entries). A refused
++  # delete (an outage refuses every episode's) takes the same bookkeeping; it may log.
 +  sizes = (50, 1000)
 +
 +  def build(h: int) -> Callable[[], object]:
-+    fleet, handles = _fleet_with_handles(make_cluster, h)
++    fleet, handles = _fleet_with_handles(make_cluster, h, mode, refuse=outcome == "refused")
 +    target = handles[-1]
 +
 +    fleet_any: Any = fleet
 +
++    # A refused release keeps its handle, so the caller can retry it.
++    left = h if outcome == "refused" else h - 1
++
 +    def run() -> None:
-+      fleet.release(target)
++      with contextlib.suppress(ApiException):
++        fleet.release(target)
 +      # A release that found nothing to remove would measure a no-op (len() is O(1), unlike
 +      # handles(), which copies the list).
-+      assert len(fleet_any._handles) == h - 1
++      assert len(fleet_any._handles) == left
 +
 +    return run
 +
-+  assert_o1("SandboxFleet.release(last handle)", build, sizes)
++  assert_o1(f"SandboxFleet.release(last handle, {mode}, {outcome})", build, sizes,
++            quiet=outcome == "deleted")
 +
 +
-+def test_fleet_acquire_is_o1_in_active_handles(make_cluster: Any) -> None:
++@pytest.mark.parametrize("outcome", ["created", "refused"])
++def test_fleet_acquire_is_o1_in_active_handles(make_cluster: Any, outcome: str) -> None:
 +  # acquire() registers the handle under fleet._lock, so any scan of the live handles
-+  # there costs O(H) per acquire and O(H^2) for a fleet ramping up to H sandboxes.
++  # there costs O(H) per acquire and O(H^2) for a fleet ramping up to H sandboxes. A refused
++  # create (a quota or RBAC outage fails every episode's) unwinds its reservation, which must
++  # not scan them either; it may log the failure.
 +  sizes = (50, 1000)
 +
 +  def build(h: int) -> Callable[[], object]:
@@ -11940,10 +13522,46 @@ index 0000000..709a115
 +    # Create the on-demand pool once, so the measured acquire takes the steady-state path.
 +    fleet.release(fleet.acquire(Task(id="warm", image="img")))
 +    task = Task(id="measured", image="img")
-+    # measure() runs each fresh build once, so no sample needs to undo the acquire.
-+    return lambda: fleet.acquire(task)
++    if outcome == "created":
++      # measure() runs each fresh build once, so no sample needs to undo the acquire.
++      return lambda: fleet.acquire(task)
++    cluster = fleet.registry.get("solo")
++    cluster.sandbox_client.create_sandbox.side_effect = ApiException(status=403)
 +
-+  assert_o1("SandboxFleet.acquire", build, sizes)
++    def refused() -> None:
++      with pytest.raises(Exception):
++        fleet.acquire(task)
++
++    return refused
++
++  assert_o1(f"SandboxFleet.acquire ({outcome})", build, sizes, quiet=outcome == "created")
++
++
++def test_fleet_snapshot_ops_are_o1_in_active_handles(make_cluster: Any) -> None:
++  # Snapshot workflows snapshot, suspend, and resume or restore a handle per episode. The
++  # fleet's side of each (the phase, the claim-slot bookkeeping under fleet._lock) must not
++  # scan the live handles; the snapshot work itself is the SDK's, stubbed here.
++  sizes = (50, 1000)
++
++  def build(h: int) -> Callable[[], object]:
++    fleet, handles = _fleet_with_handles(make_cluster, h)
++    target: Any = handles[-1]
++    target.snapshot = lambda *_a, **_k: "uid"
++    target.suspend = lambda **_k: "uid"
++    target.resume = lambda **_k: True
++    target.restore = lambda *_a, **_k: None
++
++    def run() -> None:
++      fleet.snapshot(target)
++      fleet.suspend(target)
++      fleet.resume(target)
++      fleet.suspend(target)
++      fleet.restore(target, "uid")
++      assert not target._slot_released
++
++    return run
++
++  assert_o1("SandboxFleet snapshot, suspend, resume, restore", build, sizes)
 +
 +
 +def test_repeat_on_demand_acquires_skip_pool_and_template_requests(
@@ -11964,6 +13582,9 @@ index 0000000..709a115
 +  make_sandbox = cluster.sandbox_client.create_sandbox.side_effect
 +
 +  def recorded_sandbox(*args: Any, **kwargs: Any) -> MagicMock:
++    # The claim create is a round trip, so it must run with the fleet's lock free; under it
++    # every other worker's acquire and release would wait out the request.
++    _assert_unlocked("the per_claim create", fleet._lock)
 +    sandbox = cast(MagicMock, make_sandbox(*args, **kwargs))
 +    sandboxes.append(sandbox)
 +    return sandbox
@@ -12027,8 +13648,31 @@ index 0000000..709a115
 +        assert handle.is_alive()
 +    assert streams.call_count == steps, f"{streams.call_count} exec streams for {steps} steps"
 +    requests = _cluster_requests(cluster)[sent:]
-+    assert requests == ["read_namespaced_pod_status"] * pod_gets, (
-+        f"{steps} steps sent {requests[:6]} (expected {pod_gets} pod GETs)")
++    # At most one pod GET per step; dropping it would be an improvement.
++    assert set(requests) <= {"read_namespaced_pod_status"} and len(requests) <= pod_gets, (
++        f"{steps} steps sent {requests[:6]} (expected at most {pod_gets} pod GETs)")
++
++
++def test_claim_watchdog_polls_send_one_pod_read_each(make_cluster: Any) -> None:
++  # fail_fast is on by default, so every cold-starting per_claim acquire runs a ClaimWatchdog.
++  # It resolves the claim's pod once (claim and Sandbox reads), then reads only the pod on
++  # each poll.
++  from agent_sandbox_rl.config import FailFastPolicy
++  from agent_sandbox_rl.failfast import ClaimWatchdog
++  cluster = make_cluster("solo")
++  _route_pod_reads(cluster)
++  cluster.custom_api.get_namespaced_custom_object.return_value = {
++      "metadata": {"annotations": {}}, "status": {"sandbox": {"name": "sbx-1"}}}
++  cluster.core_api.read_namespaced_pod_status.return_value = {
++      "metadata": {"name": "sbx-1"}, "status": {"phase": "Pending"}}
++  watchdog = ClaimWatchdog(cluster, "claim-1", FailFastPolicy())
++  polls = 10
++  for _ in range(polls):
++    assert watchdog._check() is None
++  requests = _cluster_requests(cluster)
++  assert len(requests) <= 2 + polls, (
++      f"{len(requests)} requests over {polls} watchdog polls (expected at most 2 + {polls}): "
++      f"{requests[:6]}")
 +
 +
 +@pytest.mark.xfail(strict=True, reason="F-38: a per_claim acquire reads the Sandbox twice "
@@ -12066,59 +13710,85 @@ index 0000000..709a115
 +
 +
 +class _ChunkedResp:
-+  """A session websocket that delivers ``chunks`` stdout chunks of ``size`` bytes, then the
-+  command's end marker."""
++  """A session websocket that delivers ``chunks`` output chunks of ``size`` bytes on
++  ``stream`` (stdout, stderr, or alternating), then the command's end marker on stdout."""
 +
-+  def __init__(self, chunks: int, size: int, marker: str) -> None:
-+    self.pending = ["x" * size] * chunks + [marker + "\r\n"]
++  def __init__(self, chunks: int, size: int, marker: str, stream: str = "stdout") -> None:
++    def channel(i: int) -> str:
++      return stream if stream != "interleaved" else ("stderr" if i % 2 else "stdout")
++    self.pending = collections.deque(
++        [(channel(i), "x" * size) for i in range(chunks)] + [("stdout", marker + "\r\n")])
++    self.update_timeouts: list[float] = []
 +
 +  def write_stdin(self, _data: str) -> None:
 +    pass
 +
 +  def update(self, timeout: float) -> None:
-+    pass
++    self.update_timeouts.append(timeout)
 +
 +  def peek_stderr(self) -> bool:
-+    return False
++    return bool(self.pending) and self.pending[0][0] == "stderr"
++
++  def read_stderr(self) -> str:
++    return self.pending.popleft()[1]
 +
 +  def peek_stdout(self) -> bool:
-+    return bool(self.pending)
++    return bool(self.pending) and self.pending[0][0] == "stdout"
 +
 +  def read_stdout(self) -> str:
-+    return self.pending.pop(0)
++    return self.pending.popleft()[1]
 +
 +  def is_open(self) -> bool:
 +    return True
 +
 +
-+SESSION_CHUNKS = (50, 2000)
++SESSION_CHUNKS = (200, 4000)
 +SESSION_CHUNK_BYTES = 1024
++SESSION_RUN_TIMEOUT_S = 60.0
 +
 +
-+def test_session_run_cost_is_linear_in_output_size() -> None:
++def _session(chunks: int, stream: str) -> SandboxSession:
++  session = object.__new__(SandboxSession)
++  session_any: Any = session
++  session_any.pod, session_any.container, session_any._seq = "p", None, 0
++  session_any._resp = _ChunkedResp(chunks, SESSION_CHUNK_BYTES, "ASRLDONE1X", stream)
++  return session
++
++
++@pytest.mark.parametrize("stream", ["stdout", "stderr", "interleaved"])
++def test_session_run_cost_is_linear_in_output_size(stream: str) -> None:
 +  # F-39: SandboxSession.run (every command of a recycled sandbox with use_session=True)
-+  # must cost time linear in the command's output. The quadratic version re-joins and
-+  # re-scans the whole buffer on every chunk, which is C work: it executes no extra
-+  # bytecode and its peak memory stays linear, so only time shows it. The sizes differ
-+  # 40x; linear is about 40x and quadratic about 1,600x, so the 160x bound leaves 4x of
-+  # room for timer noise either way. Check 8's INV-PERF-HOTPATH-5 flags the same pattern
-+  # statically.
++  # must cost time linear in the command's output, whichever stream carries it. The
++  # quadratic version re-joins and re-scans the whole buffer on every chunk, which is C
++  # work: it executes no extra bytecode and its peak memory stays linear, so only time
++  # shows it. It uses this process's CPU time, so other processes competing for the cores
++  # don't count. The sizes differ 20x; linear is about 20x and quadratic about 400x, so the
++  # 80x bound leaves 4x of room either way. Check 8's INV-PERF-HOTPATH-5 flags the same
++  # pattern statically. The timeout only bounds a broken run; it never expires here.
 +  def run_once(chunks: int) -> float:
-+    session = object.__new__(SandboxSession)
-+    session_any: Any = session
-+    session_any.pod, session_any.container, session_any._seq = "p", None, 0
-+    session_any._resp = _ChunkedResp(chunks, SESSION_CHUNK_BYTES, "ASRLDONE1X")
-+    started = time.perf_counter()
-+    out = session.run("true")
-+    elapsed = time.perf_counter() - started
++    session = _session(chunks, stream)
++    started = time.process_time()
++    out = session.run("true", timeout=SESSION_RUN_TIMEOUT_S)
++    elapsed = time.process_time() - started
 +    assert len(out) == chunks * SESSION_CHUNK_BYTES
 +    return elapsed
 +
-+  small, large = (min(run_once(k) for _ in range(5)) for k in SESSION_CHUNKS)
++  small = min(run_once(SESSION_CHUNKS[0]) for _ in range(7))
++  # A quadratic run takes seconds at the large size, so stop at the first one already over.
++  large = float("inf")
++  for _ in range(3):
++    large = min(large, run_once(SESSION_CHUNKS[1]))
++    if large / small > 4 * SESSION_CHUNKS[1] / SESSION_CHUNKS[0]:
++      break
++  # Each wait for output must block up to a second (the command's own pace), not poll.
++  probe = _session(3, stream)
++  probe.run("true")
++  update_timeouts = cast(_ChunkedResp, cast(Any, probe)._resp).update_timeouts
++  assert min(update_timeouts) >= 1.0, f"SandboxSession.run polls every {min(update_timeouts)} s"
 +  size_ratio = SESSION_CHUNKS[1] / SESSION_CHUNKS[0]
 +  assert large / small <= 4 * size_ratio, (
-+      f"SandboxSession.run: {small * 1e3:.2f} ms for {SESSION_CHUNKS[0]} chunks vs "
-+      f"{large * 1e3:.2f} ms for {SESSION_CHUNKS[1]} ({large / small:.0f}x for "
++      f"SandboxSession.run ({stream}): {small * 1e3:.2f} ms for {SESSION_CHUNKS[0]} chunks "
++      f"vs {large * 1e3:.2f} ms for {SESSION_CHUNKS[1]} ({large / small:.0f}x for "
 +      f"{size_ratio:.0f}x the output)")
 +
 +
@@ -12151,8 +13821,293 @@ index 0000000..709a115
 +  assert_o1(f"BatchWatchdog._poll_once (0 pending, {backing})", build, sizes)
 +
 +
++class _ExecutorFleet:
++  """The fleet surface the executors use (process_parallel, the async fleet's, and the
++  recycle executors), with free acquires and releases that count every claim and pool
++  request, so only the executor's own per-task work (and the Observer's) is measured."""
++
++  plan_ = None
++
++  def __init__(self) -> None:
++    from agent_sandbox_rl.observability import Observer
++    observer: Any = Observer
++    self._obs = observer()
++    self.config = types.SimpleNamespace(max_concurrent=8, window_size=None)
++    self.requests: collections.Counter[str] = collections.Counter()
++
++  def acquire(self, _task: Task, **_kwargs: Any) -> Any:
++    self.requests["acquire"] += 1
++    return types.SimpleNamespace(cluster_name="solo", pod_name="p", claim_expires_at=None)
++
++  def release(self, _handle: Any, **_kwargs: Any) -> None:
++    self.requests["release"] += 1
++
++  def warm_image(self, *_args: Any, **_kwargs: Any) -> None:
++    self.requests["warm_image"] += 1
++
++  def unwarm_image(self, *_args: Any, **_kwargs: Any) -> None:
++    self.requests["unwarm_image"] += 1
++
++  def set_pool_replicas(self, *_args: Any, **_kwargs: Any) -> None:
++    self.requests["set_pool_replicas"] += 1
++
++  def overcommit_guard(self, _expected: int) -> Any:
++    return contextlib.nullcontext()
++
++
++class _CleanReset:
++  """A git-restore reset that always comes back clean, without an exec."""
++
++  def prime(self, _handle: Any) -> Any:
++    from agent_sandbox_rl.recycle import ResetBaseline
++    return ResetBaseline(pristine_sha="sha")
++
++  def recyclable(self, _baseline: Any) -> bool:
++    return True
++
++  def reset(self, _handle: Any, _baseline: Any, timeout: float) -> Any:
++    from agent_sandbox_rl.recycle import ResetOutcome
++    return ResetOutcome(clean=True, seconds=0.0)
++
++
++EXECUTOR_TASKS = (1000, 20000)
++EXECUTOR_IMAGES = 8
++MAX_REUSES = 32
++EXECUTORS = ("process_parallel-1", "process_parallel-8", "async_process_parallel",
++             "recycle-1", "recycle-8", "async_recycle")
++
++
++def _run_executor(executor: str, fleet: _ExecutorFleet, tasks: list[Task]) -> Any:
++  from agent_sandbox_rl import recycle, strategies
++  from agent_sandbox_rl.async_fleet import AsyncSandboxFleet
++  run_tasks: Any = strategies.process_parallel
++  run_recycled: Any = recycle.reuse_git_restore_sandbox
++  run_recycled_async: Any = recycle.reuse_git_restore_sandbox_async
++
++  def process(_task: Task, _handle: Any) -> str:
++    return "ok"
++
++  async def process_async(_task: Task, _handle: Any) -> str:
++    return "ok"
++
++  name, _, concurrency = executor.partition("-")
++  recycled = {"reset": _CleanReset(), "max_reuses": MAX_REUSES, "use_session": False}
++  if name == "process_parallel":
++    return run_tasks(fleet, tasks, process, int(concurrency))
++  if name == "recycle":
++    return run_recycled(fleet, tasks, process, int(concurrency), **recycled)
++  async_fleet: Any = object.__new__(AsyncSandboxFleet)
++  async_fleet._fleet, async_fleet._executor = fleet, None
++  try:
++    if name == "async_process_parallel":
++      return asyncio.run(async_fleet._process_parallel(tasks, process_async, 8))
++    return asyncio.run(run_recycled_async(async_fleet, tasks, process_async, 8, **recycled))
++  finally:
++    async_fleet.close()
++
++
++@pytest.mark.parametrize("executor", EXECUTORS)
++def test_executor_cost_is_linear_in_task_count(executor: str) -> None:
++  # The executors run every task of fleet.run(): process_parallel (and each window of the
++  # windowed strategies), the async fleet's, and the recycle executors. Their per-task
++  # bookkeeping must not grow with the task count. A lookup that scans the submitted futures
++  # or the results is C work, invisible to instruction counts, so this uses CPU time (all
++  # threads of this process). The sizes differ 20x; linear is about 20x and quadratic
++  # hundreds, so the 80x bound leaves 4x of room either way. Claims stay at one per task, or
++  # for recycling at one per image per MAX_REUSES tasks, with at most two pool requests
++  # (unwarm on hold, re-warm on a re-claim) per claim.
++  def run_once(n: int) -> float:
++    fleet = _ExecutorFleet()
++    tasks = [Task(id=f"t-{i}", image=f"img-{i % EXECUTOR_IMAGES}") for i in range(n)]
++    started = time.process_time()
++    results = _run_executor(executor, fleet, tasks)
++    elapsed = time.process_time() - started
++    assert results == ["ok"] * n
++    claims = fleet.requests["acquire"]
++    assert fleet.requests["release"] == claims, f"{executor}: {dict(fleet.requests)}"
++    budget = n if "process_parallel" in executor else (
++        EXECUTOR_IMAGES + -(-n // MAX_REUSES))
++    pool_requests = sum(fleet.requests[k] for k in (
++        "warm_image", "unwarm_image", "set_pool_replicas"))
++    assert claims <= budget and pool_requests <= 2 * claims + EXECUTOR_IMAGES, (
++        f"{executor}: {dict(fleet.requests)} for {n} tasks (at most {budget} claims)")
++    return elapsed
++
++  size_ratio = EXECUTOR_TASKS[1] / EXECUTOR_TASKS[0]
++  small = min(run_once(EXECUTOR_TASKS[0]) for _ in range(5))
++  large = float("inf")
++  for _ in range(2):
++    large = min(large, run_once(EXECUTOR_TASKS[1]))
++    if large / small > 4 * size_ratio:
++      break
++  assert large / small <= 4 * size_ratio, (
++      f"{executor}: {small * 1e3:.1f} ms for {EXECUTOR_TASKS[0]} tasks vs "
++      f"{large * 1e3:.1f} ms for {EXECUTOR_TASKS[1]} ({large / small:.0f}x for "
++      f"{size_ratio:.0f}x the tasks)")
++
++
++class _WarmingFleet:
++  """The fleet surface LookaheadWarmer uses, recording each pool request."""
++
++  plan_ = object()                              # planned already, so reconcile never plans
++
++  def __init__(self) -> None:
++    self.config = types.SimpleNamespace(max_warmpool_size=8)
++    self.requests: list[tuple[str, str]] = []
++
++  def warm_image(self, image: str, **_kwargs: Any) -> None:
++    self.requests.append(("warm", image))
++
++  def set_pool_replicas(self, image: str, _replicas: int) -> None:
++    self.requests.append(("scale", image))
++
++  def unwarm_image(self, image: str) -> None:
++    self.requests.append(("unwarm", image))
++
++
++LOOKAHEAD_IMAGES = 50                          # per training batch; consecutive batches share half
++
++
++def test_lookahead_sends_only_the_diff_and_keeps_no_history() -> None:
++  # A streaming run adds each training batch to the LookaheadWarmer and finishes the one
++  # before it. Each reconcile must send one pool request per image whose desired replicas
++  # changed (create, scale, or remove) and none for the rest, and neither its cost nor its
++  # tables may grow with the number of batches already streamed.
++  from agent_sandbox_rl.lookahead import LookaheadWarmer
++  fleet = _WarmingFleet()
++  warmer: Any = LookaheadWarmer(fleet, register_images=False, max_workers=1)
++  step = LOOKAHEAD_IMAGES // 2
++
++  def counts(k: int) -> dict[str, int]:
++    return {f"img-{i}": 1 for i in range(k * step, k * step + LOOKAHEAD_IMAGES)}
++
++  def stream(k: int) -> None:
++    calls: tuple[Callable[[], object], ...] = (
++        lambda: warmer.add(k, counts(k)), lambda: warmer.finish(k - 1))
++    for call in calls:
++      before, sent = warmer.desired(), len(fleet.requests)
++      call()
++      after = warmer.desired()
++      changed = {image for image in before.keys() | after.keys()
++                 if before.get(image) != after.get(image)}
++      requests = fleet.requests[sent:]
++      assert sorted(image for _kind, image in requests) == sorted(changed), (
++          f"batch {k}: {len(requests)} pool requests for {len(changed)} changed images")
++
++  def table_sizes() -> dict[str, int]:
++    return {name: len(value) for name, value in vars(warmer).items() if isinstance(value, Sized)}
++
++  # Traced from the first batch, so the state each batch replaces is traced too; past batch
++  # 100 the tables have reached their steady capacity, so what the next 300 batches keep is
++  # what the warmer retains per batch.
++  tracemalloc.start()
++  try:
++    warmer.add(0, counts(0))
++    for k in range(1, 11):
++      stream(k)
++    early = count_bytecode_instructions(lambda: stream(11))
++    early_tables = table_sizes()
++    for k in range(12, 100):
++      stream(k)
++    fleet.requests.clear()                        # the recorder's own log grows by design
++    gc.collect()
++    before = tracemalloc.get_traced_memory()[0]
++    for k in range(100, 400):
++      stream(k)
++    fleet.requests.clear()
++    gc.collect()
++    retained = (tracemalloc.get_traced_memory()[0] - before) / (400 - 100)
++  finally:
++    tracemalloc.stop()
++  late = count_bytecode_instructions(lambda: stream(400))
++  assert_scaling("LookaheadWarmer add + finish", early, late, (11, 400))
++  grown = {name: (early_tables[name], size) for name, size in table_sizes().items()
++           if size > early_tables.get(name, 0)}
++  assert grown == {}, f"LookaheadWarmer tables grew with the stream: {grown}"
++  assert retained < 4, f"LookaheadWarmer kept {retained:.1f} B per streamed batch"
++  assert len(warmer._live) == 1 and len(warmer._active) == LOOKAHEAD_IMAGES, (
++      f"{len(warmer._live)} live batches and {len(warmer._active)} active images "
++      f"after 400 batches (expected 1 and {LOOKAHEAD_IMAGES})")
++
++
++class _RecordingStop(threading.Event):
++  """A stop event that records each wait's timeout instead of sleeping, and reports a stop
++  on the ``stop_after``-th wait."""
++
++  def __init__(self, stop_after: int) -> None:
++    super().__init__()
++    self.timeouts: list[float | None] = []
++    self.stop_after = stop_after
++
++  def wait(self, timeout: float | None = None) -> bool:
++    self.timeouts.append(timeout)
++    return len(self.timeouts) >= self.stop_after
++
++
++def test_background_polls_wait_their_configured_interval(make_cluster: Any) -> None:
++  # Each background loop sends Kubernetes requests per wakeup: the ClaimWatchdog that every
++  # cold per_claim acquire starts (a pod GET per poll), the overcommit breaker (a filtered
++  # pod list per poll), and, on 26/N, the idle BatchWatchdog. Each must sleep its full
++  # configured interval between polls; a shorter wait multiplies the requests and
++  # wakeups with nothing in the per-poll costs to show it.
++  from agent_sandbox_rl import failfast, fleet as fleet_module
++  from agent_sandbox_rl.config import FailFastPolicy
++  from agent_sandbox_rl.failfast import ClaimWatchdog
++  polls = 4
++  policy = FailFastPolicy()
++  watchdog = ClaimWatchdog(make_cluster("solo"), "claim-1", policy)
++  claim_stop = _RecordingStop(polls + 1)
++  checks = [0]
++
++  def check() -> None:
++    checks[0] += 1
++
++  cast(Any, watchdog)._stop_evt = claim_stop
++  cast(Any, watchdog)._check = check
++  watchdog.run()
++  assert claim_stop.timeouts == [policy.initial_delay_s] + [policy.poll_s] * polls, (
++      f"ClaimWatchdog waited {claim_stop.timeouts} (expected {policy.initial_delay_s} s, "
++      f"then {policy.poll_s} s per poll)")
++  assert checks[0] == polls
++
++  config = FleetConfig(install_teardown_hooks=False, max_live_sandboxes=100)
++  fleet = SandboxFleet(config, registry=ClusterRegistry([make_cluster("solo")]))
++  breaker_stop = _RecordingStop(polls + 1)
++  counts = [0]
++
++  def live_owned_count() -> int:
++    counts[0] += 1
++    return 0
++
++  # Only the fleet module's Event: threading.Thread.start waits on an Event of its own.
++  threading_for_fleet = types.SimpleNamespace(**vars(threading))
++  threading_for_fleet.Event = lambda: breaker_stop
++  with patch.object(fleet_module, "threading", threading_for_fleet), \
++      patch.object(fleet, "live_owned_count", live_owned_count), \
++      fleet.overcommit_guard(expected=1):
++    deadline = time.monotonic() + 10
++    while len(breaker_stop.timeouts) <= polls and time.monotonic() < deadline:
++      time.sleep(0.01)
++  assert breaker_stop.timeouts == [config.breaker_poll_s] * (polls + 1), (
++      f"overcommit breaker waited {breaker_stop.timeouts} (expected {config.breaker_poll_s} s "
++      f"per poll)")
++  assert counts[0] == polls
++
++  batch_watchdog_cls = getattr(failfast, "BatchWatchdog", None)
++  if batch_watchdog_cls is None:
++    return                                      # 26/N only, as in the idle-poll gate below
++  batch_policy = types.SimpleNamespace(poll_s=1.0, initial_delay_s=5.0)
++  batch_watchdog = batch_watchdog_cls(
++      MagicMock(), _state_backed_batch(_acquired_state(4)), batch_policy, lambda *_a: None)
++  batch_stop = _RecordingStop(polls)
++  cast(Any, batch_watchdog)._stop_evt = batch_stop
++  batch_watchdog.run()
++  assert batch_stop.timeouts == [batch_policy.poll_s] * polls, (
++      f"an idle BatchWatchdog waited {batch_stop.timeouts} (expected {batch_policy.poll_s} s)")
++
++
 +_EPISODE_CHURN_SCRIPT = """
-+import contextlib, gc, logging, sys, tracemalloc
++import asyncio, contextlib, gc, itertools, logging, sys, threading, tracemalloc
 +sys.path.insert(0, sys.argv[4])
 +from conftest import FakeCluster
 +from k8s_agent_sandbox.batch_state import BatchState
@@ -12160,9 +14115,14 @@ index 0000000..709a115
 +from agent_sandbox_rl import BatchClaimConfig, ClusterRegistry, FleetConfig, SandboxFleet
 +from agent_sandbox_rl.batch_claims import BatchClaims
 +from agent_sandbox_rl.sources import Task
++from agent_sandbox_rl.async_fleet import AsyncSandboxFleet
++from agent_sandbox_rl.recycle import ResetBaseline, ResetOutcome, reuse_git_restore_sandbox
++from agent_sandbox_rl.strategies import process_parallel
 +
 +WARMUP, EPISODES = int(sys.argv[2]), int(sys.argv[3])
-+MODE, _, RECORDING = sys.argv[1].partition("+")
++MODE, *FLAGS = sys.argv[1].split("+")
++RECORDING = "recording" in FLAGS
++EXECUTOR = next((flag for flag in FLAGS if flag in ("async", "recycle")), "parallel")
 +logging.disable(logging.WARNING)
 +
 +
@@ -12187,6 +14147,65 @@ index 0000000..709a115
 +  if pods.count - before > allowed_per_episode * episodes:
 +    sys.exit(f"{pods.count - before} pod GETs across {episodes} episodes "
 +             f"(at most {allowed_per_episode} each)")
++
++
++_episode_ids = itertools.count()
++
++
++def next_task():
++  # A distinct task per episode, as a real run has (one per dataset instance), so anything
++  # keyed by task id (a metric label, a cache) grows here as it would in production.
++  return Task(id=f"churn-{next(_episode_ids)}", image="img")
++
++
++class CleanReset:
++  def prime(self, handle):
++    return ResetBaseline(pristine_sha="sha")
++
++  def recyclable(self, baseline):
++    return True
++
++  def reset(self, handle, baseline, timeout):
++    return ResetOutcome(clean=True, seconds=0.0)
++
++
++_LOOP = asyncio.new_event_loop()
++_ASYNC_FLEETS = {}
++
++
++def process(_task, _handle):
++  return "ok"
++
++
++async def process_async(_task, _handle):
++  return "ok"
++
++
++def episode(fleet):
++  # One task through an executor fleet.run() uses (process_parallel, the async fleet's, or
++  # the recycle executor), so the per-task bookkeeping it adds (the process phase,
++  # task_done, the run report) is measured too.
++  task = next_task()
++  if EXECUTOR == "async":
++    if id(fleet) not in _ASYNC_FLEETS:
++      async_fleet = object.__new__(AsyncSandboxFleet)
++      async_fleet._fleet, async_fleet._executor = fleet, None
++      # The pool starts its workers lazily, up to its cap; start them all now, so that
++      # bounded thread growth is not read as memory kept per episode.
++      pool = async_fleet._thread_pool()
++      ready = threading.Barrier(pool._max_workers)
++      for started in [pool.submit(ready.wait) for _ in range(pool._max_workers)]:
++        started.result()
++      _ASYNC_FLEETS[id(fleet)] = async_fleet
++    run = _ASYNC_FLEETS[id(fleet)]._process_parallel([task], process_async, 1)
++    result, = _LOOP.run_until_complete(run)
++  elif EXECUTOR == "recycle":
++    result, = reuse_git_restore_sandbox(fleet, [task], process, 1, reset=CleanReset(),
++                                        use_session=False, scale_on_hold=False)
++  else:
++    result, = process_parallel(fleet, [task], process, 1)
++  if result != "ok":
++    sys.exit(f"episode failed: {result!r}")
 +
 +
 +def maybe_recording(fleet):
@@ -12304,7 +14323,7 @@ index 0000000..709a115
 +  def run(count):
 +    before = pods.count
 +    for _ in range(count):
-+      fleet.release(fleet.acquire(task))
++      episode(fleet)
 +    for watchdog in watchdogs:
 +      watchdog._poll_once()
 +    # Batch mode knows each member's pod from the batch watch.
@@ -12377,7 +14396,7 @@ index 0000000..709a115
 +  def run(count):
 +    before = pods.count
 +    for _ in range(count):
-+      fleet.release(fleet.acquire(task))
++      episode(fleet)
 +    # The one pod-identity GET per acquire (record_pod_identity).
 +    check_pod_reads(pods, before, count, 1)
 +
@@ -12399,21 +14418,28 @@ index 0000000..709a115
 +  env = dict(os.environ)
 +  env["PYTHONPATH"] = os.pathsep.join(
 +      [str(tests_dir.parent), *([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])])
++  # The event loop and the async fleet's thread pool keep a bounded 10-20 KB of callback
++  # state whatever the episode count (measured at 3000 and 12000 episodes), so the async mode
++  # runs 4x the episodes to keep that offset under the bound; 8 B per episode still fails 2x.
++  episodes = CHURN_EPISODES * (4 if "async" in mode else 1)
 +  proc = subprocess.run(
 +      [sys.executable, "-c", _EPISODE_CHURN_SCRIPT, mode, str(CHURN_WARMUP),
-+       str(CHURN_EPISODES), str(tests_dir)],
++       str(episodes), str(tests_dir)],
 +      capture_output=True, text=True, env=env, timeout=300, check=False)
 +  assert proc.returncode == 0, proc.stderr[-2000:]
 +  return float(proc.stdout.strip().splitlines()[-1])
 +
 +
 +@pytest.mark.parametrize(
-+    "mode", ["claims", "fleet", "fleet+recording", "per_claim", "per_claim+recording"])
++    "mode", ["claims", "fleet", "fleet+recording", "fleet+recording+async",
++             "fleet+recording+recycle", "per_claim", "per_claim+recording"])
 +def test_fleet_episodes_retain_no_memory(mode: str) -> None:
 +  # Every RL episode acquires and releases one sandbox (a batch member in claim_mode="batch",
 +  # a claim of its own in per_claim mode); a long-lived fleet runs millions, so anything kept
 +  # per episode (a handed-out BatchClaim, a handle, a client-side claim record, a run-report
 +  # sample, a log record) grows without bound. fleet.run() always records a RunReport, so the
-+  # "+recording" modes run the episodes inside fleet.recording(). One reference is 8 B.
++  # "+recording" modes run the episodes inside fleet.recording(). Episodes run through
++  # process_parallel, or with "+async" / "+recycle" through the async fleet's executor or the
++  # recycle executor. One reference is 8 B.
 +  per_episode = _retained_per_episode(mode)
 +  assert per_episode < 4, f"{per_episode:.1f} B/episode retained ({mode})"
