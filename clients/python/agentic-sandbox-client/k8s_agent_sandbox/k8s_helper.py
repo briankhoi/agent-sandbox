@@ -27,6 +27,7 @@ from collections.abc import Callable, Generator, Iterator
 from typing import Any, List, cast
 from kubernetes import client, config, watch
 import urllib3.exceptions
+from urllib3.response import HTTPResponse
 from .exceptions import SandboxClaimFailedError, SandboxMetadataError, SandboxNotFoundError, SandboxTemplateNotFoundError, SandboxWarmPoolNotFoundError
 from .models import AdditionalPodMetadata
 from .utils import (
@@ -57,14 +58,15 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
-def _shutdown_response_socket(resp: Any) -> None:
+def _shutdown_response_socket(resp: HTTPResponse | None) -> None:
     """Shuts down the socket under a streaming response so a read blocked on it in another thread
     returns at once. Closing the socket instead can hang on the SSL lock that the blocked read holds.
     """
-    sock = getattr(getattr(resp, "connection", None), "sock", None)
-    if sock is not None:
+    conn = resp.connection if resp is not None else None
+    if conn is not None and conn.sock is not None:
+        # kubernetes 37 and later also shut the socket down in Watch.stop(), so it may already be.
         with contextlib.suppress(OSError):
-            sock.shutdown(socket.SHUT_RDWR)
+            conn.sock.shutdown(socket.SHUT_RDWR)
 
 
 class _EmptyWatchResponse:
@@ -819,18 +821,19 @@ class K8sHelper:
             # kubernetes releases before 37 make Watch.stop() only set a flag, so a quiet stream
             # stays blocked in its read until the watch times out. Keeping the response lets stop
             # unblock that read on every client version.
-            active_resp: list[Any] = [None]
+            active_resp: HTTPResponse | None = None
 
             def _stop() -> None:
                 stopped.set()
                 if (target := w_ref()) is not None:
                     watch.Watch.stop(target)
-                _shutdown_response_socket(active_resp[0])
+                _shutdown_response_socket(active_resp)
 
             w.stop = _stop  # type: ignore[method-assign]
 
             @functools.wraps(orig_list_fn)
             def _checked_list(*args: Any, **kwargs: Any) -> Any:
+                nonlocal active_resp
                 target = w_ref()
                 if stopped.is_set() or (
                     target is not None and getattr(target, "_stop", False) is True
@@ -839,7 +842,7 @@ class K8sHelper:
                         target._stop = True
                     return _EmptyWatchResponse()
                 resp: Any = orig_list_fn(*args, **kwargs)
-                active_resp[0] = resp
+                active_resp = resp
                 # Watch.stream resets _stop at entry and invokes the list call before assigning
                 # _resp, so re-check stopped here to close the response immediately on race.
                 if stopped.is_set():
