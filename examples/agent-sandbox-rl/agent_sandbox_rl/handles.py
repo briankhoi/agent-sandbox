@@ -711,6 +711,48 @@ class SandboxHandle:
     """Whether the Sandbox's ``spec.operatingMode`` is ``Suspended``."""
     return bool(self._snapshot_sandbox().is_suspended())
 
+  def _cleanup_batch_after_remote_delete(self) -> None:
+    if self._cluster is not None:
+      forget_claim_in_client(self._cluster, self.claim_name)
+    if self.sandbox is not None:
+      try:
+        sb_vars = vars(self.sandbox)
+      except TypeError:
+        sb_vars = {}
+      if "_snapshots" in sb_vars:
+        snapshots = sb_vars["_snapshots"]
+      else:
+        snapshots = sb_vars.get("snapshots")
+      if snapshots is not None and hasattr(snapshots, "delete_manual_triggers"):
+        try:
+          snapshots.delete_manual_triggers()
+        except Exception as exc:  # noqa: BLE001 (best-effort trigger cleanup)
+          logger.warning(
+              "failed to delete snapshot manual triggers for %s: %s",
+              self.sandbox_id, exc)
+      if "_snapshots" in sb_vars:
+        setattr(self.sandbox, "_snapshots", None)
+
+  def _close_sandbox_connection(self) -> None:
+    if self.sandbox is not None:
+      close_conn = getattr(self.sandbox, "close_connection", None)
+      if callable(close_conn):
+        try:
+          close_conn()
+        except Exception as exc:  # noqa: BLE001 (best-effort connection close)
+          logger.warning(
+              "failed to close sandbox connection for %s: %s",
+              self.sandbox_id, exc)
+
+  def finalize_bulk_batch_release(self) -> None:
+    """Clean up local session, client tracking, snapshot triggers, and connection
+    for a batch handle whose remote claim is deleted by batch deletecollection."""
+    self.close_session()
+    try:
+      self._cleanup_batch_after_remote_delete()
+    finally:
+      self._close_sandbox_connection()
+
   def release(self) -> None:
     """Release this sandbox (delete its claim).
 
@@ -724,36 +766,9 @@ class SandboxHandle:
       # deleting the claim behind the batch's back.
       try:
         self._batch_claim.release()
-        if self._cluster is not None:
-          forget_claim_in_client(self._cluster, self.claim_name)
-        if self.sandbox is not None:
-          try:
-            sb_vars = vars(self.sandbox)
-          except TypeError:
-            sb_vars = {}
-          if "_snapshots" in sb_vars:
-            snapshots = sb_vars["_snapshots"]
-          else:
-            snapshots = sb_vars.get("snapshots")
-          if snapshots is not None and hasattr(snapshots, "delete_manual_triggers"):
-            try:
-              snapshots.delete_manual_triggers()
-            except Exception as exc:  # noqa: BLE001 (best-effort trigger cleanup)
-              logger.warning(
-                  "failed to delete snapshot manual triggers for %s: %s",
-                  self.sandbox_id, exc)
-          if "_snapshots" in sb_vars:
-            setattr(self.sandbox, "_snapshots", None)
+        self._cleanup_batch_after_remote_delete()
       finally:
-        if self.sandbox is not None:
-          close_conn = getattr(self.sandbox, "close_connection", None)
-          if callable(close_conn):
-            try:
-              close_conn()
-            except Exception as exc:  # noqa: BLE001 (best-effort connection close)
-              logger.warning(
-                  "failed to close sandbox connection for %s: %s",
-                  self.sandbox_id, exc)
+        self._close_sandbox_connection()
       return
     if self.sandbox is not None:
       self.sandbox.terminate()

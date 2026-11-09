@@ -19,15 +19,17 @@ Each fleet holds one SDK batch per cluster. An acquire adds one member to it wit
 instead of a watch per claim, and the claims are owned by the batch Lease, so the
 batch reaper cleans up after a driver that dies without tearing down.
 
-The batch is opened by the first acquire on its cluster, from that acquire's pool
-as a size-0 group. ``claim_batch`` checks every group's pool and template one
-after another before it returns, so opening it with every planned pool would put
-two GETs per image on the first acquire's thread; `SandboxBatch.acquire` checks
-each later pool once, on the thread of its own first acquire.
+When warm pools are started via `SandboxFleet.setup` / `start_warmpools(wait=True)`
+or the first window of `warm_images(wait=True)`, each cluster's batch is pre-opened
+with those pools as size-0 groups (`claim_batch` prechecks them concurrently up to
+`max_in_flight` and seeds `WarmCredit` + `_checked_pools` off the acquire hot path).
+Any unplanned pool acquired later still opens or checks lazily on its first acquire.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import re
 import threading
@@ -154,7 +156,51 @@ class BatchClaims:
     with self._lock:
       return self._cluster_locks.setdefault(name, threading.Lock())
 
-  def _batch_for(self, cluster: "Cluster", pool: str) -> SandboxBatch:
+  def has_live_batch(self, cluster_name: str) -> bool:
+    """Whether ``cluster_name`` currently has a healthy open batch."""
+    with self._lock:
+      existing = self._live.get(cluster_name)
+    return existing is not None and existing.err() is None
+
+  def prepare_clusters(
+      self,
+      cluster_pools: Sequence[tuple["Cluster", Sequence[str]]],
+      *,
+      only_unopened: bool = False,
+  ) -> None:
+    """Pre-open each cluster's batch with its warmed ``pools`` as size-0 groups."""
+    pending: list[tuple["Cluster", list[str]]] = []
+    for cluster, pools in cluster_pools:
+      deduped = list(dict.fromkeys(p for p in pools if p))
+      if not deduped:
+        continue
+      if only_unopened and self.has_live_batch(cluster.name):
+        continue
+      pending.append((cluster, deduped))
+    if not pending:
+      return
+    if len(pending) == 1:
+      cluster, deduped = pending[0]
+      self._batch_for(cluster, deduped)
+      return
+    first_err: BaseException | None = None
+    with ThreadPoolExecutor(max_workers=len(pending)) as ex:
+      futs = [ex.submit(self._batch_for, c, p) for c, p in pending]
+      for fut in futs:
+        try:
+          fut.result()
+        except BaseException as exc:  # noqa: BLE001 (drain remaining clusters first)
+          if first_err is None:
+            first_err = exc
+    if first_err is not None:
+      raise first_err
+
+  def _batch_for(self, cluster: "Cluster", pool: str | Sequence[str]) -> SandboxBatch:
+    pool_names = (
+        [pool] if isinstance(pool, str) else list(dict.fromkeys(p for p in pool if p))
+    )
+    if not pool_names:
+      raise ValueError("at least one warm pool name is required to open a batch")
     # Under the cluster's lock, so concurrent first acquires open one batch.
     with self._cluster_lock(cluster.name):
       with self._lock:
@@ -179,7 +225,7 @@ class BatchClaims:
       s = self._settings
       batch: SandboxBatch
       batch = cluster.sandbox_client.claim_batch(
-          [BatchGroup(warmpool=pool, size=0)],
+          [BatchGroup(warmpool=p, size=0) for p in pool_names],
           namespace=cluster.namespace,
           labels=dict(self._labels),
           create_rps=s.create_rps,
@@ -280,9 +326,11 @@ class BatchClaims:
     return BatchClaim(
         batch=batch, member=member, expires_at=expires_at, cluster=cluster)
 
-  def release_all(self) -> None:
-    """Releases every batch this fleet opened. Errors are logged, so one cluster's
-    failure doesn't keep the others' claims alive."""
+  def release_all(self) -> dict[int, Exception]:
+    """Releases every batch this fleet opened concurrently across clusters.
+    Errors are logged and returned keyed by ``id(batch)`` while retaining failed
+    batches in ``_opened`` for retry, so one cluster's failure doesn't keep the
+    others' claims alive."""
     with self._lock:
       self._closed = True
       self._epoch += 1
@@ -293,11 +341,37 @@ class BatchClaims:
       self._live.clear()
     for wd in watchdogs:
       wd.stop()
-    for batch in opened:
+    if not opened:
+      return {}
+
+    failed: dict[int, Exception] = {}
+    succeeded_ids: set[int] = set()
+
+    def _release_one(batch: SandboxBatch) -> tuple[int, Exception | None]:
       try:
         batch.release()
-      except Exception:  # noqa: BLE001 (best effort, like the teardown sweep)
+      except Exception as exc:  # noqa: BLE001 (best effort, like the teardown sweep)
         logger.warning("failed to release batch %s", batch.batch_id, exc_info=True)
+        return id(batch), exc
+      return id(batch), None
+
+    if len(opened) == 1:
+      bid, err = _release_one(opened[0])
+      if err is not None:
+        failed[bid] = err
       else:
-        with self._lock:
-          self._opened = [b for b in self._opened if b is not batch]
+        succeeded_ids.add(bid)
+    else:
+      with ThreadPoolExecutor(max_workers=len(opened)) as ex:
+        futs = [ex.submit(_release_one, b) for b in opened]
+        for fut in futs:
+          bid, err = fut.result()
+          if err is not None:
+            failed[bid] = err
+          else:
+            succeeded_ids.add(bid)
+
+    if succeeded_ids:
+      with self._lock:
+        self._opened = [b for b in self._opened if id(b) not in succeeded_ids]
+    return failed
