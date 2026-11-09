@@ -173,40 +173,24 @@ Once the Lease is gone, a driver that wakes up and `GetBatch` both see `BatchLea
 This diagram walks through how `ClaimBatch` builds and runs the `Batch` handle end to end:
 
 ```mermaid
-flowchart TD
-    Start["Batch claim requested"]
-    Mint["Generate batch-id"]
-    Lease["Create the batch Lease<br/>before any claim exists"]
-    Watch["One informer on all<br/>SandboxClaims, filtered<br/>by label=batch-id,<br/>started before any<br/>create, so no early<br/>event is missed"]
-    Create["Paced claim creation<br/>across all groups, via<br/>rate-limiting and<br/>concurrency limits"]
-    Claims[("N SandboxClaims created<br/>with labels, annotations,<br/>a group's warmPoolRef,<br/>and a shutdownTime")]
-    Aggregate["Aggregate readiness<br/>over one watch stream"]
-    Quorum["Hand out Ready members,<br/>one consumer mode:<br/>WaitForQuorum (every group),<br/>GroupOutcomes (per group),<br/>or Events only"]
-    Work["Caller uses the ready<br/>sandboxes for its task"]
-    LateReady["Late-ready members keep<br/>arriving (sent through<br/>the event stream)"]
-    Swap["Membership changes:<br/>ReleaseMember, Acquire,<br/>ReleaseGroup,<br/>ReleaseNotReady"]
-    Release["Release:<br/>stop informer<br/>and renewal,<br/>deletecollection,<br/>then delete the Lease"]
-    Detach["Detach: stop informer<br/>and renewal, keep claims;<br/>GetBatch re-attaches<br/>within the grace period"]
-    Renew["Driver renews the Lease<br/>every RenewInterval;<br/>LeaseDegraded and Err<br/>report failures"]
-
-    Start --> Mint --> Lease --> Watch --> Create --> Claims
-    Claims --> Aggregate --> Quorum --> Work --> Release
-    Quorum -.-> LateReady -.-> Work
-    Work -.-> Swap -.-> Work
-    Work -.-> Detach
-    Lease --> Renew
-
-    subgraph CrashSafety["If the driver dies"]
-      NoRenew["Lease stops<br/>being renewed"]
-      Reaper["Reaper CronJob sees<br/>a stale Lease and<br/>deletes it (bound:<br/>LeaseDuration + margin<br/>+ RenewInterval<br/>+ poll period)"]
-      GC["Garbage collector<br/>deletes the claims,<br/>then their Sandboxes<br/>and Pods"]
-      Cap["Backstop:<br/>controller deletes<br/>each claim at its<br/>shutdownTime"]
-      NoRenew --> Reaper
-      Reaper --> GC
-      NoRenew --> Cap
+flowchart LR
+    subgraph Run["Normal run"]
+      direction LR
+      Claim["ClaimBatch:<br/>check pools,<br/>create Lease"] --> Watch["List, then<br/>watch claims"]
+      Watch --> Create["Create claims<br/>(paced, owned<br/>by the Lease)"]
+      Create --> Ready["Hand out<br/>Ready members"]
+      Ready --> Work["Use sandboxes;<br/>Acquire / Release*<br/>to resize"]
+      Work --> Release["Release:<br/>delete claims,<br/>then the Lease"]
+      Work -.-> Detach["Detach:<br/>GetBatch can<br/>re-attach later"]
     end
 
-    Renew -.->|driver dies at<br/>any point:<br/>renewals stop| NoRenew
+    subgraph Gone["Cleanup without Release"]
+      direction LR
+      Stale["Lease not renewed<br/>(crash, expiry, or<br/>detach grace ends)"] --> Reaper["Reaper deletes<br/>the Lease"] --> GC["GC deletes<br/>its claims"]
+      Cap["Backstop: each claim<br/>is deleted at its<br/>shutdownTime"]
+    end
+
+    Claim -.->|"renewals stop"| Stale
 ```
 
 ### RBAC
