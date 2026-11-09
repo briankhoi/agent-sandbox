@@ -1,0 +1,505 @@
+{
+  "params": {
+    "context": null,
+    "contexts": null,
+    "in_cluster": true,
+    "namespace": "agent-sandbox-rl",
+    "node_selector": "cloud.google.com/gke-nodepool=gvisor-pool",
+    "images_file": "/app/drivers/images/swebench500.txt",
+    "problems": 500,
+    "rollouts": 6,
+    "concurrency": 500,
+    "claim_concurrency": 500,
+    "strategies": "naive,sliding,pipelined",
+    "recycle": false,
+    "recycle_only": false,
+    "max_reuses": 32,
+    "max_warmpool_size": 1,
+    "warm_per_task": false,
+    "colocate": false,
+    "enable_cow": false,
+    "tmp_disk_gi": 4,
+    "unmanaged_network_policy": true,
+    "placement": "image-affinity",
+    "reset_timeout": 30.0,
+    "cpu": "125m",
+    "memory": "256Mi",
+    "runtime_class": "gvisor",
+    "testbed": "/testbed",
+    "probe": "python3 -c 'import os, sys; assert os.path.isdir(\"/testbed\"); print(sys.version_info[0])'",
+    "window_size": 0,
+    "avg_image_gb": 0.0,
+    "usable_disk_gb": 0.0,
+    "termination_grace_seconds": 0,
+    "overcommit_factor": 3.5,
+    "warm_create_budget": 600,
+    "claim_mode": "batch",
+    "batch_max_in_flight": 64,
+    "batch_create_rps": 200.0,
+    "batch_lease_duration": 300,
+    "batch_work_budget": 3600,
+    "out": "/out/result.json",
+    "concurrencies": "640,1600,2350",
+    "worker_vcpus": 320,
+    "post_warm_settle_s": 5.0,
+    "exec_concurrency": 512
+  },
+  "points": [
+    {
+      "target_concurrency": 640,
+      "clusters": 1,
+      "worker_vcpus": 320,
+      "target_sandboxes_per_vcpu": 2.0,
+      "achieved_active_sandboxes_per_vcpu": 2.0,
+      "claim_mode": "batch",
+      "batch_max_in_flight": 64,
+      "setup_s": 93.2,
+      "warm_wait": {
+        "ready": 640,
+        "desired": 640,
+        "terminating_pods": 0,
+        "min_ready_target": 640,
+        "wait_s": 0.58,
+        "timed_out": false
+      },
+      "claim_burst_wall_s": 4.51,
+      "claims_per_s": 141.89,
+      "per_cluster_claims_per_s": 141.89,
+      "burst_and_exec_wall_s": 5.096,
+      "ok_claims": 640,
+      "ok_active_exec": 640,
+      "claim_err": 0,
+      "probe_err": 0,
+      "failure_rate_pct": 0.0,
+      "wire_claim_s": {
+        "n": 640,
+        "first": 0.9418,
+        "min": 0.9418,
+        "p50": 1.7979,
+        "avg": 1.9916,
+        "p90": 3.3142,
+        "p95": 3.547,
+        "p99": 3.7786,
+        "max": 4.1363,
+        "straggler_skew": 2.301
+      },
+      "first_cmd_exec_s": {
+        "n": 640,
+        "first": 0.3077,
+        "min": 0.3077,
+        "p50": 0.6141,
+        "avg": 0.6406,
+        "p90": 0.8729,
+        "p95": 0.97,
+        "p99": 1.1136,
+        "max": 1.4105,
+        "straggler_skew": 2.297
+      },
+      "ttfi_s": {
+        "n": 640,
+        "first": 1.4945,
+        "min": 1.4945,
+        "p50": 2.4734,
+        "avg": 2.6322,
+        "p90": 3.867,
+        "p95": 4.1165,
+        "p99": 4.3253,
+        "max": 4.7675,
+        "straggler_skew": 1.928
+      },
+      "ttfi_inline_s": {
+        "n": 640,
+        "first": 1.4945,
+        "min": 1.4945,
+        "p50": 2.4733,
+        "avg": 2.6322,
+        "p90": 3.867,
+        "p95": 4.1165,
+        "p99": 4.3253,
+        "max": 4.7675,
+        "straggler_skew": 1.928
+      },
+      "release_wall_s": 0.794,
+      "release_sandboxes_per_s": 806.08,
+      "per_cluster_release_sandboxes_per_s": 806.08,
+      "teardown_s": 1.409,
+      "reap_zero_pods": {
+        "converged": true,
+        "drain_s": 0.085,
+        "settle_s": 0.0,
+        "remaining": {
+          "pods": 0,
+          "sandboxes": 0,
+          "claims": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "batch_leases": 0
+        }
+      },
+      "cluster_health_while_held": {
+        "worker_nodes": 10,
+        "not_ready_nodes": 0,
+        "memory_pressure_nodes": 0,
+        "disk_pressure_nodes": 0,
+        "pid_pressure_nodes": 0,
+        "active_pods_checked": 640,
+        "running_active_pods": 640,
+        "oom_kills": 0,
+        "evicted_pods": 0
+      },
+      "proc_before": {
+        "open_fds": 62,
+        "open_sockets": 57,
+        "vm_rss_mb": 218.93,
+        "vm_hwm_mb": 251.55,
+        "threads": 5,
+        "tcp_states": {
+          "ESTABLISHED": 55
+        }
+      },
+      "proc_held": {
+        "open_fds": 638,
+        "open_sockets": 633,
+        "vm_rss_mb": 251.39,
+        "vm_hwm_mb": 251.55,
+        "threads": 643,
+        "tcp_states": {
+          "CLOSE_WAIT": 574,
+          "ESTABLISHED": 55
+        }
+      },
+      "proc_after_release": {
+        "open_fds": 62,
+        "open_sockets": 57,
+        "vm_rss_mb": 272.09,
+        "vm_hwm_mb": 351.03,
+        "threads": 643,
+        "tcp_states": {
+          "ESTABLISHED": 55
+        }
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 1141,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        }
+      },
+      "errors_sample": []
+    },
+    {
+      "target_concurrency": 1600,
+      "clusters": 1,
+      "worker_vcpus": 320,
+      "target_sandboxes_per_vcpu": 5.0,
+      "achieved_active_sandboxes_per_vcpu": 5.0,
+      "claim_mode": "batch",
+      "batch_max_in_flight": 64,
+      "setup_s": 65.77,
+      "warm_wait": {
+        "ready": 1600,
+        "desired": 1600,
+        "terminating_pods": 0,
+        "min_ready_target": 1600,
+        "wait_s": 1.34,
+        "timed_out": false
+      },
+      "claim_burst_wall_s": 11.307,
+      "claims_per_s": 141.51,
+      "per_cluster_claims_per_s": 141.51,
+      "burst_and_exec_wall_s": 13.686,
+      "ok_claims": 1600,
+      "ok_active_exec": 1600,
+      "claim_err": 0,
+      "probe_err": 0,
+      "failure_rate_pct": 0.0,
+      "wire_claim_s": {
+        "n": 1600,
+        "first": 2.4837,
+        "min": 2.4837,
+        "p50": 6.5377,
+        "avg": 6.027,
+        "p90": 8.659,
+        "p95": 8.7955,
+        "p99": 9.1572,
+        "max": 9.5846,
+        "straggler_skew": 1.466
+      },
+      "first_cmd_exec_s": {
+        "n": 1600,
+        "first": 0.3218,
+        "min": 0.3218,
+        "p50": 0.8516,
+        "avg": 0.9918,
+        "p90": 1.7295,
+        "p95": 1.9587,
+        "p99": 2.2431,
+        "max": 2.4609,
+        "straggler_skew": 2.89
+      },
+      "ttfi_s": {
+        "n": 1600,
+        "first": 3.0544,
+        "min": 3.0544,
+        "p50": 7.1098,
+        "avg": 7.0188,
+        "p90": 10.3539,
+        "p95": 10.6231,
+        "p99": 11.059,
+        "max": 12.0455,
+        "straggler_skew": 1.694
+      },
+      "ttfi_inline_s": {
+        "n": 1600,
+        "first": 3.0544,
+        "min": 3.0544,
+        "p50": 7.1098,
+        "avg": 7.0188,
+        "p90": 10.3539,
+        "p95": 10.623,
+        "p99": 11.059,
+        "max": 12.0455,
+        "straggler_skew": 1.694
+      },
+      "release_wall_s": 1.824,
+      "release_sandboxes_per_s": 876.95,
+      "per_cluster_release_sandboxes_per_s": 876.95,
+      "teardown_s": 1.472,
+      "reap_zero_pods": {
+        "converged": true,
+        "drain_s": 5.726,
+        "settle_s": 0.0,
+        "remaining": {
+          "pods": 0,
+          "sandboxes": 0,
+          "claims": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "batch_leases": 0
+        }
+      },
+      "cluster_health_while_held": {
+        "worker_nodes": 10,
+        "not_ready_nodes": 0,
+        "memory_pressure_nodes": 0,
+        "disk_pressure_nodes": 0,
+        "pid_pressure_nodes": 0,
+        "active_pods_checked": 1600,
+        "running_active_pods": 1600,
+        "oom_kills": 0,
+        "evicted_pods": 0
+      },
+      "proc_before": {
+        "open_fds": 61,
+        "open_sockets": 56,
+        "vm_rss_mb": 317.8,
+        "vm_hwm_mb": 412.32,
+        "threads": 5,
+        "tcp_states": {
+          "ESTABLISHED": 54
+        }
+      },
+      "proc_held": {
+        "open_fds": 631,
+        "open_sockets": 626,
+        "vm_rss_mb": 412.05,
+        "vm_hwm_mb": 412.32,
+        "threads": 1559,
+        "tcp_states": {
+          "ESTABLISHED": 66,
+          "CLOSE_WAIT": 558
+        }
+      },
+      "proc_after_release": {
+        "open_fds": 73,
+        "open_sockets": 68,
+        "vm_rss_mb": 476.86,
+        "vm_hwm_mb": 660.55,
+        "threads": 1559,
+        "tcp_states": {
+          "ESTABLISHED": 66
+        }
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 2976,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 1030
+          }
+        }
+      },
+      "errors_sample": []
+    },
+    {
+      "target_concurrency": 2350,
+      "clusters": 1,
+      "worker_vcpus": 320,
+      "target_sandboxes_per_vcpu": 7.344,
+      "achieved_active_sandboxes_per_vcpu": 7.344,
+      "claim_mode": "batch",
+      "batch_max_in_flight": 64,
+      "setup_s": 128.62,
+      "warm_wait": {
+        "ready": 2350,
+        "desired": 2350,
+        "terminating_pods": 0,
+        "min_ready_target": 2350,
+        "wait_s": 1.96,
+        "timed_out": false
+      },
+      "claim_burst_wall_s": 15.335,
+      "claims_per_s": 153.25,
+      "per_cluster_claims_per_s": 153.25,
+      "burst_and_exec_wall_s": 16.934,
+      "ok_claims": 2350,
+      "ok_active_exec": 2350,
+      "claim_err": 0,
+      "probe_err": 0,
+      "failure_rate_pct": 0.0,
+      "wire_claim_s": {
+        "n": 2350,
+        "first": 4.2929,
+        "min": 4.2929,
+        "p50": 7.0365,
+        "avg": 7.0839,
+        "p90": 9.7555,
+        "p95": 10.1778,
+        "p99": 10.7349,
+        "max": 11.2186,
+        "straggler_skew": 1.594
+      },
+      "first_cmd_exec_s": {
+        "n": 2350,
+        "first": 0.3268,
+        "min": 0.3268,
+        "p50": 0.7252,
+        "avg": 0.8983,
+        "p90": 1.6019,
+        "p95": 1.8781,
+        "p99": 1.9906,
+        "max": 2.3362,
+        "straggler_skew": 3.221
+      },
+      "ttfi_s": {
+        "n": 2350,
+        "first": 5.7555,
+        "min": 5.7555,
+        "p50": 7.7158,
+        "avg": 8.2021,
+        "p90": 10.3679,
+        "p95": 10.7948,
+        "p99": 11.6121,
+        "max": 12.7208,
+        "straggler_skew": 1.649
+      },
+      "ttfi_inline_s": {
+        "n": 2350,
+        "first": 4.8034,
+        "min": 4.8034,
+        "p50": 7.6383,
+        "avg": 7.9821,
+        "p90": 10.3679,
+        "p95": 10.7948,
+        "p99": 11.6121,
+        "max": 12.7208,
+        "straggler_skew": 1.665
+      },
+      "release_wall_s": 1.444,
+      "release_sandboxes_per_s": 1626.86,
+      "per_cluster_release_sandboxes_per_s": 1626.86,
+      "teardown_s": 1.496,
+      "reap_zero_pods": {
+        "converged": true,
+        "drain_s": 9.3,
+        "settle_s": 0.0,
+        "remaining": {
+          "pods": 0,
+          "sandboxes": 0,
+          "claims": 0,
+          "warmpools": 0,
+          "templates": 0,
+          "batch_leases": 0
+        }
+      },
+      "cluster_health_while_held": {
+        "worker_nodes": 10,
+        "not_ready_nodes": 0,
+        "memory_pressure_nodes": 0,
+        "disk_pressure_nodes": 0,
+        "pid_pressure_nodes": 0,
+        "active_pods_checked": 2350,
+        "running_active_pods": 2350,
+        "oom_kills": 0,
+        "evicted_pods": 0
+      },
+      "proc_before": {
+        "open_fds": 60,
+        "open_sockets": 55,
+        "vm_rss_mb": 520.21,
+        "vm_hwm_mb": 660.55,
+        "threads": 5,
+        "tcp_states": {
+          "ESTABLISHED": 53
+        }
+      },
+      "proc_held": {
+        "open_fds": 316,
+        "open_sockets": 311,
+        "vm_rss_mb": 623.52,
+        "vm_hwm_mb": 660.55,
+        "threads": 1918,
+        "tcp_states": {
+          "ESTABLISHED": 66,
+          "CLOSE_WAIT": 243
+        }
+      },
+      "proc_after_release": {
+        "open_fds": 73,
+        "open_sockets": 68,
+        "vm_rss_mb": 714.02,
+        "vm_hwm_mb": 966.54,
+        "threads": 1918,
+        "tcp_states": {
+          "ESTABLISHED": 66
+        }
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 4513,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 1943
+          }
+        }
+      },
+      "errors_sample": []
+    }
+  ]
+}

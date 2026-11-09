@@ -1,0 +1,17 @@
+{
+  "images_file": "/app/drivers/images/swebench500.txt",
+  "images_count": 500,
+  "clusters_count": 1,
+  "images_per_pod": 25,
+  "max_parallel": 5,
+  "ok": true,
+  "wall_s": 794.08,
+  "per_cluster": [
+    {
+      "cluster": "bench",
+      "ok": true,
+      "remaining_prepull_pods": 0,
+      "wall_s": 794.08
+    }
+  ]
+}

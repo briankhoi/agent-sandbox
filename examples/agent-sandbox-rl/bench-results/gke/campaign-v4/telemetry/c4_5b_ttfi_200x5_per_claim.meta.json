@@ -1,0 +1,17 @@
+{
+  "run_name": "c4_5b_ttfi_200x5_per_claim",
+  "attempt": 1,
+  "context": "gke_<GCP_PROJECT>_us-central1_asrl-c4-1",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-c4-5b-ttfi-200x5-per-claim",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:faa997cf22194fb81ed0833f54b8fa34469e746e6ac32c149f6f19df9441d38c",
+  "driver_cmd": "python run_claim_soak_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --mode burst --problems 200 --replicas-per-image 5 --concurrencies 100,250,500,1000 --repeats 3 --verify-exec --unmanaged-network-policy --termination-grace-seconds 0 --claim-mode per_claim",
+  "start_utc": "2026-11-09T13:45:17Z",
+  "end_utc": "2026-11-09T13:52:13Z",
+  "job_elapsed_s": 416,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "json_ok": 1,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

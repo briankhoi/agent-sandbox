@@ -1,0 +1,73 @@
+# Campaign 4 T0 Stock Controller Manifest (Suites #1 & #2)
+# Ctrl (sbx/wp) = 1000/500, stock HTTP/2 client & event flags, NO custom APF FlowSchemas.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+  labels:
+    app: agent-sandbox-controller
+    control-plane: controller-manager
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: agent-sandbox-controller
+  template:
+    metadata:
+      labels:
+        app: agent-sandbox-controller
+        control-plane: controller-manager
+    spec:
+      serviceAccountName: agent-sandbox-controller
+      nodeSelector:
+        dedicated: ctrl
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: ctrl
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: agent-sandbox-controller
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: manager
+          image: us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/agent-sandbox-controller@sha256:8d11e685651cfb17e406d3440256dedb8317c219a7fe80a789999290d3161ab1
+          env:
+            - name: GOMEMLIMIT
+              value: "26GiB"
+          args:
+            - --leader-elect=true
+            - --extensions
+            - --sandbox-concurrent-workers=1000
+            - --sandbox-claim-concurrent-workers=500
+            - --sandbox-warm-pool-concurrent-workers=500
+            - --sandbox-template-concurrent-workers=100
+            - --sandbox-warm-pool-max-batch-size=500
+            - --sandbox-warm-pool-readiness-grace-period=30m
+            - --kube-api-qps=-1
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: healthz
+              containerPort: 8081
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "14"
+              memory: "28Gi"
+            limits:
+              cpu: "28"
+              memory: "32Gi"

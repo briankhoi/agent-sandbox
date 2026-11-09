@@ -1,0 +1,17 @@
+{
+  "run_name": "c4_7b_mc5_golden_small_4096_per_claim_r1",
+  "attempt": 1,
+  "context": "c1,c2,c3,c4,c5 (asrl-c4-1..5)",
+  "mode": "in_cluster_mc5_job",
+  "job_name": "asrl-c4-7b-mc5-golden-small-4096-per-claim-r1",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:faa997cf22194fb81ed0833f54b8fa34469e746e6ac32c149f6f19df9441d38c",
+  "driver_cmd": "python run_multicluster_bench.py --contexts c1,c2,c3,c4,c5 --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --suite golden-small --problems 500 --jobs 8 --job-problems 128 --job-rollouts 4 --job-stagger-s 0.5 --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 2500 --claim-mode per_claim",
+  "start_utc": "2026-11-09T16:48:08Z",
+  "end_utc": "2026-11-09T16:50:06Z",
+  "job_elapsed_s": 118,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "json_ok": 1,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

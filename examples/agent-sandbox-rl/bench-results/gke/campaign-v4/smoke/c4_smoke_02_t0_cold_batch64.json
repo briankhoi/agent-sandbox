@@ -1,0 +1,80 @@
+{
+  "timestamp_epoch": 1794243704.3813477,
+  "status": "PASS",
+  "arms": [
+    {
+      "claim_mode": "per_claim",
+      "clusters": 1,
+      "claims_tested": 8,
+      "setup_s": 3.214,
+      "release_s": 0.034,
+      "ttfi_s": {
+        "n": 8,
+        "first": 0.4296,
+        "min": 0.4296,
+        "p50": 0.6262,
+        "avg": 0.5754,
+        "p90": 0.7082,
+        "p95": 0.7117,
+        "p99": 0.7117,
+        "max": 0.7117,
+        "straggler_skew": 1.137
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 14,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "claim_mode": "batch",
+      "clusters": 1,
+      "claims_tested": 8,
+      "setup_s": 1.384,
+      "release_s": 0.118,
+      "ttfi_s": {
+        "n": 8,
+        "first": 0.3114,
+        "min": 0.3114,
+        "p50": 0.5186,
+        "avg": 0.4627,
+        "p90": 0.5455,
+        "p95": 0.7701,
+        "p99": 0.7701,
+        "max": 0.7701,
+        "straggler_skew": 1.485
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 8,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        }
+      },
+      "status": "PASS"
+    }
+  ]
+}

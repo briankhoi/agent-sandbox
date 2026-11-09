@@ -1,0 +1,132 @@
+# Official examples/apf-insulation/apf-insulation.yaml adapted to GKE 1.37's
+# 30-share custom PLC guardrail (20 shares critical + 10 shares bulk = 30 shares;
+# built-in levels = 245 shares -> 275 total).
+# Leaves tenant ServiceAccounts (asrl-driver) in stock service-accounts -> workload-low.
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: PriorityLevelConfiguration
+metadata:
+  name: agent-sandbox-critical
+  labels:
+    app: agent-sandbox-controller
+spec:
+  type: Limited
+  limited:
+    nominalConcurrencyShares: 20
+    lendablePercent: 0
+    limitResponse:
+      type: Queue
+      queuing:
+        queues: 16
+        handSize: 4
+        queueLengthLimit: 250
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: PriorityLevelConfiguration
+metadata:
+  name: agent-sandbox-bulk
+  labels:
+    app: agent-sandbox-controller
+spec:
+  type: Limited
+  limited:
+    nominalConcurrencyShares: 10
+    lendablePercent: 50
+    limitResponse:
+      type: Queue
+      queuing:
+        queues: 16
+        handSize: 4
+        queueLengthLimit: 250
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: agent-sandbox-critical
+  labels:
+    app: agent-sandbox-controller
+spec:
+  priorityLevelConfiguration:
+    name: agent-sandbox-critical
+  matchingPrecedence: 900
+  distinguisherMethod:
+    type: ByUser
+  rules:
+    - subjects:
+        - kind: ServiceAccount
+          serviceAccount:
+            name: agent-sandbox-controller
+            namespace: agent-sandbox-system
+      resourceRules:
+        - apiGroups: ["extensions.agents.x-k8s.io"]
+          resources: ["sandboxclaims", "sandboxclaims/status"]
+          verbs: ["update", "patch"]
+          clusterScope: true
+          namespaces: ["*"]
+        - apiGroups: ["agents.x-k8s.io"]
+          resources: ["sandboxes", "sandboxes/status", "sandboxes/finalizers"]
+          verbs: ["update", "patch"]
+          clusterScope: true
+          namespaces: ["*"]
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["update", "patch"]
+          clusterScope: true
+          namespaces: ["*"]
+        - apiGroups: ["coordination.k8s.io"]
+          resources: ["leases"]
+          verbs: ["get", "create", "update"]
+          clusterScope: true
+          namespaces: ["*"]
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: agent-sandbox-events
+  labels:
+    app: agent-sandbox-controller
+spec:
+  priorityLevelConfiguration:
+    name: workload-low
+  matchingPrecedence: 950
+  distinguisherMethod:
+    type: ByUser
+  rules:
+    - subjects:
+        - kind: ServiceAccount
+          serviceAccount:
+            name: agent-sandbox-controller
+            namespace: agent-sandbox-system
+      resourceRules:
+        - apiGroups: ["", "events.k8s.io"]
+          resources: ["events"]
+          verbs: ["*"]
+          clusterScope: true
+          namespaces: ["*"]
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: agent-sandbox-bulk
+  labels:
+    app: agent-sandbox-controller
+spec:
+  priorityLevelConfiguration:
+    name: agent-sandbox-bulk
+  matchingPrecedence: 1000
+  distinguisherMethod:
+    type: ByUser
+  rules:
+    - subjects:
+        - kind: ServiceAccount
+          serviceAccount:
+            name: agent-sandbox-controller
+            namespace: agent-sandbox-system
+      resourceRules:
+        - apiGroups: ["*"]
+          resources: ["*"]
+          verbs: ["*"]
+          clusterScope: true
+          namespaces: ["*"]
+      nonResourceRules:
+        - nonResourceURLs: ["*"]
+          verbs: ["*"]

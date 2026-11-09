@@ -1,0 +1,11 @@
+apiserver_flowcontrol_nominal_limit_seats{priority_level="agent-sandbox-bulk"} 19
+apiserver_flowcontrol_nominal_limit_seats{priority_level="agent-sandbox-critical"} 35
+apiserver_flowcontrol_nominal_limit_seats{priority_level="catch-all"} 10
+apiserver_flowcontrol_nominal_limit_seats{priority_level="exempt"} 0
+apiserver_flowcontrol_nominal_limit_seats{priority_level="global-default"} 40
+apiserver_flowcontrol_nominal_limit_seats{priority_level="leader-election"} 20
+apiserver_flowcontrol_nominal_limit_seats{priority_level="node-high"} 79
+apiserver_flowcontrol_nominal_limit_seats{priority_level="system"} 59
+apiserver_flowcontrol_nominal_limit_seats{priority_level="workload-high"} 79
+apiserver_flowcontrol_nominal_limit_seats{priority_level="workload-low"} 196
+go_sched_gomaxprocs_threads 16

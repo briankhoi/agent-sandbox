@@ -1,0 +1,41 @@
+{
+  "images_file": "/app/drivers/images/swebench500.txt",
+  "images_count": 500,
+  "clusters_count": 5,
+  "images_per_pod": 25,
+  "max_parallel": 5,
+  "ok": true,
+  "wall_s": 845.74,
+  "per_cluster": [
+    {
+      "cluster": "c1",
+      "ok": true,
+      "remaining_prepull_pods": 0,
+      "wall_s": 156.0
+    },
+    {
+      "cluster": "c2",
+      "ok": true,
+      "remaining_prepull_pods": 0,
+      "wall_s": 693.41
+    },
+    {
+      "cluster": "c3",
+      "ok": true,
+      "remaining_prepull_pods": 0,
+      "wall_s": 829.92
+    },
+    {
+      "cluster": "c4",
+      "ok": true,
+      "remaining_prepull_pods": 0,
+      "wall_s": 761.06
+    },
+    {
+      "cluster": "c5",
+      "ok": true,
+      "remaining_prepull_pods": 0,
+      "wall_s": 845.72
+    }
+  ]
+}
