@@ -303,7 +303,12 @@ class AsyncSandboxBatch:
         """Create a batch: precheck, create its Lease, start the watch, then create claims in the background."""
         helper = client.k8s_helper
         timeout = batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS
-        ready = await _precheck_pools(helper, [g.warmpool for g in args.groups], namespace)
+        ready = await _precheck_pools(
+            helper,
+            [g.warmpool for g in args.groups],
+            namespace,
+            max_concurrency=args.max_in_flight,
+        )
 
         size = sum(g.size for g in args.groups)
         # One shutdownTime for the whole fill. Quorum can come as late as quorum_timeout after the
@@ -928,8 +933,8 @@ class AsyncSandboxBatch:
         groups is checked once per handle, like ``claim_batch`` checks its pools. The claim takes the
         next unused ordinal and carries its pool's group label but no group annotations, so it is
         never one of the initial claims. ``events()``, ``group_outcomes()``, ``wait_for_quorum()``
-        and ``release_not_ready()`` leave it alone, and ``release_group()`` on its pool releases it
-        with the pool's other members. Its ``shutdownTime`` is the
+        and ``release_not_ready()`` leave it alone, and ``release_group()`` on its pool or
+        ``release_members()`` releases it with the batch's other members. Its ``shutdownTime`` is the
         time of its create plus ``quorum_timeout`` plus ``work_budget`` plus 600 seconds, and its
         create follows the initial claims' retries and pacing. Like theirs, a create that the
         pool's Ready sandboxes cover skips ``create_rps`` pacing. Once callers spend the Ready
@@ -942,7 +947,7 @@ class AsyncSandboxBatch:
 
         If it raises, including on a cancellation, the member is dropped from ``members()`` and its
         claim is deleted, unless the claim is already gone or its create was rejected. A failed delete is
-        retried by ``release_not_ready()`` and ``release()``. Once this handle loses the batch's
+        retried by ``release_not_ready()``, ``release_members()``, and ``release()``. Once this handle loses the batch's
         Lease it keeps the claim, which ``release()`` deletes only if no other handle has taken the
         Lease since. It never creates a second claim, so call it again to try again. A member it
         returned that fails later shows in ``members()`` like any other, and ``release_member``
@@ -974,8 +979,8 @@ class AsyncSandboxBatch:
                 sending any create or create retry that ``create_rps`` pacing or ``max_in_flight``
                 cannot start before the deadline.
             BatchError: If this handle has been detached or released, or ``err()`` is set, when
-                called or while waiting, or if ``release_member`` or ``release_group`` releases the
-                member before it is Ready.
+                called or while waiting, or if ``release_member``, ``release_group``, or
+                ``release_members`` releases the member before it is Ready.
             ApiException: If checking an unchecked warm pool fails with an API error such as a
                 403.
             aiohttp.ClientError, TimeoutError: If checking an unchecked warm pool fails before
@@ -1411,6 +1416,47 @@ class AsyncSandboxBatch:
             guard=self._member_delete,
             deadline=lambda: self._lease_expires_at,
         )
+
+    async def release_members(self) -> None:
+        """Deletes every claim the batch currently holds across all pools, pending ones included,
+        and drops their members from ``members()`` while keeping the batch, its Lease, and its
+        watch open for subsequent ``acquire()`` calls.
+
+        All planned fill creates not yet sent are skipped, in-flight ``acquire()`` calls raise
+        ``BatchError``, and a create that lands afterwards is deleted. Released members are never
+        handed out afterwards and emit no ``MEMBER_LOST``.
+
+        Claims are deleted like ``release()`` deletes the batch's, with label-scoped
+        deletecollection rounds across the whole batch. If they fail, calling ``release_members``
+        again retries.
+
+        Raises:
+            BatchError: If this handle has been detached or released, once this handle loses the
+                batch's Lease, or if claims are still not being deleted after the last round.
+            ApiException: For a non-transient error such as a 403, which is raised at once.
+                After the last round, the last transient error is raised (an ``ApiException``
+                or a transport error).
+        """
+        async with self._changed:
+            self._check_lease_held_locked()
+            self._drop_planned_creates(None)
+            names, acquiring, pending_seqs = self._state.release_members()
+            for name in acquiring:
+                self._wake_acquire(name)
+            self._changed.notify_all()
+        await self._close_cached_connections("release_members", names)
+        await _delete_claims_in_rounds(
+            self._client.k8s_helper,
+            self.namespace,
+            batch_utils.batch_claim_label_selector(self.batch_id, self._lease_uid),
+            f"batch '{self.batch_id}' members",
+            guard=self._member_delete,
+            deadline=lambda: self._lease_expires_at,
+        )
+        if pending_seqs:
+            async with self._lock:
+                for name, seq in pending_seqs.items():
+                    self._state.note_deleted(name, seq)
 
     def _drop_planned_creates(self, warmpool: str | None) -> None:
         """Releases the planned creates not yet sent, of one pool or of every pool, so they don't
@@ -2419,6 +2465,8 @@ async def _precheck_pools(
     warmpools: Iterable[str],
     namespace: str,
     timeout: int | float | Callable[[], Awaitable[float]] = batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
+    *,
+    max_concurrency: int = 1,
 ) -> dict[str, int]:
     """Checks that each warm pool and the SandboxTemplate it references exist, and returns each
     pool's Ready replica count.
@@ -2427,13 +2475,108 @@ async def _precheck_pools(
         SandboxWarmPoolNotFoundError: If a warm pool doesn't exist.
         SandboxTemplateNotFoundError: If a warm pool's template doesn't exist, or it names none.
     """
+    pools = list(dict.fromkeys(warmpools))
     checked_templates: set[str] = set()
     ready: dict[str, int] = {}
-    for name in warmpools:
-        step_timeout = await timeout() if callable(timeout) else timeout
-        warmpool = await helper.get_sandbox_warmpool(
-            name, namespace, _request_timeout=step_timeout
+    if len(pools) <= 1 or max_concurrency <= 1:
+        for name in pools:
+            step_timeout = await timeout() if callable(timeout) else timeout
+            warmpool = await helper.get_sandbox_warmpool(
+                name, namespace, _request_timeout=step_timeout
+            )
+            if warmpool is None:
+                raise SandboxWarmPoolNotFoundError(
+                    f"SandboxWarmPool '{name}' not found in namespace '{namespace}'"
+                )
+            ready[name] = batch_utils.warmpool_ready_replicas(warmpool)
+            template = batch_utils.warmpool_template_name(warmpool)
+            if template is None:
+                raise SandboxTemplateNotFoundError(
+                    f"SandboxWarmPool '{name}' does not reference a SandboxTemplate"
+                )
+            if template in checked_templates:
+                continue
+            step_timeout = await timeout() if callable(timeout) else timeout
+            if await helper.get_sandbox_template(
+                template, namespace, _request_timeout=step_timeout
+            ) is None:
+                raise SandboxTemplateNotFoundError(
+                    f"SandboxTemplate '{template}' not found in namespace '{namespace}'"
+                )
+            checked_templates.add(template)
+        return ready
+
+    sem = asyncio.Semaphore(min(len(pools), max_concurrency))
+
+    async def _fetch_pool(pool_name: str) -> Any:
+        async with sem:
+            step_timeout = await timeout() if callable(timeout) else timeout
+            return await helper.get_sandbox_warmpool(
+                pool_name, namespace, _request_timeout=step_timeout
+            )
+
+    async def _fetch_template(tmpl_name: str) -> Any:
+        async with sem:
+            step_timeout = await timeout() if callable(timeout) else timeout
+            return await helper.get_sandbox_template(
+                tmpl_name, namespace, _request_timeout=step_timeout
+            )
+
+    raw_pools = await asyncio.gather(
+        *(_fetch_pool(name) for name in pools), return_exceptions=True
+    )
+    pool_results: dict[str, Any] = {}
+    pool_errors: dict[str, BaseException] = {}
+    for name, res in zip(pools, raw_pools, strict=True):
+        if isinstance(res, asyncio.CancelledError):
+            raise res
+        if isinstance(res, BaseException):
+            pool_errors[name] = res
+        else:
+            pool_results[name] = res
+
+    templates_needed: list[str] = []
+    seen_templates: set[str] = set()
+    for name in pools:
+        if name in pool_errors:
+            break
+        warmpool = pool_results[name]
+        if warmpool is None:
+            break
+        template = batch_utils.warmpool_template_name(warmpool)
+        if template is None:
+            break
+        if template not in seen_templates:
+            seen_templates.add(template)
+            templates_needed.append(template)
+
+    tmpl_results: dict[str, Any] = {}
+    tmpl_errors: dict[str, BaseException] = {}
+    if len(templates_needed) == 1:
+        only_tmpl = templates_needed[0]
+        try:
+            tmpl_results[only_tmpl] = await _fetch_template(only_tmpl)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            tmpl_errors[only_tmpl] = exc
+    elif len(templates_needed) > 1:
+        raw_tmpls = await asyncio.gather(
+            *(_fetch_template(tname) for tname in templates_needed),
+            return_exceptions=True,
         )
+        for tname, res in zip(templates_needed, raw_tmpls, strict=True):
+            if isinstance(res, asyncio.CancelledError):
+                raise res
+            if isinstance(res, BaseException):
+                tmpl_errors[tname] = res
+            else:
+                tmpl_results[tname] = res
+
+    for name in pools:
+        if name in pool_errors:
+            raise pool_errors[name]
+        warmpool = pool_results[name]
         if warmpool is None:
             raise SandboxWarmPoolNotFoundError(
                 f"SandboxWarmPool '{name}' not found in namespace '{namespace}'"
@@ -2446,10 +2589,9 @@ async def _precheck_pools(
             )
         if template in checked_templates:
             continue
-        step_timeout = await timeout() if callable(timeout) else timeout
-        if await helper.get_sandbox_template(
-            template, namespace, _request_timeout=step_timeout
-        ) is None:
+        if template in tmpl_errors:
+            raise tmpl_errors[template]
+        if tmpl_results.get(template) is None:
             raise SandboxTemplateNotFoundError(
                 f"SandboxTemplate '{template}' not found in namespace '{namespace}'"
             )

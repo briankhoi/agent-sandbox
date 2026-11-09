@@ -6011,5 +6011,118 @@ class TestHandleLookupAndPoolScopedWakeups(BaseBatchClientTest):
         self.assertFalse(waiter_b.is_set())
 
 
+class TestParallelPrecheckAndReleaseMembers(BaseClaimBatchTest):
+
+    def test_claim_batch_prechecks_multiple_pools_concurrently_and_dedupes_templates(self):
+        helper = self.cluster.helper
+        in_flight = 0
+        peak_in_flight = 0
+        lock = threading.Lock()
+        sleep_s = 0.04
+
+        def get_warmpool(name, *args, **kwargs):
+            nonlocal in_flight, peak_in_flight
+            with lock:
+                in_flight += 1
+                peak_in_flight = max(peak_in_flight, in_flight)
+            try:
+                time.sleep(sleep_s)
+                tmpl = "shared-tmpl" if int(name.split("-")[-1]) % 2 == 0 else f"tmpl-{name}"
+                return {"spec": {"sandboxTemplateRef": {"name": tmpl}}, "status": {"readyReplicas": 3}}
+            finally:
+                with lock:
+                    in_flight -= 1
+
+        def get_template(name, *args, **kwargs):
+            nonlocal in_flight, peak_in_flight
+            with lock:
+                in_flight += 1
+                peak_in_flight = max(peak_in_flight, in_flight)
+            try:
+                time.sleep(sleep_s)
+                return {"metadata": {"name": name}}
+            finally:
+                with lock:
+                    in_flight -= 1
+
+        helper.get_sandbox_warmpool.side_effect = get_warmpool
+        helper.get_sandbox_template.side_effect = get_template
+        groups = [BatchGroup(warmpool=f"pool-{i}", size=0) for i in range(12)]
+        t0 = time.monotonic()
+        batch = self.claim(groups, max_in_flight=6)
+        dt = time.monotonic() - t0
+        # 12 pools + 7 unique templates at max_in_flight=6 take ~4 waves, well below 19 serial calls.
+        self.assertLess(dt, 10 * sleep_s)
+        self.assertGreater(peak_in_flight, 1)
+        self.assertLessEqual(peak_in_flight, 6)
+        self.assertEqual(helper.get_sandbox_warmpool.call_count, 12)
+        self.assertEqual(helper.get_sandbox_template.call_count, 7)
+
+        # Subsequent acquire() on prechecked pools performs 0 additional GETs.
+        m = batch.acquire("pool-5", timeout=5)
+        self.assertEqual(m.warmpool, "pool-5")
+        self.assertEqual(helper.get_sandbox_warmpool.call_count, 12)
+        self.assertEqual(helper.get_sandbox_template.call_count, 7)
+
+    def test_claim_batch_parallel_precheck_preserves_input_order_errors(self):
+        helper = self.cluster.helper
+        helper.get_sandbox_warmpool.side_effect = lambda name, *a, **kw: (
+            None if name == "pool-0" else {"spec": {"sandboxTemplateRef": {"name": "tmpl-1"}}}
+        )
+        with self.assertRaises(SandboxWarmPoolNotFoundError):
+            self.claim(
+                [BatchGroup(warmpool="pool-0", size=0), BatchGroup(warmpool="pool-1", size=0)],
+                max_in_flight=4,
+            )
+        # Missing pool-0 short-circuits before fetching pool-1's template.
+        helper.get_sandbox_template.assert_not_called()
+
+        helper.get_sandbox_warmpool.side_effect = lambda name, *a, **kw: (
+            {"spec": {"sandboxTemplateRef": {"name": "missing-tmpl"}}}
+            if name == "pool-0"
+            else None
+        )
+        helper.get_sandbox_template.return_value = None
+        with self.assertRaises(SandboxTemplateNotFoundError):
+            self.claim(
+                [BatchGroup(warmpool="pool-0", size=0), BatchGroup(warmpool="pool-1", size=0)],
+                max_in_flight=4,
+            )
+
+    def test_release_members_deletes_all_pools_by_batch_label_and_keeps_batch_open(self):
+        helper = self.cluster.helper
+        batch = self.claim(
+            [BatchGroup(warmpool="pool-a", size=0), BatchGroup(warmpool="pool-b", size=0)],
+            max_in_flight=4,
+        )
+        wp_reads_at_open = helper.get_sandbox_warmpool.call_count
+        m_a = batch.acquire("pool-a", timeout=5)
+        m_b = batch.acquire("pool-b", timeout=5)
+        self.assertEqual({m.claim_name for m in batch.members()}, {m_a.claim_name, m_b.claim_name})
+
+        # Failed deletecollection keeps member deletes fenced for retry, then succeeds in 1 call.
+        denied = k8s_client.ApiException(status=403)
+        helper.delete_sandbox_claims_by_label.side_effect = [denied, None]
+        with self.assertRaises(k8s_client.ApiException):
+            batch.release_members()
+        self.assertTrue(bool(batch._state._pending_deletes))
+
+        helper.delete_sandbox_claims_by_label.reset_mock()
+        batch.release_members()
+        self.assertEqual(helper.delete_sandbox_claims_by_label.call_count, 1)
+        helper.delete_sandbox_claim.assert_not_called()
+        helper.delete_batch_lease.assert_not_called()
+        self.assertEqual(batch.members(), [])
+        self.assertEqual(batch._state._pending_deletes, {})
+        self.assertIsNone(batch.err())
+
+        # Batch, Lease, watch, and _checked_pools stay open for subsequent acquires (0 extra pool GETs).
+        m_a2 = batch.acquire("pool-a", timeout=5)
+        m_b2 = batch.acquire("pool-b", timeout=5)
+        self.assertNotIn(m_a2.claim_name, {m_a.claim_name, m_b.claim_name})
+        self.assertEqual({m.claim_name for m in batch.members()}, {m_a2.claim_name, m_b2.claim_name})
+        self.assertEqual(helper.get_sandbox_warmpool.call_count, wp_reads_at_open)
+
+
 if __name__ == "__main__":
     unittest.main()
