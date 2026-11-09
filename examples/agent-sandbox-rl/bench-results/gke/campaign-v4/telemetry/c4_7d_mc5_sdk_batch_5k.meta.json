@@ -1,0 +1,10 @@
+{
+  "run_name": "c4_7d_mc5_sdk_batch_5k",
+  "context": "c1,c2,c3,c4,c5 (asrl-c4-1..5)",
+  "mode": "workstation_direct_mc5_sdk",
+  "sdk_commit": "bb5c3fbd7ec6e94f6d96a7e6a544e60bdaae55ce",
+  "start_utc": "2026-11-09T19:49:12Z",
+  "end_utc": "2026-11-09T20:25:15Z",
+  "elapsed_s": 2163,
+  "json_ok": 1
+}

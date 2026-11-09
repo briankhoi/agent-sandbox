@@ -1,0 +1,17 @@
+{
+  "run_name": "c4_smoke_12_mc5_warm_resume",
+  "attempt": 1,
+  "context": "c1,c2,c3,c4,c5 (asrl-c4-1..5)",
+  "mode": "in_cluster_mc5_job",
+  "job_name": "asrl-c4-smoke-12-mc5-warm-resume",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:faa997cf22194fb81ed0833f54b8fa34469e746e6ac32c149f6f19df9441d38c",
+  "driver_cmd": "python run_smoke_gate.py --contexts c1,c2,c3,c4,c5 --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --per-cluster-claims 8",
+  "start_utc": "2026-11-09T19:48:00Z",
+  "end_utc": "2026-11-09T19:48:35Z",
+  "job_elapsed_s": 35,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "json_ok": 1,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

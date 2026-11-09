@@ -1,0 +1,200 @@
+{
+  "timestamp_epoch": 1794253701.6579795,
+  "status": "PASS",
+  "arms": [
+    {
+      "claim_mode": "per_claim",
+      "clusters": 5,
+      "claims_tested": 40,
+      "setup_s": 2.432,
+      "release_s": 0.055,
+      "ttfi_s": {
+        "n": 40,
+        "first": 0.3402,
+        "min": 0.3402,
+        "p50": 0.3766,
+        "avg": 0.3788,
+        "p90": 0.4079,
+        "p95": 0.41,
+        "p99": 0.4273,
+        "max": 0.4273,
+        "straggler_skew": 1.135
+      },
+      "verify_teardown": {
+        "c1": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        },
+        "c2": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        },
+        "c3": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        },
+        "c4": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        },
+        "c5": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "claim_mode": "batch",
+      "clusters": 5,
+      "claims_tested": 40,
+      "setup_s": 2.355,
+      "release_s": 0.123,
+      "ttfi_s": {
+        "n": 40,
+        "first": 0.1765,
+        "min": 0.1765,
+        "p50": 0.2262,
+        "avg": 0.2282,
+        "p90": 0.2513,
+        "p95": 0.2567,
+        "p99": 0.2961,
+        "max": 0.2961,
+        "straggler_skew": 1.309
+      },
+      "verify_teardown": {
+        "c1": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        },
+        "c2": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        },
+        "c3": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        },
+        "c4": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        },
+        "c5": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 0,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 0
+          }
+        }
+      },
+      "status": "PASS"
+    }
+  ]
+}
