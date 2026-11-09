@@ -22,14 +22,15 @@ import atexit
 import functools
 import logging
 import threading
-from collections.abc import Sequence
+import weakref
+from collections.abc import Callable, Sequence
 from types import TracebackType
 from typing import Any, Dict, Generic, List, Self, Tuple, Type, TypeVar
 
 from kubernetes import client
 from kubernetes.client import ApiException
 
-from .claim_adoption import validate_claim_name, validate_claim_for_adoption
+from .claim_adoption import validate_claim_name, validate_claim_for_adoption, is_already_exists
 
 # Import all tracing components from the trace_manager module
 from .trace_manager import (
@@ -79,7 +80,7 @@ class SandboxClient(Generic[T]):
         Args:
             connection_config: Configuration for connecting to the sandboxes. 
                 Defaults to SandboxLocalTunnelConnectionConfig() which uses 
-                kubectl port-forwarding. Sandboxd supports a pod tunnel or the
+                kubectl port-forwarding. Sandboxd supports a Pod or router tunnel, or the
                 explicit Service DNS / Pod IP in-cluster connection config.
             tracer_config: Configuration for OpenTelemetry tracing. 
                 Defaults to an empty SandboxTracerConfig (tracing disabled).
@@ -131,6 +132,7 @@ class SandboxClient(Generic[T]):
                 self._active_batches,
                 self._closing_batches,
                 self._batches_lock,
+                weakref.ref(self.k8s_helper),
             ))
 
     def __enter__(self) -> Self:
@@ -149,6 +151,7 @@ class SandboxClient(Generic[T]):
             self._active_batches,
             self._closing_batches,
             self._batches_lock,
+            weakref.ref(self.k8s_helper),
         )
 
     def create_sandbox(
@@ -177,7 +180,7 @@ class SandboxClient(Generic[T]):
                 (``SandboxClaim.metadata.labels``).
             claim_name: Optional DNS-1123 Claim name. Explicit names remain
                 caller-owned and are excluded from automatic cleanup.
-            adopt_existing: On 409, attach to the existing named Claim after
+            adopt_existing: On AlreadyExists, attach to the existing named Claim after
                 checking its warm pool and that it is not terminating. Requires
                 claim_name. Creation options are not reapplied on adoption;
                 an existing shutdownTime is preserved.
@@ -242,7 +245,7 @@ class SandboxClient(Generic[T]):
             except ApiException as error:
                 if error.status == 409:
                     cleanup_generated = False
-                if not (adopt_existing and error.status == 409):
+                if not (adopt_existing and is_already_exists(error)):
                     raise
                 created_claim = self.k8s_helper.get_sandbox_claim(claim_name, namespace)
             if not generated_name:
@@ -337,12 +340,22 @@ class SandboxClient(Generic[T]):
                 existing.close_connection()
             raise SandboxNotFoundError(f"Sandbox claim '{claim_name}' not found or resolution failed in namespace '{namespace}': {e}") from e
 
-        # If it's already in the registry and active (and verified on K8s), return the existing object
-        if existing and existing.is_active:
+        # Reuse the tracked handle only while it is active and still bound to
+        # the claim's current sandbox. A claim deleted and re-created under the
+        # same name keeps that name, so the handle's sandbox_id is what tells
+        # us the claim now points at a different sandbox.
+        if existing and existing.is_active and existing.sandbox_id == sandbox_id:
             return existing
 
-        # If the sandbox is not active, pop it out from the tracking list
+        # Drop the inactive or stale handle. close_connection() only releases
+        # local resources, so the claim's current sandbox is untouched. A
+        # failed close must not block the replacement: the caller needs a
+        # handle for the current sandbox either way.
         if existing:
+            try:
+                existing.close_connection()
+            except Exception as e:
+                logger.error(f"Failed to close stale sandbox connection for '{claim_name}' in namespace '{namespace}': {e}")
             self._active_connection_sandboxes.pop(key, None)
 
         # Re-attach: Create a fresh handle for the existing ID
@@ -590,7 +603,9 @@ class SandboxClient(Generic[T]):
         # connections.
         key = (batch.namespace, batch.batch_id)
         with batches_lock:
-            if (batch._connected or batch._stale_connections) and active_batches.get(key) is not batch:
+            with batch._lock:
+                has_connections = bool(batch._connected or batch._stale_connections)
+            if has_connections and active_batches.get(key) is not batch:
                 closing_batches.add(batch)
             else:
                 closing_batches.discard(batch)
@@ -600,7 +615,9 @@ class SandboxClient(Generic[T]):
         # A caller whose detach() didn't finish has handed the batch off, so cleanup finishes the detach
         # instead of stopping or releasing the batch. If that fails too, nothing is deleted and the
         # handle stays registered for the next cleanup.
-        if not batch._detach_unfinished():
+        with batch._lock:
+            unfinished = batch._detach_unfinished()
+        if not unfinished:
             return False
         try:
             batch.detach()
@@ -678,19 +695,26 @@ class SandboxClient(Generic[T]):
         active_batches: dict[tuple[str, str], SandboxBatch],
         closing_batches: set[SandboxBatch],
         batches_lock: threading.Lock,
+        k8s_helper_ref: Callable[[], K8sHelper | None],
     ) -> None:
-        for key, sandbox in list(registry.items()):
-            namespace, claim_name = key
-            try:
-                if key in explicit_claims:
-                    sandbox.close_connection()
-                else:
-                    # This static hook has no client to dispatch through, so it calls _delete_tracked_sandbox
-                    # directly. A subclass override of delete_sandbox does not run during exit cleanup or __exit__.
-                    SandboxClient._delete_tracked_sandbox(registry, key, sandbox)
-            except Exception as e:
-                logger.error(f"Cleanup failed for {claim_name} in namespace {namespace}: {e}")
-        SandboxClient._release_batches(active_batches, closing_batches, batches_lock, exiting=True)
+        # Resolve before popping tracked handles that may hold the last reference to k8s_helper.
+        k8s_helper = k8s_helper_ref()
+        try:
+            for key, sandbox in list(registry.items()):
+                namespace, claim_name = key
+                try:
+                    if key in explicit_claims:
+                        sandbox.close_connection()
+                    else:
+                        # This static hook has no client to dispatch through, so it calls _delete_tracked_sandbox
+                        # directly. A subclass override of delete_sandbox does not run during exit cleanup or __exit__.
+                        SandboxClient._delete_tracked_sandbox(registry, key, sandbox)
+                except Exception as e:
+                    logger.error(f"Cleanup failed for {claim_name} in namespace {namespace}: {e}")
+            SandboxClient._release_batches(active_batches, closing_batches, batches_lock, exiting=True)
+        finally:
+            if k8s_helper is not None:
+                k8s_helper.close()
 
     @staticmethod
     def _release_batches(

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import logging
-from typing import Callable
+from collections.abc import Callable
 from .trace_manager import create_tracer_manager
 from .trace_manager import trace_span
 from .commands.command_executor import CommandExecutor
@@ -99,6 +99,8 @@ class Sandbox:
         self._sandbox_name_hash: str | None = None
         # Set by a batch's connect() to the pod IP its watch already saw.
         self._seeded_pod_ip: str | None = None
+        self._on_close: Callable[[], None] | None = None
+        self._claim_deleter: Callable[[], None] | None = None
         
     def get_pod_name(self) -> str:
         """Fetches the Sandbox object from Kubernetes and retrieves its current pod name."""
@@ -270,8 +272,11 @@ class Sandbox:
                 logger.error(f"Failed to end tracing span: {e}")
         
         self._is_closed = True
+        on_close, self._on_close = self._on_close, None
+        if on_close is not None:
+            on_close()
         logger.info(f"Connection to sandbox claim '{self.claim_name}' has been closed.")
-    
+
     def terminate(self) -> None:
         """
         Permanent deletion of all server side infrastructure and client side connection.
@@ -281,12 +286,26 @@ class Sandbox:
         If the claim is already gone remotely, ``delete_sandbox_claim`` treats a
         404 as success rather than raising.
         """
+        if not self.claim_name:
+            self.close_connection()
+            return
+
+        if self._claim_deleter is not None:
+            self._claim_deleter()
+            try:
+                self.close_connection()
+            finally:
+                try:
+                    if self._on_terminated is not None:
+                        self._on_terminated(self)
+                finally:
+                    self._on_terminated = None
+                    self._claim_deleter = None
+                    self.claim_name = None
+            return
+
         # Close the client side connection and trace manager lifecycle
         self.close_connection()
-
-        if not self.claim_name:
-            # Already deleted (or never successfully created a claim).
-            return
 
         self.k8s_helper.delete_sandbox_claim(self.claim_name, self.namespace)
 

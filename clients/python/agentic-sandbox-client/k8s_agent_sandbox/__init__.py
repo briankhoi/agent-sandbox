@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Public clients, configuration models, and errors for Agent Sandbox."""
+
 from .sandbox_client import SandboxClient
 from .models import (
     BatchEvent,
@@ -21,6 +23,7 @@ from .models import (
     Member,
     MemberState,
     SandboxdInClusterConnectionConfig,
+    SandboxdRouterTunnelConnectionConfig,
 )
 from .sandbox_batch import SandboxBatch
 from .metrics_utils import get_metrics, print_metrics
@@ -69,3 +72,40 @@ except ImportError:
                 "AsyncSandboxBatch requires the 'async' extras. "
                 "Install with: pip install k8s-agent-sandbox[async]"
             )
+
+
+__all__ = [
+    "AsyncSandboxBatch",
+    "AsyncSandboxClient",
+    "BatchError",
+    "BatchEvent",
+    "BatchEventType",
+    "BatchExistsError",
+    "BatchGroup",
+    "BatchInUseError",
+    "BatchLeaseExpiredError",
+    "BatchNotFoundError",
+    "BatchTimeoutError",
+    "GroupOutcome",
+    "Member",
+    "MemberState",
+    "QuorumUnreachableError",
+    "SandboxBatch",
+    "SandboxClaimFailedError",
+    "SandboxClient",
+    "SandboxError",
+    "SandboxNoServiceError",
+    "SandboxNotFoundError",
+    "SandboxNotReadyError",
+    "SandboxPortForwardError",
+    "SandboxRequestError",
+    "SandboxResponseTooLargeError",
+    "SandboxServiceUnavailableError",
+    "SandboxTemplateNotFoundError",
+    "SandboxWarmPoolNotFoundError",
+    "SandboxdInClusterConnectionConfig",
+    "SandboxdRouterTunnelConnectionConfig",
+    "TerminalMemberError",
+    "get_metrics",
+    "print_metrics",
+]

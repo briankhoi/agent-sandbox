@@ -12,13 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import copy
+import functools
 import logging
 import math
+import threading
 import time
+import weakref
 from itertools import chain
 from datetime import UTC, datetime
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from typing import Any, List, cast
 from kubernetes import client, config, watch
 import urllib3.exceptions
@@ -26,6 +30,7 @@ from .exceptions import SandboxClaimFailedError, SandboxMetadataError, SandboxNo
 from .models import AdditionalPodMetadata
 from .utils import (
     construct_sandbox_claim_env_spec,
+    current_not_ready,
     is_valid_gateway_hostname,
     is_valid_ip,
     select_pod_ip,
@@ -50,6 +55,22 @@ from .constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _EmptyWatchResponse:
+    """Empty HTTP response placeholder returned when a watch stops before streaming."""
+
+    status = 200
+    closed = True
+
+    def stream(self, *_args: Any, **_kwargs: Any) -> Iterator[bytes]:
+        return iter(())
+
+    def close(self) -> None:
+        pass
+
+    def release_conn(self) -> None:
+        pass
 
 
 class _UnretriedApiClient(client.ApiClient):
@@ -93,8 +114,8 @@ class _UnretriedApiClient(client.ApiClient):
         self._cookie = value
 
 
-def _api_client_without_retries(api_client: client.ApiClient | None) -> client.ApiClient:
-    """Returns an ``ApiClient`` like ``api_client`` (or the default one) whose requests urllib3
+def _api_client_without_retries(api_client: client.ApiClient) -> client.ApiClient:
+    """Returns an ``ApiClient`` like ``api_client`` whose requests urllib3
     doesn't retry, so batch Lease and custom-object callers run their own deadline- and
     conflict-aware retry logic.
 
@@ -103,11 +124,7 @@ def _api_client_without_retries(api_client: client.ApiClient | None) -> client.A
     the Lease's expiry inside one SDK call, and a retried Lease write that already landed comes back
     as a conflict. The async helper needs no counterpart, since aiohttp doesn't retry requests.
     """
-    if api_client is not None:
-        return _UnretriedApiClient(api_client)
-    configuration = client.Configuration.get_default_copy()
-    configuration.retries = False
-    return client.ApiClient(configuration=configuration)
+    return _UnretriedApiClient(api_client)
 
 
 def _claim_list_pages(
@@ -194,20 +211,45 @@ class K8sHelper:
         validate_pool_size(pool_size, api_client)
         # Kept so kubectl subprocesses can target the same cluster.
         self.injected_api_client = api_client
-        if api_client is None:
-            try:
-                config.load_incluster_config()
-            except config.ConfigException:
-                config.load_kube_config(temp_file_path=kube_config_temp_dir)
-            if pool_size is not None:
-                configuration = client.Configuration.get_default_copy()
-                configuration.connection_pool_maxsize = pool_size
-                api_client = client.ApiClient(configuration=configuration)
-        self.custom_objects_api = client.CustomObjectsApi(api_client)
-        unretried_api_client = _api_client_without_retries(api_client)
-        self._batch_custom_objects_api = client.CustomObjectsApi(unretried_api_client)
-        self.core_v1_api = client.CoreV1Api(api_client)
-        self.coordination_v1_api = client.CoordinationV1Api(unretried_api_client)
+        self._owned_api_client: client.ApiClient | None = None
+        self._batch_api_client: client.ApiClient | None = None
+        try:
+            if api_client is None:
+                try:
+                    config.load_incluster_config()
+                except config.ConfigException:
+                    config.load_kube_config(temp_file_path=kube_config_temp_dir)
+                if pool_size is None:
+                    api_client = client.ApiClient()
+                else:
+                    configuration = client.Configuration.get_default_copy()
+                    configuration.connection_pool_maxsize = pool_size
+                    api_client = client.ApiClient(configuration=configuration)
+                self._owned_api_client = api_client
+            self.custom_objects_api = client.CustomObjectsApi(api_client)
+            unretried_api_client = _api_client_without_retries(api_client)
+            self._batch_api_client = unretried_api_client
+            self._batch_custom_objects_api = client.CustomObjectsApi(unretried_api_client)
+            self.core_v1_api = client.CoreV1Api(api_client)
+            self.coordination_v1_api = client.CoordinationV1Api(unretried_api_client)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Closes the Kubernetes API client connection pools owned by this helper.
+
+        A caller-injected ``api_client`` is left open and remains attached to
+        this helper.
+        """
+        try:
+            if self._batch_api_client is not None:
+                self._batch_api_client.close()
+                self._batch_api_client = None
+        finally:
+            if self._owned_api_client is not None:
+                self._owned_api_client.close()
+                self._owned_api_client = None
 
     def api_pool_size(self) -> int | None:
         """Returns the size of the Kubernetes API connection pool that creates and the watch use, or
@@ -423,31 +465,27 @@ class K8sHelper:
                             rv = seen_rv
                         status = claim_object.get('status') or {}
 
-                        ready = False
-                        for cond in status.get('conditions', []):
-                            if (
-                                cond.get('type') == 'Ready'
-                                and cond.get('status') == 'False'
-                                and cond.get('reason') == 'TemplateNotFound'
-                            ):
+                        not_ready = current_not_ready(claim_object)
+                        if not_ready is not None:
+                            reason = not_ready.get('reason')
+                            if reason == 'TemplateNotFound':
                                 raise SandboxTemplateNotFoundError(
-                                    f"SandboxTemplate requested does not exist: {cond.get('message', 'Template not found')}"
+                                    f"SandboxTemplate requested does not exist: {not_ready.get('message', 'Template not found')}"
                                 )
-                            elif cond.get('reason') == 'WarmPoolNotFound':
+                            if reason == 'WarmPoolNotFound':
                                 raise SandboxWarmPoolNotFoundError(
-                                    f"SandboxWarmPool requested does not exist: {cond.get('message', 'WarmPool not found')}"
+                                    f"SandboxWarmPool requested does not exist: {not_ready.get('message', 'WarmPool not found')}"
                                 )
-                            elif (
-                                cond.get('type') == 'Ready'
-                                and cond.get('status') == 'False'
-                                and cond.get('reason') in TERMINAL_CLAIM_READY_REASONS
-                            ):
+                            if reason in TERMINAL_CLAIM_READY_REASONS:
                                 # The controller reported a failure it will not
                                 # retry; waiting out the timeout cannot succeed.
                                 raise SandboxClaimFailedError(
                                     f"SandboxClaim '{claim_name}' failed with terminal reason "
-                                    f"{cond.get('reason')}: {cond.get('message', '')}"
+                                    f"{reason}: {not_ready.get('message', '')}"
                                 )
+
+                        ready = False
+                        for cond in status.get('conditions', []):
                             if (cond.get('type') == 'Ready' and cond.get('status') == 'True'
                                     and (not require_current_generation
                                          or (metadata.get('generation') is not None
@@ -733,6 +771,8 @@ class K8sHelper:
         namespace: str,
         label_selector: str,
         _request_timeout: float | tuple[float, float] | None = None,
+        *,
+        deadline: float | None = None,
     ) -> int:
         """Counts matching ``SandboxClaim`` objects without ``metadata.deletionTimestamp``,
         holding one page of the list at a time.
@@ -748,10 +788,17 @@ class K8sHelper:
         Args:
             _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
                 pair) forwarded to the underlying urllib3 request of each page.
+            deadline: Optional ``time.monotonic()`` deadline across the whole paginated list;
+                caps each page's ``_request_timeout`` to the remaining budget and raises
+                ``TimeoutError`` once the deadline passes.
         """
         live = 0
         for page, first in _claim_list_pages(
-            self._batch_custom_objects_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
+            self._batch_custom_objects_api.list_namespaced_custom_object,
+            namespace,
+            label_selector,
+            _request_timeout,
+            deadline=deadline,
         ):
             if first:
                 live = 0
@@ -761,20 +808,66 @@ class K8sHelper:
         return live
 
     def watch_sandbox_claims(
-        self, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int,
-        _request_timeout: float | tuple[float, float] | None = None
-    ) -> Iterator[dict[str, Any]]:
+        self,
+        namespace: str,
+        label_selector: str,
+        resource_version: str,
+        timeout_seconds: int,
+        _request_timeout: float | tuple[float, float] | None = None,
+        *,
+        on_watch: Callable[[watch.Watch | None], None] | None = None,
+    ) -> Generator[dict[str, Any], None, None]:
         """Uses a single watch starting at ``resource_version`` to yield raw watch events for multiple
         SandboxClaims matching a label selector.
 
         Args:
             _request_timeout: Optional timeout (seconds, or a ``(connect, read)``
                 pair) forwarded to the underlying urllib3 request.
+            on_watch: Optional callback that receives the active ``watch.Watch`` before streaming
+                events and ``None`` when the stream closes.
         """
         w = watch.Watch()
+        orig_list_fn = self._batch_custom_objects_api.list_namespaced_custom_object
+        stream_fn: Any = orig_list_fn
+        if type(w) is watch.Watch:
+            stopped = threading.Event()
+            w_ref = weakref.ref(w)
+
+            def _stop() -> None:
+                stopped.set()
+                if (target := w_ref()) is not None:
+                    watch.Watch.stop(target)
+
+            w.stop = _stop  # type: ignore[method-assign]
+
+            @functools.wraps(orig_list_fn)
+            def _checked_list(*args: Any, **kwargs: Any) -> Any:
+                target = w_ref()
+                if stopped.is_set() or (
+                    target is not None and getattr(target, "_stop", False) is True
+                ):
+                    if target is not None:
+                        target._stop = True
+                    return _EmptyWatchResponse()
+                resp: Any = orig_list_fn(*args, **kwargs)
+                # Watch.stream resets _stop at entry and invokes the list call before assigning
+                # _resp, so re-check stopped here to close the response immediately on race.
+                if stopped.is_set():
+                    if target is not None:
+                        target._resp = resp
+                        watch.Watch.stop(target)
+                    if not getattr(resp, "closed", True):
+                        resp.close()
+                    resp.release_conn()
+                    if target is not None:
+                        target._resp = None
+                    return _EmptyWatchResponse()
+                return resp
+
+            stream_fn = _checked_list
         try:
-            for event in w.stream(
-                func=self._batch_custom_objects_api.list_namespaced_custom_object,
+            raw_stream = w.stream(
+                func=stream_fn,
                 namespace=namespace,
                 group=CLAIM_API_GROUP,
                 version=CLAIM_API_VERSION,
@@ -784,11 +877,28 @@ class K8sHelper:
                 timeout_seconds=timeout_seconds,
                 allow_watch_bookmarks=True,
                 _request_timeout=_request_timeout,
-            ):
-                if event is not None:
-                    yield event
+            )
+            stream_cm: contextlib.AbstractContextManager[Any] = (
+                contextlib.closing(raw_stream)
+                if hasattr(raw_stream, "close")
+                else contextlib.nullcontext(raw_stream)
+            )
+            with stream_cm as stream:
+                if on_watch is not None:
+                    on_watch(w)
+                if getattr(w, "_stop", False) is True:
+                    return
+                for event in stream:
+                    if event is not None:
+                        yield event
         finally:
+            if on_watch is not None:
+                on_watch(None)
             w.stop()
+            if type(w) is watch.Watch and isinstance(
+                getattr(w, "_api_client", None), client.ApiClient
+            ):
+                w._api_client.close()
 
     def read_batch_lease(
         self, name: str, namespace: str, _request_timeout: float | tuple[float, float] | None = None

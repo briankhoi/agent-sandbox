@@ -13,11 +13,12 @@
 # limitations under the License.
 
 import asyncio
+import functools
 import logging
 import math
 import time
 from datetime import UTC, datetime
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
 import aiohttp
@@ -44,6 +45,7 @@ from .models import AdditionalPodMetadata
 from .exceptions import SandboxClaimFailedError, SandboxMetadataError, SandboxNotFoundError, SandboxTemplateNotFoundError, SandboxWarmPoolNotFoundError
 from .utils import (
     construct_sandbox_claim_env_spec,
+    current_not_ready,
     is_valid_gateway_hostname,
     is_valid_ip,
     select_pod_ip,
@@ -378,31 +380,27 @@ class AsyncK8sHelper:
                             rv = seen_rv
                         status = claim_object.get("status") or {}
 
-                        ready = False
-                        for cond in status.get("conditions", []):
-                            if (
-                                cond.get("type") == "Ready"
-                                and cond.get("status") == "False"
-                                and cond.get("reason") == "TemplateNotFound"
-                            ):
+                        not_ready = current_not_ready(claim_object)
+                        if not_ready is not None:
+                            reason = not_ready.get("reason")
+                            if reason == "TemplateNotFound":
                                 raise SandboxTemplateNotFoundError(
-                                    f"SandboxTemplate requested does not exist: {cond.get('message', 'Template not found')}"
+                                    f"SandboxTemplate requested does not exist: {not_ready.get('message', 'Template not found')}"
                                 )
-                            elif cond.get("reason") == "WarmPoolNotFound":
+                            if reason == "WarmPoolNotFound":
                                 raise SandboxWarmPoolNotFoundError(
-                                    f"SandboxWarmPool requested does not exist: {cond.get('message', 'WarmPool not found')}"
+                                    f"SandboxWarmPool requested does not exist: {not_ready.get('message', 'WarmPool not found')}"
                                 )
-                            elif (
-                                cond.get("type") == "Ready"
-                                and cond.get("status") == "False"
-                                and cond.get("reason") in TERMINAL_CLAIM_READY_REASONS
-                            ):
+                            if reason in TERMINAL_CLAIM_READY_REASONS:
                                 # The controller reported a failure it will not
                                 # retry; waiting out the timeout cannot succeed.
                                 raise SandboxClaimFailedError(
                                     f"SandboxClaim '{claim_name}' failed with terminal reason "
-                                    f"{cond.get('reason')}: {cond.get('message', '')}"
+                                    f"{reason}: {not_ready.get('message', '')}"
                                 )
+
+                        ready = False
+                        for cond in status.get("conditions", []):
                             if (cond.get("type") == "Ready" and cond.get("status") == "True"
                                     and (not require_current_generation
                                          or (metadata.get("generation") is not None
@@ -707,7 +705,12 @@ class AsyncK8sHelper:
         return items, resource_version
 
     async def count_live_sandbox_claims(
-        self, namespace: str, label_selector: str, _request_timeout: float | None = None
+        self,
+        namespace: str,
+        label_selector: str,
+        _request_timeout: float | None = None,
+        *,
+        deadline: float | None = None,
     ) -> int:
         """Counts matching ``SandboxClaim`` objects without ``metadata.deletionTimestamp``,
         holding one page of the list at a time.
@@ -722,12 +725,19 @@ class AsyncK8sHelper:
 
         Args:
             _request_timeout: Optional total timeout in seconds for each page, forwarded to kubernetes_asyncio.
+            deadline: Optional ``time.monotonic()`` deadline across the whole paginated list;
+                caps each page's ``_request_timeout`` to the remaining budget and raises
+                ``TimeoutError`` once the deadline passes.
         """
         await self._ensure_initialized()
 
         live = 0
         async for page, first in _claim_list_pages(
-            self.custom_objects_api.list_namespaced_custom_object, namespace, label_selector, _request_timeout
+            self.custom_objects_api.list_namespaced_custom_object,
+            namespace,
+            label_selector,
+            _request_timeout,
+            deadline=deadline,
         ):
             if first:
                 live = 0
@@ -739,7 +749,7 @@ class AsyncK8sHelper:
     async def watch_sandbox_claims(
         self, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int,
         _request_timeout: float | None = None
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Uses a single watch starting at ``resource_version`` to yield raw watch events for multiple
         SandboxClaims matching a label selector.
 
@@ -748,10 +758,33 @@ class AsyncK8sHelper:
         """
         await self._ensure_initialized()
 
+        list_fn = self.custom_objects_api.list_namespaced_custom_object
+
+        @functools.wraps(list_fn)
+        async def _checked_list(*args: Any, **kwargs: Any) -> Any:
+            # Watch.stream passes _preload_content=False, which skips the generated client's HTTP
+            # status check. Validate non-2xx responses here so non-JSON errors raise ApiException
+            # and 429 responses preserve their HTTP headers such as Retry-After.
+            response = cast(aiohttp.ClientResponse, await list_fn(*args, **kwargs))
+            if not 200 <= response.status <= 299:
+                try:
+                    try:
+                        raw = await response.read()
+                    except BaseException:
+                        response.close()
+                        raise
+                finally:
+                    response.release()
+                body = raw.decode("utf-8", errors="replace")
+                err = client.ApiException(http_resp=cast(Any, RESTResponse(response, raw)))
+                err.body = cast(Any, body)
+                raise err
+            return response
+
         w = watch.Watch()
         try:
             async for event in w.stream(
-                func=self.custom_objects_api.list_namespaced_custom_object,
+                func=_checked_list,
                 namespace=namespace,
                 group=CLAIM_API_GROUP,
                 version=CLAIM_API_VERSION,
@@ -932,7 +965,10 @@ class AsyncK8sHelper:
         A caller-injected ``api_client`` is left open and remains attached to
         this helper. Only a client created internally is closed and cleared.
         """
-        if self._api_client and self._owns_api_client:
-            await self._api_client.close()
+        async with self._init_lock:
+            if not (self._api_client and self._owns_api_client):
+                return
+            api_client = self._api_client
             self._api_client = None
             self._initialized = False
+        await api_client.close()

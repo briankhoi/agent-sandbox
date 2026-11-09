@@ -15,7 +15,7 @@
 """Async handle for one running Sandbox and its local client resources."""
 
 import logging
-from typing import Callable
+from collections.abc import Awaitable, Callable
 
 from .async_connector import AsyncSandboxConnector
 from .async_k8s_helper import AsyncK8sHelper
@@ -71,7 +71,7 @@ class AsyncSandbox:
                 "connection_config is required for AsyncSandbox. "
                 "Use SandboxDirectConnectionConfig, SandboxGatewayConnectionConfig, "
                 "SandboxInClusterConnectionConfig, SandboxdPodTunnelConnectionConfig, "
-                "or SandboxdInClusterConnectionConfig."
+                "SandboxdRouterTunnelConnectionConfig, or SandboxdInClusterConnectionConfig."
             )
 
         self.claim_name: str | None = claim_name
@@ -111,6 +111,8 @@ class AsyncSandbox:
         self._sandbox_name_hash: str | None = None
         # Set by a batch's connect() to the pod IP its watch already saw.
         self._seeded_pod_ip: str | None = None
+        self._on_close: Callable[[], None] | None = None
+        self._claim_deleter: Callable[[], Awaitable[None]] | None = None
 
     async def get_pod_name(self) -> str:
         """Fetches the Sandbox object from Kubernetes and retrieves its current pod name."""
@@ -272,6 +274,9 @@ class AsyncSandbox:
                 logger.error(f"Failed to end tracing span: {e}")
 
         self._is_closed = True
+        on_close, self._on_close = self._on_close, None
+        if on_close is not None:
+            on_close()
         logger.info(f"Connection to sandbox claim '{self.claim_name}' has been closed.")
 
     def _close_for_atexit(self) -> None:
@@ -281,6 +286,9 @@ class AsyncSandbox:
         self._files = None
         self._watcher = None
         self._is_closed = True
+        on_close, self._on_close = self._on_close, None
+        if on_close is not None:
+            on_close()
 
     async def terminate(self) -> None:
         """
@@ -291,11 +299,25 @@ class AsyncSandbox:
         If the claim is already gone remotely, ``delete_sandbox_claim`` treats a
         404 as success rather than raising.
         """
-        await self.close_connection()
-
         if not self.claim_name:
-            # Already deleted (or never successfully created a claim).
+            await self.close_connection()
             return
+
+        if self._claim_deleter is not None:
+            await self._claim_deleter()
+            try:
+                await self.close_connection()
+            finally:
+                try:
+                    if self._on_terminated is not None:
+                        self._on_terminated(self)
+                finally:
+                    self._on_terminated = None
+                    self._claim_deleter = None
+                    self.claim_name = None
+            return
+
+        await self.close_connection()
 
         await self.k8s_helper.delete_sandbox_claim(self.claim_name, self.namespace)
 

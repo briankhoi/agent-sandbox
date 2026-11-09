@@ -27,7 +27,7 @@ import logging
 import sys
 import tempfile
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from types import TracebackType
 from typing import Any, Generic, Self, TypeVar
 
@@ -36,7 +36,7 @@ from kubernetes_asyncio import client as async_client
 from kubernetes_asyncio.client import ApiException
 
 from . import batch_utils
-from .claim_adoption import validate_claim_name, validate_claim_for_adoption
+from .claim_adoption import validate_claim_name, validate_claim_for_adoption, is_already_exists
 from .async_k8s_helper import AsyncK8sHelper
 from .async_connector import _DefaultSSLContext
 from .async_sandbox import AsyncSandbox
@@ -192,9 +192,8 @@ class AsyncSandboxClient(Generic[T]):
                 "connection_config is required for AsyncSandboxClient. "
                 "Use SandboxDirectConnectionConfig, SandboxGatewayConnectionConfig, "
                 "SandboxInClusterConnectionConfig, SandboxdPodTunnelConnectionConfig, "
-                "or SandboxdInClusterConnectionConfig. "
-                "For local development with the router's port-forward, use the synchronous SandboxClient; "
-                "SandboxdPodTunnelConnectionConfig supports async pod port-forwarding."
+                "SandboxdRouterTunnelConnectionConfig, or SandboxdInClusterConnectionConfig. "
+                "Sandboxd Pod and router tunnels support async port-forwarding."
             )
 
         self.connection_config = connection_config
@@ -214,6 +213,13 @@ class AsyncSandboxClient(Generic[T]):
         # Handles that left _active_batches with cached connections still to close
         self._closing_batches: set[AsyncSandboxBatch] = set()
         self._lock = asyncio.Lock()
+        self._close_lock = asyncio.Lock()
+        self._not_closing = asyncio.Event()
+        self._not_closing.set()
+        self._no_batch_ops = asyncio.Event()
+        self._no_batch_ops.set()
+        self._in_flight_batch_ops = 0
+        self._close_owner: asyncio.Task[Any] | None = None
         self._default_ssl_context = _DefaultSSLContext()
 
         if cleanup:
@@ -228,6 +234,21 @@ class AsyncSandboxClient(Generic[T]):
                 self._closing_batches,
                 api_client,
             ))
+
+    @contextlib.asynccontextmanager
+    async def _batch_op(self) -> AsyncIterator[None]:
+        current_task = asyncio.current_task()
+        if current_task is not self._close_owner:
+            while not self._not_closing.is_set():
+                await self._not_closing.wait()
+        self._in_flight_batch_ops += 1
+        self._no_batch_ops.clear()
+        try:
+            yield
+        finally:
+            self._in_flight_batch_ops -= 1
+            if self._in_flight_batch_ops == 0:
+                self._no_batch_ops.set()
 
     async def __aenter__(self) -> Self:
         return self
@@ -252,23 +273,31 @@ class AsyncSandboxClient(Generic[T]):
         It stops each tracked batch's Lease renewal without releasing the Lease, so ``get_batch``
         can't re-attach a batch that wasn't detached with ``detach()``.
         """
-        async with self._lock:
-            for key, sandbox in list(self._active_connection_sandboxes.items()):
-                try:
-                    await sandbox.close_connection()
-                except Exception as e:
-                    logger.error(f"Failed to close sandbox connection: {e}")
-                else:
-                    self._active_connection_sandboxes.pop(key, None)
-        await self._stop_batches()
-        await self.k8s_helper.close()
-        self._default_ssl_context = _DefaultSSLContext()
-
-    def _attach_handle(self, sandbox: T) -> None:
-        """Attach client-owned TLS setup and termination tracking to a handle."""
-        # Preserve existing sandbox_class constructor signatures.
-        sandbox.connector._default_ssl_context = self._default_ssl_context
-        sandbox._on_terminated = functools.partial(self._untrack, self._active_connection_sandboxes)
+        current_task = asyncio.current_task()
+        if current_task is not None and self._close_owner is current_task:
+            return
+        async with self._close_lock:
+            self._not_closing.clear()
+            self._close_owner = current_task
+            try:
+                await self._no_batch_ops.wait()
+                async with self._lock:
+                    sandboxes = list(self._active_connection_sandboxes.items())
+                for key, sandbox in sandboxes:
+                    try:
+                        await sandbox.close_connection()
+                    except Exception as e:
+                        logger.error(f"Failed to close sandbox connection: {e}")
+                    else:
+                        async with self._lock:
+                            if self._active_connection_sandboxes.get(key) is sandbox:
+                                del self._active_connection_sandboxes[key]
+                await self._stop_batches()
+                await self.k8s_helper.close()
+                self._default_ssl_context = _DefaultSSLContext()
+            finally:
+                self._close_owner = None
+                self._not_closing.set()
 
     async def _stop_batches(self) -> None:
         # Without this, a dropped handle's tasks would keep renewing its Lease for the life of the
@@ -276,25 +305,46 @@ class AsyncSandboxClient(Generic[T]):
         await self._retry_closing_batches()
         async with self._lock:
             batches = list(self._active_batches.values())
+        current_task = asyncio.current_task()
         for batch in batches:
             if await self._finish_detach(batch):
                 continue
-            try:
-                # Stop new connects, creates, and deletes and drain in-flight deletes before
-                # cancelling Lease renewal or closing the caller's API session.
+            lifecycle_cm = (
+                contextlib.nullcontext()
+                if current_task is not None and batch._lifecycle_owner is current_task
+                else batch._lifecycle_lock
+            )
+            keep_for_release_retry = False
+            async with lifecycle_cm:
                 async with batch._lock:
+                    keep_for_release_retry = (
+                        batch._release_attempted
+                        and not batch._released
+                        and not batch._lease_released
+                    )
                     batch._detached = True
                     batch._stop_creating.set()
                     batch._notify_all()
                 try:
-                    await batch._wait_active_deletes()
-                    await batch._stop_background_tasks()
-                finally:
-                    # A failed stop must not leave port-forwards open.
-                    await batch._close_cached_connections("client cleanup")
-            except Exception as e:
-                logger.error(f"Failed to stop batch '{batch.batch_id}' tasks: {e}")
-            self._unregister_batch(batch)
+                    # Stop new connects, creates, and deletes and drain in-flight work before
+                    # cancelling Lease renewal or closing the caller's API session.
+                    try:
+                        await batch._wait_active_creates()
+                        await batch._wait_active_deletes()
+                        await batch._stop_background_tasks()
+                    finally:
+                        # A failed stop must not leave port-forwards open.
+                        await batch._close_cached_connections("client cleanup")
+                except Exception as e:
+                    logger.error(f"Failed to stop batch '{batch.batch_id}' tasks: {e}")
+            if not keep_for_release_retry:
+                self._unregister_batch(batch)
+
+    def _attach_handle(self, sandbox: T) -> None:
+        """Attach client-owned TLS setup and termination tracking to a handle."""
+        # Preserve existing sandbox_class constructor signatures.
+        sandbox.connector._default_ssl_context = self._default_ssl_context
+        sandbox._on_terminated = functools.partial(self._untrack, self._active_connection_sandboxes)
 
     async def create_sandbox(
         self,
@@ -321,7 +371,7 @@ class AsyncSandboxClient(Generic[T]):
                 (``SandboxClaim.metadata.labels``).
             claim_name: Optional DNS-1123 Claim name. Explicit names remain
                 caller-owned and are excluded from automatic cleanup.
-            adopt_existing: On 409, attach to the existing named Claim after
+            adopt_existing: On AlreadyExists, attach to the existing named Claim after
                 checking its warm pool and that it is not terminating. Requires
                 claim_name. Creation options are not reapplied on adoption;
                 an existing shutdownTime is preserved.
@@ -386,7 +436,7 @@ class AsyncSandboxClient(Generic[T]):
             except ApiException as error:
                 if error.status == 409:
                     cleanup_generated = False
-                if not (adopt_existing and error.status == 409):
+                if not (adopt_existing and is_already_exists(error)):
                     raise
                 created_claim = await self.k8s_helper.get_sandbox_claim(claim_name, namespace)
             if not generated_name:
@@ -517,10 +567,25 @@ class AsyncSandboxClient(Generic[T]):
                 f"in namespace '{namespace}': {e}"
             ) from e
 
-        if existing and existing.is_active:
+        # Reuse the tracked handle only while it is active and still bound to
+        # the claim's current sandbox. A claim deleted and re-created under the
+        # same name keeps that name, so the handle's sandbox_id is what tells
+        # us the claim now points at a different sandbox.
+        if existing and existing.is_active and existing.sandbox_id == sandbox_id:
             return existing
 
+        # Drop the inactive or stale handle. close_connection() only releases
+        # local resources, so the claim's current sandbox is untouched. A
+        # failed close must not block the replacement: the caller needs a
+        # handle for the current sandbox either way.
         if existing:
+            try:
+                await existing.close_connection()
+            except Exception as e:
+                logger.error(
+                    f"Failed to close stale sandbox connection for '{claim_name}' "
+                    f"in namespace '{namespace}': {e}"
+                )
             async with self._lock:
                 self._active_connection_sandboxes.pop(key, None)
 
@@ -669,17 +734,18 @@ class AsyncSandboxClient(Generic[T]):
             groups, labels, batch_id, create_rps, max_in_flight, work_budget, quorum_timeout,
             lease_duration,
         )
-        args = args._replace(
-            max_in_flight=batch_utils.check_pool_size(
-                await self.k8s_helper.api_pool_size(),
-                args.max_in_flight,
-                explicit=max_in_flight is not None,
+        async with self._batch_op():
+            args = args._replace(
+                max_in_flight=batch_utils.check_pool_size(
+                    await self.k8s_helper.api_pool_size(),
+                    args.max_in_flight,
+                    explicit=max_in_flight is not None,
+                )
             )
-        )
-        batch = await AsyncSandboxBatch._claim(self, args, namespace, self._trace_context_annotations())
-        # Registered with no await in between, so a cancel here can't leave the batch's tasks
-        # running where close() won't stop them.
-        self._register_batch(batch)
+            batch = await AsyncSandboxBatch._claim(self, args, namespace, self._trace_context_annotations())
+            # Registered with no await in between, so a cancel here can't leave the batch's tasks
+            # running where close() won't stop them.
+            self._register_batch(batch)
         return batch
 
     async def get_batch(self, batch_id: str, namespace: str = "default") -> AsyncSandboxBatch:
@@ -719,8 +785,9 @@ class AsyncSandboxClient(Generic[T]):
             batch = await client.get_batch("b1234abcd12")
             ready = [m for m in batch.members() if m.state is MemberState.READY]
         """
-        batch = await AsyncSandboxBatch._attach(self, batch_id, namespace)
-        self._register_batch(batch)
+        async with self._batch_op():
+            batch = await AsyncSandboxBatch._attach(self, batch_id, namespace)
+            self._register_batch(batch)
         return batch
 
     def _register_batch(self, batch: AsyncSandboxBatch) -> None:
@@ -753,6 +820,9 @@ class AsyncSandboxClient(Generic[T]):
         # handle stays registered for the next cleanup.
         if not batch._detach_unfinished():
             return False
+        current_task = asyncio.current_task()
+        if current_task is not None and batch._lifecycle_owner is current_task:
+            return True
         try:
             await batch.detach()
         except Exception as e:
@@ -857,14 +927,22 @@ class AsyncSandboxClient(Generic[T]):
             tracked = [
                 (key, registry[key]) for key in claims
             ]
-            batches = list(active_batches.values())
+            batches = list(active_batches.items())
             closing = list(closing_batches)
             if not tracked and not batches and not closing:
                 return
 
             # A batch's cached connections hold port-forward processes too.
-            batch_sandboxes = [sandbox for batch in batches + closing for sandbox, _ in batch._connected.values()]
-            batch_sandboxes += [sandbox for batch in batches + closing for sandbox in batch._stale_connections]
+            batch_sandboxes = [
+                sandbox
+                for batch in [b for _, b in batches] + closing
+                for sandbox, _ in batch._connected.values()
+            ]
+            batch_sandboxes += [
+                sandbox
+                for batch in [b for _, b in batches] + closing
+                for sandbox in batch._stale_connections
+            ]
             for sandbox in [sandbox for _, sandbox in tracked] + batch_sandboxes:
                 try:
                     sandbox._close_for_atexit()
@@ -891,46 +969,56 @@ class AsyncSandboxClient(Generic[T]):
             kube_config_dir_cm = (
                 contextlib.nullcontext() if atexit_api_client is not None else tempfile.TemporaryDirectory()
             )
-            with kube_config_dir_cm as kube_config_dir:
-                helper = K8sHelper(api_client=atexit_api_client, kube_config_temp_dir=kube_config_dir)
-                for ns, claim_name in (key for key, _ in tracked):
-                    if (ns, claim_name) in explicit_claims:
-                        continue
+            try:
+                with kube_config_dir_cm as kube_config_dir:
+                    helper = K8sHelper(api_client=atexit_api_client, kube_config_temp_dir=kube_config_dir)
                     try:
-                        helper.delete_sandbox_claim(
-                            claim_name,
-                            ns,
-                            _request_timeout=_ATEXIT_DELETE_REQUEST_TIMEOUT_SECONDS,
-                        )
-                    except Exception as e:
-                        if sys.stderr is not None:
-                            print(
-                                f"[agent-sandbox] Warning: failed to delete sandbox claim "
-                                f"'{claim_name}' in namespace '{ns}' during atexit cleanup: {e}",
-                                file=sys.stderr,
-                            )
-                for batch in batches:
-                    # A batch whose detach() didn't finish was handed off, and an atexit hook can't await detach().
-                    # The hook leaves an attached batch in place until its Lease goes stale.
-                    if batch._detach_unfinished() or batch._exit_detaches():
-                        continue
-                    try:
-                        _delete_batch_objects_sync(
-                            helper,
-                            batch.namespace,
-                            batch.batch_id,
-                            batch._lease_name,
-                            batch._holder_identity,
-                            batch._lease_duration,
-                            batch._lease,
-                        )
-                    except Exception as e:
-                        if sys.stderr is not None:
-                            print(
-                                f"[agent-sandbox] Warning: failed to release batch "
-                                f"'{batch.batch_id}' in namespace '{batch.namespace}' during atexit cleanup: {e}",
-                                file=sys.stderr,
-                            )
+                        for ns, claim_name in (key for key, _ in tracked):
+                            if (ns, claim_name) in explicit_claims:
+                                continue
+                            try:
+                                helper.delete_sandbox_claim(
+                                    claim_name,
+                                    ns,
+                                    _request_timeout=_ATEXIT_DELETE_REQUEST_TIMEOUT_SECONDS,
+                                )
+                            except Exception as e:
+                                if sys.stderr is not None:
+                                    print(
+                                        f"[agent-sandbox] Warning: failed to delete sandbox claim "
+                                        f"'{claim_name}' in namespace '{ns}' during atexit cleanup: {e}",
+                                        file=sys.stderr,
+                                    )
+                        for (namespace, batch_id), batch in batches:
+                            # A batch whose detach() didn't finish was handed off, and an atexit hook can't await detach().
+                            # The hook leaves an attached batch in place until its Lease goes stale.
+                            if batch._detach_unfinished() or batch._exit_detaches():
+                                continue
+                            try:
+                                _delete_batch_objects_sync(
+                                    helper,
+                                    batch.namespace,
+                                    batch.batch_id,
+                                    batch._lease_name,
+                                    batch._holder_identity,
+                                    batch._lease_duration,
+                                    batch._lease,
+                                )
+                            except Exception as e:
+                                if sys.stderr is not None:
+                                    print(
+                                        f"[agent-sandbox] Warning: failed to release batch "
+                                        f"'{batch.batch_id}' in namespace '{batch.namespace}' during atexit cleanup: {e}",
+                                        file=sys.stderr,
+                                    )
+                            else:
+                                if active_batches.get((namespace, batch_id)) is batch:
+                                    del active_batches[(namespace, batch_id)]
+                    finally:
+                        helper.close()
+            finally:
+                if atexit_api_client is not None:
+                    atexit_api_client.close()
         except Exception as e:
             if sys.stderr is not None:
                 print(
