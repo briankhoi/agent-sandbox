@@ -2,7 +2,7 @@
 
 Both agents (local and cloud) update the row of a PR when its state changes: status, head, upstream number, title or description. Keep this file in sync with `/mnt/project-files/pr-descriptions/pr_board.md` (cloud copy) and say what changed in the commit message. Brian opens PRs himself, so a row is "ready, not opened" until he gives the number.
 
-Heads checked 2026-10-23 00:30 UTC after `git fetch origin` and a fetch of upstream `feature/batch-claim` (`c56f0791`) and `main` (`840fdfde`). The upstream API is unreachable from the cloud, so merged state comes from git. Upstream squash-merges, so a branch is not an ancestor of upstream. Merged means the squash commit's tree equals the branch tree (checked in `state.md`) and the upstream log shows the PR number. Always re-fetch, since heads move.
+Heads checked 2026-11-09 05:20 UTC after `git fetch origin` and a fetch of upstream `feature/batch-claim` (`98258d58`) and `main` (`993fd4aa`). The upstream API is unreachable from the cloud, so merged state comes from git. Upstream squash-merges, so a branch is not an ancestor of upstream. Merged means the squash commit's tree equals the branch tree (checked in `state.md`) and the upstream log shows the PR number. Always re-fetch, since heads move.
 
 Status values: merged / open upstream #n / ready, not opened / planned. Owner: local agent (SDK stack) or cloud (RL work). Titles use the literal "(k/N)". Commits are authored by Brian Nguyen <brianknguyen@google.com> with no trailers.
 
@@ -31,11 +31,12 @@ Status values: merged / open upstream #n / ready, not opened / planned. Owner: l
 | 19/N | `feat/batch-7a-create-path` (PR 7, "7a") | feat(python-sdk): skip warm-pool create pacing and stop create retries on release (19/N) | merged #2166 (`5e379f8a`, tree equals `dcecf913`) | `dcecf913` | local agent |
 | 20/N | `feat/batch-8-list-memory` (PR 8, "7b") | perf(python-sdk): page the claim list and stop parsing the deletecollection body (20/N) | merged #2175 (`28b839ba`, tree equals `50b690d0`) | `50b690d0` | local agent (coordinator 2) |
 | 21/N | `feat/batch-9-types` (types PR) | refactor(python-sdk): replace Any with exact helper and Lease types in batch modules (21/N) | merged #2176 (`76d750e2`, tree equals `aa13ae7a`) | `aa13ae7a` | local agent (coordinator 2) |
-| 22/N | `feat/batch-10-deletecollection-retry` (retry + TLA+ protocol fixes PR) | fix(python-sdk): harden batch Lease fencing, reaper wait, and custom-object retries (22/N) | open upstream #2188 (2-tier retry simplification + `claim_batch` setup fencing + 31-config TLC verified & synced 2026-11-06 on `76d750e2`: `cd965322`, `540465e8`, `d9df3a42`; compare `31fe4581..review-diff/r2188-cr4`) | `d9df3a42` | local agent (coordinator 2) |
-| 23/N | `feat/batch-11-acquire-annotations` (Task 7 SDK) | feat(python-sdk): pass pod_annotations in batch acquire (23/N) | open upstream #2189 (pool-precheck deadline + batch error docs synced 2026-11-06 on `d9df3a42`: `c96874a0`, `c121a6f2`, `8a435b0f`; compare `50cda408..review-diff/r2189-pool-deadline`) | `8a435b0f` | local agent (coordinator 3) |
-| 24/N | `merge/main-into-batch-claim-2` (branch sync, stacked on `23/N`) | merge(batch): merge main into feature/batch-claim (24/N) | open upstream #2194 (restacked & synced 2026-11-06 on `8a435b0f` + `bcf5d4a0` with `/label tide/merge-method-merge`: `855000b9`, `35284596`, `51ba4e78`) | `51ba4e78` | stack / coordinator 3 |
-| 25/N | `feat/rl-batch-claim-mode` (4 commits stacked on `24/N`) | feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch (25/N) | ready, not opened (`CHANGELOG.md` entry folded & synced 2026-11-06 on `51ba4e78`: `06d29e24`, `dab949fb`, `87754fa1`, `e84e964c`; compare `31a703cd..review-diff/r25n-changelog`) | `e84e964c` | stack / coordinator 3 |
-| 26/N (tentative — fold into `25/N` later) | `feat/rl-batch-hardening` (10 commits stacked on `25/N`, `restack/26n`) | feat(agent-sandbox-rl): harden batch claim mode with watchdog, Lease sweeps, and parallel scale-up (26/N) | ready, not opened (**NOTE: tentative `26/N` — fold into / make this the actual `25/N` later before opening upstream**; rebased & synced 2026-11-06 on `e84e964c` with `_batch_custom_objects_api` pool resize + `CHANGELOG.md` sync: `4dc4ce94..bb443e71`) | `bb443e71` | local agent |
+| 22/N | `feat/batch-10-deletecollection-retry` (retry + TLA+ protocol fixes PR) | fix(python-sdk): harden batch Lease fencing, reaper wait, and custom-object retries (22/N) | **merged** upstream #2188 (`98258d58`, tree equals `d9df3a42`) | `d9df3a42` | local agent (coordinator 2) |
+| 23/N | `feat/batch-11-acquire-annotations` (Task 7 SDK) | feat(python-sdk): pass pod_annotations in batch acquire (23/N) | open upstream #2189 (review copy `review/r-sweep/feat/batch-11-acquire-annotations` `2f709656` mechanically rebased on `98258d58`, awaiting sync approval) | `8a435b0f` (review `2f709656`) | local agent (coordinator 3) |
+| 24/N | `feat/batch-12-lease-watch-fencing` (PR #2188 follow-ups + Lease/watch/pacing/complexity fixes) | fix(python-sdk): harden batch Lease takeover, watch restarts, and O(1) member lookups (24/N) | ready, not opened (pushed to `origin`, 8 commits on `2f709656`, awaiting review) | `05151df9` | local agent |
+| 25/N | `feat/batch-13-client-handle-hardening` (client/handle lifecycle, `atexit`, PEP 561) | fix(python-sdk): harden batch client cleanup, handle connection close, and PEP 561 typing (25/N) | ready, not opened (pushed to `origin`, 4 commits on `05151df9`, awaiting review) | `7c59f18d` | local agent |
+| 26/N | `merge/main-into-batch-claim-2` (renumbered from `24/N`, stacked on `25/N`) | merge(batch): merge main into feature/batch-claim (26/N) | open upstream #2194 (`review/r-sweep/merge/main-into-batch-claim-2` `68e6cab5` merging `7c59f18d` + `upstream/main` `993fd4aa` with `/label tide/merge-method-merge`, awaiting approval) | `51ba4e78` (review `68e6cab5`) | stack / coordinator 3 |
+| 27/N | `feat/rl-batch-claim-mode` + `feat/rl-batch-hardening` (folded RL PR on `26/N`) | feat(agent-sandbox-rl): add hardened claim_mode="batch" with watchdog, Lease sweeps, and parallel scale-up (27/N) | ready, not opened (`review/r-sweep/feat/rl-batch-claim-mode` `1a6eac09` + `review/r-sweep/feat/rl-batch-hardening` `fc4b7101`, 14 commits on `68e6cab5`, awaiting approval) | `e84e964c` / `bb443e71` (review `1a6eac09` / `fc4b7101`) | local agent |
 | RL | `feat/rl-sandbox-client-race` (1 commit on upstream main) | fix(rl): build Cluster.sandbox_client once under concurrent first use | **merged** upstream #2035 as squash `7f40dc1a` (independent of the stack, targets `main`) | `834656b9` | cloud |
 | SDK fix | `fix/python-sdk-release-terminated-handles` (1 commit on upstream main `7f40dc1a`) | fix(python-sdk): untrack terminated sandbox handles from client registry | **merged** upstream #2085 as squash `7b1a9fbc` (Fixes #2082; merged by 2026-11-02; shepherd prompt `work/prompts/G7-pr-shepherd-2085-2087.md`) | `0a1eb20b` (CodeRabbit round 1 folded 2026-10-28) | cloud shepherd thread (item G) |
 | SDK fix | `fix/python-sdk-free-closed-connectors` (1 commit on upstream main `6342c063`) | fix(python-sdk): break handle-to-connector reference cycle on close | **merged** upstream #2086 as squash `e7468986` (Fixes #2083; shepherd prompt `work/prompts/G7-pr-shepherd-2085-2087.md`) | `a996361e` (rebased on main 2026-11-02; tomergee nit answered, no change) | cloud shepherd thread (item G) |
@@ -131,7 +132,7 @@ This PR is the eleventh in a series of PRs to implement a batch. It names the as
 - The async handle's watch and Lease renewal start with `asyncio.create_task`, named `batch-<id>-watch` and `batch-<id>-renew`, so they are easy to tell apart in task dumps.
 - Both `detach()` calls can read the Lease while this handle holds it, so the second release write used to fail with a 409 even though the batch was released. On a 409, `detach()` now reads the Lease again and only raises if this handle still holds it.
 
-### 12/N PR 2 (open #1824)
+### 12/N PR 2 (merged #1824)
 This PR is the twelfth in a series of PRs to implement a batch. It adds `claim_batch` and `release`.
 - `claim_batch` prechecks each group's warm pool and template, creates the batch Lease, then creates claims in the background at `create_rps` with `max_in_flight` workers. Failed creates become `CreateFailed` members.
 - Each group's first `min_ready` claims are created first, one group after another in group order, and the rest follow in the same order, so the first groups can be consumed while later groups are still being created.
@@ -146,37 +147,37 @@ This PR is the twelfth in a series of PRs to implement a batch. It adds `claim_b
 - A batch id that ends in a newline is rejected.
 - An e2e test claims a two-member batch, runs a command in a member and releases it.
 
-### 13/N PR 3 (open #1988)
+### 13/N PR 3 (merged #1988)
 This PR is the thirteenth in a series of PRs to implement a batch. It adds the ways to consume a batch as it fills.
 - `events()` yields member events as they happen.
 - `group_outcomes()` yields each group once its outcome is known: its first `min_ready` Ready members, or an `error` (`QuorumUnreachableError` or `BatchTimeoutError`).
 - Fill accounting is O(1) per watch event.
 
-### 14/N PR 4 (open #1989)
+### 14/N PR 4 (merged #1989)
 This PR is the fourteenth in a series of PRs to implement a batch. It adds `wait_for_quorum()`.
 - It blocks until every group has `min_ready` Ready members and returns them in one list, or raises `QuorumUnreachableError` or `BatchTimeoutError`.
 - Members beyond the quorum are handed out through `events()`.
 
-### 15/N PR 5 (open #1990)
+### 15/N PR 5 (merged #1990)
 This PR is the fifteenth in a series of PRs to implement a batch. It lets a caller free part of a batch.
 - `release_member(member)` deletes one member's claim.
 - `release_group(warmpool)` deletes a group's claims with label-scoped `deletecollection` rounds, using a hashed group label.
 - `release_not_ready()` ends the fill and deletes every fill member that isn't Ready and was never handed out.
 - Member deletes and claim creates share `max_in_flight`, releasing each slot before retry backoff, and `detach()`, `release()`, and async client cleanup wait for in-flight member and group deletes before stopping Lease renewal or releasing or deleting the Lease.
 
-### 16/N PR 6 (open #1991)
+### 16/N PR 6 (merged #1991)
 This PR is the sixteenth in a series of PRs to implement a batch. It adds `acquire()` so a caller can replace a released member.
 - `acquire(warmpool, timeout=None)` adds one member from any warm pool in the namespace and blocks until it is Ready. It never leaves its claim behind. Concurrent first acquires check a pool once and share the outcome.
 - `size=0` groups are allowed for pools filled only through `acquire()`.
 - The Lease records labels, `create_rps` and the next ordinal, so a re-attached handle behaves like the original.
 
-### 17/N Transport (open #2153)
+### 17/N Transport (merged #2153)
 This PR is the seventeenth in a series of PRs to implement a batch. It makes fan-out cheaper and safer.
 - `connect()` uses the pod IP the watch already knows, so it skips one Sandbox GET per member.
 - A cached connection closes when its member is lost, failed, moves to another IP or is bound to another sandbox.
 - `claim_batch` clamps an omitted `max_in_flight` down to `pool_size - 2` when the client's connection pool is smaller, and fails early when an explicit `max_in_flight` exceeds `pool_size - 2` or the pool holds fewer than 3 connections. `SandboxClient` and `AsyncSandboxClient` take `pool_size`.
 
-### 18/N Reaper (open #2154)
+### 18/N Reaper (merged #2154)
 This PR is the eighteenth in a series of PRs to implement a batch. It cleans up batches whose driver died.
 - Batch claims carry an ownerReference to their Lease, so the garbage collector deletes them once the Lease is gone.
 - `python -m k8s_agent_sandbox.batch_reaper` runs once and finds Leases past their duration plus a skew margin. It deletes only those Leases, each with a resourceVersion precondition, and never touches claims, so its RBAC is `list`, `get` and `delete` on Leases. `--dry-run` only logs.
@@ -199,13 +200,13 @@ This PR is the twentieth in a series of PRs to implement a batch. It lowers the 
 - `delete_sandbox_claims_by_label` drains raw `deletecollection` chunks unread without decompressing them, closes an unfinished sync response before `release_conn()` so a mid-stream interruption cannot return a dirty socket to the pool, and releases the connection in a `finally` block. The async helper raises `ApiException` for a non-2xx response itself (decoding non-UTF-8 error pages with replacement characters), because `kubernetes_asyncio` returns an unread response without checking its status.
 - Measured on kind with 5,000 claims (sync): `release()` peak drops from 69.4 MB to 0.2 MB (and from 81.7 MB to 11.8 MB when deletecollection times out); claim-list peak drops from 69.4 MB to 48.7 MB with paging and to 24.1 MB (retained dicts 46.4 MB to 18.9 MB) after dropping `managedFields`. At 10,000 claims, `release()` peak drops from 138.8 MB to 9.9 MB and list peak from 138.9 MB to 43.6 MB. Release time is unchanged within noise.
 
-### 21/N Types PR (open #2176)
+### 21/N Types PR (merged #2176)
 This PR is the twenty-first in a series of PRs to implement a batch. It replaces `Any` with exact helper and `V1Lease` types in the batch modules.
 - Types the `helper` parameter on `_precheck_pools`, `_take_batch_lease`, `_delete_batch_objects`, and `_delete_claims_in_rounds` as `K8sHelper` in `sandbox_batch.py` and `AsyncK8sHelper` in `async_sandbox_batch.py`.
 - Types `read_batch_lease`, `replace_batch_lease`, and `create_batch_lease` on `K8sHelper` and `AsyncK8sHelper`, along with `_write_renewal`, `_take_batch_lease`, and `_delete_batch_objects` on the batch handles, with `V1Lease` instead of `Any` (and narrows `BatchState.mark_lost`'s update dict to `dict[str, object]`).
 - Adds overloaded `batch_utils.lease_parts(lease)` returning `(lease.metadata, lease.spec)` and raising `BatchError` if either is `None`, and handles `lease is None` up front in `_attach` so callers don't repeat `None` checks for fields the API server always populates.
 
-### 22/N Lease fencing, reaper wait, and custom-object retry PR (open #2188)
+### 22/N Lease fencing, reaper wait, and custom-object retry PR (merged #2188)
 This PR is the twenty-second in a series of PRs to implement a batch. It stops `urllib3` from retrying sync batch custom-object requests, scopes post-Lease claim selectors to the Lease UID with local Lease expiry self-fencing, and makes the batch reaper wait a full Lease duration before deleting stale Leases.
 - `kubernetes` leaves `configuration.retries` as `None` by default, so `urllib3` uses `Retry(3)`, which repeats connection failures and timed-out `GET` or `DELETE` requests three times inside one SDK call and sleeps up to 6 hours on `429`/`503` `Retry-After` headers before returning to batch callers. `K8sHelper` now shares the unretried `ApiClient` (`retries=False`) from `_api_client_without_retries(api_client)` between `coordination_v1_api` and `_batch_custom_objects_api`, routing all batch custom-object calls (`list_sandbox_claim_objects`, `count_live_sandbox_claims`, `delete_sandbox_claims_by_label`, `watch_sandbox_claims`, `get_sandbox_warmpool`, `get_sandbox_template`, and `batch=True` `create_sandbox_claim` / `delete_sandbox_claim`) through `_batch_custom_objects_api` so `SandboxBatch` owns its deadline- and Lease-bounded retry loops while sharing one `urllib3` connection pool. Non-batch calls keep default `urllib3` retries on `custom_objects_api`, and `AsyncK8sHelper` accepts `batch: bool = False` on `create_sandbox_claim` and `delete_sandbox_claim` for parity because `aiohttp` does not retry requests.
 - Batch claims now carry `agents.x-k8s.io/batch-lease-uid` (`lease.metadata.uid`), scoping post-Lease `get_batch`, `_watch_loop`, `release_group`, and `release` / client-cleanup `deletecollection` selectors to `(batch-id, batch-lease-uid)` so a stalled `release()` or re-attached watch never touches a newer batch reusing `batch_id` (while pre-Lease `claim_batch` collision checks and `lease is None` `get_batch` checks stay on `batch-id`). `claim_batch` also bounds its pre-existing claim list by `deadline = renewed_at + lease_duration`, raises `BatchLeaseExpiredError` if setup crosses `lease_expires_at`, and fences rollback `delete_batch_lease` with `resource_version=created_rv`. Both shells check `_lease_expires_at` across in-flight create/wait/consumer loops, keep `lease_degraded()` sticky once expired, and bound claim and pool request timeouts by the remaining Lease budget.
@@ -217,39 +218,46 @@ This PR is the twenty-third in a series of PRs to implement a batch. It lets cal
 - `_check_pool()` and `_precheck_pools()` bound each `max_in_flight` wait, follower wait, and warm-pool or template `GET` by both `acquire(timeout=...)` and live Lease expiry, re-checking handle and group state before classifying a timeout and cancelling the shared single-flight future on caller-local `BatchError` so concurrent acquires with remaining budget can take over.
 - Narrows `GroupOutcome.error` to `BatchError | None`, documents the `BatchError` / `SandboxError` / pass-through API and transport error contract in `README.md` and `acquire()` docstrings, and regenerates `docs/python_sdk_reference.md`.
 
-### 24/N Branch sync merge PR (ready, not opened)
-This PR merges `main` (`bcf5d4a0`) into `feature/batch-claim` so the branch picks up recent Python SDK and `examples/agent-sandbox-rl` changes before `25/N`. Open with `/label tide/merge-method-merge`.
-- Merges `main` into `feature/batch-claim`, preserving `main`'s static `atexit` client cleanup (`#2087`) and terminated-handle eviction (`#2085`) alongside batch exit cleanup while keeping batch-connected handles cached until `release_member()` or the watch marks them `LOST`.
+### 24/N Lease takeover, watch restart, and O(1) lookup PR (ready, not opened)
+Branch `feat/batch-12-lease-watch-fencing` (`05151df9`), 8 commits pushed to `origin` on rebased `23/N` (`2f709656`), targeting `feature/batch-claim`.
+- Title: `fix(python-sdk): harden batch Lease takeover, watch restarts, and O(1) member lookups (24/N)`.
+- Decouples terminal Lease loss (`_lease_error`) from fatal watch errors (`BatchState.error()`) while keeping `batch.err()` shared, so Lease renewal and member cleanup keep running while the handle holds the Lease, and closes active watch streams cleanly on teardown and Lease loss (`Watch.stop()` + bounded join in sync, `contextlib.aclosing` in async).
+- Deletes late fill claims arriving on the watch or re-list after `release_not_ready()` or `release_group()` stops the creator, records timed-out `_waiting` group members in `_resolved` so `fill_settled()` never stalls, and clamps `release_group()` `deletecollection` rounds and live claim counts to `_lease_expires_at`.
+- Checks connection-pool headroom and clamps Lease takeover expiry in `get_batch()`, handles `404` `replace_batch_lease` races across attach, detach, and release, drains in-flight dynamic `acquire()` creates before `release()` or `detach()`, and restarts `batch_reaper.find_stale_leases` pagination on `410 Gone` while isolating malformed `renewTime` entries per Lease.
+- Adds `O(1)` `SandboxBatch.get_member(claim_name)` / `AsyncSandboxBatch.get_member(claim_name)`, indexes `BatchState` and planned/pacing fill creates per warm pool, stores `_stale_connections` as an insertion-ordered `dict`, wakes only the released pool's `acquire()` waiters in `release_group()`, accepts `ConnectTimeoutError` on BSD/macOS non-listening socket tests, and regenerates `docs/python_sdk_reference.md`.
+
+### 25/N Client cleanup, handle connection close, and PEP 561 typing PR (ready, not opened)
+Branch `feat/batch-13-client-handle-hardening` (`7c59f18d`), 4 commits pushed to `origin` on `24/N` (`05151df9`), targeting `feature/batch-claim`.
+- Title: `fix(python-sdk): harden batch client cleanup, handle connection close, and PEP 561 typing (25/N)`.
+- Validates HTTP status in `AsyncK8sHelper.watch_sandbox_claims` so non-2xx responses raise `ApiException` with `Retry-After` headers preserved, exposes local `K8sHelper.api_pool_size()` / `AsyncK8sHelper.api_pool_size()`, shares one owned `ApiClient` across `K8sHelper` custom and core APIs, and closes owned pools on `K8sHelper.close()` and client cleanup.
+- Coordinates `AsyncSandboxClient.close()` with concurrent `claim_batch()` and `get_batch()`, snapshots tracked sandboxes before awaiting `close_connection()`, serializes `detach()` and `_stop_batches()` on `batch._lifecycle_lock` while retaining unreleased batches whose `release()` started and failed, and guards `SandboxClient` batch connection reads under `batch._lock`.
+- Evicts closed batch-connected `Sandbox` / `AsyncSandbox` handles from `_connected` via weakref-backed callbacks without reference cycles, skips inactive cached handles in `connect()`, and routes `terminate()` on batch-connected handles through Lease-fenced `release_member()`.
+- Declares explicit `__all__` exports in `k8s_agent_sandbox/__init__.py` so strict `mypy --no-implicit-reexport` consumers type-check cleanly.
+
+### 26/N Branch sync merge PR (open #2194)
+Branch `merge/main-into-batch-claim-2` (review copy `review/r-sweep/merge/main-into-batch-claim-2` `68e6cab5` merging `25/N` `7c59f18d` + `upstream/main` `993fd4aa`). Open with `/label tide/merge-method-merge`.
+- Merges `main` into `feature/batch-claim`, combining `main`'s static `atexit` client cleanup (`#2087`), closed-connector cycle breaking (`#2086`), and terminated-handle eviction (`#2085`) with `25/N` batch client cleanup and handle eviction.
 - Forwards `client.file_config` (`#2041`) and `AsyncSandboxClient._default_ssl_context` (`#2132`) in `SandboxBatch.connect()` and `AsyncSandboxBatch.connect()`.
 - Regenerates `docs/python_sdk_reference.md` with `main`'s 4-level heading `sed` rule.
 
-### 25/N RL batch claim mode (ready, not opened)
-Branch `feat/rl-batch-claim-mode`, 4 commits on `24/N`, targeting `feature/batch-claim` under `examples/agent-sandbox-rl/`.
-- Title: `feat(agent-sandbox-rl): add claim_mode="batch" to claim through the SDK batch (25/N)`.
-- `FleetConfig(claim_mode="batch")` makes `fleet.acquire` and `fleet.release` claim through a per-cluster SDK batch (Design C, approved 2026-10-21), forwarding snapshot `pod_annotations` through `batch.acquire(..., pod_annotations=...)` (`23/N`), and falling back to deleting a member's claim directly when `batch.release_member` raises `BatchError` on a stopped or released batch. The default stays per-claim.
-- Recycled batch claims rotate before they expire (RL Lease default 300 s, approved 2026-10-21).
-- Updates the RL `README.md`.
-- Results, kind, 160 sandboxes per step (measured): sync batch 1.27 s, async batch 1.32 s (0 errors, no leaks), so the async path needs no changes. Async per-claim 1.75 s, sync per-claim 3.88 s. The 3.1x sync headline is inflated by the client race below, so the honest no-limit win is about 1.3x (inferred). Cost wins stand: 243 vs 640 API requests, 1 vs 160 watches. The batch is at its floor on kind (requests done at about 0.4 s, controller adoption to 1.08 s).
-- Detail: `rl-design/async_speed_gap.md`, `rl-design/rl_design_decision.md`.
-- **Consolidation note:** Before opening `25/N` upstream, fold `26/N` (`feat/rl-batch-hardening`, `bb443e71`) into `25/N` so the hardened RL batch implementation ships as the actual `25/N`.
+### 27/N RL batch claim mode and GKE scale-up hardening (ready, not opened)
+Branches `feat/rl-batch-claim-mode` + `feat/rl-batch-hardening` (review copies `review/r-sweep/feat/rl-batch-claim-mode` `1a6eac09`, 4 commits, + `review/r-sweep/feat/rl-batch-hardening` `fc4b7101`, 10 commits, stacked on `26/N` `68e6cab5`), targeting `feature/batch-claim` under `examples/agent-sandbox-rl/`. Fold into a single RL PR when opening upstream.
+- Title: `feat(agent-sandbox-rl): add hardened claim_mode="batch" with watchdog, Lease sweeps, and parallel scale-up (27/N)`.
+- `FleetConfig(claim_mode="batch")` routes `fleet.acquire` and `fleet.release` through a per-cluster SDK batch (Design C, epoch-fenced against concurrent teardown), forwards snapshot `pod_annotations` through `batch.acquire(..., pod_annotations=...)` (`23/N`), rotates recycled batch claims before `claim_expires_at` (with sub-second ceiling alignment), and uses `O(1)` `batch.get_member` in `BatchClaim.still_reaches` and `O(1)` `id(handle)` indexing in `SandboxFleet._handles`.
+- Adds `BatchWatchdog` so `FleetConfig.fail_fast` inspects cold-start pending claims via `O(1)` idle `_acquire_waiters` checks and batched cluster-wide `LIST`s, failing broken images or configs early via `batch.release_member` with `FailFastError`.
+- Checks dry-run `create_namespaced_lease` RBAC in `preflight()` (treating missing namespaces as `warn_only`), sweeps batch `Lease`s (`agents.x-k8s.io/batch-id` + run-id label) in `reap(run_id=...)`, and verifies `Lease` cleanup in `teardown()` / `verify_teardown()`.
+- Parallelizes `acquire_batch()` and `release_all()` (with `BaseException`-safe rollback, async cancellation worker-thread reclaim, and `FakeFleet` parity), skips repeat `ensure_template` / `ensure_warmpool` RPCs on cached on-demand warm pools, shares each cluster's `CoreV1Api` for REST pod status reads, auto-sizes cluster `urllib3` connection pools (including `_batch_custom_objects_api` and `coordination_v1_api`), and raises `AsyncSandboxFleet`'s executor ceiling to `4096`.
+- Reconnects watch-evicted sandboxes cleanly in `SandboxHandle.refresh()`, cleans up snapshot triggers and fallback connections on batch `release()`, bounds fallback direct claim deletes, surfaces a `work_budget` hint with `SandboxLostError(expired=True)` after `claim_expires_at`, and updates `README.md` + `CHANGELOG.md`.
 
-### 26/N (tentative — fold into actual `25/N` later) RL batch hardening & GKE scale-up (`feat/rl-batch-hardening`, ready, not opened)
-Branch `feat/rl-batch-hardening` (`restack/26n`), 10 commits (`4dc4ce94..bb443e71`) stacked on `25/N` (`e84e964c`), targeting `feature/batch-claim` under `examples/agent-sandbox-rl/`.
-- **Plan note (2026-11-06):** Tracked separately as tentative `26/N` while `22/N–25/N` review branches settle and Campaign 2/3 GKE benchmarks run; **fold into / make this the actual `25/N` later** when opening the RL PR upstream.
-- Adds `BatchWatchdog` so `FleetConfig.fail_fast` inspects cold-start pending claims in `"batch"` mode via batched cluster-wide `LIST`s and fails broken images or configs early via `batch.release_member` with `FailFastError`.
-- Sweeps batch `Lease`s (`agents.x-k8s.io/batch-id` + run-id label) in `reap(run_id=...)` and verifies `Lease` cleanup in `teardown()` / `verify_teardown()`, handling missing `Lease` RBAC gracefully.
-- Parallelizes `acquire_batch()` and `release_all()` (with concurrent rollback on partial failure and `FakeFleet` parity), skips repeat `ensure_template` / `ensure_warmpool` RPCs on cached on-demand warm pools, shares each cluster's `CoreV1Api` for REST pod status reads, auto-sizes cluster `urllib3` connection pools (including `K8sHelper`'s `_batch_custom_objects_api` and `coordination_v1_api`), and raises `AsyncSandboxFleet`'s executor ceiling to `4096`.
-- Surfaces a `work_budget` hint with `SandboxLostError(expired=True)` when a batch claim is lost after `claim_expires_at`, cleans up snapshot triggers on batch `release()`, bounds fallback direct claim deletes, and updates `README.md` + `CHANGELOG.md`.
-
-### SDK fix: terminated-handle memory leak (three PRs, target `main`, not in the batch stack)
+### SDK fix: terminated-handle memory leak (merged #2085, #2086, #2087; targets `main`, not in the batch stack)
 Owner: coordinator 1 (item G). A long-running async driver grew from 94 MB to 1.75 GB over 2,400 sandboxes (measured, `bench/async-mem-probe`). With all three PRs, growth per 100 sandboxes went from 90.1 MB to 0.46 MB, and memory kept per terminated sandbox from 0.667 MB to 0.0001 MB (measured by G, verified by coordinator 1's checker).
-- PR 1 (#2085, Fixes #2082): `terminate()` removes its own registry entry through a hook bound to the registry (not the client). Both clients.
-- PR 2 (#2086, Fixes #2083): a closed handle's connector drops its links back to the handle, so it is freed without the cyclic GC. Async in the connector's final `close()`, sync in `Sandbox.close_connection()`.
-- PR 3 (#2087, Fixes #2084): the exit hook holds only the registry data, not the client, so closed clients are freed; exit cleanup unchanged. Both clients; stacked on #2085 (`do-not-merge/hold` until #2085 merges).
-- Filed issue and PR texts: `work/results/issues-final.md`. Shepherd prompt for #2085–#2087: `work/prompts/G7-pr-shepherd-2085-2087.md`.
+- PR 1 (#2085, Fixes #2082, merged `7b1a9fbc`): `terminate()` removes its own registry entry through a hook bound to the registry (not the client). Both clients.
+- PR 2 (#2086, Fixes #2083, merged `e7468986`): a closed handle's connector drops its links back to the handle, so it is freed without the cyclic GC. Async in the connector's final `close()`, sync in `Sandbox.close_connection()`.
+- PR 3 (#2087, Fixes #2084, merged `ae6bb389`): the exit hook holds only the registry data, not the client, so closed clients are freed; exit cleanup unchanged. Both clients.
+- Filed issue and PR texts: `work/results/issues-final.md`. Shepherd prompt for #2085 to #2087: `work/prompts/G7-pr-shepherd-2085-2087.md`.
 
-### RL sandbox client race (ready, not opened)
-Branch `feat/rl-sandbox-client-race`, 1 commit on upstream `main` (`834656b9`). Draft: `/mnt/project-files/pr-descriptions/rl_sandbox_client_race.md`.
+### RL sandbox client race (merged #2035)
+Branch `feat/rl-sandbox-client-race`, 1 commit merged on upstream `main` as `7f40dc1a` (`834656b9`). Draft: `/mnt/project-files/pr-descriptions/rl_sandbox_client_race.md`.
 - Title: fix(rl): build Cluster.sandbox_client once under concurrent first use.
 - `Cluster.sandbox_client` was built lazily with no lock. With 160 concurrent first acquires the sync fleet built 64 to 118 SandboxClients, and every build loads the kubeconfig. It now builds under a per-cluster lock with a double check, and later calls take the unlocked fast path.
 - Test: `test_concurrent_first_sandbox_client_builds_one_client` starts 16 threads on a barrier and asserts one build. It fails without the lock (16 builds) and without the inner check. 142 tests in the touched files pass.

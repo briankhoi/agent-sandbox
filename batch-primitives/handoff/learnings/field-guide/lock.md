@@ -515,6 +515,24 @@ A few terms used throughout: a **lock** (mutex) lets one thread in at a time. A 
 
 </details>
 
+<a id="lock-23"></a>
+
+## LOCK-23 Read `batch._acquire_waiters` directly instead of maintaining shadow ordinal watermarks, and record fail-fast verdicts inside `_decide_lock`
+
+**Takeaway:** When an external watchdog needs the set of currently waiting `SandboxBatch.acquire()` claims, snapshot `batch._acquire_waiters` under `batch._lock` and probe each active claim via `batch.get_member(claim_name)` (`O(in_flight)`) rather than maintaining shadow ordinal counters, and record `StartVerdict` inside `_decide_lock` before releasing the member (`27/N`).
+
+<details>
+<summary>The full story (27/N: failfast.py & batch_claims.py)</summary>
+
+- **Situation:** `BatchWatchdog` (`examples/agent-sandbox-rl/agent_sandbox_rl/failfast.py`) polls pending cold-start batch claims and releases broken claims early so `SandboxBatch.acquire()` wakes immediately with `SandboxStartError` instead of calling `batch.members()` (`O(N log N)` under `batch._lock`, `F-30`).
+- **What goes wrong:**
+  1. **Shadow ordinal watermarks drift (`0`-indexed vs `1`-indexed and unparsed exits):** Maintaining duplicate `_next_ordinal` / `_completed_ordinals` counters in `BatchWatchdog` started at `1` while `BatchState._next_ordinal` starts at `0` (skipping `<batch_id>-0` on every `size=0` batch), and stalled under continuous load whenever a cancelled `acquire()` exited before its claim name was parsed.
+  2. **Post-lock verdict race:** Releasing `_decide_lock` before calling `_record_verdict(claim_name, verdict)` opened a window where a concurrently completing `acquire()` could finish `exit_acquire(claim_name)` and observe `pop_verdict() == None` right before `BatchWatchdog` recorded the verdict and called `batch.release_member(cur)` on the caller's live claim.
+- **What we do:** Read `batch._acquire_waiters` directly under `batch._lock` (`O(1)` when idle, `O(in_flight)` under load, zero shadow ordinal state), keep `_decide_lock` strictly downstream of `batch._lock` and upstream of `BatchClaims._lock`, record the verdict inside `if claim_name in self._first_seen_at:` under `_decide_lock`, and release `_decide_lock` before calling `batch.release_member(cur)`.
+- **Related:** [LOCK-1](#lock-1), [RACE-1](race.md#race-1), [PERF-1](perf.md#perf-1).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

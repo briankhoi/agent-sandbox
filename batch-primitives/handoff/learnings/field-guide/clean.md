@@ -593,6 +593,24 @@ This section covers who owns each resource the batch SDK creates (cached connect
 
 </details>
 
+<a id="clean-28"></a>
+
+## CLEAN-28 Pass `weakref.ref(self.k8s_helper)` to static `atexit` hooks, untrack `get_sandbox` fallbacks on batch handles, and reclaim cancelled worker futures inline
+
+**Takeaway:** Process-wide registries (`atexit`, `SandboxClient._active_connection_sandboxes`) and worker-pool shutdowns (`AsyncSandboxFleet.close(wait=True)`) outlive individual calls: hold `k8s_helper` via `weakref.ref` in `atexit`, call `forget_claim_in_client` whenever a batch handle falls back to `get_sandbox()`, and run cancellation reclaims inline when the callback fires on the `ThreadPoolExecutor` worker thread (`26/N`, `27/N`).
+
+<details>
+<summary>The full story (26/N & 27/N: sandbox_client.py, handles.py, async_fleet.py)</summary>
+
+- **Situation:** Three cross-lifetime cleanup boundaries interacted across `26/N` and `27/N`:
+  1. **`atexit` strong reference (`26/N`, `sandbox_client.py`):** Upstream `#2087` replaced bound `atexit.register(self._atexit_cleanup)` with a static hook so closed `SandboxClient` instances can be garbage-collected (`gc.disable()` refcount test). Passing `self.k8s_helper` strongly into that `functools.partial` kept `K8sHelper` and its `urllib3.PoolManager` sockets alive for the life of the process even after `client.close()`.
+  2. **Batch `refresh()` `get_sandbox` fallback (`27/N`, `handles.py`):** When `SandboxHandle.refresh()` fell back to `cluster.sandbox_client.get_sandbox(claim_name)` on a stopped batch or lagging claim watch, `get_sandbox` stored `(namespace, claim_name)` in `client._active_connection_sandboxes` without `_explicit_claims`. Because batch `SandboxHandle.release()` bypasses `sandbox.terminate()`, the fallback `Sandbox` leaked in `_active_connection_sandboxes` and caused exit cleanup (`_delete_automatic_sandboxes`) to issue redundant `DELETE`s.
+  3. **Cancelled `AsyncSandboxFleet.acquire` during `close(wait=True)` (`27/N`, `async_fleet.py`):** When an `asyncio` task awaiting `wrap_future(pool.submit(self._fleet.acquire, ...))` is cancelled right before `afleet.close(wait=True)` runs `executor.shutdown(wait=True)`, submitting the delayed `self._fleet.release(handle)` callback back onto `pool` raises `RuntimeError: cannot schedule new futures after shutdown`, whereas spawning a detached daemon thread lets `close(wait=True)` return before the handle is released.
+- **What we do:** Pass `weakref.ref(self.k8s_helper)` to `SandboxClient._atexit_cleanup` (`26/N`), call `forget_claim_in_client(self._cluster, self.claim_name)` immediately inside `SandboxHandle._get_direct_sandbox()` and batch `release()` (`27/N`), and execute `self._fleet.release(handle)` inline on the worker thread inside `_reclaim_cancelled_future` whenever `threading.current_thread() is not loop_thread` so `executor.shutdown(wait=True)` naturally waits for the reclaim to finish (`27/N`).
+- **Related:** [CLEAN-1](#clean-1), [CLEAN-11](#clean-11), [CANCEL-1](cancel.md#cancel-1).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

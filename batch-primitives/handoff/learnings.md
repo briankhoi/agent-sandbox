@@ -147,12 +147,12 @@ This is the deep part. Each section is its own page and groups entries around on
 | Section | Ids | Entries |
 | :-- | :-- | --: |
 | [Watching the cluster: list, watch, and the local cache](learnings/field-guide/watch.md) | `WATCH-` | 11 |
-| [Leases, liveness, handoff, and the reaper](learnings/field-guide/lease.md) | `LEASE-` | 35 |
+| [Leases, liveness, handoff, and the reaper](learnings/field-guide/lease.md) | `LEASE-` | 36 |
 | [Two observers: when the watch and an RPC see the same object](learnings/field-guide/race.md) | `RACE-` | 10 |
 | [Retries, backoff, pacing, and deadlines](learnings/field-guide/retry.md) | `RETRY-` | 19 |
-| [Concurrency inside one process: locks, waiters, and shared work](learnings/field-guide/lock.md) | `LOCK-` | 22 |
+| [Concurrency inside one process: locks, waiters, and shared work](learnings/field-guide/lock.md) | `LOCK-` | 23 |
 | [Cancellation, interrupts, and sync/async parity](learnings/field-guide/cancel.md) | `CANCEL-` | 25 |
-| [Cleanup and resource ownership](learnings/field-guide/clean.md) | `CLEAN-` | 27 |
+| [Cleanup and resource ownership](learnings/field-guide/clean.md) | `CLEAN-` | 28 |
 | [Completion and accounting: when is the batch done?](learnings/field-guide/count.md) | `COUNT-` | 15 |
 | [Kubernetes API semantics that bit us (or could have)](learnings/field-guide/k8s.md) | `K8S-` | 22 |
 | [HTTP client and Python runtime quirks](learnings/field-guide/lib.md) | `LIB-` | 23 |

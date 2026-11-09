@@ -389,6 +389,21 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 </details>
 
+<a id="agent-9"></a>
+
+### AGENT-9 Pair every subagent dispatch with a `schedule` watchdog and wrap shell calls in `timeout --kill-after`
+
+**Takeaway:** Subagents can stall silently on interactive prompts, SSH port-22 hangs, unbounded `pytest` socket waits, or mid-turn model pauses without firing a completion event. Pair every subagent invocation with `schedule(DurationSeconds=..., TimerCondition="<subagent-id>")` and require `timeout --kill-after=10 <secs>` on every shell command.
+
+<details>
+<summary>The full story (23/N..27/N Remediation & 14-Stage Verification Campaign)</summary>
+
+- **What happened:** During long verification runs, two failure modes stalled unattended subagents: (1) `git ls-remote origin` against an SSH remote (`git@github.com:...`) hung until killed whereas HTTPS with `!gh auth git-credential` finished in `1 s`, and (2) a 14-stage pipeline runner paused after an intermediate tool step without sending its final report until nudged.
+- **What we do:** Enforce a three-layer anti-hang protocol across all builders and verifiers: (1) wrap every shell command in `timeout --kill-after=10 <secs>` and pass `GIT_TERMINAL_PROMPT=0` on git network calls, (2) pair every `invoke_subagent` or `send_message` call with `schedule(DurationSeconds=..., TimerCondition=...)` that auto-cancels on timely return and wakes the coordinator to inspect `transcript.jsonl` if the subagent stalls, and (3) combine deterministic 14-stage pipeline execution with three parallel domain-partitioned un-anchored verifiers (`Concurrency/Rollback`, `Watchdog/Handles/SDK`, `Minimalism/Hygiene/Test-Audit`) until all three return `ZERO_FINDINGS`.
+- **Related:** [AGENT-1](#agent-1), [AGENT-8](#agent-8), [CHAOS-1](chaos-verification-suite.md#chaos-1).
+
+</details>
+
 ---
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)

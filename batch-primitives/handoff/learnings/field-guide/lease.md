@@ -718,6 +718,24 @@ This section covers the batch's Lease: a small `coordination.k8s.io/v1` object n
 
 </details>
 
+<a id="lease-36"></a>
+
+## LEASE-36 Stop Lease renewals only when the handle fenced itself, and probe Lease RBAC with server-side `dry_run="All"` create rather than `list`
+
+**Takeaway:** A non-retryable claim-watch error (`_state.error()`, such as a watch `403`) must not abort an in-flight `_write_renewal` while the handle still owns the Lease (`F-01`), and preflight checks for batch mode must test `create_namespaced_lease(..., dry_run="All")` rather than `list_namespaced_lease` so least-privilege drivers without `list` RBAC pass (`27/N`).
+
+<details>
+<summary>The full story (24/N & 27/N: sandbox_batch.py, async_sandbox_batch.py, preflight.py)</summary>
+
+- **Situation:** `SandboxBatch._write_renewal` (`24/N`) guards post-`GET` Lease renewals, while `agent_sandbox_rl.preflight.preflight_cluster(check_leases=True)` (`27/N`) validates Lease RBAC before a batch run starts.
+- **What goes wrong:**
+  1. **Stopping renewal on watch errors (`F-01`, `janetkuo` on `#2188`):** Checking `self._batch_error_locked() is not None` inside `_write_renewal` conflated self-fencing (`_detached` or local Lease expiry) with claim-watch errors (`_state.error()`). Stopping renewals after a watch `403` let `batch_reaper` delete live claims that handed-out callers were still using.
+  2. **Probing Lease RBAC with `list` (`27/N`, `preflight.py`):** The SDK's documented least-privilege `sandbox-batch-driver` Role grants `verbs: ["create", "get", "update", "delete"]` on `coordination.k8s.io/leases` (`list` belongs only to `batch_reaper`). Probing `list_namespaced_lease(ns, limit=1)` rejected valid least-privilege batch drivers with `403` while passing read-only Roles that could not actually `create` a Lease.
+- **What we do:** In both `SandboxBatch._write_renewal` and `AsyncSandboxBatch._write_renewal`, stop renewal only when `self._detached or self._lease_expired` (`24/N`). In `preflight_cluster(..., check_leases=True)`, probe `create_namespaced_lease(ns, probe_body, dry_run="All")`, treating HTTP `404` as `warn_only=True` only when the target namespace itself does not exist yet (since Kubernetes evaluates RBAC `403` before namespace lookup `404`).
+- **Related:** [LEASE-8](#lease-8), [LEASE-33](#lease-33), [K8S-1](k8s.md#k8s-1).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)
