@@ -1,0 +1,17 @@
+{
+  "run_name": "c4_4b_tunix_grpo_8step_per_claim_rerun_r1",
+  "attempt": 1,
+  "context": "gke_<GCP_PROJECT>_us-central1_asrl-c4-t0",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-c4-4b-tunix-grpo-8step-per-claim-rerun-r1",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:faa997cf22194fb81ed0833f54b8fa34469e746e6ac32c149f6f19df9441d38c",
+  "driver_cmd": "python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/r2e_subset_500.txt --problems 64 --rollouts 16 --steps 8 --concurrency 1024 --cpu 125m --memory 512Mi --strategies naive --warm-per-task --max-warmpool-size 16 --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 512 --probe 'cd /testbed && git status >/dev/null && git log --oneline -5 >/dev/null && sleep 5' --claim-mode per_claim",
+  "start_utc": "2026-11-09T20:28:26Z",
+  "end_utc": "2026-11-09T20:56:34Z",
+  "job_elapsed_s": 1688,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "json_ok": 1,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

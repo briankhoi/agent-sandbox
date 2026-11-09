@@ -150,3 +150,15 @@ Errors: `batch64` `0 / 25,500`; `per_claim` `4 / 40,500` (two `5k` reps with `2`
 | `batch64` | `2,771.0s` | `4,578/4,578` | `0.969s` | `16.55s` |
 
 **Parity (`0.99×`).** With every image new to the node, wall time is bound by image pull, not claim orchestration — an honest "no win on unique-image cold paths" data point.
+
+#### 3.9.1 `#7D` bonus — `max_in_flight` sensitivity (`mif=256`, `create_rps=500` vs default `mif=64`, `create_rps=200`)
+
+Same harness, same 5 clusters, run immediately after `#7D` (own `per_claim` arm interleaved ABABAB).
+
+| Burst | `per_claim` claim | `batch` `mif=256` claim | `batch` `mif=64` claim (from `#7D`) | Release API `mif=256` / `mif=64` |
+| --- | ---: | ---: | ---: | ---: |
+| `1,000` | `30.2s` | `24.8s` | **`10.1s`** | `0.615s` / `0.560s` |
+| `2,500` | `66.2s` | `30.6s` | **`19.6s`** | `0.868s` / `0.946s` |
+| `5,000` | `120.3s` | `32.0s` | **`22.7s`** | `1.183s` / `1.222s` |
+
+**Raising `max_in_flight` to 256 is slower at every size** (`1.4×–2.5×` slower claim than `mif=64`); release is unchanged (one `DELETE_COLLECTION` either way). `mif=256`: `0 / 25,500` errors.
