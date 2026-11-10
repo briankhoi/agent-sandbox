@@ -111,3 +111,6 @@ Brian: "always use active voice in response comments or in general." Use active 
 - Brian: "you dont need to give me the heads in the future." Don't list branch heads in messages to Brian. Record them in `state.md` and the PR board instead, where C2 and C3 can read the 17/N and 23/N heads.
 - Decision C, Brian: "no, only at the end of the entire stack you can." Delete superseded remote `review/*` and `review-diff/*` branches only after the whole stack has merged, and ask once more then.
 - Decision A (16/N `acquire()` cleanup), Brian: "defer till 16/N work, not sure yet."
+
+## Comment for the reader before review (Brian, 2026-11-10)
+Brian, after asking what `step_budget()`, `contextlib.aclosing`, and the late-delete watch path do in #2235: "note how i had to ask questions though." Before pushing a PR for review, read its whole diff as a newcomer and add active-voice comments or docstrings wherever the reason for the code isn't obvious from the code itself (fencing against Lease loss, ordering between threads, why a structure exists, why a timeout is a deadline). A reviewer's "what is this for" question means a missing comment, so fix the code, not just the reply. On private helpers, prefer `#` comments over docstrings on public methods of private classes, because pydoc-markdown then renders the private class in `docs/python_sdk_reference.md`.
