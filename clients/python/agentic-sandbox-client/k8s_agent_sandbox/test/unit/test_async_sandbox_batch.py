@@ -5414,7 +5414,7 @@ class TestCreateDrainPacingAndAcquireWakeup(BaseAsyncBatchClientTest):
         self.mock_k8s_helper.delete_sandbox_claims_by_label.assert_not_awaited()
         allow_post_return.set()
         acq_res, rel_res = await asyncio.gather(acq_task, rel_task, return_exceptions=True)
-        await handle._wait_active_deletes()
+        await handle._wait_active_requests()
         self.assertIsNone(rel_res)
         self.assertIsInstance(acq_res, BaseException)
         self.assertEqual(live_claims, set())

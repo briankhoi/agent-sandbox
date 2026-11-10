@@ -5560,7 +5560,7 @@ class TestCreateDrainPacingAndAcquireWakeup(BaseBatchClientTest):
         rel_thread.join(timeout=3.0)
         self.assertFalse(acq_thread.is_alive())
         self.assertFalse(rel_thread.is_alive())
-        handle._wait_active_deletes()
+        handle._wait_active_requests()
         self.assertEqual(len(acq_errors), 1)
         self.assertEqual(live_claims, set())
 

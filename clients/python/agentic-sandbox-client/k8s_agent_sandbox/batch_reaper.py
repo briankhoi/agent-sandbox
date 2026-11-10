@@ -47,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 REAPER_DEFAULT_SKEW_MARGIN_SECONDS = 60
 _LEASE_LIST_PAGE_SIZE = 500
+# An expired continue token (410) restarts the Lease list from the first page, up to this many
+# times, so a sweep over a large namespace still finishes.
 _MAX_LIST_RESTARTS = 3
 _SERVICE_ACCOUNT_NAMESPACE_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
@@ -107,6 +109,7 @@ def find_stale_leases(
                 _request_timeout=batch_utils.BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS,
             )
         except ApiException as e:
+            # The continue token expired, so restart from the first page and drop partial results.
             if e.status == 410 and continue_token is not None and restarts < _MAX_LIST_RESTARTS:
                 restarts += 1
                 stale.clear()
@@ -130,6 +133,7 @@ def find_stale_leases(
                 reapable = is_lease_reapable(
                     spec.renew_time, spec.lease_duration_seconds, now, skew_margin
                 )
+            # Skip one Lease with an unusable renewTime instead of aborting the namespace sweep.
             except (TypeError, ValueError, OverflowError) as e:
                 logger.warning(
                     f"Batch Lease '{metadata.name}' in namespace '{namespace}' has invalid "

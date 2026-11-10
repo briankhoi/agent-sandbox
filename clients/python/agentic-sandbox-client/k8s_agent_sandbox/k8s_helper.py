@@ -815,6 +815,8 @@ class K8sHelper:
         w = watch.Watch()
         orig_list_fn = self._batch_custom_objects_api.list_namespaced_custom_object
         stream_fn: Any = orig_list_fn
+        # Wrap only the stock Watch, whose stream() calls func and reads _stop the way this code
+        # expects.
         if type(w) is watch.Watch:
             stopped = threading.Event()
             w_ref = weakref.ref(w)
@@ -831,6 +833,8 @@ class K8sHelper:
 
             w.stop = _stop  # type: ignore[method-assign]
 
+            # stop() can run before Watch.stream() makes its list call, and stream() resets _stop on
+            # entry, so this checks again and skips the request once the watch is stopped.
             @functools.wraps(orig_list_fn)
             def _checked_list(*args: Any, **kwargs: Any) -> Any:
                 nonlocal active_resp
@@ -877,6 +881,8 @@ class K8sHelper:
                 else contextlib.nullcontext(raw_stream)
             )
             with stream_cm as stream:
+                # Hand the watch to the caller so it can stop it from another thread. A stop that came
+                # before this registration already set _stop, so return without streaming.
                 if on_watch is not None:
                     on_watch(w)
                 if getattr(w, "_stop", False) is True:
@@ -888,6 +894,8 @@ class K8sHelper:
             if on_watch is not None:
                 on_watch(None)
             w.stop()
+            # Each Watch builds its own ApiClient, so close it rather than leak a thread pool on
+            # every watch restart.
             if type(w) is watch.Watch and isinstance(
                 getattr(w, "_api_client", None), client.ApiClient
             ):

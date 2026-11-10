@@ -203,6 +203,8 @@ class BatchState:
         self.size = sum(g.size for g in self.groups)
 
         self._members: dict[str, Member] = {}
+        # Per-pool indexes so per-pool lookups and release_group() cost O(pool size) instead of a
+        # scan over every member.
         self._members_by_pool: dict[str, dict[str, Member]] = {}
         self._declared_pools: set[str] = {g.warmpool for g in self.groups}
         # Ordinals are never reused, since a released claim may still be terminating when its
@@ -256,6 +258,8 @@ class BatchState:
         # Claims the caller released, including fill creates it stopped. They are gone from members(),
         # are never handed out, and later watch events for them are ignored.
         self._released: set[str] = set()
+        # Released claims the watch hasn't seen yet, such as a fill create still in flight when the
+        # caller released its pool. If one lands later, the watch queues its delete.
         self._released_unseen: set[str] = set()
         self._released_count: dict[str, int] = dict.fromkeys(self._group_by_pool, 0)
         # Pools whose fill creates the caller stopped with release_group() or release_not_ready().
@@ -264,6 +268,7 @@ class BatchState:
         # older delete finishing after a retry recreated the claim leaves the new delete pending.
         self._pending_deletes: dict[str, int] = {}
         self._next_delete_seq = 0
+        # Late claims the watch found for released pools, which the handle deletes in the background.
         self._watch_deletes: list[str] = []
         # The pool of each acquire() claim that isn't Ready yet, so release_group() can release it
         # before the watch has seen it.
@@ -305,6 +310,7 @@ class BatchState:
         claim_name = metadata.get("name", "")
         if claim_name in self._released:
             if claim_name in self._released_unseen:
+                # Count the late claim's ordinal so a later acquire() never reuses its name.
                 self._released_unseen.discard(claim_name)
                 ordinal = parse_ordinal(self.batch_id, claim_name)
                 if ordinal is not None:
