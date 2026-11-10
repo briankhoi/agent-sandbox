@@ -6,7 +6,7 @@
 > - **Controller Image:** `us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/agent-sandbox-controller@sha256:8d11e685651cfb17e406d3440256dedb8317c219a7fe80a789999290d3161ab1`
 > - **Driver Image:** `us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:faa997cf22194fb81ed0833f54b8fa34469e746e6ac32c149f6f19df9441d38c`
 > - **Fairness Guarantees:** Identical `1000/500` controller workers, identical `go_sched_gomaxprocs_threads = 16` regional GKE 1.37 control planes, `ABABAB` interleaved `3`-repetition medians on fast sweeps/bursts, verified `0` residual objects + `30s` settle before every run, and `per_claim` code paths `100%` untouched.
-> - **Live Status:** Complete: `#1`, `#2`, `#4A`, `#4C`, `#5A`, `#5B`, `#5C`, `#6`, `#7A`, `#7B`, `#7C`, **`#7D`**. `#4B` clean rerun complete (supersedes the original, whose `batch64` Step 0 had `893/1,024` probe errors). Running: `#3A/#3B/#3C`, `#4-SWE` on the existing SBD cluster (non-canonical hardware, labeled as such).
+> - **Live Status:** Complete: `#1`, `#2`, `#4A`, `#4C`, `#5A`, `#5B`, `#5C`, `#6`, `#7A`, `#7B`, `#7C`, **`#7D`**. `#4B` clean rerun complete (supersedes the original, whose `batch64` Step 0 had `893/1,024` probe errors). **All suites complete** (`#3A/#3B/#3C`, `#4-SWE` finished 2026-11-10 02:43Z on the SBD cluster — non-canonical hardware, see warning).
 
 > [!WARNING]
 > **Comparability scope (audit 2026-11-09):** Every `per_claim` vs `batch64` ratio in this file is a same-cluster, back-to-back A/B and is valid. **Absolute numbers are NOT directly comparable to published `sandbox-rl-performance` `RESULTS.md` rows**, whose canonical env is `10× e2-standard-32`, pd-ssd 600 GB, GKE `1.36.0-gke.3712000` (kernel 6.12), controller `1000/50`, and on T1 patched gcfsd/Riptide. Campaign 4 ran GKE `1.37.1-gke.2097000` (kernel 6.18) on:
@@ -178,3 +178,30 @@ Fresh `10× n2-standard-32` pool (pd-balanced 1,500 GB), `r2e_subset_500` Daemon
 
 > [!NOTE]
 > **Rep-1 cold-cache bias also affected `#1`.** Its rep 1 ran `per_claim` first on a pool whose streamed images were not yet hydrated (`naive` `329s`, `pipelined` `581s` vs ~`100–120s` afterwards). The "`3.20×` / `4.14×` faster on `r1`" callouts were run-order artifacts and are withdrawn; the medians stand.
+
+
+### 3.12 Track B — SWE-bench on the 600 GB SBD cluster (`10× n2-standard-32`, pd-standard 100 GB boot + SBD; **not canonical T1**: no patched gcfsd)
+
+Order note: every rep ran `per_claim` then `batch64` (not alternating); the SBD keeps images on local disk, and rep-1 values show no cold bias.
+
+| Suite | Strategy | `per_claim` (`r1 \| r2 \| r3 \| med`) | `batch64` (`r1 \| r2 \| r3 \| med`) | Ratio | Claim P50 (pc → batch) | Errors |
+| --- | --- | --- | --- | ---: | --- | ---: |
+| `#3B` Hydrated SBD `500×6`, `probe=true` | `naive` | `165.6 \| 159.7 \| 172.4 \|` `165.6s` | `146.2 \| 155.3 \| 160.7 \|` **`155.3s`** | **`1.07×`** | `22.2s → 17.0s` (`1.30×`) | `0 / 0` |
+| | `pipelined` | `134.7 \| 169.4 \| 160.3 \|` `160.3s` | `173.0 \| 162.9 \| 158.1 \|` `162.9s` | `0.98×` | `14.8s → 17.7s` | `0 / 0` |
+| `#3C` Hydrated SBD `500×6`, real work (`git` + `sleep 30`) | `pipelined` | `312.4 \| 303.9 \| 290.2 \|` `303.9s` | `290.4 \| 295.7 \| 297.0 \|` **`295.7s`** | `1.03×` | `8.3s → 7.8s` | `0 / 0` |
+| `#4-SWE` Eval `500×1`, real work | `naive` | `49.7s` (med) | `48.7s` | `1.02×` | `0.48s → 1.15s` | `1 / 1` |
+| | `pipelined` | `80.7s` | `79.8s` | `1.01×` | `0.50s → 0.68s` | `1 / 0` |
+| | raw-Pod `B0` | `42.1 \| 42.4 \| 42.7 \|` **`42.4s`** (fastest arm) | | | | `0` |
+| `#3A` First-boot cold SBD (fresh pool per arm) | `naive` | `514.0s` | `536.5s` | `0.96×` | `60.4s → 60.3s` | `0 / 0` |
+
+**`#4-SWE` 8-step sync-barrier RL (`500 × 2 × 8 = 8,000`, real-work probe), steady step `1–7` mean:**
+
+| Strategy | `per_claim` | `batch64` | Ratio | Errors (pc / batch) |
+| --- | ---: | ---: | ---: | ---: |
+| `naive` | `92.3s` | `92.3s` | `1.00×` | `2 / 0` |
+| `pipelined` | `143.9s` | `141.9s` | `1.01×` | `1 / 2` |
+| `recycle` | `159.5s` | **`150.4s`** | `1.06×` | `0 / 0` |
+| `hold` | `134.7s` | `134.6s` | `1.00×` | `0 / 0` |
+| raw-Pod `B0` | `95–102s` per step (`770.9s` total) | | | `0` |
+
+**Takeaway:** on the SBD cluster with real per-task work (`git` + `sleep 30`), wall time is dominated by in-sandbox work and image/rootfs start, so `batch64` is at **parity** (within ±7%). SandboxBatch's large wins (`#4A`, `#5`, `#6`, `#7`) appear where the claim/release control path is the bottleneck: big bursts, fleet scale, bulk teardown, short probes.

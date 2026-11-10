@@ -1,0 +1,17 @@
+{
+  "run_name": "c4_3b_t1_hydrated_sbd_batch64_r2",
+  "attempt": 1,
+  "context": "gke_<GCP_PROJECT>_us-central1_asrl-c4-1",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-c4-3b-t1-hydrated-sbd-batch64-r2",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:faa997cf22194fb81ed0833f54b8fa34469e746e6ac32c149f6f19df9441d38c",
+  "driver_cmd": "python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --problems 500 --rollouts 6 --concurrency 500 --strategies naive,pipelined --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --probe true --claim-mode batch --batch-max-in-flight 64 --batch-create-rps 200",
+  "start_utc": "2026-11-09T22:01:49Z",
+  "end_utc": "2026-11-09T22:07:58Z",
+  "job_elapsed_s": 369,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "json_ok": 1,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}
