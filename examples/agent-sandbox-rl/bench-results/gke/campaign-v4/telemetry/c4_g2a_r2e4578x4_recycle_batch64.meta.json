@@ -1,0 +1,17 @@
+{
+  "run_name": "c4_g2a_r2e4578x4_recycle_batch64",
+  "attempt": 1,
+  "context": "gke_<GCP_PROJECT>_us-central1_asrl-c4-1",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-c4-g2a-r2e4578x4-recycle-batch64",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:faa997cf22194fb81ed0833f54b8fa34469e746e6ac32c149f6f19df9441d38c",
+  "driver_cmd": "python run_hicard_20k_full.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/r2e_subset_verified_4578_digests.txt --problems 4578 --rollouts 4 --concurrency 300 --window-size 300 --cpu 125m --memory 1Gi --strategies pipelined --recycle-only --reset-timeout 30 --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 300 --probe 'cd /testbed && git status >/dev/null && git log --oneline -5 >/dev/null && sleep 5' --claim-mode batch --batch-max-in-flight 64 --batch-create-rps 200",
+  "start_utc": "2026-11-10T20:51:55Z",
+  "end_utc": "2026-11-10T21:51:44Z",
+  "job_elapsed_s": 3589,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "json_ok": 1,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

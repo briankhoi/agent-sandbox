@@ -205,3 +205,46 @@ Order note: every rep ran `per_claim` then `batch64` (not alternating); the SBD 
 | raw-Pod `B0` | `95–102s` per step (`770.9s` total) | | | `0` |
 
 **Takeaway:** on the SBD cluster with real per-task work (`git` + `sleep 30`), wall time is dominated by in-sandbox work and image/rootfs start, so `batch64` is at **parity** (within ±7%). SandboxBatch's large wins (`#4A`, `#5`, `#6`, `#7`) appear where the claim/release control path is the bottleneck: big bursts, fleet scale, bulk teardown, short probes.
+
+## 4. Gap-fill suites (2026-11-10/11) — comparisons to published `sandbox-rl-performance` rows
+
+### 4.1 Official-hardware ("canonical T0") cluster
+`10× e2-standard-32`, pd-ssd 600 GB, node GKE `1.36.4-gke.2377000` (kernel 6.12; closest available to published `1.36.0`), control plane `1.37.1`, stock T0 controller (`1000/500` workers = the "#1266, wp-workers=500" setup of published rows `#10–16`), stock APF, 125m/1Gi, probe `true`, 500×6.
+
+**Streaming OFF, warm (published rows `#2–4`) — dropped after 1 matched round (low priority; repo canonical is streaming ON).** Both arms used `--overcommit-factor 10` (the 3.5× default tripped on both arms and the untimed warm-up; published runs predate the breaker). Single round, very noisy:
+
+| Strategy | `per_claim` | `batch64` | Published |
+| --- | ---: | ---: | ---: |
+| naive | `391s` | `995s` | `1,530s` |
+| sliding | `727s` | `589s` | `1,154s` |
+| pipelined | `2,041s` | `459s` | `558s` |
+
+**Streaming ON, cold — fresh pool per arm (published rows `#5–7`), default 3.5× breaker, 1 round per arm:**
+
+| Strategy | `per_claim` | `batch64` | Ratio | Claim P50 (pc → batch) | Published |
+| --- | ---: | ---: | ---: | --- | ---: |
+| naive | `727.5s` | **`661.6s`** | `1.10×` | `31.6s → 57.9s` | `1,154s` |
+| sliding | **`655.0s`** | `916.4s` | `0.71×` | `12.2s → 22.5s` | `1,435s` |
+| pipelined | ❌ breaker tripped (`2,251/3,000`, 749 failed) | **`523.0s` (`3,000/3,000`)** | batch completed | `14.4s → 29.4s` | `1,359s` |
+
+Batch claims return later on cold nodes (see `WARMPOOL_AND_READ_BUDGET_HANDOFF.md`), but under the identical 3.5× breaker `per_claim` over-created on cold `pipelined` while `batch64` stayed bounded.
+
+**Streaming ON, warm (published rows `#8`, `#10–12`):** running — one job per strategy, ABABAB, `--overcommit-factor 10` both arms (the default tripped randomly on both arms on these nodes; earlier attempts quarantined).
+
+### 4.2 R2E-Gym 4,578 × 4 recycle ("Combo C"), cold, fresh pool per arm (`10× n2-standard-32`, pd-balanced 1.5 TB)
+
+| Arm | Wall | Completed | Claim P50 |
+| --- | ---: | ---: | ---: |
+| `per_claim` | **`3,283s`** | `18,312 / 18,312` | `0.80s` |
+| `batch64` | `3,571s` (`0.92×`) | `18,312 / 18,312` | `1.13s` |
+| raw-Pod `B0` (conc 300) | `8,817s` | `17,741 / 18,312` (**571 failed, 3.1%**) | — |
+
+Image-pull-bound: batch ≈ per_claim; **both agent-sandbox arms are ~2.5–2.7× faster than raw Pods with 0 failures vs 3.1%.** (First B0 attempt lost: its 12 MB result exceeded the kubelet log limit; harness now gzip+base64-encodes results.)
+
+### 4.3 1:1 trajectory-replay probe (published driver `run_replay_probe.py` workload: 50 SWE-bench images × 1, 25-wide, pipelined, its replay probe), ABABAB, untimed warm-up
+
+| Arm | Wall (`r1 \| r2 \| r3 \| med`) | Claim P50 (med) | Errors |
+| --- | --- | ---: | ---: |
+| `per_claim` | `60.6 \| 33.4 \| 32.5 \|` `33.4s` | `0.146s` | `0` |
+| `batch64` | `33.4 \| 30.5 \| 30.4 \|` **`30.5s`** | **`0.116s`** | `0` |
+| **Ratio** | **`1.10×`** | **`1.26×`** | — |

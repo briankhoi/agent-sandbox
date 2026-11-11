@@ -1,0 +1,17 @@
+{
+  "run_name": "c4_g2b_replay_per_claim_r3",
+  "attempt": 1,
+  "context": "gke_<GCP_PROJECT>_us-central1_asrl-c4-1",
+  "mode": "in_cluster_job",
+  "job_name": "asrl-c4-g2b-replay-per-claim-r3",
+  "driver_image": "us-central1-docker.pkg.dev/<GCP_PROJECT>/rl-gke-bench/asrl-driver@sha256:faa997cf22194fb81ed0833f54b8fa34469e746e6ac32c149f6f19df9441d38c",
+  "driver_cmd": "python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --problems 50 --rollouts 1 --concurrency 25 --claim-concurrency 25 --strategies pipelined --termination-grace-seconds 0 --unmanaged-network-policy --probe 'if [ -f /benchmarks/replay.py ]; then python3 /benchmarks/replay.py; else echo aW1wb3J0IG9zCnRvdGFsX3JlYWQ9MDsgdGFyZ2V0PTUwKjEwMjQqMTAyNApyb290X2RpcnM9W2QgZm9yIGQgaW4gWyIvdGVzdGJlZCIsIi9vcHQiLCIvdXNyL2xpYiJdIGlmIG9zLnBhdGguZXhpc3RzKGQpXQpmb3IgcmQgaW4gcm9vdF9kaXJzOgogIGZvciByLGQsZmlsZXMgaW4gb3Mud2FsayhyZCk6CiAgICBmb3IgZiBpbiBmaWxlczoKICAgICAgdHJ5OgogICAgICAgIHdpdGggb3Blbihvcy5wYXRoLmpvaW4ocixmKSwicmIiKSBhcyBmcDogdG90YWxfcmVhZCArPSBsZW4oZnAucmVhZCg2NCoxMDI0KSkKICAgICAgZXhjZXB0IEV4Y2VwdGlvbjogcGFzcwogICAgICBpZiB0b3RhbF9yZWFkID49IHRhcmdldDogYnJlYWsKICAgIGlmIHRvdGFsX3JlYWQgPj0gdGFyZ2V0OiBicmVhawogIGlmIHRvdGFsX3JlYWQgPj0gdGFyZ2V0OiBicmVhawpwcmludChmIltSRVBMQVldIFRyYWplY3RvcnkgcmVwbGF5IGNvbXBsZXRlZDoge3RvdGFsX3JlYWQvKDEwMjQqMTAyNCk6LjFmfSBNQiBzdHJlYW1lZCIpCg== | base64 -d | python3; fi' --claim-mode per_claim",
+  "start_utc": "2026-11-11T04:06:34Z",
+  "end_utc": "2026-11-11T04:07:27Z",
+  "job_elapsed_s": 53,
+  "job_succeeded": 1,
+  "job_failed": 0,
+  "json_ok": 1,
+  "controller_restarts_before": 0,
+  "controller_restarts_after": 0
+}

@@ -1,0 +1,200 @@
+{
+  "params": {
+    "driver": "bench_core",
+    "claim_mode": "per_claim",
+    "batch_max_in_flight": null,
+    "batch_create_rps": null,
+    "batch_lease_duration": 300,
+    "batch_work_budget": 3600,
+    "overcommit_factor": 3.5,
+    "warm_create_budget": 1000,
+    "strategies": "naive",
+    "recycle": false,
+    "images_file": "/app/drivers/images/swebench500.txt",
+    "images": 500,
+    "rollouts": 6,
+    "total_tasks": 3000,
+    "concurrency": 500,
+    "claim_concurrency": 500,
+    "max_warmpool_size": 1,
+    "warm_per_task": false,
+    "colocate": false,
+    "enable_cow": false,
+    "tmp_disk_gi": 0,
+    "unmanaged_network_policy": false,
+    "placement": "image-affinity",
+    "window_size": null,
+    "termination_grace_seconds": 0,
+    "cpu": "125m",
+    "memory": "1Gi",
+    "runtime_class": "gvisor",
+    "context": null,
+    "contexts": null,
+    "in_cluster": true,
+    "namespace": "agent-sandbox-rl",
+    "node_selector": {
+      "cloud.google.com/gke-nodepool": "gvisor-pool"
+    },
+    "testbed": "/testbed",
+    "probe": "true",
+    "out": "/out/result.json"
+  },
+  "variants": [
+    {
+      "strategy": "naive",
+      "recycle": false,
+      "label": "naive",
+      "claim_mode": "per_claim",
+      "batch_max_in_flight": null,
+      "clusters": 1,
+      "wall_s": 283.74,
+      "fatal_error": "FleetOvercommitError: live sandboxes 1758 exceeded ceiling 1750 (expected 500, factor 3.5) \u2014 run aborted, fleet torn down",
+      "report_total_s": 283.63,
+      "total_tasks": 3000,
+      "tasks_ok": 2357,
+      "tasks_err": 643,
+      "failure_rate_pct": 21.43333,
+      "claims": 2357,
+      "s_per_task": 0.0946,
+      "wall_per_ok_task_s": 0.1204,
+      "goodput_tasks_per_s": 8.31,
+      "per_cluster_goodput_tasks_per_s": 8.31,
+      "throughput_tasks_per_s": 10.57,
+      "per_cluster_throughput_tasks_per_s": 10.57,
+      "warm_replicas_peak": 500,
+      "paired_ttfi_s": {
+        "n": 2357,
+        "first": 0.4946,
+        "min": 0.4946,
+        "p50": 3.7055,
+        "avg": 23.704,
+        "p90": 89.7481,
+        "p95": 146.8868,
+        "p99": 221.6457,
+        "max": 255.1525,
+        "straggler_skew": 68.858
+      },
+      "paired_wire_claim_s": {
+        "n": 2357,
+        "first": 0.1304,
+        "min": 0.1304,
+        "p50": 2.8982,
+        "avg": 23.0657,
+        "p90": 89.1701,
+        "p95": 146.502,
+        "p99": 220.9002,
+        "max": 254.594,
+        "straggler_skew": 87.846
+      },
+      "paired_first_cmd_s": {
+        "n": 2357,
+        "first": 0.3471,
+        "min": 0.3471,
+        "p50": 0.4818,
+        "avg": 0.5783,
+        "p90": 0.7735,
+        "p95": 1.3649,
+        "p99": 2.0133,
+        "max": 2.7249,
+        "straggler_skew": 5.656
+      },
+      "env_ready_ok_s": {
+        "n": 2357,
+        "first": 13.4078,
+        "min": 13.4078,
+        "p50": 110.7561,
+        "avg": 117.7663,
+        "p90": 244.9156,
+        "p95": 256.6202,
+        "p99": 273.7447,
+        "max": 281.0204,
+        "straggler_skew": 2.537
+      },
+      "phases": {
+        "preflight": {
+          "n": 1,
+          "avg": 0.19,
+          "total": 0.19,
+          "max": 0.19
+        },
+        "plan": {
+          "n": 1,
+          "avg": 0.01,
+          "total": 0.01,
+          "max": 0.01
+        },
+        "create_warmpool": {
+          "n": 500,
+          "avg": 0.1175,
+          "total": 58.77,
+          "max": 0.32
+        },
+        "wait_pool_ready": {
+          "n": 500,
+          "avg": 4.2638,
+          "total": 2131.92,
+          "max": 7.77
+        },
+        "claim": {
+          "n": 2855,
+          "avg": 46.6902,
+          "total": 133300.5,
+          "max": 266.22
+        },
+        "process": {
+          "n": 2357,
+          "avg": 0.5863,
+          "total": 1381.88,
+          "max": 2.73
+        },
+        "release": {
+          "n": 2357,
+          "avg": 0.0301,
+          "total": 70.95,
+          "max": 0.3
+        },
+        "teardown": {
+          "n": 2,
+          "avg": 1.36,
+          "total": 2.72,
+          "max": 2.72
+        }
+      },
+      "phases_err": {},
+      "proc_before": {
+        "open_fds": 7,
+        "open_sockets": 2,
+        "vm_rss_mb": 121.26,
+        "vm_hwm_mb": 121.26,
+        "threads": 1
+      },
+      "proc_after": {
+        "open_fds": 556,
+        "open_sockets": 551,
+        "vm_rss_mb": 402.35,
+        "vm_hwm_mb": 422.18,
+        "threads": 1082
+      },
+      "verify_teardown": {
+        "bench": {
+          "claims": 0,
+          "leases": 0,
+          "warmpools": 0,
+          "sandboxes": 0,
+          "templates": 0,
+          "pods": 1755,
+          "remaining": {
+            "claims": 0,
+            "leases": 0,
+            "warmpools": 0,
+            "templates": 0,
+            "pods": 1390
+          }
+        }
+      },
+      "errors_sample": [
+        "FleetOvercommitError: live sandboxes 1758 exceeded ceiling 1750 (expected 500, factor 3.5) \u2014 run aborted, fleet torn down"
+      ]
+    }
+  ]
+}
