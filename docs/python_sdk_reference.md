@@ -1056,9 +1056,10 @@ next refresh. Fill creates, ``acquire()`` creates and pool reads, and member del
 If it raises, including on a cancellation, the member is dropped from ``members()`` and its
 claim is deleted, unless the claim is already gone or its create was rejected. A failed delete is
 retried by ``release_not_ready()`` and ``release()``. Once this handle loses the batch's
-Lease it keeps the claim, and ``release()`` deletes it. It never creates a second claim, so
-call it again to try again. A member it returned that fails later shows in ``members()``
-like any other, and ``release_member`` frees it.
+Lease it keeps the claim, which ``release()`` deletes only if no other handle has taken the
+Lease since. It never creates a second claim, so call it again to try again. A member it
+returned that fails later shows in ``members()`` like any other, and ``release_member``
+frees it.
 
 ``TerminalMemberError`` and ``BatchTimeoutError`` both subclass ``BatchError``, and
 ``except SandboxError`` also covers a missing pool or template. Bad arguments raise

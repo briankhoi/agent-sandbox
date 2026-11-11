@@ -3206,7 +3206,8 @@ class TestReleaseMembers(BaseClaimBatchTest):
                         orig_wait = batch._wait_stop_or
 
                         async def wait_gate(timeout: float, cancel: asyncio.Event | None = None) -> bool:
-                            if timeout == 1.0:
+                            # The retry backoff is 1.0 seconds, computed from a deadline.
+                            if 0.5 < timeout <= 1.0:
                                 entered_backoff.set()
                                 await asyncio.wait_for(finish_backoff.wait(), 5)
                                 return batch._stop_creating.is_set()
@@ -5511,6 +5512,47 @@ class TestCreateDrainPacingAndAcquireWakeup(BaseAsyncBatchClientTest):
             self.assertIsInstance(ctx.exception.__cause__, BatchLeaseExpiredError)
         finally:
             handle2._in_flight.release()
+
+    async def test_acquire_keeps_pacing_and_retrying_when_notify_all_wakes_its_waiter(self):
+        # _notify_all() also sets acquire waiters (for example after a healthy 410 re-list), so a
+        # wake during pacing or a retry wait must not skip the create.
+        handle = _make_handle(self.client, groups=[BatchGroup(warmpool="pool-a", size=0)])
+        # One event per create count, so the test can tell the pacing sleep from the retry sleep.
+        sleeping = {0: asyncio.Event(), 1: asyncio.Event()}
+        calls: list[str] = []
+        orig_wait_stop_or = handle._wait_stop_or
+
+        async def wait_stop_or(timeout, cancel=None):
+            if timeout > 0.2 and cancel is not None and len(calls) in sleeping:
+                sleeping[len(calls)].set()
+            return await orig_wait_stop_or(timeout, cancel)
+
+        handle._wait_stop_or = wait_stop_or  # type: ignore[method-assign]
+        api_429 = k8s_client.ApiException(status=429, reason="Too Many Requests")
+        api_429.headers = {"Retry-After": "1"}
+        sent = asyncio.Event()
+
+        async def create(name, *args, **kwargs):
+            calls.append(name)
+            if len(calls) == 1:
+                raise api_429
+            sent.set()
+
+        self.mock_k8s_helper.create_sandbox_claim = AsyncMock(side_effect=create)
+        self.mock_k8s_helper.delete_sandbox_claims_by_label = AsyncMock()
+        self.mock_k8s_helper.count_live_sandbox_claims = AsyncMock(return_value=0)
+        handle._next_create_at = time.monotonic() + 1.0
+        acq_task = asyncio.create_task(handle.acquire("pool-a", timeout=10.0))
+        for creates_so_far in (0, 1):
+            await asyncio.wait_for(sleeping[creates_so_far].wait(), timeout=3.0)
+            self.assertEqual(len(calls), creates_so_far)
+            async with handle._lock:
+                handle._notify_all()
+        await asyncio.wait_for(sent.wait(), timeout=3.0)
+        self.assertEqual(len(calls), 2)
+        await handle.release_group("pool-a")
+        with self.assertRaises(BatchError):
+            await asyncio.wait_for(acq_task, timeout=3.0)
 
 
 class TestHandleLookupAndPoolScopedWakeups(BaseAsyncBatchClientTest):

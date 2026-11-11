@@ -3093,7 +3093,8 @@ class TestReleaseMembers(BaseClaimBatchTest):
                             orig_wait = batch._stop_creating.wait_or
 
                             def wait_gate(timeout, cancel=None):
-                                if timeout == 1.0:
+                                # The retry backoff is 1.0 seconds, computed from a deadline.
+                                if 0.5 < timeout <= 1.0:
                                     entered_backoff.set()
                                     finish_backoff.wait(5)
                                     return batch._stop_creating.is_set()
@@ -3912,6 +3913,20 @@ class TestReleaseMembers(BaseClaimBatchTest):
         handle._watch_loop()
         self.assertEqual([c.args[0] for c in helper.delete_sandbox_claim.call_args_list], ["b1-1"])
         self.assertEqual([m.claim_name for m in handle.members()], ["b1-0"])
+
+    def test_watch_deletes_start_before_they_are_tracked(self):
+        # _stop_background_threads joins every tracked delete thread, and joining a thread that
+        # hasn't started raises, so a thread must start before it enters _watch_delete_threads.
+        handle = _make_handle(self.client, groups=[BatchGroup(warmpool="pool-a", size=1)])
+        handle._state._watch_deletes.append("b1-0")
+        with handle._lock:
+            handle._start_watch_deletes_locked()
+            tracked = list(handle._watch_delete_threads)
+            self.assertEqual(len(tracked), 1)
+            # join() raises RuntimeError on a thread that hasn't started.
+            tracked[0].join(timeout=0)
+        tracked[0].join(timeout=3.0)
+        self.assertFalse(tracked[0].is_alive())
 
     def test_lease_loss_wakes_delete_claim_retry_sleep(self):
         helper = self.cluster.helper
@@ -5549,7 +5564,10 @@ class TestCreateDrainPacingAndAcquireWakeup(BaseBatchClientTest):
             ),
             daemon=True,
         )
-        rel_thread = threading.Thread(target=handle.release, daemon=True)
+        rel_errors: list[BaseException] = []
+        rel_thread = threading.Thread(
+            target=lambda: self._capture_exc(handle.release, rel_errors), daemon=True
+        )
         acq_thread.start()
         self.assertTrue(entered_post.wait(timeout=3.0))
         rel_thread.start()
@@ -5562,6 +5580,7 @@ class TestCreateDrainPacingAndAcquireWakeup(BaseBatchClientTest):
         self.assertFalse(rel_thread.is_alive())
         handle._wait_active_requests()
         self.assertEqual(len(acq_errors), 1)
+        self.assertEqual(rel_errors, [])
         self.assertEqual(live_claims, set())
 
     @staticmethod
@@ -5671,6 +5690,53 @@ class TestCreateDrainPacingAndAcquireWakeup(BaseBatchClientTest):
             self.assertIsInstance(ctx.exception.__cause__, BatchLeaseExpiredError)
         finally:
             handle2._in_flight.release()
+
+    def test_acquire_keeps_pacing_and_retrying_when_notify_all_wakes_its_waiter(self):
+        # _notify_all() also sets acquire waiters (for example after a healthy 410 re-list), so a
+        # wake during pacing or a retry wait must not skip the create.
+        handle = _make_handle(self.client, groups=[BatchGroup(warmpool="pool-a", size=0)])
+        # One event per create count, so the test can tell the pacing sleep from the retry sleep.
+        sleeping = {0: threading.Event(), 1: threading.Event()}
+        calls: list[str] = []
+        orig_wait_or = handle._stop_creating.wait_or
+
+        def wait_or(timeout, cancel=None):
+            if timeout > 0.2 and cancel is not None and len(calls) in sleeping:
+                sleeping[len(calls)].set()
+            return orig_wait_or(timeout, cancel)
+
+        handle._stop_creating.wait_or = wait_or  # type: ignore[method-assign]
+        api_429 = k8s_client.ApiException(status=429, reason="Too Many Requests")
+        api_429.headers = {"Retry-After": "1"}
+        sent = threading.Event()
+
+        def create(name, *args, **kwargs):
+            calls.append(name)
+            if len(calls) == 1:
+                raise api_429
+            sent.set()
+
+        self.mock_k8s_helper.create_sandbox_claim.side_effect = create
+        self.mock_k8s_helper.count_live_sandbox_claims.return_value = 0
+        with handle._lock:
+            handle._next_create_at = time.monotonic() + 1.0
+        acq_errors: list[BaseException] = []
+        acq_thread = threading.Thread(
+            target=lambda: self._capture_exc(lambda: handle.acquire("pool-a", timeout=10.0), acq_errors),
+            daemon=True,
+        )
+        acq_thread.start()
+        for creates_so_far in (0, 1):
+            self.assertTrue(sleeping[creates_so_far].wait(timeout=3.0))
+            self.assertEqual(len(calls), creates_so_far)
+            with handle._lock:
+                handle._notify_all()
+        self.assertTrue(sent.wait(timeout=3.0))
+        self.assertEqual(len(calls), 2)
+        handle.release_group("pool-a")
+        acq_thread.join(timeout=3.0)
+        self.assertFalse(acq_thread.is_alive())
+        self.assertIsInstance(acq_errors[0], BatchError)
 
 
 class TestHandleLookupAndPoolScopedWakeups(BaseBatchClientTest):

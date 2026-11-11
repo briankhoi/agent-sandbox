@@ -891,9 +891,10 @@ class AsyncSandboxBatch:
         If it raises, including on a cancellation, the member is dropped from ``members()`` and its
         claim is deleted, unless the claim is already gone or its create was rejected. A failed delete is
         retried by ``release_not_ready()`` and ``release()``. Once this handle loses the batch's
-        Lease it keeps the claim, and ``release()`` deletes it. It never creates a second claim, so
-        call it again to try again. A member it returned that fails later shows in ``members()``
-        like any other, and ``release_member`` frees it.
+        Lease it keeps the claim, which ``release()`` deletes only if no other handle has taken the
+        Lease since. It never creates a second claim, so call it again to try again. A member it
+        returned that fails later shows in ``members()`` like any other, and ``release_member``
+        frees it.
 
         ``TerminalMemberError`` and ``BatchTimeoutError`` both subclass ``BatchError``, and
         ``except SandboxError`` also covers a missing pool or template. Bad arguments raise
@@ -978,16 +979,17 @@ class AsyncSandboxBatch:
                 refreshed = True
             assert claim_name is not None and waiter is not None
             acquired_name = claim_name
-            # Once creating stops or the acquire waiter fires, _wait_acquired surfaces the outcome.
-            if not await self._wait_stop_or(slot - time.monotonic(), waiter):
-                def can_send() -> bool:
-                    # Checks again after waiting for a max_in_flight slot or before retrying, in case
-                    # release_group() or release_member() freed the claim or an earlier attempt landed.
-                    return (
-                        self._state.acquired_member(acquired_name) is None
-                        and self._state.get_member(acquired_name) is None
-                    )
+            def can_send() -> bool:
+                # Checks again after pacing, after waiting for a max_in_flight slot, and before
+                # retrying, in case release_group() or release_member() freed the claim or an
+                # earlier attempt landed.
+                return (
+                    self._state.acquired_member(acquired_name) is None
+                    and self._state.get_member(acquired_name) is None
+                )
 
+            # Once creating stops or the caller releases the claim, _wait_acquired surfaces the outcome.
+            if not await self._sleep_or_skip(slot, waiter, can_send):
                 def on_send() -> None:
                     nonlocal may_exist, sent
                     sent += 1
@@ -2140,6 +2142,26 @@ class AsyncSandboxBatch:
                     task.cancel()
         return self._stop_creating.is_set() or cancel.is_set()
 
+    async def _sleep_or_skip(
+        self, until: float, cancel: asyncio.Event | None, can_send: Callable[[], bool] | None
+    ) -> bool:
+        """Sleeps until ``until`` and returns whether to skip the create, which is only when creation
+        stopped or ``can_send`` turned false while it slept.
+
+        ``cancel`` is the ``acquire()`` waiter, which ``_notify_all()`` also sets, for example after a
+        healthy 410 re-list. A wake therefore only means the state may have changed, so this checks
+        the state again and keeps sleeping while the create is still wanted.
+        """
+        while await self._wait_stop_or(until - time.monotonic(), cancel):
+            if self._stop_creating.is_set() or cancel is None:
+                return True
+            # Clear before checking, so a release that lands after the check wakes the next wait.
+            cancel.clear()
+            async with self._lock:
+                if not self._can_still_send(can_send):
+                    return True
+        return False
+
     def _reserve_create_slot(self, earliest: float) -> float:
         """Reserves the next pacing slot at or after ``earliest``, so creates and their retries
         together stay within ``create_rps``. The caller holds ``self._lock``.
@@ -2310,7 +2332,7 @@ class AsyncSandboxBatch:
                             if not self._can_still_send(can_send):
                                 return
                             self._check_retry_deadline(claim_name, deadline, time.monotonic() + backoff, e)
-                        if await self._wait_stop_or(backoff, cancel):
+                        if await self._sleep_or_skip(time.monotonic() + backoff, cancel, can_send):
                             return
                     async with self._lock:
                         if not self._can_still_send(can_send):
@@ -2319,7 +2341,7 @@ class AsyncSandboxBatch:
                         # Other creates keep taking slots during a backoff, so the create checks the deadline again.
                         self._check_retry_deadline(claim_name, deadline, earliest, e)
                         slot = self._reserve_create_slot(earliest)
-                    if await self._wait_stop_or(slot - time.monotonic(), cancel):
+                    if await self._sleep_or_skip(slot, cancel, can_send):
                         return
                     attempt += 1
                     continue

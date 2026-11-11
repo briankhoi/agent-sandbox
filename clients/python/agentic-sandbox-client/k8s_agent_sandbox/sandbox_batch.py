@@ -929,9 +929,10 @@ class SandboxBatch:
         If it raises, including on a cancellation, the member is dropped from ``members()`` and its
         claim is deleted, unless the claim is already gone or its create was rejected. A failed delete is
         retried by ``release_not_ready()`` and ``release()``. Once this handle loses the batch's
-        Lease it keeps the claim, and ``release()`` deletes it. It never creates a second claim, so
-        call it again to try again. A member it returned that fails later shows in ``members()``
-        like any other, and ``release_member`` frees it.
+        Lease it keeps the claim, which ``release()`` deletes only if no other handle has taken the
+        Lease since. It never creates a second claim, so call it again to try again. A member it
+        returned that fails later shows in ``members()`` like any other, and ``release_member``
+        frees it.
 
         ``TerminalMemberError`` and ``BatchTimeoutError`` both subclass ``BatchError``, and
         ``except SandboxError`` also covers a missing pool or template. Bad arguments raise
@@ -1016,16 +1017,17 @@ class SandboxBatch:
                 refreshed = True
             assert claim_name is not None and waiter is not None
             acquired_name = claim_name
-            # Once creating stops or the acquire waiter fires, _wait_acquired surfaces the outcome.
-            if not self._stop_creating.wait_or(slot - time.monotonic(), waiter):
-                def can_send() -> bool:
-                    # Checks again after waiting for a max_in_flight slot or before retrying, in case
-                    # release_group() or release_member() freed the claim or an earlier attempt landed.
-                    return (
-                        self._state.acquired_member(acquired_name) is None
-                        and self._state.get_member(acquired_name) is None
-                    )
+            def can_send() -> bool:
+                # Checks again after pacing, after waiting for a max_in_flight slot, and before
+                # retrying, in case release_group() or release_member() freed the claim or an
+                # earlier attempt landed.
+                return (
+                    self._state.acquired_member(acquired_name) is None
+                    and self._state.get_member(acquired_name) is None
+                )
 
+            # Once creating stops or the caller releases the claim, _wait_acquired surfaces the outcome.
+            if not self._sleep_or_skip(slot, waiter, can_send):
                 def on_send() -> None:
                     nonlocal may_exist, sent
                     sent += 1
@@ -1749,26 +1751,29 @@ class SandboxBatch:
                 self._changed.notify_all()
         self._client._unregister_batch(self)
 
-    def _schedule_watch_deletes_locked(self) -> threading.Thread | None:
-        """Builds an unstarted thread that deletes claims that landed after their pool was
-        released, or returns ``None`` if there are none or this handle can no longer delete claims.
-        A separate thread keeps the watch from blocking on HTTP deletes, and the caller starts it
-        after releasing ``_lock``.
+    def _start_watch_deletes_locked(self) -> None:
+        """Starts a thread that deletes claims that landed after their pool was released, unless
+        there are none or this handle can no longer delete claims. A separate thread keeps the watch
+        from blocking on HTTP deletes.
+
+        The thread starts here, under ``_lock``, so ``_watch_delete_threads`` never holds an unstarted
+        thread for ``_stop_background_threads`` to join. Its deletes take ``_lock`` themselves, so they
+        wait until the caller releases it.
         """
         names = self._state.take_watch_deletes()
         if not names:
-            return None
+            return
         self._expire_lease_if_due()
         if self._detached or self._lease_error is not None:
-            return None
+            return
         thread = threading.Thread(
             target=self._run_watch_deletes,
             args=(names,),
             name=f"batch-{self.batch_id}-watch-delete",
             daemon=True,
         )
+        thread.start()
         self._watch_delete_threads.add(thread)
-        return thread
 
     def _run_watch_deletes(self, names: list[str]) -> None:
         """Deletes each late claim. ``BatchError`` means this handle detached or lost the Lease,
@@ -1825,11 +1830,9 @@ class SandboxBatch:
                         with self._lock:
                             self._state.resync_from_list(items)
                             self._exhaust_warm_credit()
-                            delete_thread = self._schedule_watch_deletes_locked()
+                            self._start_watch_deletes_locked()
                             self._notify_all()
                             stale = self._pop_stale_connections(list(self._connected))
-                        if delete_thread is not None:
-                            delete_thread.start()
                         self._close_connections(stale, "a re-list")
                         relist = False
                     watch_started = time.monotonic()
@@ -1861,7 +1864,6 @@ class SandboxBatch:
                             if event_type == "BOOKMARK":
                                 continue
                             claim_name = (obj.get("metadata") or {}).get("name", "")
-                            delete_thread = None
                             with self._lock:
                                 if event_type == "DELETED":
                                     if self._state.mark_lost(claim_name) is not None:
@@ -1869,13 +1871,11 @@ class SandboxBatch:
                                 elif event_type in ("ADDED", "MODIFIED"):
                                     member = self._state.upsert_claim(obj)
                                     self._exhaust_warm_credit()
-                                    delete_thread = self._schedule_watch_deletes_locked()
+                                    self._start_watch_deletes_locked()
                                     if member is not None and member.state is not MemberState.PENDING:
                                         self._wake_acquire(claim_name)
                                 self._changed.notify_all()
                                 stale = self._pop_stale_connections([claim_name])
-                            if delete_thread is not None:
-                                delete_thread.start()
                             self._close_connections(stale, "a watch event")
                     if (
                         not got_event
@@ -2173,6 +2173,26 @@ class SandboxBatch:
             and (can_send is None or can_send())
         )
 
+    def _sleep_or_skip(
+        self, until: float, cancel: threading.Event | None, can_send: Callable[[], bool] | None
+    ) -> bool:
+        """Sleeps until ``until`` and returns whether to skip the create, which is only when creation
+        stopped or ``can_send`` turned false while it slept.
+
+        ``cancel`` is the ``acquire()`` waiter, which ``_notify_all()`` also sets, for example after a
+        healthy 410 re-list. A wake therefore only means the state may have changed, so this checks
+        the state again and keeps sleeping while the create is still wanted.
+        """
+        while self._stop_creating.wait_or(until - time.monotonic(), cancel):
+            if self._stop_creating.is_set() or cancel is None:
+                return True
+            # Clear before checking, so a release that lands after the check wakes the next wait.
+            cancel.clear()
+            with self._lock:
+                if not self._can_still_send(can_send):
+                    return True
+        return False
+
     def _reserve_create_slot(self, earliest: float) -> float:
         """Reserves the next pacing slot at or after ``earliest``, so creates and their retries
         together stay within ``create_rps``. The caller holds ``self._lock``.
@@ -2368,7 +2388,7 @@ class SandboxBatch:
                             if not self._can_still_send(can_send):
                                 return
                             self._check_retry_deadline(claim_name, deadline, time.monotonic() + backoff, e)
-                        if self._stop_creating.wait_or(backoff, cancel):
+                        if self._sleep_or_skip(time.monotonic() + backoff, cancel, can_send):
                             return
                     with self._lock:
                         if not self._can_still_send(can_send):
@@ -2377,7 +2397,7 @@ class SandboxBatch:
                         # Other creates keep taking slots during a backoff, so the create checks the deadline again.
                         self._check_retry_deadline(claim_name, deadline, earliest, e)
                         slot = self._reserve_create_slot(earliest)
-                    if self._stop_creating.wait_or(slot - time.monotonic(), cancel):
+                    if self._sleep_or_skip(slot, cancel, can_send):
                         return
                     attempt += 1
                     continue
