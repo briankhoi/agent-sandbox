@@ -229,7 +229,15 @@ Order note: every rep ran `per_claim` then `batch64` (not alternating); the SBD 
 
 Batch claims return later on cold nodes (see `WARMPOOL_AND_READ_BUDGET_HANDOFF.md`), but under the identical 3.5× breaker `per_claim` over-created on cold `pipelined` while `batch64` stayed bounded.
 
-**Streaming ON, warm (published rows `#8`, `#10–12`):** running — one job per strategy, ABABAB, `--overcommit-factor 10` both arms (the default tripped randomly on both arms on these nodes; earlier attempts quarantined).
+**Streaming ON, warm — the repo's canonical setup (published rows `#10–12`, same "#1266 / wp-workers=500" controller config).** Untimed full warm-up, then one job per strategy, true ABABAB, `--overcommit-factor 10` for both arms (the 3.5× default tripped randomly on both arms on these nodes; those attempts are quarantined, not reported). `0` errors in all 18 runs.
+
+| Strategy | `per_claim` (`r1 \| r2 \| r3 \| med`) | `batch64` (`r1 \| r2 \| r3 \| med`) | Ratio | Claim P50 (pc / batch) | TTFI P50 (pc / batch) | Published |
+| --- | --- | --- | ---: | --- | --- | ---: |
+| naive | `394.4 \| 391.3 \| 394.4 \|` `394.4s` | `392.0 \| 401.2 \| 392.6 \|` `392.6s` | `1.00×` | `3.35s / 3.58s` | `5.07s / 4.69s` | `#10`: `587.7s` |
+| sliding | `392.2 \| 393.7 \| 398.1 \|` `393.7s` | `395.8 \| 394.2 \| 393.7 \|` `394.2s` | `1.00×` | `3.50s / 3.41s` | `5.02s / 4.56s` | `#11`: `603.8s` |
+| pipelined | `490.2 \| 434.3 \| 434.8 \|` `434.8s` | `433.3 \| 432.7 \| 432.6 \|` `432.7s` | `1.00×` | `10.66s / 11.22s` | `11.76s / 12.29s` | `#12`: `507.4s` |
+
+**On the canonical warm setup, SandboxBatch and per_claim are at parity (within 0.5%)**, and both are ~1.2–1.5× faster than the published rows; that gap is environment (node 1.36.4 vs 1.36.0 and other version deltas), not batching. Compared with Campaign 4 `#1` (same e2 node shape but GKE 1.37 nodes, pd-balanced 1.5 TB: ~`87–121s`), these runs are ~3–4× slower, so node version/disk dominate absolute wall here. The extra warm sets (recycle, 500×10, no-warm-pool floor) were not run.
 
 ### 4.2 R2E-Gym 4,578 × 4 recycle ("Combo C"), cold, fresh pool per arm (`10× n2-standard-32`, pd-balanced 1.5 TB)
 
