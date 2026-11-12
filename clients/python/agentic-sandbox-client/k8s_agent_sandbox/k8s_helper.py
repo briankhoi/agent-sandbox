@@ -252,6 +252,7 @@ class K8sHelper:
         self.injected_api_client = api_client
         self._owned_api_client: client.ApiClient | None = None
         self._batch_api_client: client.ApiClient | None = None
+        self._bulk_ext_list_forbidden: bool = False
         try:
             if api_client is None:
                 try:

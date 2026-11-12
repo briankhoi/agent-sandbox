@@ -167,6 +167,7 @@ class AsyncK8sHelper:
         self._api_client: client.ApiClient | None = api_client
         # An injected client is caller-owned; only close clients we create.
         self._owns_api_client = api_client is None
+        self._bulk_ext_list_forbidden: bool = False
 
     @property
     def injected_api_client(self) -> client.ApiClient | None:

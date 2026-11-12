@@ -1218,9 +1218,13 @@ class SandboxFleet:
       # mode issues no creates, and its entries carry the provisioner's depth
       # (often thousands), which would split every pool into its own wave.
       self._warm_entries(entries, wait)
+      if wait and entries:
+        self._prepare_batch_clusters(entries, only_unopened=False, just_warmed=True)
       return
     if not budget or budget <= 0:
       self._warm_entries(entries, wait)
+      if wait and entries:
+        self._prepare_batch_clusters(entries, only_unopened=False, just_warmed=True)
       return
     wave: list = []
     wave_creates = 0
@@ -1240,6 +1244,8 @@ class SandboxFleet:
       logger.info("staged warm: wave %d — %d pools / %d creates (budget %d)",
                   n_waves, len(wave), wave_creates, budget)
       self._warm_entries(wave, wait=wait)
+    if wait and entries:
+      self._prepare_batch_clusters(entries, only_unopened=False, just_warmed=True)
 
   def warm_images(self, images, *, replicas_override: int | None = None,
                   wait: bool = True) -> None:
@@ -2500,7 +2506,7 @@ class SandboxFleet:
           # even when a handle's release failed, since a live Lease keeps the
           # batch reaper away.
           failed_batches.update(self._batch_claims.release_all())
-        if self._async_batch_claims is not None:
+        if self._async_batch_claims is not None and not self._async_tearing_down:
           failed_batches.update(self._async_batch_claims.release_all_sync())
         for bid, exc in failed_batches.items():
           failed_handles = deferred_by_batch.get(bid)

@@ -329,9 +329,14 @@ class BatchClaims:
     if not isinstance(pool, str):
       seed_fn = getattr(reuse_existing, "seed_checked_pools", None)
       if verified_ready is not None and callable(seed_fn):
-        seed_fn({p: verified_ready[p] for p in pool_names if p in verified_ready})
-      elif isinstance(reuse_existing, SandboxBatch):
-        reuse_existing.precheck_pools(pool_names, timeout=self._ready_timeout)
+        seeded_map = {p: verified_ready[p] for p in pool_names if p in verified_ready}
+        if seeded_map:
+          seed_fn(seeded_map)
+        unseeded = [p for p in pool_names if p not in verified_ready]
+      else:
+        unseeded = pool_names
+      if unseeded and isinstance(reuse_existing, SandboxBatch):
+        reuse_existing.precheck_pools(unseeded, timeout=self._ready_timeout)
     return reuse_existing
 
   def acquire(
@@ -426,6 +431,48 @@ class BatchClaims:
     return failed
 
 
+def close_async_sandbox_sync(
+    sb_or_entry: Any,
+    loop: asyncio.AbstractEventLoop | None = None,
+    loop_thread: threading.Thread | None = None,
+) -> None:
+  """Close a sandbox (or ``(sandbox, pod_ip)`` entry) safely from sync code."""
+  sb = sb_or_entry[0] if isinstance(sb_or_entry, tuple) else sb_or_entry
+  if sb is None:
+    return
+  if loop is None:
+    try:
+      loop = asyncio.get_running_loop()
+      loop_thread = threading.current_thread()
+    except RuntimeError:
+      loop = None
+  close_conn = getattr(sb, "close_connection", None)
+  if (
+      loop is not None
+      and not loop.is_closed()
+      and loop.is_running()
+      and callable(close_conn)
+  ):
+    res = close_conn()
+    if asyncio.iscoroutine(res):
+      if threading.current_thread() is not loop_thread:
+        asyncio.run_coroutine_threadsafe(res, loop).result(timeout=5.0)
+      else:
+        t = loop.create_task(res)
+        t.add_done_callback(
+            lambda done: None if done.cancelled() else done.exception()
+        )
+    return
+  atexit_fn = getattr(type(sb), "_close_for_atexit", None)
+  if callable(atexit_fn):
+    atexit_fn(sb)
+    return
+  if callable(close_conn):
+    res = close_conn()
+    if asyncio.iscoroutine(res):
+      res.close()
+
+
 @dataclass
 class AsyncBatchClaim:
   """One acquired async batch member and the ``AsyncSandboxBatch`` that owns it."""
@@ -487,23 +534,9 @@ class AsyncBatchClaim:
         wake(self.member.claim_name)
       connected = getattr(self.batch, "_connected", None)
       if isinstance(connected, dict):
-        conn_sb = connected.pop(self.member.claim_name, None)
-        close_conn = getattr(conn_sb, "close_connection", None)
-        if callable(close_conn):
-          res = close_conn()
-          if asyncio.iscoroutine(res):
-            if (
-                self._loop is not None
-                and not self._loop.is_closed()
-                and self._loop.is_running()
-                and threading.current_thread() is self._loop_thread
-            ):
-              t = self._loop.create_task(res)
-              t.add_done_callback(
-                  lambda done: None if done.cancelled() else done.exception()
-              )
-            else:
-              res.close()
+        conn_entry = connected.pop(self.member.claim_name, None)
+        if conn_entry is not None:
+          close_async_sandbox_sync(conn_entry, self._loop, self._loop_thread)
     except Exception:  # noqa: BLE001
       pass
     self.cluster.resources.delete_claim(
@@ -754,15 +787,26 @@ class AsyncBatchClaims:
             with self._lock:
               self._opened = [t for t in self._opened if t[1] is not batch]
           raise FleetError(f"fleet has torn down; cannot claim on {cluster.name!r}")
+        if not isinstance(pool, str):
+          prewarm_fn = getattr(cluster, "prewarm_async_clients", None)
+          if inspect.iscoroutinefunction(prewarm_fn):
+            await prewarm_fn(
+                connections=min(64, eff_max_in_flight or 64)
+            )
         logger.info("opened async batch %s on cluster %s", batch.batch_id, cluster.name)
         return batch
     if not isinstance(pool, str):
       seed_fn = getattr(reuse_existing, "seed_checked_pools", None)
       precheck_fn = getattr(reuse_existing, "precheck_pools", None)
       if verified_ready is not None and inspect.iscoroutinefunction(seed_fn):
-        await seed_fn({p: verified_ready[p] for p in pool_names if p in verified_ready})
-      elif inspect.iscoroutinefunction(precheck_fn):
-        await precheck_fn(pool_names, timeout=self._ready_timeout)
+        seeded_map = {p: verified_ready[p] for p in pool_names if p in verified_ready}
+        if seeded_map:
+          await seed_fn(seeded_map)
+        unseeded = [p for p in pool_names if p not in verified_ready]
+      else:
+        unseeded = pool_names
+      if unseeded and inspect.iscoroutinefunction(precheck_fn):
+        await precheck_fn(unseeded, timeout=self._ready_timeout)
     return reuse_existing
 
   async def acquire(
@@ -799,6 +843,66 @@ class AsyncBatchClaims:
         batch=batch, member=member, expires_at=expires_at, cluster=cluster,
         _loop=loop, _loop_thread=loop_thread)
 
+  def _sync_release_single_batch(
+      self,
+      cluster: "Cluster",
+      batch: Any,
+      loop: asyncio.AbstractEventLoop | None,
+      loop_thread: threading.Thread | None,
+  ) -> None:
+    if loop is not None and not loop.is_closed() and loop.is_running():
+      def _stop_bg(b=batch):
+        b._detached = True
+        stop_evt = getattr(b, "_stop_creating", None)
+        if stop_evt is not None:
+          stop_evt.set()
+        for attr in ("_watch_task", "_renew_task"):
+          t = getattr(b, attr, None)
+          if t is not None and not t.done():
+            t.cancel()
+      try:
+        loop.call_soon_threadsafe(_stop_bg)
+      except RuntimeError:
+        pass
+    connected = getattr(batch, "_connected", None)
+    if isinstance(connected, dict) and connected:
+      entries = list(connected.values())
+      connected.clear()
+      for entry in entries:
+        try:
+          close_async_sandbox_sync(entry, loop, loop_thread)
+        except Exception:  # noqa: BLE001
+          pass
+    stale_conns = getattr(batch, "_stale_connections", None)
+    if isinstance(stale_conns, list) and stale_conns:
+      stale_entries = list(stale_conns)
+      stale_conns.clear()
+      for entry in stale_entries:
+        try:
+          close_async_sandbox_sync(entry, loop, loop_thread)
+        except Exception:  # noqa: BLE001
+          pass
+    if hasattr(batch, "_lease_name") and hasattr(batch, "_holder_identity"):
+      _delete_batch_objects_sync(
+          cluster.k8s_helper,
+          batch.namespace,
+          batch.batch_id,
+          batch._lease_name,
+          batch._holder_identity,
+          batch._lease_duration,
+          batch._lease,
+      )
+      batch._lease_released = True
+      batch._released = True
+      unreg = getattr(getattr(batch, "_client", None), "_unregister_batch", None)
+      if callable(unreg):
+        try:
+          unreg(batch)
+        except Exception:  # noqa: BLE001
+          pass
+    elif callable(getattr(batch, "release", None)) and not inspect.iscoroutinefunction(batch.release):
+      batch.release()
+
   async def release_all(self) -> dict[int, Exception]:
     with self._lock:
       self._closed = True
@@ -815,16 +919,43 @@ class AsyncBatchClaims:
 
     failed: dict[int, Exception] = {}
     succeeded_ids: set[int] = set()
+    cur_loop = asyncio.get_running_loop()
 
-    async def _release_one(batch: Any) -> tuple[int, Exception | None]:
+    async def _release_one(
+        cluster: "Cluster",
+        batch: Any,
+        batch_loop: asyncio.AbstractEventLoop | None,
+        loop_thread: threading.Thread | None,
+    ) -> tuple[int, Exception | None]:
       try:
-        await batch.release()
+        if batch_loop is cur_loop:
+          await batch.release()
+        elif (
+            batch_loop is not None
+            and not batch_loop.is_closed()
+            and batch_loop.is_running()
+            and inspect.iscoroutinefunction(getattr(batch, "release", None))
+        ):
+          await asyncio.wrap_future(
+              asyncio.run_coroutine_threadsafe(batch.release(), batch_loop),
+              loop=cur_loop,
+          )
+        else:
+          await asyncio.to_thread(
+              self._sync_release_single_batch, cluster, batch, batch_loop, loop_thread
+          )
       except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to release async batch %s", batch.batch_id, exc_info=True)
+        logger.warning(
+            "failed to release async batch %s",
+            getattr(batch, "batch_id", "?"),
+            exc_info=True,
+        )
         return id(batch), exc
       return id(batch), None
 
-    outcomes = await asyncio.gather(*(_release_one(b) for _c, b, _l, _lt in opened))
+    outcomes = await asyncio.gather(
+        *(_release_one(c, b, bl, lt) for c, b, bl, lt in opened)
+    )
     for bid, err in outcomes:
       if err is not None:
         failed[bid] = err
@@ -870,35 +1001,8 @@ class AsyncBatchClaims:
           logger.warning("failed to release async batch %s on running loop", batch.batch_id, exc_info=True)
           failed[id(batch)] = exc
         continue
-      if loop is not None and not loop.is_closed() and loop.is_running():
-        def _stop_bg(b=batch):
-          b._detached = True
-          stop_evt = getattr(b, "_stop_creating", None)
-          if stop_evt is not None:
-            stop_evt.set()
-          for attr in ("_watch_task", "_renew_task"):
-            t = getattr(b, attr, None)
-            if t is not None and not t.done():
-              t.cancel()
-        try:
-          loop.call_soon_threadsafe(_stop_bg)
-        except RuntimeError:
-          pass
       try:
-        if hasattr(batch, "_lease_name") and hasattr(batch, "_holder_identity"):
-          _delete_batch_objects_sync(
-              cluster.k8s_helper,
-              batch.namespace,
-              batch.batch_id,
-              batch._lease_name,
-              batch._holder_identity,
-              batch._lease_duration,
-              batch._lease,
-          )
-          batch._lease_released = True
-          batch._released = True
-        elif callable(getattr(batch, "release", None)) and not inspect.iscoroutinefunction(batch.release):
-          batch.release()
+        self._sync_release_single_batch(cluster, batch, loop, loop_thread)
         succeeded_ids.add(id(batch))
       except Exception as exc:  # noqa: BLE001
         logger.warning("failed to sync-release async batch %s", getattr(batch, "batch_id", "?"), exc_info=True)
