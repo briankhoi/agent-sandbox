@@ -171,6 +171,63 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 </details>
 
+<a id="proc-13"></a>
+
+### PROC-13 Design a state model once before patching edge cases, and end every fix loop with a holistic review
+
+**Takeaway:** When a fix needs new bookkeeping, write its invariants and every add and remove path first, then review the whole model at once. Don't let verifiers drip edge cases into incremental patches. Close each fix loop with a cohesion and redundancy review, not only bug hunts.
+
+<details>
+<summary>The full story (25/N, 2026-11-12)</summary>
+
+- **What happened:** The #2252 round took 9 verifier rounds (2 angles each). Most of rounds 3 to 7 were a cascade from patching the pending-delete model one edge case at a time: each patch added state (`_pending_deletes_by_pool`, `_label_deletes`) that the next round found a new hole in.
+- **What we do:** A holistic cohesion review collapsed the cascade: it removed both structures and derived pending deletes from `_released` (claim to pool) plus `_release_sweeps`. One final confirm round then passed.
+- **Related:** [PROC-1](#proc-1), [PROC-3](#proc-3), [PROC-7](#proc-7), [AGENT-6](#agent-6).
+
+</details>
+
+<a id="proc-14"></a>
+
+### PROC-14 Review moved code as new code
+
+**Takeaway:** Code moved between commits or PRs lands in a new context with new callers and invariants. Review it as fresh code, not as "already reviewed".
+
+<details>
+<summary>The full story (25/N)</summary>
+
+- **What happened:** `release_members()` and the parallel pool prechecks moved from 27/N into 25/N. The #2252 round still had to fix them: released claims' deletes had to stay pending until their label delete succeeds, and acquires and queued outcomes had to be fenced against release sweeps.
+- **Related:** [PROC-2](#proc-2), [PROC-13](#proc-13).
+
+</details>
+
+<a id="proc-15"></a>
+
+### PROC-15 Check dependency behavior at the oldest supported version
+
+**Takeaway:** When a fix relies on a library call, check what that call does at the oldest version the package supports, not only the installed one.
+
+<details>
+<summary>The full story (25/N)</summary>
+
+- **What happened:** CodeRabbit flagged that the owned-client close in 25/N must clear `pool_manager` itself because `ApiClient.close()` on kubernetes 35 doesn't. The same class of bug hit 24/N: `Watch.stop()` only sets a flag before kubernetes 37, so a quiet watch blocked `release()` for the full join timeout.
+- **Related:** [PROC-5](#proc-5).
+
+</details>
+
+<a id="proc-16"></a>
+
+### PROC-16 Model multi-task interleavings for any new lock or gate
+
+**Takeaway:** Before adding a lock, gate, or fence, write out the interleavings of every task that can reach it (caller, watch, cleanup, concurrent acquires) and check each for deadlock and lost wakeups.
+
+<details>
+<summary>The full story (25/N)</summary>
+
+- **What happened:** CodeRabbit found a close/detach deadlock in async close serialization and an acquire that bypassed the release-sweep fence. Both were two-task interleavings no test covered.
+- **Related:** [PROC-10](#proc-10).
+
+</details>
+
 <a id="sec-git"></a>
 
 ## Stacked PRs and git

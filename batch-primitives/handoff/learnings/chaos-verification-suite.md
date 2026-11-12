@@ -313,6 +313,24 @@
 
 </details>
 
+<a id="chaos-13"></a>
+
+## CHAOS-13 Adapt the harness when the SDK internals it reaches into change
+
+**Takeaway:** The harness reads private `BatchState` fields and calls private methods, so an SDK refactor can break it without any product bug. Check these touchpoints first when a run errors on an attribute or signature, and record each adaptation.
+
+<details>
+<summary>The full story (25/N #2252 rework, 2026-11-12)</summary>
+
+- **Adaptations needed at 25/N `29bae67e`:**
+  - `batch_invariant_oracle.py` uses `state._released.keys() &`, because `_released` is now a dict (claim to pool).
+  - `BatchState.drop_acquired(claim, warmpool, created, *, retried)` now takes the pool.
+  - `quorum_result()` is renamed `take_quorum_result()`.
+- **Known env-sensitive gate:** the async acquire memory gate passes in isolation but can fail under full-suite load. Rerun it alone before treating a failure as a regression.
+- **Related:** [CHAOS-10](#chaos-10), [CHAOS-12](#chaos-12).
+
+</details>
+
 ---
 
 [Learnings home](../learnings.md) · [Field guide index](../learnings.md#sec-field-guide)
