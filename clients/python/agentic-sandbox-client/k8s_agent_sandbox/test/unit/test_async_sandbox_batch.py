@@ -6673,6 +6673,54 @@ class TestAsyncReleaseAllMembers(BaseClaimBatchTest):
         self.assertNotIn("pool-b", batch._checked_pools)
         self.assertFalse(batch._warm_credit.take("pool-b"))
 
+    async def test_precheck_and_seed_pools_respect_permits_inflight_and_rewarm(self):
+        batch = await self.claim([BatchGroup(warmpool="pool-a", size=0)], max_in_flight=1)
+        await batch._stop_background_tasks()
+        real_helper = AsyncK8sHelper(api_client=MagicMock())
+        await real_helper._ensure_initialized()
+        batch._client.k8s_helper = real_helper
+
+        active_lists = 0
+        max_active_lists = 0
+
+        async def tracked_wp_list(namespace, _request_timeout=None, *, deadline=None):
+            nonlocal active_lists, max_active_lists
+            self.assertIsNotNone(deadline)
+            active_lists += 1
+            max_active_lists = max(max_active_lists, active_lists)
+            await asyncio.sleep(0.02)
+            active_lists -= 1
+            return {f"pool-{i}": (2, "tmpl-a") for i in range(4)}
+
+        async def tracked_tp_list(namespace, _request_timeout=None, *, deadline=None):
+            nonlocal active_lists, max_active_lists
+            self.assertIsNotNone(deadline)
+            active_lists += 1
+            max_active_lists = max(max_active_lists, active_lists)
+            await asyncio.sleep(0.02)
+            active_lists -= 1
+            return {"tmpl-a"}
+
+        with patch.object(AsyncK8sHelper, "list_sandbox_warmpool_summaries", side_effect=tracked_wp_list), \
+             patch.object(AsyncK8sHelper, "list_sandbox_template_names", side_effect=tracked_tp_list):
+            await batch.precheck_pools([f"pool-{i}" for i in range(4)], 5.0)
+        self.assertEqual(max_active_lists, 1)
+        self.assertTrue(batch._warm_credit.take("pool-0"))
+        self.assertTrue(batch._warm_credit.take("pool-0"))
+        self.assertFalse(batch._warm_credit.take("pool-0"))
+
+        # Re-seeding an already-checked idle pool replenishes its credit for Epoch 2+.
+        await batch.seed_checked_pools({"pool-0": 3})
+        self.assertTrue(batch._warm_credit.take("pool-0"))
+
+        # In-flight precheck failure is awaited and surfaced by concurrent precheck_pools.
+        inflight_fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        inflight_fut.add_done_callback(lambda done: done.cancelled() or done.exception())
+        inflight_fut.set_exception(SandboxWarmPoolNotFoundError("missing pool-z"))
+        batch._prechecks["pool-z"] = inflight_fut
+        with self.assertRaises(SandboxWarmPoolNotFoundError):
+            await batch.precheck_pools(["pool-z"], 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()

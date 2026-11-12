@@ -1257,21 +1257,29 @@ class AsyncSandboxBatch:
         warmpools: Iterable[str],
         timeout: int | float | None = None,
     ) -> None:
-        """Bulk-verifies unchecked warm pools and their templates, seeding ``WarmCredit``."""
+        """Bulk-verifies unchecked warm pools and their templates, seeding their Ready credit.
+
+        Shares ``self._prechecks`` with concurrent ``acquire()`` calls so each pool is checked at
+        most once, and bounds concurrent API requests strictly to the number of ``max_in_flight``
+        permits acquired so the watch and Lease renewal connections keep their headroom.
+
+        Args:
+            warmpools: Names of ``SandboxWarmPool`` resources to verify in ``self.namespace``.
+            timeout: Seconds to wait across all pool checks. Defaults to ``quorum_timeout``.
+
+        Raises:
+            ValueError: If ``timeout`` is not a finite positive number.
+            BatchError: If this handle has been detached or released, or once its Lease expires.
+            BatchTimeoutError: If the pools are not checked within ``timeout``.
+            SandboxWarmPoolNotFoundError: If a warm pool does not exist.
+            SandboxTemplateNotFoundError: If a warm pool's template does not exist or it names none.
+        """
         wait = batch_utils.positive_number("timeout", timeout, self._quorum_timeout)
         deadline = time.monotonic() + wait
-        async with self._lock:
-            now = time.monotonic()
-            self._check_healthy(now)
-            unchecked = [
-                p for p in dict.fromkeys(warmpools)
-                if p
-                and p not in self._checked_pools
-                and p not in self._prechecks
-                and not self._state.release_sweeping(p)
-            ]
-            release_seqs = {p: self._state.pool_release_seq(p) for p in unchecked}
-        if not unchecked:
+        pools = [p for p in dict.fromkeys(warmpools) if p]
+        if not pools:
+            async with self._lock:
+                self._check_healthy()
             return
 
         async def next_timeout() -> float:
@@ -1288,48 +1296,159 @@ class AsyncSandboxBatch:
                     self._lease_expires_at - now,
                 )
 
-        acquired = False
-        try:
-            while not acquired:
-                step_timeout = await next_timeout()
-                with contextlib.suppress(TimeoutError):
-                    async with asyncio.timeout(step_timeout):
-                        await self._in_flight.acquire()
-                        acquired = True
-            ready = await _precheck_pools(
-                self._client.k8s_helper,
-                unchecked,
-                self.namespace,
-                timeout=next_timeout,
-                max_concurrency=max(2, min(16, self._max_in_flight)),
-            )
+        loop = asyncio.get_running_loop()
+        while True:
+            owned_checks: dict[str, asyncio.Future[None]] = {}
+            release_seqs: dict[str, int] = {}
+            inflight_check: asyncio.Future[None] | None = None
+            wait_timeout = 0.0
             async with self._lock:
-                self._check_healthy()
-                for p, rdy in ready.items():
+                now = time.monotonic()
+                self._check_healthy(now)
+                pending = [
+                    p for p in pools
+                    if p not in self._checked_pools and not self._state.release_sweeping(p)
+                ]
+                if not pending:
+                    return
+                if now >= deadline:
+                    raise BatchTimeoutError(f"warm pools weren't checked within {wait:g}s")
+                wait_timeout = min(deadline, self._lease_expires_at) - now
+                for p in pending:
+                    existing = self._prechecks.get(p)
+                    if existing is not None:
+                        if inflight_check is None:
+                            inflight_check = existing
+                    else:
+                        fut: asyncio.Future[None] = loop.create_future()
+                        fut.add_done_callback(lambda done: done.cancelled() or done.exception())
+                        self._prechecks[p] = fut
+                        owned_checks[p] = fut
+                        release_seqs[p] = self._state.pool_release_seq(p)
+
+            if owned_checks:
+                permits_held = 0
+                try:
+                    try:
+                        while permits_held == 0:
+                            step_timeout = await next_timeout()
+                            with contextlib.suppress(TimeoutError):
+                                async with asyncio.timeout(step_timeout):
+                                    await self._in_flight.acquire()
+                                    permits_held = 1
+                        want_extra = min(16, self._max_in_flight) - 1
+                        for _ in range(want_extra):
+                            if not self._in_flight.locked():
+                                await self._in_flight.acquire()
+                                permits_held += 1
+                            else:
+                                break
+                        try:
+                            ready = await _precheck_pools(
+                                self._client.k8s_helper,
+                                list(owned_checks),
+                                self.namespace,
+                                timeout=next_timeout,
+                                max_concurrency=permits_held,
+                                deadline=lambda: min(deadline, self._lease_expires_at),
+                            )
+                        except Exception as e:
+                            async with self._lock:
+                                now = time.monotonic()
+                                self._check_healthy(now)
+                            if not isinstance(e, BatchError) and now >= deadline and (
+                                isinstance(e, TimeoutError) or _is_transport_error(e)
+                            ):
+                                raise BatchTimeoutError(
+                                    f"warm pools weren't checked within {wait:g}s"
+                                ) from e
+                            raise
+                        async with self._lock:
+                            self._check_healthy()
+                            for p, fut in owned_checks.items():
+                                self._prechecks.pop(p, None)
+                                if (
+                                    p in ready
+                                    and self._state.pool_release_seq(p) == release_seqs[p]
+                                    and not self._state.release_sweeping(p)
+                                ):
+                                    if p not in self._checked_pools:
+                                        self._warm_credit.record(p, ready[p])
+                                        self._checked_pools.add(p)
+                                    fut.set_result(None)
+                                else:
+                                    fut.cancel()
+                    finally:
+                        for _ in range(permits_held):
+                            self._in_flight.release()
+                except BaseException as e:
+                    for p, fut in owned_checks.items():
+                        self._prechecks.pop(p, None)
+                        if fut.done():
+                            continue
+                        same_rel = self._state.pool_release_seq(p) == release_seqs[p]
+                        if (
+                            permits_held > 0
+                            and isinstance(e, Exception)
+                            and not isinstance(e, BatchError)
+                            and same_rel
+                        ):
+                            fut.set_exception(e)
+                        else:
+                            fut.cancel()
+                    raise
+
+            if inflight_check is not None:
+                async with self._lock:
+                    now = time.monotonic()
+                    self._check_healthy(now)
+                    if now >= deadline:
+                        raise BatchTimeoutError(f"warm pools weren't checked within {wait:g}s")
+                    wait_timeout = min(deadline, self._lease_expires_at) - now
+                try:
+                    await asyncio.wait_for(asyncio.shield(inflight_check), wait_timeout)
+                except TimeoutError:
                     if (
-                        p not in self._checked_pools
-                        and self._state.pool_release_seq(p) == release_seqs[p]
-                        and not self._state.release_sweeping(p)
+                        inflight_check.done()
+                        and not inflight_check.cancelled()
+                        and inflight_check.exception() is not None
                     ):
-                        self._warm_credit.record(p, rdy)
-                        self._checked_pools.add(p)
-        finally:
-            if acquired:
-                self._in_flight.release()
+                        inflight_check.result()
+                except asyncio.CancelledError:
+                    task = asyncio.current_task()
+                    if inflight_check.cancelled() and task is not None and not task.cancelling():
+                        continue
+                    raise
+                continue
+            return
 
     async def seed_checked_pools(self, ready_by_pool: Mapping[str, int]) -> None:
-        """Marks caller-verified warm pools as checked and records their Ready counts."""
+        """Marks caller-verified warm pools as checked and records their Ready replica credit.
+
+        Replenishes credit on pools that were already checked in an earlier step or epoch so long
+        as no ``acquire()`` or ``release_group()`` sweep is currently in flight on that pool.
+
+        Args:
+            ready_by_pool: Mapping from verified ``SandboxWarmPool`` name to observed
+                ``status.readyReplicas`` count.
+
+        Raises:
+            BatchError: If this handle has been detached or released, or once its Lease expires.
+        """
         if not ready_by_pool:
             return
         async with self._lock:
             self._check_healthy()
             for p, rdy in ready_by_pool.items():
+                if not p or self._state.release_sweeping(p):
+                    continue
                 if (
-                    p
-                    and p not in self._checked_pools
-                    and not self._state.release_sweeping(p)
+                    not self._state._acquiring_by_pool.get(p)
+                    and not self._state._checking_acquires.get(p)
                 ):
                     self._warm_credit.record(p, max(0, int(rdy)))
+                    self._checked_pools.add(p)
+                elif p not in self._checked_pools:
                     self._checked_pools.add(p)
 
     async def _refresh_warm_credit(self, warmpool: str, deadline: float, acquire_seq: int) -> None:
@@ -1392,10 +1511,13 @@ class AsyncSandboxBatch:
                 if remaining <= 0:
                     return
                 request_timeout = min(float(batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS), remaining)
+                list_deadline = min(deadline, self._lease_expires_at)
                 try:
                     async with asyncio.timeout(request_timeout):
                         ready_map = await helper.list_sandbox_warmpools_ready(
-                            self.namespace, _request_timeout=request_timeout
+                            self.namespace,
+                            _request_timeout=request_timeout,
+                            deadline=list_deadline,
                         )
                 except asyncio.CancelledError:
                     raise
@@ -2654,6 +2776,7 @@ async def _precheck_pools(
     timeout: int | float | Callable[[], Awaitable[float]] = batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
     *,
     max_concurrency: int = 1,
+    deadline: float | Callable[[], float] | None = None,
 ) -> dict[str, int]:
     """Checks that each warm pool and the SandboxTemplate it references exist, and returns each
     pool's Ready replica count.
@@ -2667,7 +2790,6 @@ async def _precheck_pools(
 
     if (
         len(pools) >= 4
-        and max_concurrency > 1
         and type(helper) is AsyncK8sHelper
         and "get_sandbox_warmpool" not in helper.__dict__
         and "get_sandbox_template" not in helper.__dict__
@@ -2679,12 +2801,28 @@ async def _precheck_pools(
             and "list_namespaced_custom_object" not in api.__dict__
             and "get_namespaced_custom_object" not in api.__dict__
         ):
-            t_wp = await timeout() if callable(timeout) else timeout
-            t_tp = await timeout() if callable(timeout) else timeout
-            wp_summaries, tpl_names = await asyncio.gather(
-                helper.list_sandbox_warmpool_summaries(namespace, _request_timeout=t_wp),
-                helper.list_sandbox_template_names(namespace, _request_timeout=t_tp),
-            )
+            eff_deadline = deadline() if callable(deadline) else deadline
+            if max_concurrency >= 2:
+                t_wp = await timeout() if callable(timeout) else timeout
+                t_tp = await timeout() if callable(timeout) else timeout
+                wp_summaries, tpl_names = await asyncio.gather(
+                    helper.list_sandbox_warmpool_summaries(
+                        namespace, _request_timeout=t_wp, deadline=eff_deadline
+                    ),
+                    helper.list_sandbox_template_names(
+                        namespace, _request_timeout=t_tp, deadline=eff_deadline
+                    ),
+                )
+            else:
+                t_wp = await timeout() if callable(timeout) else timeout
+                wp_summaries = await helper.list_sandbox_warmpool_summaries(
+                    namespace, _request_timeout=t_wp, deadline=eff_deadline
+                )
+                eff_deadline = deadline() if callable(deadline) else deadline
+                t_tp = await timeout() if callable(timeout) else timeout
+                tpl_names = await helper.list_sandbox_template_names(
+                    namespace, _request_timeout=t_tp, deadline=eff_deadline
+                )
             checked_templates.update(tpl_names)
             bulk_ready: dict[str, int] = {}
             for name in pools:

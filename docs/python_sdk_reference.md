@@ -1347,6 +1347,58 @@ and ``release_member`` frees it.
 - `urllib3.exceptions.HTTPError` - If checking an unchecked warm pool fails before
   ``timeout``, such as on a connection error or request timeout.
 
+<a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.precheck_pools"></a>
+
+#### precheck\_pools
+
+```python
+def precheck_pools(warmpools: Iterable[str],
+                   timeout: int | float | None = None) -> None
+```
+
+Bulk-verifies unchecked warm pools and their templates, seeding their Ready credit.
+
+Shares ``self._prechecks`` with concurrent ``acquire()`` calls so each pool is checked at
+most once, and bounds concurrent API requests strictly to the number of ``max_in_flight``
+permits acquired so the watch and Lease renewal connections keep their headroom.
+
+**Arguments**:
+
+- `warmpools` - Names of ``SandboxWarmPool`` resources to verify in ``self.namespace``.
+- `timeout` - Seconds to wait across all pool checks. Defaults to ``quorum_timeout``.
+  
+
+**Raises**:
+
+- `ValueError` - If ``timeout`` is not a finite positive number.
+- `BatchError` - If this handle has been detached or released, or once its Lease expires.
+- `BatchTimeoutError` - If the pools are not checked within ``timeout``.
+- `SandboxWarmPoolNotFoundError` - If a warm pool does not exist.
+- `SandboxTemplateNotFoundError` - If a warm pool's template does not exist or it names none.
+
+<a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.seed_checked_pools"></a>
+
+#### seed\_checked\_pools
+
+```python
+def seed_checked_pools(ready_by_pool: Mapping[str, int]) -> None
+```
+
+Marks caller-verified warm pools as checked and records their Ready replica credit.
+
+Replenishes credit on pools that were already checked in an earlier step or epoch so long
+as no ``acquire()`` or ``release_group()`` sweep is currently in flight on that pool.
+
+**Arguments**:
+
+- `ready_by_pool` - Mapping from verified ``SandboxWarmPool`` name to observed
+  ``status.readyReplicas`` count.
+  
+
+**Raises**:
+
+- `BatchError` - If this handle has been detached or released, or once its Lease expires.
+
 <a id="k8s_agent_sandbox.sandbox_batch.SandboxBatch.release_member"></a>
 
 #### release\_member

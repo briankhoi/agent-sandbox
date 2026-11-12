@@ -23,6 +23,7 @@ SDK's `K8sHelper` / `SandboxClient` (built lazily). No SDK fork required.
 from __future__ import annotations
 
 import asyncio
+import copy
 import threading
 from collections import OrderedDict
 from urllib.parse import urlencode
@@ -52,7 +53,12 @@ async def build_async_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000
   return async_client.ApiClient(configuration=configuration)
 
 
-async def _build_fast_ws_core_api(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
+async def _build_fast_ws_core_api(
+    cfg: ClusterConfig,
+    *,
+    pool_maxsize: int = 1000,
+    base_configuration=None,
+):
   """Build a `kubernetes_asyncio` `CoreV1Api` backed by a lightweight `WsApiClient`."""
   import aiohttp
   from kubernetes_asyncio import client as async_client
@@ -117,42 +123,48 @@ async def _build_fast_ws_core_api(cfg: ClusterConfig, *, pool_maxsize: int = 100
       if query_params:
         url = f"{url}?{urlencode(query_params)}"
       ws_url = get_websocket_url(url)
+      ws_kwargs = {
+          "headers": hdrs,
+          "heartbeat": self.heartbeat,
+          "proxy": self.rest_client.proxy,
+          "proxy_headers": self.rest_client.proxy_headers,
+      }
+      server_hostname = getattr(self.rest_client, "server_hostname", None)
+      if server_hostname:
+        ws_kwargs["server_hostname"] = server_hostname
       if not _preload_content:
-        return self.rest_client.pool_manager.ws_connect(
-            ws_url, headers=hdrs, heartbeat=self.heartbeat
-        )
-      chunks: list[str] = []
+        return self.rest_client.pool_manager.ws_connect(ws_url, **ws_kwargs)
+      buf = bytearray()
       try:
         async with self.rest_client.pool_manager.ws_connect(
-            ws_url,
-            headers=hdrs,
-            heartbeat=self.heartbeat,
-            proxy=self.rest_client.proxy,
-            proxy_headers=self.rest_client.proxy_headers,
+            ws_url, **ws_kwargs
         ) as ws:
           async for wsmsg in ws:
             raw = wsmsg.data
             if isinstance(raw, bytes):
               if len(raw) > 1 and raw[0] in (STDOUT_CHANNEL, STDERR_CHANNEL):
-                chunks.append(raw[1:].decode("utf-8", errors="replace"))
+                buf.extend(raw[1:])
             elif isinstance(raw, str):
               if len(raw) > 1 and ord(raw[0]) in (STDOUT_CHANNEL, STDERR_CHANNEL):
-                chunks.append(raw[1:])
+                buf.extend(raw[1:].encode("utf-8"))
       except aiohttp.WSServerHandshakeError as exc:
         raise async_client.ApiException(status=exc.status, reason=exc.message) from exc
-      out = "".join(chunks)
-      return WsResponse(200, out.encode("utf-8"))
+      return WsResponse(200, bytes(buf))
 
-  configuration = async_client.Configuration()
-  configuration.connection_pool_maxsize = pool_maxsize
-  if cfg.in_cluster:
-    k8s_async_config.load_incluster_config(client_configuration=configuration)
+  if base_configuration is not None:
+    configuration = copy.copy(base_configuration)
+    configuration.connection_pool_maxsize = pool_maxsize
   else:
-    await k8s_async_config.load_kube_config(
-        config_file=cfg.kubeconfig,
-        context=cfg.context,
-        client_configuration=configuration,
-    )
+    configuration = async_client.Configuration()
+    configuration.connection_pool_maxsize = pool_maxsize
+    if cfg.in_cluster:
+      k8s_async_config.load_incluster_config(client_configuration=configuration)
+    else:
+      await k8s_async_config.load_kube_config(
+          config_file=cfg.kubeconfig,
+          context=cfg.context,
+          client_configuration=configuration,
+      )
   ws_api = _FastWsApiClient(configuration)
   return ws_api, async_client.CoreV1Api(ws_api)
 
@@ -173,6 +185,30 @@ def build_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
     k8s_config.load_kube_config(config_file=cfg.kubeconfig, context=cfg.context,
                                 client_configuration=configuration)
   return client.ApiClient(configuration)
+
+
+def _resize_async_api_client_pool(api_client, needed: int) -> None:
+  if api_client is None:
+    return
+  cfg_obj = getattr(api_client, "configuration", None)
+  cur = getattr(cfg_obj, "connection_pool_maxsize", None)
+  conn = getattr(
+      getattr(getattr(api_client, "rest_client", None), "pool_manager", None),
+      "connector",
+      None,
+  )
+  conn_limit = getattr(conn, "_limit", None)
+  if (
+      conn is not None
+      and isinstance(conn_limit, int)
+      and not isinstance(conn_limit, bool)
+      and 0 < conn_limit < needed
+  ):
+    conn._limit = needed
+    if cfg_obj is not None and isinstance(cur, int) and not isinstance(cur, bool) and 0 < cur < needed:
+      cfg_obj.connection_pool_maxsize = needed
+  elif conn is None and cfg_obj is not None and isinstance(cur, int) and not isinstance(cur, bool) and 0 < cur < needed:
+    cfg_obj.connection_pool_maxsize = needed
 
 
 def _resize_api_client_pool(api_client, needed: int) -> None:
@@ -230,6 +266,7 @@ class Cluster:
     self._async_exec_core_api = None
     self._async_loop: asyncio.AbstractEventLoop | None = None
     self._async_init_lock: asyncio.Lock | None = None
+    self._async_state_lock = threading.Lock()
     # Concurrent first acquires would otherwise each build a SandboxClient,
     # and every build loads the kubeconfig.
     self._sandbox_client_lock = threading.Lock()
@@ -276,11 +313,8 @@ class Cluster:
         sub_client = getattr(sub_api, "api_client", None)
         if sub_client is not None:
           _resize_api_client_pool(sub_client, needed)
-    if self._async_api_client is not None:
-      cfg_obj = getattr(self._async_api_client, "configuration", None)
-      cur = getattr(cfg_obj, "connection_pool_maxsize", None)
-      if cfg_obj is not None and isinstance(cur, int) and 0 < cur < needed:
-        cfg_obj.connection_pool_maxsize = needed
+    _resize_async_api_client_pool(self._async_api_client, needed)
+    _resize_async_api_client_pool(self._async_ws_api_client, needed)
 
   def exec_core_api(self):
     """A thread-local `CoreV1Api` for router-free pod exec.
@@ -341,44 +375,68 @@ class Cluster:
         self._sandbox_client = c
       return self._sandbox_client
 
+  async def _ensure_async_loop(self, loop: asyncio.AbstractEventLoop) -> asyncio.Lock:
+    """Ensure cached async clients belong to ``loop``, resetting stale loop state atomically."""
+    with self._async_state_lock:
+      if self._async_loop is loop and self._async_init_lock is not None:
+        return self._async_init_lock
+      if self._async_loop is None:
+        init_lock = self._async_init_lock or asyncio.Lock()
+        self._async_init_lock = init_lock
+        self._async_loop = loop
+        return init_lock
+      old_loop = self._async_loop
+      old_sb = self._async_sandbox_client
+      old_api = None if self._injected_async_api_client else self._async_api_client
+      old_ws = self._async_ws_api_client
+      self._async_sandbox_client = None
+      self._async_k8s_helper = None
+      self._async_ws_api_client = None
+      self._async_exec_core_api = None
+      if not self._injected_async_api_client:
+        self._async_api_client = None
+      init_lock = asyncio.Lock()
+      self._async_init_lock = init_lock
+      self._async_loop = loop
+
+    if old_loop is not None and not old_loop.is_closed():
+      for obj in (old_sb, old_api, old_ws):
+        if obj is None:
+          continue
+        close_fn = getattr(obj, "close", None)
+        if not callable(close_fn):
+          continue
+        try:
+          if old_loop.is_running():
+            fut = asyncio.run_coroutine_threadsafe(close_fn(), old_loop)
+            fut.add_done_callback(lambda d: None if d.cancelled() else d.exception())
+          else:
+            res = close_fn()
+            if asyncio.iscoroutine(res):
+              res.close()
+        except Exception:  # noqa: BLE001
+          pass
+    return init_lock
+
   async def get_async_sandbox_client(self):
     """SDK ``AsyncSandboxClient`` bound to this cluster's async API client."""
     loop = asyncio.get_running_loop()
-    if (
-        self._async_loop is not loop
-        and not self._injected_async_api_client
-    ):
-      if self._async_api_client is not None and self._async_loop is not None and not self._async_loop.is_closed():
-        try:
-          await self._async_api_client.close()
-        except Exception:  # noqa: BLE001
-          pass
-      self._async_api_client = None
-      self._async_k8s_helper = None
-      self._async_sandbox_client = None
-      self._async_init_lock = asyncio.Lock()
-      self._async_loop = loop
-    elif self._async_init_lock is None or self._async_loop is not loop:
-      self._async_init_lock = asyncio.Lock()
-      self._async_loop = loop
-
+    init_lock = await self._ensure_async_loop(loop)
     if self._async_sandbox_client is not None:
       return self._async_sandbox_client
 
-    async with self._async_init_lock:
+    async with init_lock:
       if self._async_sandbox_client is not None:
         return self._async_sandbox_client
       if self._async_api_client is None:
         self._async_api_client = await build_async_api_client(
             self.config, pool_maxsize=self._pool_maxsize
         )
+      else:
+        _resize_async_api_client_pool(self._async_api_client, self._pool_maxsize)
       from k8s_agent_sandbox import AsyncSandboxClient
-      from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
       from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
 
-      helper = AsyncK8sHelper(api_client=self._async_api_client)
-      await helper._ensure_initialized()
-      self._async_k8s_helper = helper
       kwargs = {}
       if self.tracer_config is not None:
         kwargs["tracer_config"] = self.tracer_config
@@ -389,38 +447,32 @@ class Cluster:
           api_client=self._async_api_client,
           **kwargs,
       )
-      c.k8s_helper = helper
+      await c.k8s_helper._ensure_initialized()
+      self._async_k8s_helper = c.k8s_helper
       self._async_sandbox_client = c
       return self._async_sandbox_client
 
   async def async_exec_core_api(self):
     """Shared event-loop-native ``CoreV1Api`` over ``WsApiClient`` for ``aexec()``."""
     loop = asyncio.get_running_loop()
-    if self._async_loop is not loop:
-      if self._async_ws_api_client is not None and self._async_loop is not None and not self._async_loop.is_closed():
-        try:
-          await self._async_ws_api_client.close()
-        except Exception:  # noqa: BLE001
-          pass
-      self._async_ws_api_client = None
-      self._async_exec_core_api = None
-      if not self._injected_async_api_client:
-        self._async_api_client = None
-        self._async_k8s_helper = None
-        self._async_sandbox_client = None
-      self._async_init_lock = asyncio.Lock()
-      self._async_loop = loop
-    elif self._async_init_lock is None:
-      self._async_init_lock = asyncio.Lock()
-
+    init_lock = await self._ensure_async_loop(loop)
     if self._async_exec_core_api is not None:
       return self._async_exec_core_api
 
-    async with self._async_init_lock:
+    async with init_lock:
       if self._async_exec_core_api is not None:
         return self._async_exec_core_api
+      from kubernetes_asyncio import client as async_client
+      raw_cfg = (
+          getattr(self._async_api_client, "configuration", None)
+          if self._injected_async_api_client and self._async_api_client is not None
+          else None
+      )
+      base_cfg = raw_cfg if isinstance(raw_cfg, async_client.Configuration) else None
       ws_api, core_api = await _build_fast_ws_core_api(
-          self.config, pool_maxsize=self._pool_maxsize
+          self.config,
+          pool_maxsize=self._pool_maxsize,
+          base_configuration=base_cfg,
       )
       self._async_ws_api_client = ws_api
       self._async_exec_core_api = core_api
@@ -428,15 +480,16 @@ class Cluster:
 
   async def aclose(self) -> None:
     """Close any owned ``kubernetes_asyncio`` ``ApiClient`` and ``WsApiClient`` sessions."""
-    sb_client = self._async_sandbox_client
-    api_client = self._async_api_client
-    ws_api = self._async_ws_api_client
-    self._async_sandbox_client = None
-    self._async_k8s_helper = None
-    self._async_ws_api_client = None
-    self._async_exec_core_api = None
-    if not self._injected_async_api_client:
-      self._async_api_client = None
+    with self._async_state_lock:
+      sb_client = self._async_sandbox_client
+      api_client = self._async_api_client
+      ws_api = self._async_ws_api_client
+      self._async_sandbox_client = None
+      self._async_k8s_helper = None
+      self._async_ws_api_client = None
+      self._async_exec_core_api = None
+      if not self._injected_async_api_client:
+        self._async_api_client = None
     if sb_client is not None:
       close_fn = getattr(sb_client, "close", None)
       if callable(close_fn):

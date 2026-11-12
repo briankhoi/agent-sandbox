@@ -45,6 +45,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from k8s_agent_sandbox import BatchError
+from k8s_agent_sandbox.batch_utils import BATCH_REQUEST_TIMEOUT_SECONDS
 from k8s_agent_sandbox.exceptions import SandboxNotReadyError
 from k8s_agent_sandbox.utils import select_pod_ip
 
@@ -110,7 +111,7 @@ class AsyncSandboxFleet:
     if self._async_batch_claims is None or not entries or not self._sync_acquire_unpatched():
       return
     with self._fleet._lock:
-      if self._fleet._torndown:
+      if self._fleet._torndown or self._fleet._async_tearing_down:
         return
       warmed_snapshot = (
           dict(self._fleet._warmed)
@@ -257,7 +258,7 @@ class AsyncSandboxFleet:
                                 create_budget=create_budget)
     if wait and self._fleet.plan_ is not None:
       await self._prepare_async_batch_clusters(
-          self._fleet.plan_.entries, only_unopened=True
+          self._fleet.plan_.entries, only_unopened=False, just_warmed=True
       )
     return res
 
@@ -271,7 +272,9 @@ class AsyncSandboxFleet:
     self._fleet._defer_sync_batch_prepare = self._sync_acquire_unpatched()
     await self._to_thread(self._fleet.setup, prepull)
     if self._fleet.plan_ is not None:
-      await self._prepare_async_batch_clusters(self._fleet.plan_.entries)
+      await self._prepare_async_batch_clusters(
+          self._fleet.plan_.entries, just_warmed=True
+      )
     return self
 
   def _reclaim_cancelled_future(
@@ -319,13 +322,14 @@ class AsyncSandboxFleet:
       pool: str,
       entry,
       *,
+      on_demand: bool = False,
       pod_annotations: dict | None = None,
   ) -> SandboxHandle:
     fl = self._fleet
     batch_claims = self._async_batch_claims
     assert batch_claims is not None
     with fl._lock:
-      if fl._torndown:
+      if fl._torndown or fl._async_tearing_down:
         raise FleetError("fleet was torn down; call setup() before acquiring again")
       hard = fl.config.max_live_sandboxes
       if hard and fl._claims_reserved >= hard:
@@ -339,9 +343,14 @@ class AsyncSandboxFleet:
     fam = repo_family(task)
     claim: AsyncBatchClaim | None = None
     sandbox = None
+    created_pool = False
     cluster_slot_reserved = False
     handle: SandboxHandle | None = None
     try:
+      if on_demand:
+        pool, created_pool = await self._to_thread(
+            fl._ensure_ondemand_pool_for_acquire, cluster, task.image
+        )
       with fl._obs.phase("claim", cluster=cluster.name, family=fam):
         claim = await batch_claims.acquire(
             cluster, pool, pod_annotations=annotations or None
@@ -375,7 +384,7 @@ class AsyncSandboxFleet:
           _batch_claim=claim,
       )
       with fl._lock:
-        if fl._torndown:
+        if fl._torndown or fl._async_tearing_down:
           raise FleetError(
               f"fleet has torn down; cannot acquire on {cluster.name!r}")
         fl._handles[id(handle)] = handle
@@ -388,25 +397,35 @@ class AsyncSandboxFleet:
             fl._handles.pop(id(handle), None)
           cluster.release_claim()
         fl._claims_reserved = max(0, fl._claims_reserved - 1)
-      if claim is not None:
+      if claim is not None or created_pool:
         async def _cleanup_failed_acquire() -> None:
-          try:
-            await claim.arelease()
-          except Exception:  # noqa: BLE001
-            logger.warning(
-                "failed to release async batch member after acquire error",
-                exc_info=True)
-          if sandbox is not None:
-            close_conn = getattr(sandbox, "close_connection", None)
-            if callable(close_conn):
-              try:
-                res = close_conn()
-                if inspect.isawaitable(res):
-                  await res
-              except Exception:  # noqa: BLE001
-                logger.warning(
-                    "failed to close async sandbox connection after acquire error",
-                    exc_info=True)
+          if claim is not None:
+            try:
+              await claim.arelease()
+            except Exception:  # noqa: BLE001
+              logger.warning(
+                  "failed to release async batch member after acquire error",
+                  exc_info=True)
+            if sandbox is not None:
+              close_conn = getattr(sandbox, "close_connection", None)
+              if callable(close_conn):
+                try:
+                  res = close_conn()
+                  if inspect.isawaitable(res):
+                    await res
+                except Exception:  # noqa: BLE001
+                  logger.warning(
+                      "failed to close async sandbox connection after acquire error",
+                      exc_info=True)
+          if created_pool:
+            try:
+              await self._to_thread(
+                  fl._rollback_ondemand_pool, cluster, task.image, pool
+              )
+            except Exception:  # noqa: BLE001
+              logger.warning(
+                  "failed to roll back on-demand pool after async acquire error",
+                  exc_info=True)
 
         cleanup_task = asyncio.create_task(_cleanup_failed_acquire())
         self._bg_tasks.add(cleanup_task)
@@ -452,24 +471,40 @@ class AsyncSandboxFleet:
           return await self._acquire_native_batch(
               task, cluster, entry.pool, entry, pod_annotations=pod_annotations
           )
-      elif not fl.config.adopt_existing:
-        candidate = fl.placement.select(task.image, fl.registry)
-        key = (candidate.name, task.image)
+      elif fl.config.adopt_existing:
         with fl._lock:
-          already_ondemand = key in fl._ondemand
-          if already_ondemand:
-            fl._ondemand_shared.add(key)
-        if already_ondemand and self._can_use_native_async_batch(candidate):
-          return await self._acquire_native_batch(
-              task, candidate, fl.config.pool_name(task.image), None,
-              pod_annotations=pod_annotations,
-          )
-      else:
+          if fl._torndown or fl._async_tearing_down:
+            raise FleetError(
+                "fleet was torn down; call setup() before acquiring again"
+            )
+          hard = fl.config.max_live_sandboxes
+          if hard and fl._claims_reserved >= hard:
+            raise FleetOvercommitError(
+                f"max_live_sandboxes={hard} reached: {fl._claims_reserved} claims "
+                "live or in flight on this fleet. Release handles before acquiring "
+                "more, or raise the limit."
+            )
         raise PoolNotFoundError(
             f"adopt_existing: no adopted warm pool for image '{task.image}', and "
             f"adopt mode does not create one. The image is not in the current plan "
             f"— reload tasks and re-run plan(), or point the fleet at a namespace "
             f"that serves it.")
+      else:
+        with fl._lock:
+          if fl._torndown or fl._async_tearing_down:
+            raise FleetError(
+                "fleet was torn down; call setup() before acquiring again"
+            )
+        candidate = fl.placement.select(task.image, fl.registry)
+        if self._can_use_native_async_batch(candidate):
+          return await self._acquire_native_batch(
+              task,
+              candidate,
+              fl.config.pool_name(task.image),
+              None,
+              on_demand=True,
+              pod_annotations=pod_annotations,
+          )
 
     loop = asyncio.get_running_loop()
     loop_thread = threading.current_thread()
@@ -725,43 +760,100 @@ class AsyncSandboxFleet:
   async def teardown(self, delete_namespace: bool = False, *, verify: bool = False):
     fl = self._fleet
     async_release_err: Exception | None = None
-    if self._async_batch_claims is not None and not fl._torndown:
-      deferred_async: dict[int, list[SandboxHandle]] = {}
-      if (
-          "release_all" not in self.__dict__
-          and type(self).release_all is AsyncSandboxFleet.release_all
-          and "release" not in self.__dict__
-          and type(self).release is AsyncSandboxFleet.release
-          and "release" not in fl.__dict__
-          and type(fl).release is SandboxFleet.release
-      ):
-        async_handles = [
-            h for h in self.handles()
-            if isinstance(h._batch_claim, AsyncBatchClaim)
-            and "release" not in h.__dict__
-            and type(h).release is SandboxHandle.release
-            and "release_member" not in getattr(h._batch_claim.batch, "__dict__", {})
-            and h._batch_claim.batch.err() is None
-        ]
-        if async_handles:
-          with fl._lock:
-            claimed = [
-                h for h in async_handles if fl._handles.pop(id(h), None) is not None
-            ]
-          if claimed:
-            for h in claimed:
-              assert h._batch_claim is not None
-              deferred_async.setdefault(id(h._batch_claim.batch), []).append(h)
-            await self._afinalize_claimed_batch_handles(claimed)
-      failed_async = await self._async_batch_claims.release_all()
-      for bid, exc in failed_async.items():
-        failed_handles = deferred_async.get(bid)
-        if not failed_handles:
-          continue
-        if async_release_err is None:
-          async_release_err = exc
+    do_async_drain = False
+    if self._async_batch_claims is not None:
+      with fl._lock:
+        if not fl._torndown and not fl._async_tearing_down:
+          fl._async_tearing_down = True
+          do_async_drain = True
+      if do_async_drain:
+        self._async_batch_claims.mark_closing()
+    try:
+      if do_async_drain and self._async_batch_claims is not None:
+        deferred_async: dict[int, list[SandboxHandle]] = {}
+        if (
+            "release_all" not in self.__dict__
+            and type(self).release_all is AsyncSandboxFleet.release_all
+            and "release" not in self.__dict__
+            and type(self).release is AsyncSandboxFleet.release
+            and "release_all" not in fl.__dict__
+            and type(fl).release_all is SandboxFleet.release_all
+            and "release" not in fl.__dict__
+            and type(fl).release is SandboxFleet.release
+        ):
+          by_batch: dict[int, list[SandboxHandle]] = {}
+          excluded_batches: set[int] = set()
+          for h in self.handles():
+            bc = h._batch_claim
+            if not isinstance(bc, AsyncBatchClaim):
+              continue
+            if (
+                "release" not in h.__dict__
+                and type(h).release is SandboxHandle.release
+                and "release_member" not in getattr(bc.batch, "__dict__", {})
+                and bc.batch.err() is None
+            ):
+              by_batch.setdefault(id(bc.batch), []).append(h)
+            else:
+              excluded_batches.add(id(bc.batch))
+          bulk_candidates = [
+              h
+              for bid, gh in by_batch.items()
+              if bid not in excluded_batches
+              for h in gh
+          ]
+          if bulk_candidates:
+            with fl._lock:
+              claimed = [
+                  h for h in bulk_candidates
+                  if fl._handles.pop(id(h), None) is not None
+              ]
+            if claimed:
+              for h in claimed:
+                assert h._batch_claim is not None
+                deferred_async.setdefault(id(h._batch_claim.batch), []).append(h)
+              await self._afinalize_claimed_batch_handles(claimed)
+        failed_async = await self._async_batch_claims.release_all()
+        for bid, exc in failed_async.items():
+          failed_handles = deferred_async.get(bid)
+          if not failed_handles:
+            continue
+          if async_release_err is None:
+            async_release_err = exc
+          if fl._shared_run_id:
+            for h in failed_handles:
+              cluster_obj = fl.registry.get(h.cluster_name)
+              helper = getattr(cluster_obj, "_async_k8s_helper", None)
+              try:
+                if helper is not None:
+                  await helper.delete_sandbox_claim(
+                      h.claim_name,
+                      cluster_obj.namespace,
+                      _request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS,
+                      log_level=logging.DEBUG,
+                      batch=True,
+                  )
+                else:
+                  await self._to_thread(
+                      cluster_obj.resources.delete_claim,
+                      h.claim_name,
+                      request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS,
+                  )
+              except Exception:  # noqa: BLE001
+                logger.warning(
+                    "teardown: fallback claim delete failed for %s on %s",
+                    h.claim_name, h.cluster_name, exc_info=True,
+                )
+      res = await self._to_thread(
+          self._fleet.teardown,
+          delete_namespace,
+          verify=(verify and async_release_err is None),
+      )
+    finally:
+      if do_async_drain:
+        with fl._lock:
+          fl._async_tearing_down = False
       await self._aclose_clusters()
-    res = await self._to_thread(self._fleet.teardown, delete_namespace, verify=verify)
     if async_release_err is not None:
       raise async_release_err
     return res
@@ -815,6 +907,95 @@ class AsyncSandboxFleet:
         and type(fl).release_all is SandboxFleet.release_all
     )
     entered = 0
+    deferred_tail: list[tuple[int, str, str, float, SandboxHandle]] = []
+
+    async def _release_deferred_tail(*, capture_errors: bool) -> None:
+      if not deferred_tail:
+        return
+      items = list(deferred_tail)
+      deferred_tail.clear()
+      item_by_hid = {id(h): (idx, cl, fm, start_t, h) for idx, cl, fm, start_t, h in items}
+      with fl._lock:
+        active_by_batch: dict[int, set[int]] = {}
+        for live_h in fl._handles.values():
+          if live_h._batch_claim is not None:
+            active_by_batch.setdefault(id(live_h._batch_claim.batch), set()).add(id(live_h))
+
+      by_batch: dict[int, tuple[object, str, list[SandboxHandle]]] = {}
+      remaining: list[SandboxHandle] = []
+      for _idx, cl, _fm, _st, h in items:
+        bc = h._batch_claim
+        if (
+            isinstance(bc, AsyncBatchClaim)
+            and "release" not in h.__dict__
+            and type(h).release is SandboxHandle.release
+            and "release_member" not in getattr(bc.batch, "__dict__", {})
+            and bc.batch.err() is None
+            and callable(getattr(bc.batch, "release_members", None))
+            and active_by_batch.get(id(bc.batch), set()).issubset(item_by_hid.keys())
+        ):
+          key = id(bc.batch)
+          if key not in by_batch:
+            by_batch[key] = (bc.batch, cl, [])
+          by_batch[key][2].append(h)
+        else:
+          remaining.append(h)
+
+      bulk_groups: list[tuple[object, str, list[SandboxHandle]]] = []
+      for _key, (b_obj, cname, gh) in by_batch.items():
+        if len(gh) >= 2:
+          bulk_groups.append((b_obj, cname, gh))
+        else:
+          remaining.extend(gh)
+
+      rel_errors: dict[int, Exception] = {}
+
+      async def _rel_bulk(b_obj, cname: str, gh: list[SandboxHandle]) -> None:
+        with fl._lock:
+          claimed = [h for h in gh if fl._handles.pop(id(h), None) is not None]
+        if not claimed:
+          return
+        try:
+          with obs.phase("release", cluster=cname):
+            await getattr(b_obj, "release_members")()
+        except Exception as e:
+          with fl._lock:
+            for h in claimed:
+              fl._handles[id(h)] = h
+          if not capture_errors:
+            raise
+          for h in claimed:
+            rel_errors[id(h)] = e
+          return
+        except BaseException:
+          with fl._lock:
+            for h in claimed:
+              fl._handles[id(h)] = h
+          raise
+        await self._afinalize_claimed_batch_handles(claimed)
+
+      async def _rel_one(h: SandboxHandle) -> None:
+        try:
+          await self.release(h)
+        except Exception as e:
+          if not capture_errors:
+            raise
+          rel_errors[id(h)] = e
+
+      coros = [_rel_bulk(b_obj, cname, gh) for b_obj, cname, gh in bulk_groups]
+      coros.extend(_rel_one(h) for h in remaining)
+      await asyncio.gather(*coros)
+
+      if capture_errors:
+        now = time.monotonic()
+        for idx, cl, fm, start_t, h in items:
+          err = rel_errors.get(id(h))
+          if err is not None:
+            logger.error("task %s release failed: %s", tasks[idx].id, err)
+            results[idx] = err
+            obs.task_done(cl, fm, "error", now - start_t)
+          else:
+            obs.task_done(cl, fm, "ok", now - start_t)
 
     async def _one(i, task):
       nonlocal entered
@@ -822,29 +1003,45 @@ class AsyncSandboxFleet:
       t0 = time.monotonic()
       status = "ok"
       cluster = "-"
+      deferred = False
       async with sem:
         entered += 1
         try:
           handle = await self.acquire(task)
           cluster = handle.cluster_name
+          task_failed = False
           try:
             with obs.phase("process", cluster=cluster, family=fam):
               results[i] = await self._call(process_fn, task, handle)
+          except BaseException:
+            task_failed = True
+            raise
           finally:
-            if not (can_defer_tail and entered >= total and handle._batch_claim is not None):
+            if (
+                not task_failed
+                and can_defer_tail
+                and entered >= total
+                and handle._batch_claim is not None
+            ):
+              deferred = True
+              deferred_tail.append((i, cluster, fam, t0, handle))
+            else:
               await self.release(handle)
         except Exception as e:  # noqa: BLE001
           status = "error"
           logger.error("task %s failed: %s", task.id, e)
           results[i] = e
         finally:
-          obs.task_done(cluster, fam, status, time.monotonic() - t0)
+          if not deferred:
+            obs.task_done(cluster, fam, status, time.monotonic() - t0)
 
     try:
       await asyncio.gather(*(_one(i, t) for i, t in enumerate(tasks)))
+      if deferred_tail:
+        await _release_deferred_tail(capture_errors=True)
     finally:
-      if can_defer_tail and self.handles():
-        await self.release_all()
+      if deferred_tail:
+        await asyncio.gather(_release_deferred_tail(capture_errors=False), return_exceptions=True)
     return results
 
   async def _run_windowed(self, process_fn, concurrency, window,

@@ -6552,6 +6552,60 @@ class TestReleaseAllMembers(BaseClaimBatchTest):
         self.assertNotIn("pool-b", batch._checked_pools)
         self.assertFalse(batch._warm_credit.take("pool-b"))
 
+    def test_precheck_and_seed_pools_respect_permits_inflight_and_rewarm(self):
+        batch = self.claim([BatchGroup(warmpool="pool-a", size=0)], max_in_flight=1)
+        batch._stop_background_threads()
+        api_client = k8s_client.ApiClient()
+        self.addCleanup(api_client.close)
+        real_helper = K8sHelper(api_client=api_client)
+        self.addCleanup(real_helper.close)
+        batch._client.k8s_helper = real_helper
+
+        active_lists = 0
+        max_active_lists = 0
+        lock = threading.Lock()
+
+        def tracked_wp_list(namespace, _request_timeout=None, *, deadline=None):
+            nonlocal active_lists, max_active_lists
+            self.assertIsNotNone(deadline)
+            with lock:
+                active_lists += 1
+                max_active_lists = max(max_active_lists, active_lists)
+            time.sleep(0.02)
+            with lock:
+                active_lists -= 1
+            return {f"pool-{i}": (2, "tmpl-a") for i in range(4)}
+
+        def tracked_tp_list(namespace, _request_timeout=None, *, deadline=None):
+            nonlocal active_lists, max_active_lists
+            self.assertIsNotNone(deadline)
+            with lock:
+                active_lists += 1
+                max_active_lists = max(max_active_lists, active_lists)
+            time.sleep(0.02)
+            with lock:
+                active_lists -= 1
+            return {"tmpl-a"}
+
+        with patch.object(K8sHelper, "list_sandbox_warmpool_summaries", side_effect=tracked_wp_list), \
+             patch.object(K8sHelper, "list_sandbox_template_names", side_effect=tracked_tp_list):
+            batch.precheck_pools([f"pool-{i}" for i in range(4)], 5.0)
+        self.assertEqual(max_active_lists, 1)
+        self.assertTrue(batch._warm_credit.take("pool-0"))
+        self.assertTrue(batch._warm_credit.take("pool-0"))
+        self.assertFalse(batch._warm_credit.take("pool-0"))
+
+        # Re-seeding an already-checked idle pool replenishes its credit for Epoch 2+.
+        batch.seed_checked_pools({"pool-0": 3})
+        self.assertTrue(batch._warm_credit.take("pool-0"))
+
+        # In-flight precheck failure is awaited and surfaced by concurrent precheck_pools.
+        inflight_fut: Future[None] = Future()
+        inflight_fut.set_exception(SandboxWarmPoolNotFoundError("missing pool-z"))
+        batch._prechecks["pool-z"] = inflight_fut
+        with self.assertRaises(SandboxWarmPoolNotFoundError):
+            batch.precheck_pools(["pool-z"], 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()
