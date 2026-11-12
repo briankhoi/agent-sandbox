@@ -6612,6 +6612,67 @@ class TestAsyncReleaseAllMembers(BaseClaimBatchTest):
         helper.delete_sandbox_claim.assert_not_called()
         self.assertEqual(batch._state._pending_deletes, {})
 
+    async def test_multi_pool_refresh_warm_credit_coalesces_into_single_list_on_real_async_helper(self):
+        from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
+
+        batch = await self.claim(
+            [BatchGroup(warmpool="pool-a", size=0), BatchGroup(warmpool="pool-b", size=0)],
+            max_in_flight=4,
+        )
+        real_helper = AsyncK8sHelper(api_client=MagicMock())
+        batch._client.k8s_helper = real_helper
+        while batch._warm_credit.take("pool-a"):
+            pass
+        while batch._warm_credit.take("pool-b"):
+            pass
+        batch._warm_credit._read_at["pool-a"] = -100.0
+        batch._warm_credit._read_at["pool-b"] = -100.0
+
+        with patch.object(
+            AsyncK8sHelper,
+            "list_sandbox_warmpools_ready",
+            new=AsyncMock(return_value={"pool-a": 6, "pool-b": 5}),
+        ) as m_list, patch.object(
+            AsyncK8sHelper, "get_sandbox_warmpool", new=AsyncMock()
+        ) as m_get:
+            await asyncio.gather(
+                batch._refresh_warm_credit("pool-a", time.monotonic() + 10.0, 0),
+                batch._refresh_warm_credit("pool-b", time.monotonic() + 10.0, 0),
+            )
+            self.assertEqual(m_list.await_count, 1)
+            m_get.assert_not_awaited()
+            self.assertTrue(batch._warm_credit.take("pool-a"))
+            self.assertTrue(batch._warm_credit.take("pool-b"))
+
+    async def test_precheck_pools_fences_against_concurrent_release_group(self):
+        helper = self.cluster.helper
+        batch = await self.claim([BatchGroup(warmpool="pool-a", size=0)], max_in_flight=4)
+        entered = asyncio.Event()
+        gate = asyncio.Event()
+
+        async def slow_get(name, namespace, _request_timeout=None):
+            if name == "pool-b":
+                entered.set()
+                await gate.wait()
+            return {
+                "spec": {"sandboxTemplateRef": {"name": "tmpl-a"}},
+                "status": {"readyReplicas": 5},
+            }
+
+        async def ok_tmpl(name, namespace, _request_timeout=None):
+            return {"metadata": {"name": name}}
+
+        helper.get_sandbox_warmpool.side_effect = slow_get
+        helper.get_sandbox_template.side_effect = ok_tmpl
+        batch._state._declared_pools.add("pool-b")
+        precheck_task = asyncio.create_task(batch.precheck_pools(["pool-b"], 5.0))
+        await asyncio.wait_for(entered.wait(), 5)
+        await batch.release_group("pool-b")
+        gate.set()
+        await asyncio.wait_for(precheck_task, 5)
+        self.assertNotIn("pool-b", batch._checked_pools)
+        self.assertFalse(batch._warm_credit.take("pool-b"))
+
 
 if __name__ == "__main__":
     unittest.main()

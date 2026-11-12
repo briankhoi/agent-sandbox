@@ -36,6 +36,8 @@ Ready long before ``initial_delay_s`` elapses, so only cold starts are polled.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import threading
 import time
@@ -342,6 +344,8 @@ class BatchWatchdog(threading.Thread):
       batch: Any,
       policy: "FailFastPolicy",
       record_verdict: Any,
+      *,
+      loop: asyncio.AbstractEventLoop | None = None,
   ) -> None:
     super().__init__(
         name=f"asrl-batch-failfast-{getattr(batch, 'batch_id', 'batch')}",
@@ -351,6 +355,7 @@ class BatchWatchdog(threading.Thread):
     self.batch = batch
     self.policy = policy
     self._record_verdict = record_verdict
+    self._loop = loop
     self._stop_evt = threading.Event()
     self._decide_lock = threading.Lock()
     self._in_flight_acquires = 0
@@ -397,7 +402,7 @@ class BatchWatchdog(threading.Thread):
   def _has_waiter(waiters: Any, b_lock: Any, claim_name: str) -> bool:
     if not isinstance(waiters, dict):
       return True
-    if b_lock is not None:
+    if b_lock is not None and hasattr(b_lock, "__enter__"):
       with b_lock:
         return claim_name in waiters
     return claim_name in waiters
@@ -431,7 +436,7 @@ class BatchWatchdog(threading.Thread):
     waiters = getattr(self.batch, "_acquire_waiters", None)
     b_lock = getattr(self.batch, "_lock", None)
     if in_flight > 0 and isinstance(waiters, dict):
-      if b_lock is not None:
+      if b_lock is not None and hasattr(b_lock, "__enter__"):
         with b_lock:
           tracked.update(waiters.keys())
       else:
@@ -509,7 +514,15 @@ class BatchWatchdog(threading.Thread):
           "batch claim %s will not start (%s on pod %s): %s; releasing member",
           claim_name, verdict.reason, verdict.pod_name, verdict.message)
       try:
-        self.batch.release_member(cur)
+        rel_fn = self.batch.release_member
+        if inspect.iscoroutinefunction(rel_fn):
+          if self._loop is not None and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(rel_fn(cur), self._loop).result(timeout=15.0)
+          else:
+            self.cluster.resources.delete_claim(
+                claim_name, request_timeout=_REQUEST_TIMEOUT)
+        else:
+          rel_fn(cur)
       except Exception as exc:  # noqa: BLE001
         if any(b.__name__ == "BatchError" for b in type(exc).__mro__):
           try:

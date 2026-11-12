@@ -6490,6 +6490,68 @@ class TestReleaseAllMembers(BaseClaimBatchTest):
         helper.delete_sandbox_claim.assert_not_called()
         self.assertEqual(batch._state._pending_deletes, {})
 
+    def test_multi_pool_refresh_warm_credit_coalesces_into_single_list_on_real_k8s_helper(self):
+        from k8s_agent_sandbox.k8s_helper import K8sHelper
+
+        batch = self.claim(
+            [BatchGroup(warmpool="pool-a", size=0), BatchGroup(warmpool="pool-b", size=0)],
+            max_in_flight=4,
+        )
+        api_client = k8s_client.ApiClient()
+        self.addCleanup(api_client.close)
+        real_helper = K8sHelper(api_client=api_client)
+        self.addCleanup(real_helper.close)
+        batch._client.k8s_helper = real_helper
+        while batch._warm_credit.take("pool-a"):
+            pass
+        while batch._warm_credit.take("pool-b"):
+            pass
+        batch._warm_credit._read_at["pool-a"] = -100.0
+        batch._warm_credit._read_at["pool-b"] = -100.0
+
+        with patch.object(
+            K8sHelper,
+            "list_sandbox_warmpools_ready",
+            return_value={"pool-a": 4, "pool-b": 3},
+        ) as m_list, patch.object(K8sHelper, "get_sandbox_warmpool") as m_get:
+            batch._refresh_warm_credit("pool-a", time.monotonic() + 10.0, 0)
+            batch._refresh_warm_credit("pool-b", time.monotonic() + 10.0, 0)
+            self.assertEqual(m_list.call_count, 1)
+            m_get.assert_not_called()
+            self.assertTrue(batch._warm_credit.take("pool-a"))
+            self.assertTrue(batch._warm_credit.take("pool-b"))
+
+    def test_precheck_pools_fences_against_concurrent_release_group(self):
+        helper = self.cluster.helper
+        batch = self.claim([BatchGroup(warmpool="pool-a", size=0)], max_in_flight=4)
+        entered = threading.Event()
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+
+        def slow_get(name, namespace, _request_timeout=None):
+            if name == "pool-b":
+                entered.set()
+                gate.wait(5)
+            return {
+                "spec": {"sandboxTemplateRef": {"name": "tmpl-a"}},
+                "status": {"readyReplicas": 5},
+            }
+
+        helper.get_sandbox_warmpool.side_effect = slow_get
+        helper.get_sandbox_template.side_effect = lambda name, namespace, _request_timeout=None: {
+            "metadata": {"name": name}
+        }
+        # Simulate pool-b known to state then released mid-precheck
+        batch._state._declared_pools.add("pool-b")
+        with ThreadPoolExecutor(1) as pool:
+            fut = pool.submit(batch.precheck_pools, ["pool-b"], 5.0)
+            self.assertTrue(entered.wait(5))
+            batch.release_group("pool-b")
+            gate.set()
+            fut.result(5)
+        self.assertNotIn("pool-b", batch._checked_pools)
+        self.assertFalse(batch._warm_credit.take("pool-b"))
+
 
 if __name__ == "__main__":
     unittest.main()

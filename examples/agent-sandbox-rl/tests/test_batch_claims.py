@@ -15,10 +15,11 @@
 """Tests for FleetConfig(claim_mode="batch"): acquire/release/teardown through one
 SDK batch per cluster, against a fake batch."""
 
+import asyncio
 import threading
 import time
 import types
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from k8s_agent_sandbox import BatchError, Member, MemberState
@@ -1675,3 +1676,416 @@ def test_teardown_surfaces_failed_batch_release_and_cleans_shared_run_id_claims(
   assert [h.claim_name for h in f2.handles()] == [hs2[0].claim_name]
   hs2[0].release = SandboxHandle.release.__get__(hs2[0], SandboxHandle)
   f2.teardown()
+
+
+class _FakeAsyncBatch:
+  def __init__(self, batch_id: str, groups, **kwargs):
+    self.batch_id = batch_id
+    self.groups = list(groups)
+    self.kwargs = kwargs
+    self.namespace = kwargs.get("namespace", "default")
+    self._seq = 0
+    self._members: dict[str, Member] = {}
+    self.acquired: list[tuple[str, float | None]] = []
+    self.released_members: list[str] = []
+    self.release_members_calls = 0
+    self.released = False
+    self.error: Exception | None = None
+    self._acquire_waiters: dict[str, object] = {}
+    self._lock = asyncio.Lock()
+
+  def err(self) -> Exception | None:
+    return self.error
+
+  def get_member(self, claim_name: str) -> Member | None:
+    return self._members.get(claim_name)
+
+  async def acquire(self, warmpool: str, timeout: float | None = None, *,
+                    pod_annotations: dict[str, str] | None = None) -> Member:
+    await asyncio.sleep(0)
+    self._seq += 1
+    cname = f"{self.batch_id}-{self._seq}"
+    m = Member(
+        claim_name=cname,
+        sandbox_name=f"sb-{cname}",
+        warmpool=warmpool,
+        pod_ips=("10.2.0.5",),
+        state=MemberState.READY,
+    )
+    self._members[cname] = m
+    self.acquired.append((warmpool, timeout))
+    return m
+
+  async def connect(self, member: Member):
+    sb = MagicMock(
+        claim_name=member.claim_name,
+        sandbox_id=member.sandbox_name,
+        is_active=True,
+    )
+    sb.close_connection = AsyncMock()
+    return sb
+
+  async def release_member(self, member: Member) -> None:
+    if self.error is not None or self.released:
+      raise BatchError("stopped")
+    self._members.pop(member.claim_name, None)
+    self.released_members.append(member.claim_name)
+
+  async def release_members(self) -> None:
+    if self.error is not None or self.released:
+      raise BatchError("stopped")
+    self._members.clear()
+    self.release_members_calls += 1
+
+  async def release(self) -> None:
+    self.released = True
+    self._members.clear()
+
+
+async def test_native_async_batch_acquires_without_threads_and_bulk_releases_wave():
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import ClusterConfig
+
+  c = Cluster(
+      ClusterConfig(name="native-c1", namespace="ns1"),
+      api_client=MagicMock(),
+      async_api_client=MagicMock(),
+  )
+  c.resources = MagicMock()
+  c.resources.labels = {}
+  c.resources.namespace = "ns1"
+  c.resources.ensure_template.return_value = "tmpl"
+  c.resources.create_warmpool.return_value = True
+  c.resources.wait_for_pool_ready.return_value = True
+  c.resources.list_claims.return_value = []
+  c.resources.list_leases.return_value = []
+  c.resources.list_warmpools.return_value = []
+  c.resources.list_templates.return_value = []
+  c.resources.count_pods.return_value = 0
+
+  async_batches: list[_FakeAsyncBatch] = []
+  fake_async_client = MagicMock()
+
+  async def _claim_batch(groups, **kwargs):
+    b = _FakeAsyncBatch(f"ab-{len(async_batches) + 1}", groups, **kwargs)
+    async_batches.append(b)
+    return b
+
+  fake_async_client.claim_batch = AsyncMock(side_effect=_claim_batch)
+  fake_async_client.close = AsyncMock()
+  c._async_sandbox_client = fake_async_client
+  c._async_loop = asyncio.get_running_loop()
+  c._async_init_lock = asyncio.Lock()
+
+  af = AsyncSandboxFleet(
+      FleetConfig(
+          claim_mode="batch",
+          max_concurrent=8,
+          fail_fast=FailFastPolicy(enabled=False),
+      ),
+      registry=ClusterRegistry([c]),
+  )
+  af.load_tasks(["img-a"] * 4 + ["img-b"] * 4)
+  af._fleet.plan()
+  await af._prepare_async_batch_clusters(af._fleet.plan_.entries)
+  assert len(async_batches) == 1
+  # Zero sync batches opened on native-async cluster.
+  assert af._fleet._batch_claims.has_live_batch("native-c1") is False
+  # Zero ThreadPoolExecutor instantiated during native async acquire + process + bulk release!
+  assert af._executor is None
+
+  seen_threads: set[int] = set()
+
+  async def _async_proc(task, handle):
+    seen_threads.add(threading.get_ident())
+    return handle.pod_ip
+
+  out = await af._process_parallel(af.tasks, _async_proc, concurrency=8)
+  assert out == ["10.2.0.5"] * 8
+  assert af._executor is None
+  assert seen_threads == {threading.get_ident()}
+  # Wave of 8 @ concurrency=8 deferred individual deletes into 1 bulk release_members()!
+  assert async_batches[0].released_members == []
+  assert async_batches[0].release_members_calls == 1
+  assert af.handles() == []
+  assert af._fleet._claims_reserved == 0
+  assert c.active_claims == 0
+
+  await af.teardown()
+  assert async_batches[0].released is True
+  await af.aclose()
+
+
+def test_batch_claim_config_rl_defaults_and_explicit_none_override():
+  cfg = BatchClaimConfig()
+  assert cfg.create_rps == 300.0
+  assert cfg.max_in_flight == 512
+  explicit_sdk = BatchClaimConfig(create_rps=None, max_in_flight=None)
+  assert explicit_sdk.create_rps is None
+  assert explicit_sdk.max_in_flight is None
+
+
+@pytest.mark.asyncio
+async def test_async_batch_handle_refresh_and_cancellation_cleanup(make_cluster):
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import ClusterConfig
+
+  c = Cluster(
+      ClusterConfig(name="refresh-c1", namespace="ns1"),
+      api_client=MagicMock(),
+      async_api_client=MagicMock(),
+  )
+  c.resources = MagicMock()
+  c.resources.labels = {}
+  c.resources.namespace = "ns1"
+  c.resources.list_claims.return_value = []
+  c.resources.list_leases.return_value = []
+  c.resources.list_warmpools.return_value = []
+  c.resources.list_templates.return_value = []
+  c.resources.count_pods.return_value = 0
+
+  sync_sb = MagicMock()
+  sync_sb.get_pod_name.return_value = "pod-resumed-1"
+  sync_sb.get_pod_ip.return_value = "10.9.0.2"
+  sync_sb.is_active = True
+  c._sandbox_client = MagicMock()
+  c._sandbox_client.get_sandbox.return_value = sync_sb
+
+  connect_gate = asyncio.Event()
+  connect_entered = asyncio.Event()
+  released_claims: list[str] = []
+
+  class _CancelOrRefreshBatch:
+    def __init__(self, batch_id: str, groups, **_kwargs):
+      self.batch_id = batch_id
+      self.groups = list(groups)
+      self._seq = 0
+      self.released = False
+
+    def err(self):
+      return None
+
+    async def acquire(self, pool: str, *, timeout: float, pod_annotations=None):
+      self._seq += 1
+      return Member(
+          claim_name=f"cl-{self._seq}",
+          warmpool=pool,
+          state=MemberState.READY,
+          sandbox_name=f"sb-{self._seq}",
+          pod_name=f"pod-{self._seq}",
+          pod_ips=("10.9.0.1",),
+      )
+
+    def get_member(self, claim_name: str):
+      return None
+
+    async def connect(self, member: Member):
+      if member.claim_name == "cl-2":
+        connect_entered.set()
+        await connect_gate.wait()
+      sb = MagicMock(
+          claim_name=member.claim_name,
+          sandbox_id=member.sandbox_name,
+          is_active=True,
+      )
+      sb.get_pod_name = AsyncMock(return_value="async-pod")
+      sb.get_pod_ip = AsyncMock(return_value="10.9.0.1")
+      sb.close_connection = AsyncMock()
+      return sb
+
+    async def release_member(self, member: Member):
+      released_claims.append(member.claim_name)
+
+    async def release_members(self):
+      return None
+
+    async def release(self):
+      self.released = True
+
+  fake_async_client = MagicMock()
+  fake_async_client.claim_batch = AsyncMock(
+      side_effect=lambda groups, **kw: _CancelOrRefreshBatch("cr-1", groups, **kw)
+  )
+  fake_async_client.close = AsyncMock()
+  c._async_sandbox_client = fake_async_client
+  c._async_loop = asyncio.get_running_loop()
+  c._async_init_lock = asyncio.Lock()
+
+  af = AsyncSandboxFleet(
+      FleetConfig(claim_mode="batch", max_concurrent=4, max_live_sandboxes=1,
+                  fail_fast=FailFastPolicy(enabled=False)),
+      registry=ClusterRegistry([c]),
+  )
+  t_list = af.load_tasks(["img-a", "img-a"])
+  await af.plan()
+  af._fleet._warmed["img-a"] = 2
+  await af._prepare_async_batch_clusters(af._fleet.plan_.entries)
+
+  # 1. refresh() on an AsyncSandbox handle switches cleanly to direct sync sandbox without setting coroutine as pod_name.
+  h1 = await af.acquire(t_list[0])
+  h1.refresh()
+  assert h1.pod_name == "pod-resumed-1"
+  assert isinstance(h1.pod_name, str)
+  await af.release(h1)
+  assert af._fleet._claims_reserved == 0
+
+  # 2. Cancelling acquire() mid-connect releases the claim in background AND frees _claims_reserved immediately.
+  t_cancel = asyncio.create_task(af.acquire(t_list[1]))
+  await asyncio.wait_for(connect_entered.wait(), 2.0)
+  assert af._fleet._claims_reserved == 1
+  t_cancel.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await t_cancel
+  await asyncio.sleep(0.02)
+  assert af._fleet._claims_reserved == 0
+  assert released_claims == ["cl-1", "cl-2"]
+  connect_gate.set()
+  await af.teardown()
+  await af.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_precheck_pools_uses_bulk_lists_and_windowed_fleet_prechecks_windows(make_cluster):
+  from unittest.mock import patch
+  from kubernetes_asyncio import client as async_k8s_client
+  from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
+  from k8s_agent_sandbox.async_sandbox_batch import _precheck_pools as async_precheck_pools
+
+  helper = AsyncK8sHelper.__new__(AsyncK8sHelper)
+  helper._initialized = True
+  helper._init_lock = asyncio.Lock()
+  api = async_k8s_client.CustomObjectsApi.__new__(async_k8s_client.CustomObjectsApi)
+  helper.custom_objects_api = api
+
+  list_calls: list[str] = []
+
+  async def _fake_list(_self, *, plural, **_kwargs):
+    list_calls.append(plural)
+    if plural == "sandboxwarmpools":
+      return {
+          "metadata": {},
+          "items": [
+              {
+                  "metadata": {"name": f"pool-{i}"},
+                  "spec": {"sandboxTemplateRef": {"name": f"tpl-{i}"}},
+                  "status": {"readyReplicas": i + 1},
+              }
+              for i in range(5)
+          ],
+      }
+    return {
+        "metadata": {},
+        "items": [{"metadata": {"name": f"tpl-{i}"}} for i in range(5)],
+    }
+
+  with patch.object(async_k8s_client.CustomObjectsApi, "list_namespaced_custom_object", _fake_list):
+    ready = await async_precheck_pools(
+        helper,
+        [f"pool-{i}" for i in range(5)],
+        "ns-1",
+        max_concurrency=8,
+    )
+  assert ready == {f"pool-{i}": i + 1 for i in range(5)}
+  assert sorted(list_calls) == ["sandboxtemplates", "sandboxwarmpools"]
+
+  # Also verify windowed AsyncSandboxFleet calls precheck_pools on subsequent windows.
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import ClusterConfig
+
+  c = Cluster(
+      ClusterConfig(name="win-c1", namespace="ns1"),
+      api_client=MagicMock(),
+      async_api_client=MagicMock(),
+  )
+  c.resources = MagicMock()
+  c.resources.labels = {}
+  c.resources.namespace = "ns1"
+  c.resources.list_claims.return_value = []
+  c.resources.list_leases.return_value = []
+  c.resources.list_warmpools.return_value = []
+  c.resources.list_templates.return_value = []
+  c.resources.count_pods.return_value = 0
+  seeded_windows: list[dict[str, int]] = []
+  prechecked_windows: list[list[str]] = []
+
+  class _FakeWindowAsyncBatch:
+    def __init__(self, batch_id: str, groups, **kwargs):
+      self.batch_id = batch_id
+      self.groups = list(groups)
+      self.released = False
+
+    def err(self):
+      return None
+
+    async def seed_checked_pools(self, ready_by_pool):
+      seeded_windows.append(dict(ready_by_pool))
+
+    async def precheck_pools(self, pools, timeout=None):
+      prechecked_windows.append(list(pools))
+
+    async def acquire(self, pool: str, *, timeout: float, pod_annotations=None):
+      return Member(
+          claim_name=f"cl-{pool}",
+          warmpool=pool,
+          state=MemberState.READY,
+          sandbox_name=f"sb-{pool}",
+          pod_name=f"pod-{pool}",
+          pod_ips=("10.3.0.9",),
+      )
+
+    def get_member(self, claim_name: str):
+      return None
+
+    async def connect(self, member: Member):
+      sb = MagicMock(
+          claim_name=member.claim_name,
+          sandbox_id=member.sandbox_name,
+          is_active=True,
+      )
+      sb.close_connection = AsyncMock()
+      return sb
+
+    async def release_members(self):
+      return None
+
+    async def release_member(self, member):
+      return None
+
+    async def release(self):
+      self.released = True
+
+  fake_async_client = MagicMock()
+  fake_async_client.claim_batch = AsyncMock(
+      side_effect=lambda groups, **kw: _FakeWindowAsyncBatch("wb-1", groups, **kw)
+  )
+  fake_async_client.close = AsyncMock()
+  c._async_sandbox_client = fake_async_client
+  c._async_loop = asyncio.get_running_loop()
+  c._async_init_lock = asyncio.Lock()
+
+  af = AsyncSandboxFleet(
+      FleetConfig(
+          claim_mode="batch",
+          max_concurrent=4,
+          window_size=2,
+          fail_fast=FailFastPolicy(enabled=False),
+      ),
+      registry=ClusterRegistry([c]),
+  )
+  af.load_tasks(["img-0", "img-1", "img-2", "img-3"])
+  af._fleet.warm_images = MagicMock(
+      side_effect=lambda imgs, **_kw: af._fleet._warmed.update({img: 1 for img in imgs})
+  )
+  af._fleet.unwarm_images = MagicMock()
+  af._fleet.preflight = MagicMock()
+
+  async def _noop_proc(_t, h):
+    return h.pod_name
+
+  out = await af.run(_noop_proc, strategy="sliding", concurrency=2)
+  assert len(out) == 4 and all(isinstance(x, str) and x.startswith("sb-pool-") for x in out)
+  # Window 0 opened claim_batch with 2 pools; Window 1 seeded its 2 warm_images-verified pools with 0 extra LISTs!
+  assert len(seeded_windows) == 1
+  assert len(seeded_windows[0]) == 2
+  assert prechecked_windows == []
+  await af.aclose()

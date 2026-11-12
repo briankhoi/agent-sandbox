@@ -22,7 +22,7 @@ import threading
 import time
 import weakref
 from collections import Counter, OrderedDict
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -33,6 +33,7 @@ from kubernetes.client import V1Lease, V1LeaseSpec, V1ObjectMeta
 from kubernetes.client.exceptions import ApiException
 
 from . import batch_state, batch_utils
+from .k8s_helper import K8sHelper
 from .constants import (
     BATCH_GROUP_LABEL,
     BATCH_GROUP_MIN_READY_ANNOTATION,
@@ -314,6 +315,7 @@ class SandboxBatch:
         self._active_creates: Counter[int] = Counter()
         # One per pool, so concurrent acquires wait for one read of the pool's Ready count.
         self._credit_refresh_locks: dict[str, threading.Lock] = {}
+        self._bulk_refresh_lock = threading.Lock()
         # The caller's labels, batch id label, and Lease UID label, which every claim carries.
         self._labels: dict[str, str] = {
             BATCH_ID_LABEL: batch_id,
@@ -1273,6 +1275,82 @@ class SandboxBatch:
             raise
         check.set_result(None)
 
+    def precheck_pools(
+        self,
+        warmpools: Iterable[str],
+        timeout: int | float | None = None,
+    ) -> None:
+        """Bulk-verifies unchecked warm pools and their templates, seeding ``WarmCredit``."""
+        wait = batch_utils.positive_number("timeout", timeout, self._quorum_timeout)
+        deadline = time.monotonic() + wait
+        with self._lock:
+            now = time.monotonic()
+            self._check_healthy(now)
+            unchecked = [
+                p for p in dict.fromkeys(warmpools)
+                if p
+                and p not in self._checked_pools
+                and p not in self._prechecks
+                and not self._state.release_sweeping(p)
+            ]
+            release_seqs = {p: self._state.pool_release_seq(p) for p in unchecked}
+        if not unchecked:
+            return
+
+        def next_timeout() -> float:
+            with self._lock:
+                now = time.monotonic()
+                self._check_healthy(now)
+                if now >= deadline:
+                    raise BatchTimeoutError(
+                        f"warm pools weren't checked within {wait:g}s"
+                    )
+                return min(
+                    float(batch_utils.BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS),
+                    deadline - now,
+                    self._lease_expires_at - now,
+                )
+
+        acquired = False
+        try:
+            while not acquired:
+                acquired = self._in_flight.acquire(timeout=next_timeout())
+            ready = _precheck_pools(
+                self._client.k8s_helper,
+                unchecked,
+                self.namespace,
+                timeout=next_timeout,
+                max_concurrency=max(2, min(16, self._max_in_flight)),
+            )
+            with self._lock:
+                self._check_healthy()
+                for p, rdy in ready.items():
+                    if (
+                        p not in self._checked_pools
+                        and self._state.pool_release_seq(p) == release_seqs[p]
+                        and not self._state.release_sweeping(p)
+                    ):
+                        self._warm_credit.record(p, rdy)
+                        self._checked_pools.add(p)
+        finally:
+            if acquired:
+                self._in_flight.release()
+
+    def seed_checked_pools(self, ready_by_pool: Mapping[str, int]) -> None:
+        """Marks caller-verified warm pools as checked and records their Ready counts."""
+        if not ready_by_pool:
+            return
+        with self._lock:
+            self._check_healthy()
+            for p, rdy in ready_by_pool.items():
+                if (
+                    p
+                    and p not in self._checked_pools
+                    and not self._state.release_sweeping(p)
+                ):
+                    self._warm_credit.record(p, max(0, int(rdy)))
+                    self._checked_pools.add(p)
+
     def _refresh_warm_credit(self, warmpool: str, deadline: float, acquire_seq: int) -> None:
         """Re-reads the pool's Ready count once callers spend its credit, at most once every
         ``BATCH_WARM_CREDIT_REFRESH_SECONDS``, while holding one of the ``max_in_flight`` slots, so
@@ -1285,10 +1363,20 @@ class SandboxBatch:
             remaining = min(deadline, self._lease_expires_at) - now
             return remaining if remaining > 0 and self._warm_credit.refresh_due(warmpool) else 0.0
 
+        helper = self._client.k8s_helper
         with self._lock:
             if (remaining := remaining_if_due()) <= 0:
                 return
-            refresh_lock = self._credit_refresh_locks.setdefault(warmpool, threading.Lock())
+            use_bulk = (
+                len(self._checked_pools) > 1
+                and type(helper) is K8sHelper
+                and "get_sandbox_warmpool" not in helper.__dict__
+            )
+            refresh_lock = (
+                self._bulk_refresh_lock
+                if use_bulk
+                else self._credit_refresh_locks.setdefault(warmpool, threading.Lock())
+            )
         if not refresh_lock.acquire(timeout=remaining):
             # Fall back to normal pacing, which checks whether a paced slot fits the deadline.
             return
@@ -1298,6 +1386,47 @@ class SandboxBatch:
             if remaining <= 0 or not self._in_flight.acquire(timeout=remaining):
                 return
             try:
+                if use_bulk:
+                    with self._lock:
+                        remaining = remaining_if_due()
+                        due_seqs = {
+                            p: (self._warm_credit.seq(p), self._state.pool_release_seq(p))
+                            for p in self._checked_pools
+                            if self._warm_credit.refresh_due(p) and not self._state.release_sweeping(p)
+                        }
+                        due_seqs.setdefault(
+                            warmpool, (self._warm_credit.seq(warmpool), acquire_seq)
+                        )
+                    if remaining <= 0:
+                        return
+                    request_timeout = min(float(batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS), remaining)
+                    try:
+                        ready_map = helper.list_sandbox_warmpools_ready(
+                            self.namespace, _request_timeout=request_timeout
+                        )
+                    except Exception as e:
+                        now = time.monotonic()
+                        if now >= deadline or now >= self._lease_expires_at:
+                            return
+                        logger.debug(
+                            f"Batch '{self.batch_id}' failed to list warm pools in '{self.namespace}': {e}"
+                        )
+                        with self._lock:
+                            if (
+                                self._state.pool_release_seq(warmpool) == acquire_seq
+                                and not self._state.release_sweeping(warmpool)
+                            ):
+                                self._warm_credit.record(warmpool, 0, seq=due_seqs[warmpool][0])
+                        return
+                    with self._lock:
+                        for p, (w_seq, r_seq) in due_seqs.items():
+                            if (
+                                self._state.pool_release_seq(p) == r_seq
+                                and not self._state.release_sweeping(p)
+                            ):
+                                self._warm_credit.record(p, ready_map.get(p, 0), seq=w_seq)
+                    return
+
                 # Snapshot the pool sequence before GET so a refresh finishing after exhaust() cannot overwrite 0.
                 with self._lock:
                     remaining = remaining_if_due()
@@ -1306,7 +1435,7 @@ class SandboxBatch:
                     return
                 request_timeout = min(float(batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS), remaining)
                 try:
-                    obj = self._client.k8s_helper.get_sandbox_warmpool(
+                    obj = helper.get_sandbox_warmpool(
                         warmpool, self.namespace, _request_timeout=request_timeout
                     )
                     ready = 0 if obj is None else batch_utils.warmpool_ready_replicas(obj)
@@ -2561,6 +2690,67 @@ def _precheck_pools(
     """
     pools = list(dict.fromkeys(warmpools))
     checked_templates: set[str] = set()
+
+    if (
+        len(pools) >= 4
+        and max_concurrency > 1
+        and type(helper) is K8sHelper
+        and "get_sandbox_warmpool" not in helper.__dict__
+        and "get_sandbox_template" not in helper.__dict__
+    ):
+        api = getattr(helper, "_batch_custom_objects_api", None)
+        if (
+            type(api) is client.CustomObjectsApi
+            and "list_namespaced_custom_object" not in api.__dict__
+            and "get_namespaced_custom_object" not in api.__dict__
+        ):
+            t_wp = timeout() if callable(timeout) else timeout
+            t_tp = timeout() if callable(timeout) else timeout
+            with ThreadPoolExecutor(max_workers=2) as list_exec:
+                f_wp = list_exec.submit(
+                    helper.list_sandbox_warmpool_summaries,
+                    namespace,
+                    _request_timeout=t_wp,
+                )
+                f_tp = list_exec.submit(
+                    helper.list_sandbox_template_names,
+                    namespace,
+                    _request_timeout=t_tp,
+                )
+            wp_summaries = f_wp.result()
+            tpl_names = f_tp.result()
+            checked_templates.update(tpl_names)
+            bulk_ready: dict[str, int] = {}
+            for name in pools:
+                if name in wp_summaries:
+                    rdy, template = wp_summaries[name]
+                else:
+                    step_timeout = timeout() if callable(timeout) else timeout
+                    warmpool = helper.get_sandbox_warmpool(
+                        name, namespace, _request_timeout=step_timeout
+                    )
+                    if warmpool is None:
+                        raise SandboxWarmPoolNotFoundError(
+                            f"SandboxWarmPool '{name}' not found in namespace '{namespace}'"
+                        )
+                    rdy = batch_utils.warmpool_ready_replicas(warmpool)
+                    template = batch_utils.warmpool_template_name(warmpool)
+                bulk_ready[name] = rdy
+                if template is None:
+                    raise SandboxTemplateNotFoundError(
+                        f"SandboxWarmPool '{name}' does not reference a SandboxTemplate"
+                    )
+                if template in checked_templates:
+                    continue
+                step_timeout = timeout() if callable(timeout) else timeout
+                if helper.get_sandbox_template(
+                    template, namespace, _request_timeout=step_timeout
+                ) is None:
+                    raise SandboxTemplateNotFoundError(
+                        f"SandboxTemplate '{template}' not found in namespace '{namespace}'"
+                    )
+                checked_templates.add(template)
+            return bulk_ready
 
     def check_pool(name: str) -> int:
         step_timeout = timeout() if callable(timeout) else timeout

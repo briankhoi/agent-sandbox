@@ -22,14 +22,139 @@ SDK's `K8sHelper` / `SandboxClient` (built lazily). No SDK fork required.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections import OrderedDict
+from urllib.parse import urlencode
 
 from kubernetes import client
 from kubernetes import config as k8s_config
 
 from .config import ClusterConfig, TemplateSpec
 from .resources import Resources
+
+
+async def build_async_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
+  """Build a ``kubernetes_asyncio.client.ApiClient`` for one cluster's context."""
+  from kubernetes_asyncio import client as async_client
+  from kubernetes_asyncio import config as k8s_async_config
+
+  configuration = async_client.Configuration()
+  configuration.connection_pool_maxsize = pool_maxsize
+  if cfg.in_cluster:
+    k8s_async_config.load_incluster_config(client_configuration=configuration)
+  else:
+    await k8s_async_config.load_kube_config(
+        config_file=cfg.kubeconfig,
+        context=cfg.context,
+        client_configuration=configuration,
+    )
+  return async_client.ApiClient(configuration=configuration)
+
+
+async def _build_fast_ws_core_api(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
+  """Build a `kubernetes_asyncio` `CoreV1Api` backed by a lightweight `WsApiClient`."""
+  import aiohttp
+  from kubernetes_asyncio import client as async_client
+  from kubernetes_asyncio import config as k8s_async_config
+  from kubernetes_asyncio.stream import WsApiClient
+  from kubernetes_asyncio.stream.ws_client import (
+      STDERR_CHANNEL,
+      STDOUT_CHANNEL,
+      WsResponse,
+      get_websocket_url,
+  )
+
+  class _FastWsApiClient(WsApiClient):
+    def __init__(self, configuration) -> None:
+      super().__init__(configuration=configuration)
+      # Replace default 2 MiB read_bufsize ClientSession with a 64 KiB session
+      # sharing the same SSLContext so 500-1000 concurrent execs stay compact.
+      old_pm = self.rest_client.pool_manager
+      connector = old_pm.connector
+      self.rest_client.pool_manager = aiohttp.ClientSession(
+          connector=connector,
+          connector_owner=True,
+          trust_env=True,
+          read_bufsize=65536,
+      )
+      old_pm._connector_owner = False
+      # Old session has made 0 requests; detach cleanly without closing connector.
+      self._detached_old_pm = old_pm
+
+    async def close(self) -> None:
+      old_pm = getattr(self, "_detached_old_pm", None)
+      if old_pm is not None:
+        self._detached_old_pm = None
+        try:
+          await old_pm.close()
+        except Exception:  # noqa: BLE001
+          pass
+      await super().close()
+
+    async def request(
+        self,
+        method,
+        url,
+        query_params=None,
+        headers=None,
+        post_params=None,
+        body=None,
+        _preload_content=True,
+        _request_timeout=None,
+    ):
+      if query_params:
+        expanded = []
+        for key, value in query_params:
+          if key == "command" and isinstance(value, list):
+            for cmd_part in value:
+              expanded.append((key, cmd_part))
+          else:
+            expanded.append((key, value))
+        query_params = expanded
+      hdrs = dict(headers) if headers else {}
+      hdrs.setdefault("sec-websocket-protocol", "v4.channel.k8s.io")
+      if query_params:
+        url = f"{url}?{urlencode(query_params)}"
+      ws_url = get_websocket_url(url)
+      if not _preload_content:
+        return self.rest_client.pool_manager.ws_connect(
+            ws_url, headers=hdrs, heartbeat=self.heartbeat
+        )
+      chunks: list[str] = []
+      try:
+        async with self.rest_client.pool_manager.ws_connect(
+            ws_url,
+            headers=hdrs,
+            heartbeat=self.heartbeat,
+            proxy=self.rest_client.proxy,
+            proxy_headers=self.rest_client.proxy_headers,
+        ) as ws:
+          async for wsmsg in ws:
+            raw = wsmsg.data
+            if isinstance(raw, bytes):
+              if len(raw) > 1 and raw[0] in (STDOUT_CHANNEL, STDERR_CHANNEL):
+                chunks.append(raw[1:].decode("utf-8", errors="replace"))
+            elif isinstance(raw, str):
+              if len(raw) > 1 and ord(raw[0]) in (STDOUT_CHANNEL, STDERR_CHANNEL):
+                chunks.append(raw[1:])
+      except aiohttp.WSServerHandshakeError as exc:
+        raise async_client.ApiException(status=exc.status, reason=exc.message) from exc
+      out = "".join(chunks)
+      return WsResponse(200, out.encode("utf-8"))
+
+  configuration = async_client.Configuration()
+  configuration.connection_pool_maxsize = pool_maxsize
+  if cfg.in_cluster:
+    k8s_async_config.load_incluster_config(client_configuration=configuration)
+  else:
+    await k8s_async_config.load_kube_config(
+        config_file=cfg.kubeconfig,
+        context=cfg.context,
+        client_configuration=configuration,
+    )
+  ws_api = _FastWsApiClient(configuration)
+  return ws_api, async_client.CoreV1Api(ws_api)
 
 
 def build_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
@@ -72,10 +197,14 @@ class Cluster:
   """A single target cluster and its API clients."""
 
   def __init__(self, config: ClusterConfig, *, api_client=None,
+               async_api_client=None,
                labels: dict | None = None, pool_maxsize: int = 1000):
     self.config = config
     self.name = config.name
     self.namespace = config.namespace
+    self._injected_sync_api_client = api_client is not None
+    self._injected_async_api_client = async_api_client is not None
+    self._pool_maxsize = pool_maxsize
     if api_client is not None:
       self.api_client = api_client
     elif pool_maxsize == 1000:
@@ -94,6 +223,13 @@ class Cluster:
         coordination_api=self.coordination_api)
     self._k8s_helper = None
     self._sandbox_client = None
+    self._async_api_client = async_api_client
+    self._async_k8s_helper = None
+    self._async_sandbox_client = None
+    self._async_ws_api_client = None
+    self._async_exec_core_api = None
+    self._async_loop: asyncio.AbstractEventLoop | None = None
+    self._async_init_lock: asyncio.Lock | None = None
     # Concurrent first acquires would otherwise each build a SandboxClient,
     # and every build loads the kubeconfig.
     self._sandbox_client_lock = threading.Lock()
@@ -110,8 +246,28 @@ class Cluster:
     self._exec_local = threading.local()
     self.ensure_pool_maxsize(pool_maxsize)
 
+  @property
+  def supports_native_async_batch(self) -> bool:
+    """Whether ``AsyncSandboxFleet`` can drive ``AsyncSandboxBatch`` on this cluster.
+
+    Disabled when ``ClusterConfig(snapshots=True)`` (the PodSnapshot extension
+    is sync-only) or when a test injected a synchronous ``api_client`` mock
+    without an ``async_api_client``.
+    """
+    if getattr(self.config, "snapshots", False):
+      return False
+    if self._injected_sync_api_client and not self._injected_async_api_client:
+      return False
+    try:
+      import kubernetes_asyncio  # noqa: F401
+    except ImportError:
+      return False
+    return True
+
   def ensure_pool_maxsize(self, needed: int) -> None:
     """Grow ``api_client``'s urllib3 connection pool to at least ``needed``."""
+    if needed > self._pool_maxsize:
+      self._pool_maxsize = needed
     _resize_api_client_pool(self.api_client, needed)
     helper = self._k8s_helper
     if helper is not None:
@@ -120,6 +276,11 @@ class Cluster:
         sub_client = getattr(sub_api, "api_client", None)
         if sub_client is not None:
           _resize_api_client_pool(sub_client, needed)
+    if self._async_api_client is not None:
+      cfg_obj = getattr(self._async_api_client, "configuration", None)
+      cur = getattr(cfg_obj, "connection_pool_maxsize", None)
+      if cfg_obj is not None and isinstance(cur, int) and 0 < cur < needed:
+        cfg_obj.connection_pool_maxsize = needed
 
   def exec_core_api(self):
     """A thread-local `CoreV1Api` for router-free pod exec.
@@ -179,6 +340,124 @@ class Cluster:
           c.k8s_helper = self.k8s_helper
         self._sandbox_client = c
       return self._sandbox_client
+
+  async def get_async_sandbox_client(self):
+    """SDK ``AsyncSandboxClient`` bound to this cluster's async API client."""
+    loop = asyncio.get_running_loop()
+    if (
+        self._async_loop is not loop
+        and not self._injected_async_api_client
+    ):
+      if self._async_api_client is not None and self._async_loop is not None and not self._async_loop.is_closed():
+        try:
+          await self._async_api_client.close()
+        except Exception:  # noqa: BLE001
+          pass
+      self._async_api_client = None
+      self._async_k8s_helper = None
+      self._async_sandbox_client = None
+      self._async_init_lock = asyncio.Lock()
+      self._async_loop = loop
+    elif self._async_init_lock is None or self._async_loop is not loop:
+      self._async_init_lock = asyncio.Lock()
+      self._async_loop = loop
+
+    if self._async_sandbox_client is not None:
+      return self._async_sandbox_client
+
+    async with self._async_init_lock:
+      if self._async_sandbox_client is not None:
+        return self._async_sandbox_client
+      if self._async_api_client is None:
+        self._async_api_client = await build_async_api_client(
+            self.config, pool_maxsize=self._pool_maxsize
+        )
+      from k8s_agent_sandbox import AsyncSandboxClient
+      from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
+      from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
+
+      helper = AsyncK8sHelper(api_client=self._async_api_client)
+      await helper._ensure_initialized()
+      self._async_k8s_helper = helper
+      kwargs = {}
+      if self.tracer_config is not None:
+        kwargs["tracer_config"] = self.tracer_config
+      # SandboxFleet owns teardown and atexit hooks; disable duplicate client atexit registration.
+      c = AsyncSandboxClient(
+          connection_config=SandboxInClusterConnectionConfig(),
+          cleanup=False,
+          api_client=self._async_api_client,
+          **kwargs,
+      )
+      c.k8s_helper = helper
+      self._async_sandbox_client = c
+      return self._async_sandbox_client
+
+  async def async_exec_core_api(self):
+    """Shared event-loop-native ``CoreV1Api`` over ``WsApiClient`` for ``aexec()``."""
+    loop = asyncio.get_running_loop()
+    if self._async_loop is not loop:
+      if self._async_ws_api_client is not None and self._async_loop is not None and not self._async_loop.is_closed():
+        try:
+          await self._async_ws_api_client.close()
+        except Exception:  # noqa: BLE001
+          pass
+      self._async_ws_api_client = None
+      self._async_exec_core_api = None
+      if not self._injected_async_api_client:
+        self._async_api_client = None
+        self._async_k8s_helper = None
+        self._async_sandbox_client = None
+      self._async_init_lock = asyncio.Lock()
+      self._async_loop = loop
+    elif self._async_init_lock is None:
+      self._async_init_lock = asyncio.Lock()
+
+    if self._async_exec_core_api is not None:
+      return self._async_exec_core_api
+
+    async with self._async_init_lock:
+      if self._async_exec_core_api is not None:
+        return self._async_exec_core_api
+      ws_api, core_api = await _build_fast_ws_core_api(
+          self.config, pool_maxsize=self._pool_maxsize
+      )
+      self._async_ws_api_client = ws_api
+      self._async_exec_core_api = core_api
+      return self._async_exec_core_api
+
+  async def aclose(self) -> None:
+    """Close any owned ``kubernetes_asyncio`` ``ApiClient`` and ``WsApiClient`` sessions."""
+    sb_client = self._async_sandbox_client
+    api_client = self._async_api_client
+    ws_api = self._async_ws_api_client
+    self._async_sandbox_client = None
+    self._async_k8s_helper = None
+    self._async_ws_api_client = None
+    self._async_exec_core_api = None
+    if not self._injected_async_api_client:
+      self._async_api_client = None
+    if sb_client is not None:
+      close_fn = getattr(sb_client, "close", None)
+      if callable(close_fn):
+        try:
+          await close_fn()
+        except Exception:  # noqa: BLE001
+          pass
+    if api_client is not None and not self._injected_async_api_client:
+      close_api = getattr(api_client, "close", None)
+      if callable(close_api):
+        try:
+          await close_api()
+        except Exception:  # noqa: BLE001
+          pass
+    if ws_api is not None:
+      close_ws = getattr(ws_api, "close", None)
+      if callable(close_ws):
+        try:
+          await close_ws()
+        except Exception:  # noqa: BLE001
+          pass
 
   def template_spec(self, base: TemplateSpec) -> TemplateSpec:
     """Merge per-cluster overrides onto a base TemplateSpec."""

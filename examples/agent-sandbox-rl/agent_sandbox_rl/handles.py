@@ -16,8 +16,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import shlex
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -36,7 +39,7 @@ from .sources import Task
 logger = logging.getLogger("agent_sandbox_rl.handles")
 
 if TYPE_CHECKING:
-  from .batch_claims import BatchClaim
+  from .batch_claims import AsyncBatchClaim, BatchClaim
   from .cluster import Cluster
 
 logger = logging.getLogger("agent_sandbox_rl.handles")
@@ -70,6 +73,24 @@ def exec_in_pod(core_api, pod: str, namespace: str, command, *,
       pod, namespace, command=command,
       stderr=True, stdin=False, stdout=True, tty=False,
       _preload_content=True, **exec_container_kwargs(container))
+  if out is None:
+    return ""
+  if isinstance(out, bytes):
+    return out.decode("utf-8", errors="replace")
+  return str(out)
+
+
+async def aexec_in_pod(async_core_api, pod: str, namespace: str, command, *,
+                       container: str | None = None,
+                       timeout: float | None = None) -> str:
+  """Awaitable counterpart to `exec_in_pod` over ``kubernetes_asyncio`` ``WsApiClient``."""
+  if isinstance(command, str):
+    command = ["bash", "-lc", command]
+  coro = async_core_api.connect_get_namespaced_pod_exec(
+      pod, namespace, command=command,
+      stderr=True, stdin=False, stdout=True, tty=False,
+      _preload_content=True, **exec_container_kwargs(container))
+  out = await (asyncio.wait_for(coro, timeout=timeout) if timeout is not None else coro)
   if out is None:
     return ""
   if isinstance(out, bytes):
@@ -248,16 +269,17 @@ def forget_claim_in_client(cluster, claim_name: str) -> None:
   both in place, so a fleet that claims per episode grows them for the life of
   the process. Best-effort over the client's private state until the SDK prunes
   it on the terminate path itself."""
-  client = getattr(cluster, "sandbox_client", None)
-  if client is None:
-    return
-  key = (cluster.namespace, claim_name)
-  active = getattr(client, "_active_connection_sandboxes", None)
-  if isinstance(active, dict):
-    active.pop(key, None)
-  explicit = getattr(client, "_explicit_claims", None)
-  if isinstance(explicit, set):
-    explicit.discard(key)
+  for attr in ("sandbox_client", "_async_sandbox_client"):
+    client_obj = getattr(cluster, attr, None)
+    if client_obj is None:
+      continue
+    key = (cluster.namespace, claim_name)
+    active = getattr(client_obj, "_active_connection_sandboxes", None)
+    if isinstance(active, dict):
+      active.pop(key, None)
+    explicit = getattr(client_obj, "_explicit_claims", None)
+    if isinstance(explicit, set):
+      explicit.discard(key)
 
 @dataclass
 class SandboxHandle:
@@ -315,7 +337,7 @@ class SandboxHandle:
   pod_uid: Optional[str] = field(default=None, repr=False)
   runtime_restarts: Optional[int] = field(default=None, repr=False)
   # Set when the claim is a member of the fleet's batch (claim_mode="batch").
-  _batch_claim: Optional["BatchClaim"] = field(default=None, repr=False)
+  _batch_claim: Optional["BatchClaim | AsyncBatchClaim"] = field(default=None, repr=False)
 
   @property
   def claim_expires_at(self) -> Optional[float]:
@@ -356,6 +378,37 @@ class SandboxHandle:
                          container=target)
     except Exception as e:  # noqa: BLE001 — re-raised below unless the pod is gone
       self._raise_if_lost(e)
+      raise
+
+  async def aexec(self, command, timeout: float | None = None, *,
+                  container: str | None = None) -> str:
+    """Run ``command`` inside the sandbox asynchronously without worker threads.
+
+    Uses a per-cluster ``kubernetes_asyncio`` ``WsApiClient`` connection pool on
+    the active event loop (falling back to ``asyncio.to_thread(self.exec, ...)``
+    when a persistent `SandboxSession` is open for ``container`` or the cluster
+    is a synchronous test double without ``async_exec_core_api``).
+    """
+    target = container or self.target_container or self.runtime_container
+    if (
+        (self._session is not None and self._session.is_open and self._session.container == target)
+        or self._cluster is None
+        or not callable(getattr(self._cluster, "async_exec_core_api", None))
+        or (getattr(self._cluster, "_injected_sync_api_client", False)
+            and getattr(self._cluster, "_async_exec_core_api", None) is None)
+    ):
+      return await asyncio.to_thread(
+          self.exec, command, timeout=timeout, container=container
+      )
+    try:
+      core = await self._cluster.async_exec_core_api()
+      return await aexec_in_pod(
+          core, self.pod_name, self._cluster.namespace, command,
+          container=target, timeout=timeout)
+    except asyncio.CancelledError:
+      raise
+    except Exception as e:  # noqa: BLE001
+      await asyncio.to_thread(self._raise_if_lost, e)
       raise
 
   def record_pod_identity(self) -> None:
@@ -525,6 +578,14 @@ class SandboxHandle:
     sb: Any = self.sandbox
     if sb is None:
       return
+    if inspect.iscoroutinefunction(getattr(sb, "get_pod_name", None)):
+      if self._cluster is None:
+        raise FleetError(
+            f"refresh: cannot synchronously refresh async sandbox {self.sandbox_id!r} without cluster")
+      new_sync_sb = self._get_direct_sandbox()
+      self._carry_manual_triggers(sb, new_sync_sb)
+      self._close_sandbox_connection()
+      sb = self.sandbox = new_sync_sb
     batch_cached_ip: Optional[str] = (
         select_pod_ip(self._batch_claim.member.pod_ips)
         if self._batch_claim is not None else None
@@ -542,18 +603,25 @@ class SandboxHandle:
             target = (latest if isinstance(latest, Member)
                       else self._batch_claim.member)
             new_cached_ip: Optional[str] = select_pod_ip(target.pod_ips)
-            try:
-              new_sb: Any = self._batch_claim.batch.connect(target)
-            except BatchError:
+            if inspect.iscoroutinefunction(self._batch_claim.batch.connect):
               if self._cluster is None:
-                raise
+                raise FleetError(
+                    f"refresh: cannot reconnect async batch member {self.claim_name!r} without cluster")
               new_sb = self._get_direct_sandbox()
               new_cached_ip = None
-            except SandboxNotReadyError:
-              if attempt + 1 < _REFRESH_ATTEMPTS or self._cluster is None:
-                raise
-              new_sb = self._get_direct_sandbox()
-              new_cached_ip = None
+            else:
+              try:
+                new_sb = self._batch_claim.batch.connect(target)
+              except BatchError:
+                if self._cluster is None:
+                  raise
+                new_sb = self._get_direct_sandbox()
+                new_cached_ip = None
+              except SandboxNotReadyError:
+                if attempt + 1 < _REFRESH_ATTEMPTS or self._cluster is None:
+                  raise
+                new_sb = self._get_direct_sandbox()
+                new_cached_ip = None
             self._carry_manual_triggers(sb, new_sb)
             sb = self.sandbox = new_sb
             batch_cached_ip = new_cached_ip
@@ -574,6 +642,7 @@ class SandboxHandle:
                 and isinstance(ip, str)
                 and bool(ip)
                 and select_pod_ip(latest.pod_ips) == ip
+                and not inspect.iscoroutinefunction(self._batch_claim.batch.connect)
             ):
               try:
                 new_sb = self._batch_claim.batch.connect(latest)
@@ -738,7 +807,32 @@ class SandboxHandle:
       close_conn = getattr(self.sandbox, "close_connection", None)
       if callable(close_conn):
         try:
-          close_conn()
+          res = close_conn()
+          if asyncio.iscoroutine(res):
+            bc_loop = getattr(self._batch_claim, "_loop", None)
+            bc_thread = getattr(self._batch_claim, "_loop_thread", None)
+            if (
+                bc_loop is not None
+                and not bc_loop.is_closed()
+                and bc_loop.is_running()
+                and threading.current_thread() is not bc_thread
+            ):
+              asyncio.run_coroutine_threadsafe(res, bc_loop).result(timeout=5.0)
+            else:
+              res.close()
+        except Exception as exc:  # noqa: BLE001 (best-effort connection close)
+          logger.warning(
+              "failed to close sandbox connection for %s: %s",
+              self.sandbox_id, exc)
+
+  async def _aclose_sandbox_connection(self) -> None:
+    if self.sandbox is not None:
+      close_conn = getattr(self.sandbox, "close_connection", None)
+      if callable(close_conn):
+        try:
+          res = close_conn()
+          if inspect.isawaitable(res):
+            await res
         except Exception as exc:  # noqa: BLE001 (best-effort connection close)
           logger.warning(
               "failed to close sandbox connection for %s: %s",
@@ -752,6 +846,26 @@ class SandboxHandle:
       self._cleanup_batch_after_remote_delete()
     finally:
       self._close_sandbox_connection()
+
+  async def afinalize_bulk_batch_release(self) -> None:
+    """Async counterpart to `finalize_bulk_batch_release`."""
+    self.close_session()
+    try:
+      self._cleanup_batch_after_remote_delete()
+    finally:
+      await self._aclose_sandbox_connection()
+
+  async def arelease(self) -> None:
+    """Awaitable release for async batch handles."""
+    self.close_session()
+    if self._batch_claim is not None and hasattr(self._batch_claim, "arelease"):
+      try:
+        await self._batch_claim.arelease()
+        self._cleanup_batch_after_remote_delete()
+      finally:
+        await self._aclose_sandbox_connection()
+      return
+    await asyncio.to_thread(self.release)
 
   def release(self) -> None:
     """Release this sandbox (delete its claim).
