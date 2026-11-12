@@ -476,7 +476,9 @@ def close_async_sandbox_sync(
 def _helper_async_session_open(helper: Any) -> bool:
   if helper is None:
     return False
-  api = getattr(helper, "_api_client", None)
+  api = getattr(helper, "_api_client", None) or getattr(
+      getattr(helper, "custom_objects_api", None), "api_client", None
+  )
   if api is None:
     return True
   pm = getattr(getattr(api, "rest_client", None), "pool_manager", None)
@@ -997,20 +999,27 @@ class AsyncBatchClaims:
         loop_thread: threading.Thread | None,
     ) -> tuple[int, Exception | None]:
       try:
-        if batch_loop is cur_loop and _batch_async_session_open(batch):
-          await batch.release()
-        elif (
-            batch_loop is not None
-            and not batch_loop.is_closed()
-            and batch_loop.is_running()
-            and _batch_async_session_open(batch)
-            and inspect.iscoroutinefunction(getattr(batch, "release", None))
-        ):
-          await asyncio.wrap_future(
-              asyncio.run_coroutine_threadsafe(batch.release(), batch_loop),
-              loop=cur_loop,
-          )
-        else:
+        try:
+          if batch_loop is cur_loop and _batch_async_session_open(batch):
+            await batch.release()
+          elif (
+              batch_loop is not None
+              and not batch_loop.is_closed()
+              and batch_loop.is_running()
+              and _batch_async_session_open(batch)
+              and inspect.iscoroutinefunction(getattr(batch, "release", None))
+          ):
+            await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(batch.release(), batch_loop),
+                loop=cur_loop,
+            )
+          else:
+            await asyncio.to_thread(
+                self._sync_release_single_batch, cluster, batch, batch_loop, loop_thread
+            )
+        except RuntimeError:
+          if _batch_async_session_open(batch):
+            raise
           await asyncio.to_thread(
               self._sync_release_single_batch, cluster, batch, batch_loop, loop_thread
           )
@@ -1068,10 +1077,16 @@ class AsyncBatchClaims:
               timeout=BATCH_REQUEST_TIMEOUT_SECONDS * 4
           )
           succeeded_ids.add(id(batch))
+          continue
+        except RuntimeError as exc:
+          if _batch_async_session_open(batch):
+            logger.warning("failed to release async batch %s on running loop", batch.batch_id, exc_info=True)
+            failed[id(batch)] = exc
+            continue
         except Exception as exc:  # noqa: BLE001
           logger.warning("failed to release async batch %s on running loop", batch.batch_id, exc_info=True)
           failed[id(batch)] = exc
-        continue
+          continue
       try:
         self._sync_release_single_batch(cluster, batch, loop, loop_thread)
         succeeded_ids.add(id(batch))

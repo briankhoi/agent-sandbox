@@ -261,6 +261,110 @@ def _resize_api_client_pool(api_client, needed: int) -> None:
       clear_fn()
 
 
+def _api_session_closed(api_obj) -> bool:
+  if api_obj is None:
+    return False
+  pm = getattr(getattr(api_obj, "rest_client", None), "pool_manager", None)
+  return getattr(pm, "closed", False) is True
+
+
+def _force_close_transport_offline(tr) -> None:
+  if tr is None:
+    return
+  ssl_proto = getattr(tr, "_ssl_protocol", None)
+  raw_tr = getattr(ssl_proto, "_transport", None) if ssl_proto is not None else None
+  for t_obj in (tr, raw_tr):
+    if t_obj is None:
+      continue
+    t_loop = getattr(t_obj, "_loop", None)
+    sock = getattr(t_obj, "_sock", None)
+    sock_fd = getattr(t_obj, "_sock_fd", None)
+    if sock_fd is None and sock is not None:
+      with contextlib.suppress(Exception):
+        sock_fd = sock.fileno()
+    if (
+        t_loop is not None
+        and not t_loop.is_closed()
+        and isinstance(sock_fd, int)
+        and sock_fd >= 0
+    ):
+      for rm_name in ("_remove_reader", "_remove_writer"):
+        rm_fn = getattr(t_loop, rm_name, None)
+        if callable(rm_fn):
+          with contextlib.suppress(Exception):
+            rm_fn(sock_fd)
+    if sock is not None:
+      with contextlib.suppress(Exception):
+        sock.close()
+    for attr, val in (("_sock", None), ("_closing", True), ("_closed", True)):
+      if hasattr(t_obj, attr):
+        with contextlib.suppress(Exception):
+          setattr(t_obj, attr, val)
+  if ssl_proto is not None and hasattr(ssl_proto, "_transport"):
+    with contextlib.suppress(Exception):
+      ssl_proto._transport = None
+
+
+def _close_k8s_async_client_offline(obj) -> None:
+  if obj is None:
+    return
+  old_pm = getattr(obj, "_detached_old_pm", None)
+  if old_pm is not None:
+    with contextlib.suppress(Exception):
+      obj._detached_old_pm = None
+  pm = getattr(getattr(obj, "rest_client", None), "pool_manager", None)
+  for sess in (old_pm, pm):
+    if sess is None or not type(sess).__module__.startswith("aiohttp"):
+      continue
+    conn = getattr(sess, "_connector", None)
+    if conn is not None and getattr(sess, "_connector_owner", False):
+      transports = []
+      conns_map = getattr(conn, "_conns", None)
+      if isinstance(conns_map, dict):
+        for entries in list(conns_map.values()):
+          for proto, _ in list(entries):
+            transports.append(getattr(proto, "transport", None))
+        conns_map.clear()
+      acquired_set = getattr(conn, "_acquired", None)
+      if isinstance(acquired_set, (set, list)):
+        for proto in list(acquired_set):
+          transports.append(getattr(proto, "transport", None))
+        acquired_set.clear()
+      acq_per_host = getattr(conn, "_acquired_per_host", None)
+      if hasattr(acq_per_host, "clear"):
+        acq_per_host.clear()
+      closed_trs = getattr(conn, "_cleanup_closed_transports", None)
+      if isinstance(closed_trs, list):
+        transports.extend(closed_trs)
+        closed_trs.clear()
+      for h_attr in ("_cleanup_handle", "_cleanup_closed_handle"):
+        h = getattr(conn, h_attr, None)
+        if h is not None and callable(getattr(h, "cancel", None)):
+          with contextlib.suppress(Exception):
+            h.cancel()
+          with contextlib.suppress(Exception):
+            setattr(conn, h_attr, None)
+      resolve_tasks = getattr(conn, "_resolve_host_tasks", None)
+      if isinstance(resolve_tasks, (set, list)):
+        for rt in list(resolve_tasks):
+          if hasattr(rt, "_log_destroy_pending"):
+            with contextlib.suppress(Exception):
+              rt._log_destroy_pending = False
+          if callable(getattr(rt, "cancel", None)):
+            with contextlib.suppress(Exception):
+              rt.cancel()
+        resolve_tasks.clear()
+      for tr in transports:
+        _force_close_transport_offline(tr)
+      close_sync = getattr(conn, "_close", None)
+      if callable(close_sync):
+        with contextlib.suppress(Exception):
+          close_sync()
+    if hasattr(sess, "_connector"):
+      with contextlib.suppress(Exception):
+        sess._connector = None
+
+
 class Cluster:
   """A single target cluster and its API clients."""
 
@@ -477,6 +581,9 @@ class Cluster:
             for attr in ("_watch_task", "_renew_task"):
               t = getattr(b, attr, None)
               if t is not None and not t.done():
+                if hasattr(t, "_log_destroy_pending"):
+                  with contextlib.suppress(Exception):
+                    t._log_destroy_pending = False
                 with contextlib.suppress(Exception):
                   t.cancel()
           conn_map = getattr(b, "_connected", None)
@@ -493,7 +600,9 @@ class Cluster:
               atexit_fn(sb)
         helper = getattr(sb_client, "k8s_helper", None)
         if getattr(helper, "_owns_api_client", False):
-          extra_api = getattr(helper, "_api_client", None)
+          extra_api = getattr(helper, "_api_client", None) or getattr(
+              getattr(helper, "custom_objects_api", None), "api_client", None
+          )
           helper._api_client = None
           helper._initialized = False
       else:
@@ -509,6 +618,7 @@ class Cluster:
     for obj in (extra_api, api_client, ws_api):
       if obj is None:
         continue
+      _close_k8s_async_client_offline(obj)
       close_fn = getattr(obj, "close", None)
       if not callable(close_fn):
         continue
@@ -548,16 +658,47 @@ class Cluster:
     )
     return init_lock
 
+  def _async_sb_client_usable(self) -> bool:
+    sb = self._async_sandbox_client
+    if sb is None:
+      return False
+    if self._injected_async_api_client:
+      return True
+    if self._async_api_client is not None and _api_session_closed(self._async_api_client):
+      return False
+    helper = getattr(sb, "k8s_helper", None)
+    h_api = getattr(helper, "_api_client", None) or getattr(
+        getattr(helper, "custom_objects_api", None), "api_client", None
+    )
+    if h_api is not None and _api_session_closed(h_api):
+      return False
+    return True
+
   async def get_async_sandbox_client(self):
     """SDK ``AsyncSandboxClient`` bound to this cluster's async API client."""
     loop = asyncio.get_running_loop()
     init_lock = await self._ensure_async_loop(loop)
-    if self._async_sandbox_client is not None:
+    if self._async_sb_client_usable():
       return self._async_sandbox_client
 
     async with init_lock:
-      if self._async_sandbox_client is not None:
+      if self._async_sb_client_usable():
         return self._async_sandbox_client
+      old_sb = self._async_sandbox_client
+      old_api = None
+      self._async_sandbox_client = None
+      self._async_k8s_helper = None
+      if (
+          not self._injected_async_api_client
+          and self._async_api_client is not None
+          and _api_session_closed(self._async_api_client)
+      ):
+        old_api = self._async_api_client
+        self._async_api_client = None
+      if old_sb is not None or old_api is not None:
+        await self._close_async_bundle(
+            loop, loop, old_sb, old_api, None, wait_cross_loop=False
+        )
       if self._async_api_client is None:
         self._async_api_client = await build_async_api_client(
             self.config, pool_maxsize=self._pool_maxsize
@@ -586,12 +727,23 @@ class Cluster:
     """Shared event-loop-native ``CoreV1Api`` over ``WsApiClient`` for ``aexec()``."""
     loop = asyncio.get_running_loop()
     init_lock = await self._ensure_async_loop(loop)
-    if self._async_exec_core_api is not None:
+    if self._async_exec_core_api is not None and not _api_session_closed(
+        self._async_ws_api_client
+    ):
       return self._async_exec_core_api
 
     async with init_lock:
-      if self._async_exec_core_api is not None:
+      if self._async_exec_core_api is not None and not _api_session_closed(
+          self._async_ws_api_client
+      ):
         return self._async_exec_core_api
+      old_ws = self._async_ws_api_client
+      self._async_ws_api_client = None
+      self._async_exec_core_api = None
+      if old_ws is not None:
+        await self._close_async_bundle(
+            loop, loop, None, None, old_ws, wait_cross_loop=False
+        )
       from kubernetes_asyncio import client as async_client
       raw_cfg = (
           getattr(self._async_api_client, "configuration", None)
@@ -618,6 +770,7 @@ class Cluster:
     if self._injected_sync_api_client or self._injected_async_api_client:
       return
     try:
+      await self.get_async_sandbox_client()
       await self.async_exec_core_api()
     except Exception:  # noqa: BLE001
       return

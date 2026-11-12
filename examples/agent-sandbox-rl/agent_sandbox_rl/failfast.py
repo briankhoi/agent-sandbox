@@ -402,7 +402,14 @@ class BatchWatchdog(threading.Thread):
   def _batch_session_open(batch: Any) -> bool:
     client_obj = getattr(batch, "_client", None)
     helper = getattr(client_obj, "k8s_helper", None) if client_obj is not None else None
-    api = getattr(helper, "_api_client", None) if helper is not None else None
+    api = (
+        (
+            getattr(helper, "_api_client", None)
+            or getattr(getattr(helper, "custom_objects_api", None), "api_client", None)
+        )
+        if helper is not None
+        else None
+    )
     if api is None:
       return True
     pm = getattr(getattr(api, "rest_client", None), "pool_manager", None)
