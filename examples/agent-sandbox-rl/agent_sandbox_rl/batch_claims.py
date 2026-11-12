@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 import inspect
 import logging
 import re
@@ -678,6 +679,60 @@ class AsyncBatchClaims:
   def has_opened_batches(self) -> bool:
     with self._lock:
       return bool(self._opened)
+
+  async def wait_foreground_creates_dispatched(self, max_wait: float = 0.25) -> None:
+    """Wait briefly for active foreground ``acquire()`` HTTP POSTs on this loop to finish.
+
+    Used by ``AsyncSandboxFleet._run_pipelined`` so background ``_prefetch`` pool creation
+    starts immediately after the current window's foreground ``SandboxClaim`` creates are
+    submitted to ``kube-apiserver`` rather than ahead of them.
+    """
+    if max_wait <= 0:
+      return
+    cur_loop = asyncio.get_running_loop()
+    deadline = time.monotonic() + max_wait
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    with self._lock:
+      batches = [
+          b
+          for b, bl in self._live.values()
+          if bl is cur_loop
+          and not bl.is_closed()
+          and b.err() is None
+          and _batch_async_session_open(b)
+      ]
+    if not batches:
+      return
+    while (rem := deadline - time.monotonic()) > 0:
+      for b in batches:
+        ev = getattr(b, "_no_active_creates", None)
+        if isinstance(ev, asyncio.Event) and not ev.is_set():
+          rem = deadline - time.monotonic()
+          if rem <= 0:
+            return
+          with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(ev.wait(), timeout=rem)
+      now = time.monotonic()
+      rem = deadline - now
+      if rem <= 0:
+        return
+      latest_slot = max(
+          (
+              slot
+              for b in batches
+              if isinstance((slot := getattr(b, "_next_create_at", None)), (int, float))
+              and not isinstance(slot, bool)
+          ),
+          default=0.0,
+      )
+      if latest_slot <= now and all(
+          not isinstance((ev := getattr(b, "_no_active_creates", None)), asyncio.Event)
+          or ev.is_set()
+          for b in batches
+      ):
+        return
+      await asyncio.sleep(min(rem, max(0.002, latest_slot - now)))
 
   async def prepare_clusters(
       self,
