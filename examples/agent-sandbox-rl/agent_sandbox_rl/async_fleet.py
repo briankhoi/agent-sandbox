@@ -1232,30 +1232,52 @@ class AsyncSandboxFleet:
     results = [None] * len(self.tasks)
     batches = [images[s:s + window] for s in range(0, len(images), window)]
 
-    async def _warm(batch):
+    async def _warm_k8s(batch):
       # Bounded batch warm (capped by max_concurrent), not one task per image.
       await self._to_thread(self._fleet.warm_images, batch,
                             replicas_override=replicas_override, wait=True)
+
+    async def _seed_window(batch, *, only_unopened: bool = False):
       if self._fleet.plan_ is not None:
         win_entries = [
             e for img in batch
             if (e := self._fleet.plan_.for_image(img)) is not None
         ]
         await self._prepare_async_batch_clusters(
-            win_entries, only_unopened=False, just_warmed=True
+            win_entries, only_unopened=only_unopened, just_warmed=True
         )
 
-    async def _prefetch(batch):              # background warm, timed as "prefetch"
+    async def _prefetch(batch, *, wait_fg: bool = False):  # background warm, timed as "prefetch"
+      if wait_fg and self._async_batch_claims is not None:
+        await self._async_batch_claims.wait_foreground_creates_dispatched(0.25)
       with self._fleet._obs.phase("prefetch"):
-        await _warm(batch)
+        await _warm_k8s(batch)
+        await _seed_window(
+            batch, only_unopened=not self._fleet.config.adopt_existing
+        )
 
     pending = None
     try:
       if batches:
-        await _warm(batches[0])              # prime window 0 in the foreground
+        await _warm_k8s(batches[0])          # prime window 0 in the foreground
+        await _seed_window(batches[0])
       for n, batch in enumerate(batches):
-        pending = (asyncio.create_task(_prefetch(batches[n + 1]))
-                   if n + 1 < len(batches) else None)
+        if n > 0 and not self._fleet.config.adopt_existing:
+          await _seed_window(batch)
+        pending = (
+            asyncio.create_task(
+                _prefetch(
+                    batches[n + 1],
+                    wait_fg=(
+                        default_exec
+                        and self._async_batch_claims is not None
+                        and self._sync_acquire_unpatched()
+                    ),
+                )
+            )
+            if n + 1 < len(batches)
+            else None
+        )
         batch_pairs = [(i, t) for img in batch for (i, t) in by_image[img]]
         batch_tasks = [t for _i, t in batch_pairs]
         if default_exec and len(batch_tasks) <= 256:

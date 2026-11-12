@@ -2908,3 +2908,135 @@ def test_pass4_offline_socket_cleanup_same_loop_rebuild_and_midflight_closed_ses
     await af_mf.aclose()
 
   asyncio.run(_check_abc_midflight())
+
+
+@pytest.mark.asyncio
+async def test_pipelined_batch_fresh_warm_credit_and_foreground_create_gate(
+    make_cluster,
+):
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import ClusterConfig
+
+  c = Cluster(
+      ClusterConfig(name="pipe-c1", namespace="ns1"),
+      api_client=MagicMock(),
+      async_api_client=MagicMock(),
+  )
+  c.resources = MagicMock()
+  c.resources.labels = {}
+  c.resources.namespace = "ns1"
+  c.resources.list_claims.return_value = []
+  c.resources.list_leases.return_value = []
+  c.resources.list_warmpools.return_value = []
+  c.resources.list_templates.return_value = []
+  c.resources.count_pods.return_value = 0
+
+  events: list[tuple[str, object, float]] = []
+
+  class _PipeAsyncBatch:
+    def __init__(self, batch_id: str, groups, **_kwargs):
+      self.batch_id = batch_id
+      self.groups = list(groups)
+      self.released = False
+      self._no_active_creates = asyncio.Event()
+      self._no_active_creates.set()
+      self._next_create_at = 0.0
+
+    def err(self):
+      return None
+
+    async def seed_checked_pools(self, ready_by_pool):
+      events.append(("seed", sorted(ready_by_pool.keys()), time.monotonic()))
+
+    async def precheck_pools(self, pools, timeout=None):
+      events.append(("precheck", sorted(pools), time.monotonic()))
+
+    async def acquire(self, pool: str, *, timeout: float, pod_annotations=None):
+      self._no_active_creates.clear()
+      await asyncio.sleep(0.03)
+      events.append(("post_done", pool, time.monotonic()))
+      self._no_active_creates.set()
+      return Member(
+          claim_name=f"cl-{pool}",
+          warmpool=pool,
+          state=MemberState.READY,
+          sandbox_name=f"sb-{pool}",
+          pod_name=f"pod-{pool}",
+          pod_ips=("10.3.0.9",),
+      )
+
+    def get_member(self, claim_name: str):
+      return None
+
+    async def connect(self, member: Member):
+      sb = MagicMock(
+          claim_name=member.claim_name,
+          sandbox_id=member.sandbox_name,
+          is_active=True,
+      )
+      sb.close_connection = AsyncMock()
+      return sb
+
+    async def release_members(self):
+      return None
+
+    async def release_member(self, member):
+      return None
+
+    async def release(self):
+      self.released = True
+
+  fake_async_client = MagicMock()
+  fake_async_client.claim_batch = AsyncMock(
+      side_effect=lambda groups, **kw: _PipeAsyncBatch("pb-1", groups, **kw)
+  )
+  fake_async_client.close = AsyncMock()
+  c._async_sandbox_client = fake_async_client
+  c._async_loop = asyncio.get_running_loop()
+  c._async_init_lock = asyncio.Lock()
+
+  af = AsyncSandboxFleet(
+      FleetConfig(
+          claim_mode="batch",
+          max_concurrent=4,
+          window_size=2,
+          fail_fast=FailFastPolicy(enabled=False),
+      ),
+      registry=ClusterRegistry([c]),
+  )
+  af.load_tasks(["img-0", "img-1", "img-2", "img-3"])
+
+  def _fake_warm(imgs, **_kw):
+    events.append(("warm", list(imgs), time.monotonic()))
+    af._fleet._warmed.update({img: 1 for img in imgs})
+
+  af._fleet.warm_images = MagicMock(side_effect=_fake_warm)
+  af._fleet.unwarm_images = MagicMock()
+  af._fleet.preflight = MagicMock()
+
+  async def _dwell_proc(_t, h):
+    events.append(("proc_start", h.claim_name, time.monotonic()))
+    await asyncio.sleep(0.08)
+    return h.pod_name
+
+  out = await af.run(_dwell_proc, strategy="pipelined", concurrency=2)
+  assert len(out) == 4
+  # 1) Background warm of window 1 starts AFTER window 0's foreground POSTs complete:
+  post0_times = [
+      ts for kind, p, ts in events
+      if kind == "post_done" and p in (af.config.pool_name("img-0"), af.config.pool_name("img-1"))
+  ]
+  warm1_time = next(ts for kind, imgs, ts in events if kind == "warm" and imgs == ["img-2", "img-3"])
+  assert len(post0_times) == 2 and warm1_time >= max(post0_times) - 1e-4
+  # 2) seed_checked_pools for window 1 is stamped right before window 1 acquires (NOT early during prefetch):
+  seed1_time = next(
+      ts for kind, pools, ts in events
+      if kind == "seed" and pools == sorted([af.config.pool_name("img-2"), af.config.pool_name("img-3")])
+  )
+  proc1_times = [
+      ts for kind, cl, ts in events
+      if kind == "proc_start" and any(af.config.pool_name(x) in str(cl) for x in ("img-2", "img-3"))
+  ]
+  assert seed1_time > warm1_time + 0.02
+  assert min(proc1_times) - seed1_time < 0.08
+  await af.aclose()
