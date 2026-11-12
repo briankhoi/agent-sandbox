@@ -772,6 +772,19 @@ class AsyncSandboxFleet:
         try:
           with fl._obs.phase("release", cluster=cname):
             await getattr(batch_obj, "release_members")()
+        except RuntimeError:
+          with fl._lock:
+            for h in claimed:
+              fl._handles[id(h)] = h
+          if _batch_async_session_open(batch_obj):
+            raise
+          sub_outs = await asyncio.gather(
+              *(self.release(h) for h in claimed), return_exceptions=True
+          )
+          sub_err = next((o for o in sub_outs if isinstance(o, BaseException)), None)
+          if sub_err is not None:
+            raise sub_err
+          return
         except BaseException:
           with fl._lock:
             for h in claimed:
@@ -1043,6 +1056,20 @@ class AsyncSandboxFleet:
         try:
           with obs.phase("release", cluster=cname):
             await getattr(b_obj, "release_members")()
+        except RuntimeError as e:
+          with fl._lock:
+            for h in claimed:
+              fl._handles[id(h)] = h
+          if not _batch_async_session_open(b_obj):
+            await asyncio.gather(
+                *(_rel_one(h) for h in claimed), return_exceptions=not capture_errors
+            )
+            return
+          if not capture_errors:
+            raise
+          for h in claimed:
+            rel_errors[id(h)] = e
+          return
         except Exception as e:
           with fl._lock:
             for h in claimed:

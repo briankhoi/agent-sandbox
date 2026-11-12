@@ -1820,7 +1820,7 @@ async def test_native_async_batch_acquires_without_threads_and_bulk_releases_wav
 def test_batch_claim_config_rl_defaults_and_explicit_none_override():
   cfg = BatchClaimConfig()
   assert cfg.create_rps == 500.0
-  assert cfg.max_in_flight == 512
+  assert cfg.max_in_flight == 64
   explicit_sdk = BatchClaimConfig(create_rps=None, max_in_flight=None)
   assert explicit_sdk.create_rps is None
   assert explicit_sdk.max_in_flight is None
@@ -2643,3 +2643,268 @@ def test_pass3_stale_dict_cross_loop_session_close_and_ondemand_deadlock_free(ma
   assert done_evt.wait(2.0), "_ensure_ondemand_pool_for_acquire deadlocked on _ondemand_lock!"
   assert len(err_box) == 1 and isinstance(err_box[0], FleetError)
   assert c_od.active_replicas == 0
+
+
+def test_pass4_offline_socket_cleanup_same_loop_rebuild_and_midflight_closed_session(
+    make_cluster,
+):
+  import gc
+  import socket
+  from types import SimpleNamespace
+  import warnings
+  from kubernetes_asyncio import client as async_k8s_client
+  from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
+  from agent_sandbox_rl.batch_claims import (
+      AsyncBatchClaim,
+      AsyncBatchClaims,
+      _helper_async_session_open,
+  )
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import BatchClaimConfig, ClusterConfig
+  from agent_sandbox_rl.failfast import BatchWatchdog
+
+  # 1) Real local HTTP/1.1 keep-alive server: sequential asyncio.run() AND stopped-loop aclose()
+  #    with live pooled sockets in connector._conns leak 0 socket FDs and raise 0 cross-loop errors.
+  srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+  srv.bind(("127.0.0.1", 0))
+  srv.listen(16)
+  port = srv.getsockname()[1]
+  stop_srv = threading.Event()
+  accepted: list[socket.socket] = []
+
+  def _serve() -> None:
+    srv.settimeout(0.05)
+    while not stop_srv.is_set():
+      try:
+        conn, _ = srv.accept()
+      except TimeoutError:
+        continue
+      except OSError:
+        break
+      accepted.append(conn)
+      conn.settimeout(0.2)
+      try:
+        while not stop_srv.is_set():
+          data = conn.recv(4096)
+          if not data:
+            break
+          conn.sendall(
+              b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok"
+          )
+      except OSError:
+        pass
+      finally:
+        try:
+          conn.close()
+        except OSError:
+          pass
+
+  srv_th = threading.Thread(target=_serve, daemon=True)
+  srv_th.start()
+  try:
+    async def _fake_build_http(_cfg, *, pool_maxsize=64):
+      acfg = async_k8s_client.Configuration()
+      acfg.host = f"http://127.0.0.1:{port}"
+      acfg.connection_pool_maxsize = pool_maxsize
+      return async_k8s_client.ApiClient(configuration=acfg)
+
+    c_live = Cluster(
+        ClusterConfig(name="c-live", namespace="ns1", in_cluster=True),
+        api_client=MagicMock(),
+    )
+    c_live._injected_sync_api_client = False
+    loop_errors: list[dict] = []
+
+    with warnings.catch_warnings(record=True) as caught_w:
+      warnings.simplefilter("always")
+      with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("agent_sandbox_rl.cluster.build_async_api_client", _fake_build_http)
+
+        # (a) Stopped loop with live pooled keep-alive socket -> cross-loop aclose() succeeds cleanly
+        stopped_loop = asyncio.new_event_loop()
+        stopped_loop.set_exception_handler(lambda _lp, ctx: loop_errors.append(ctx))
+
+        async def _populate_pool():
+          await c_live.get_async_sandbox_client()
+          resp = await c_live._async_api_client.call_api(
+              "/livez", "GET", _return_http_data_only=True, _preload_content=False
+          )
+          await resp.read()
+          resp.release()
+          conns = c_live._async_api_client.rest_client.pool_manager.connector._conns
+          assert sum(len(v) for v in conns.values()) >= 1
+          protos = [p for entries in conns.values() for p, _ in entries]
+          return [p.transport.get_extra_info("socket") for p in protos]
+
+        pooled_socks = stopped_loop.run_until_complete(_populate_pool())
+        assert pooled_socks and all(s.fileno() >= 0 for s in pooled_socks)
+        # Do NOT close stopped_loop yet: exercise the stopped-but-unclosed target_loop path!
+        asyncio.run(c_live.aclose())
+        assert all(s.fileno() == -1 for s in pooled_socks)
+        stopped_loop.close()
+
+        # (b) Closed loop (asyncio.run #1 -> asyncio.run #2) with live pooled keep-alive socket
+        closed_socks: list[socket.socket] = []
+
+        async def _run1_populate_and_rebuild_check():
+          sc1 = await c_live.get_async_sandbox_client()
+          core1 = await c_live.async_exec_core_api()
+          # Exercise same-loop closed ClientSession rebuild on both sandbox_client and ws_api!
+          await c_live._async_api_client.close()
+          await c_live._async_ws_api_client.close()
+          sc2 = await c_live.get_async_sandbox_client()
+          core2 = await c_live.async_exec_core_api()
+          assert sc2 is not sc1 and not c_live._async_api_client.rest_client.pool_manager.closed
+          assert core2 is not core1 and not c_live._async_ws_api_client.rest_client.pool_manager.closed
+          resp = await c_live._async_api_client.call_api(
+              "/livez", "GET", _return_http_data_only=True, _preload_content=False
+          )
+          await resp.read()
+          resp.release()
+          conns = c_live._async_api_client.rest_client.pool_manager.connector._conns
+          for entries in conns.values():
+            for proto, _ in entries:
+              closed_socks.append(proto.transport.get_extra_info("socket"))
+
+        asyncio.run(_run1_populate_and_rebuild_check())
+        assert closed_socks
+        asyncio.run(c_live.get_async_sandbox_client())
+        assert all(s.fileno() == -1 for s in closed_socks)
+        asyncio.run(c_live.aclose())
+        gc.collect()
+
+    assert loop_errors == []
+    bad_w = [
+        w for w in caught_w
+        if any(k in str(w.message) for k in ("Unclosed", "ResourceWarning", "destroyed"))
+    ]
+    assert bad_w == []
+  finally:
+    stop_srv.set()
+    srv.close()
+    srv_th.join(timeout=1.0)
+    for s in accepted:
+      with pytest.MonkeyPatch.context():
+        try:
+          s.close()
+        except OSError:
+          pass
+
+  # 2) _helper_async_session_open & BatchWatchdog._batch_session_open detect closed owned helper
+  async def _check_owned_helper_closed():
+    acfg = async_k8s_client.Configuration()
+    acfg.host = "http://127.0.0.1:9"
+    owned_api = async_k8s_client.ApiClient(configuration=acfg)
+    _ = owned_api.rest_client.pool_manager
+    h = AsyncK8sHelper(api_client=owned_api)
+    h._owns_api_client = True
+    await h._ensure_initialized()
+    fake_b = SimpleNamespace(_client=SimpleNamespace(k8s_helper=h))
+    assert _helper_async_session_open(h) is True
+    assert BatchWatchdog._batch_session_open(fake_b) is True
+    await h.close()
+    assert h._api_client is None
+    assert _helper_async_session_open(h) is False
+    assert BatchWatchdog._batch_session_open(fake_b) is False
+
+  asyncio.run(_check_owned_helper_closed())
+
+  # 3) Mid-flight RuntimeError("Session is closed") falls back cleanly in AsyncBatchClaims & AsyncSandboxFleet
+  c_mf = _batch_cluster(make_cluster, "c-mf")
+  c_mf.resources.delete_claim = MagicMock()
+  pm_box = SimpleNamespace(closed=False)
+  mf_helper = SimpleNamespace(
+      _api_client=SimpleNamespace(rest_client=SimpleNamespace(pool_manager=pm_box))
+  )
+
+  async def _midflight_close_release():
+    pm_box.closed = True
+    raise RuntimeError("Session is closed")
+
+  sync_released_ids: list[str] = []
+  abc_mf = AsyncBatchClaims(BatchClaimConfig(), ready_timeout=30, labels={})
+  abc_mf._sync_release_single_batch = lambda _cl, b, _lp, _lt: sync_released_ids.append(b.batch_id)  # type: ignore[method-assign]
+
+  async def _check_abc_midflight():
+    cur_lp = asyncio.get_running_loop()
+    b_mf = SimpleNamespace(
+        batch_id="b-midflight",
+        namespace="ns1",
+        _client=SimpleNamespace(k8s_helper=mf_helper),
+        err=lambda: None,
+        release=_midflight_close_release,
+    )
+    abc_mf._opened.append((c_mf, b_mf, cur_lp, threading.current_thread()))
+    failed = await abc_mf.release_all()
+    assert failed == {}
+    assert sync_released_ids == ["b-midflight"]
+
+    # Also test AsyncSandboxFleet.release_all() mid-flight session closure fallback
+    pm_box.closed = False
+    bulk_called: list[bool] = []
+
+    class _MidflightBatch:
+      def __init__(self) -> None:
+        self.batch_id = "b-fl-midflight"
+        self.namespace = "ns1"
+        self._client = SimpleNamespace(k8s_helper=mf_helper)
+        self._state = None
+        self._connected: dict = {}
+
+      def err(self):
+        return None
+
+      async def release_members(self):
+        bulk_called.append(True)
+        pm_box.closed = True
+        raise RuntimeError("Session is closed")
+
+      async def release_member(self, _member):
+        raise RuntimeError("Session is closed")
+
+    b_fl = _MidflightBatch()
+    af_mf = AsyncSandboxFleet(
+        FleetConfig(claim_mode="batch", fail_fast=FailFastPolicy(enabled=False)),
+        registry=ClusterRegistry([c_mf]),
+    )
+    for idx in (1, 2):
+      m = Member(
+          claim_name=f"cl-mf-{idx}",
+          warmpool="pool-1",
+          state=MemberState.READY,
+          sandbox_name=f"sb-{idx}",
+          pod_name=f"pod-{idx}",
+          pod_ips=("10.0.0.1",),
+      )
+      sb = MagicMock()
+      sb.close_connection = AsyncMock()
+      h_obj = SandboxHandle(
+          task=Task(id=f"t-{idx}", image="img:1"),
+          cluster_name=c_mf.name,
+          claim_name=m.claim_name,
+          sandbox_id=f"sb-{idx}",
+          pod_name=f"pod-{idx}",
+          hostname=f"sb-{idx}",
+          pod_ip="10.0.0.1",
+          sandbox=sb,
+          _cluster=c_mf,
+          _batch_claim=AsyncBatchClaim(
+              batch=b_fl,
+              member=m,
+              expires_at=time.monotonic() + 60.0,
+              cluster=c_mf,
+              _loop=cur_lp,
+              _loop_thread=threading.current_thread(),
+          ),
+      )
+      c_mf.reserve_claim()
+      af_mf._fleet._claims_reserved += 1
+      af_mf._fleet._handles[id(h_obj)] = h_obj
+    await af_mf.release_all()
+    assert bulk_called == [True]
+    assert af_mf.handles() == []
+    assert c_mf.resources.delete_claim.call_count == 2
+    await af_mf.aclose()
+
+  asyncio.run(_check_abc_midflight())
