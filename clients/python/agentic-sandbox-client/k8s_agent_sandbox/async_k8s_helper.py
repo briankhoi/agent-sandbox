@@ -24,6 +24,7 @@ from typing import Any, cast
 import aiohttp
 from kubernetes_asyncio import client, config, watch
 from kubernetes_asyncio.client.rest import RESTResponse
+from . import batch_utils
 from .constants import (
     CLAIM_API_GROUP,
     CLAIM_API_VERSION,
@@ -1022,12 +1023,12 @@ class AsyncK8sHelper:
                 ready_by_pool.clear()
                 continue
             for item in page.get("items", []):
-                name = (item.get("metadata") or {}).get("name")
+                if not isinstance(item, dict):
+                    continue
+                meta = item.get("metadata")
+                name = meta.get("name") if isinstance(meta, dict) else None
                 if name:
-                    raw_ready = (item.get("status") or {}).get("readyReplicas")
-                    ready_by_pool[name] = (
-                        raw_ready if isinstance(raw_ready, int) and raw_ready > 0 else 0
-                    )
+                    ready_by_pool[name] = batch_utils.warmpool_ready_replicas(item)
             continue_token = (page.get("metadata") or {}).get("continue") or None
             del page
             if continue_token is None:
@@ -1076,13 +1077,15 @@ class AsyncK8sHelper:
                 summaries.clear()
                 continue
             for item in page.get("items", []):
-                name = (item.get("metadata") or {}).get("name")
+                if not isinstance(item, dict):
+                    continue
+                meta = item.get("metadata")
+                name = meta.get("name") if isinstance(meta, dict) else None
                 if name:
-                    raw_ready = (item.get("status") or {}).get("readyReplicas")
-                    ready = raw_ready if isinstance(raw_ready, int) and raw_ready > 0 else 0
-                    spec = item.get("spec") or {}
-                    tpl = (spec.get("sandboxTemplateRef") or {}).get("name") or None
-                    summaries[name] = (ready, tpl)
+                    summaries[name] = (
+                        batch_utils.warmpool_ready_replicas(item),
+                        batch_utils.warmpool_template_name(item),
+                    )
             continue_token = (page.get("metadata") or {}).get("continue") or None
             del page
             if continue_token is None:

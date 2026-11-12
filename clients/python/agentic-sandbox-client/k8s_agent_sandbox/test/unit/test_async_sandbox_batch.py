@@ -6740,6 +6740,28 @@ class TestAsyncReleaseAllMembers(BaseClaimBatchTest):
         self.assertEqual(m_get_wp.await_count, 4)
         self.assertTrue(batch._warm_credit.take("pool-rbac-0"))
 
+        # seed_checked_pools rejects bool / non-int counts atomically without mutating state.
+        with self.assertRaises(ValueError):
+            await batch.seed_checked_pools({"pool-good": 2, "pool-bad": True})  # type: ignore[dict-item]
+        self.assertNotIn("pool-good", batch._checked_pools)
+
+        # CancelledError / non-403 error in concurrent bulk LIST propagates even if sibling returned 403.
+        real_helper._bulk_ext_list_forbidden = False
+        real_helper.custom_objects_api = k8s_client.CustomObjectsApi(MagicMock())
+        batch._in_flight = asyncio.Semaphore(4)
+        batch._max_in_flight = 4
+        with patch.object(
+            AsyncK8sHelper,
+            "list_sandbox_warmpool_summaries",
+            side_effect=k8s_client.ApiException(status=403, reason="Forbidden"),
+        ), patch.object(
+            AsyncK8sHelper,
+            "list_sandbox_template_names",
+            side_effect=asyncio.CancelledError(),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await batch.precheck_pools([f"pool-cancel-{i}" for i in range(4)], 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()

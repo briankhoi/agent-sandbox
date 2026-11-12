@@ -399,6 +399,16 @@ class BatchWatchdog(threading.Thread):
     return getattr(state, "value", state) == "pending"
 
   @staticmethod
+  def _batch_session_open(batch: Any) -> bool:
+    client_obj = getattr(batch, "_client", None)
+    helper = getattr(client_obj, "k8s_helper", None) if client_obj is not None else None
+    api = getattr(helper, "_api_client", None) if helper is not None else None
+    if api is None:
+      return True
+    pm = getattr(getattr(api, "rest_client", None), "pool_manager", None)
+    return getattr(pm, "closed", False) is not True
+
+  @staticmethod
   def _has_waiter(waiters: Any, b_lock: Any, claim_name: str) -> bool:
     if not isinstance(waiters, dict):
       return True
@@ -521,15 +531,29 @@ class BatchWatchdog(threading.Thread):
       try:
         rel_fn = self.batch.release_member
         if inspect.iscoroutinefunction(rel_fn):
-          if self._loop is not None and self._loop.is_running():
+          if (
+              self._loop is not None
+              and not self._loop.is_closed()
+              and self._loop.is_running()
+              and self._batch_session_open(self.batch)
+          ):
             asyncio.run_coroutine_threadsafe(rel_fn(cur), self._loop).result(timeout=15.0)
           else:
+            state = getattr(self.batch, "_state", None)
+            try:
+              if state is not None:
+                state.release_member(claim_name)
+              wake = getattr(self.batch, "_wake_acquire", None)
+              if callable(wake):
+                wake(claim_name)
+            except Exception:  # noqa: BLE001
+              pass
             self.cluster.resources.delete_claim(
                 claim_name, request_timeout=_REQUEST_TIMEOUT)
         else:
           rel_fn(cur)
       except Exception as exc:  # noqa: BLE001
-        if any(b.__name__ == "BatchError" for b in type(exc).__mro__):
+        if any(b.__name__ == "BatchError" for b in type(exc).__mro__) or not self._batch_session_open(self.batch):
           try:
             self.cluster.resources.delete_claim(
                 claim_name, request_timeout=_REQUEST_TIMEOUT)

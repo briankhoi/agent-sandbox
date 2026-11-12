@@ -141,12 +141,13 @@ class BatchClaimConfig(BaseModel):
   """SDK batch settings for ``FleetConfig(claim_mode="batch")``.
 
   Defaults are tuned for high-concurrency RL rollouts and evals (``create_rps=500.0``
-  when cold-pool pacing applies, ``max_in_flight=768`` concurrent API operations,
-  aligned with ``SandboxFleet._desired_pool_maxsize >= 1000`` and APF queue limits).
+  when cold-pool pacing applies, ``max_in_flight=512`` concurrent API operations,
+  aligned with ``SandboxFleet._desired_pool_maxsize >= 1000`` and stock APF
+  ``workload-low`` per-apiserver queue limits across HA control planes).
   Pass ``None`` explicitly to defer to the lower general-purpose SDK defaults."""
 
   create_rps: Annotated[float | None, Field(gt=0)] = 500.0
-  max_in_flight: Annotated[int | None, Field(ge=1)] = 768
+  max_in_flight: Annotated[int | None, Field(ge=1)] = 512
   # Longer than the SDK's 60 s, because losing the Lease ends every in-flight
   # rollout of the batch, and a driver that shares its process with a trainer can
   # stall for tens of seconds. Renewals happen every lease_duration // 3 per

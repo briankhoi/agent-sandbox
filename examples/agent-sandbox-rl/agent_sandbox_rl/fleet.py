@@ -2112,16 +2112,16 @@ class SandboxFleet:
       if already_ensured:
         self._ondemand_shared.add(key)
     if not already_ensured:
-      with self._ondemand_lock(key):
-        with self._lock:
-          if self._torndown or self._async_tearing_down:
-            raise FleetError(
-                f"fleet has torn down; cannot acquire on {cluster.name!r}")
-          already_ensured = key in self._ondemand
-          if already_ensured:
-            self._ondemand_shared.add(key)
-        if not already_ensured:
-          try:
+      try:
+        with self._ondemand_lock(key):
+          with self._lock:
+            if self._torndown or self._async_tearing_down:
+              raise FleetError(
+                  f"fleet has torn down; cannot acquire on {cluster.name!r}")
+            already_ensured = key in self._ondemand
+            if already_ensured:
+              self._ondemand_shared.add(key)
+          if not already_ensured:
             pool = self._ensure_pool(cluster, image, 1)
             cluster.reserve_replicas(1)
             created_pool = True
@@ -2136,10 +2136,10 @@ class SandboxFleet:
                 "named something other than %r; set pool_name_format to match, or "
                 "adopt_existing=True to fail instead of provisioning in parallel.",
                 image, pool, cluster.name, self.config.pool_name_format)
-          except BaseException:
-            if created_pool:
-              self._rollback_ondemand_pool(cluster, image, pool)
-            raise
+      except BaseException:
+        if created_pool:
+          self._rollback_ondemand_pool(cluster, image, pool)
+        raise
     return pool, created_pool
 
   def _rollback_ondemand_pool(
