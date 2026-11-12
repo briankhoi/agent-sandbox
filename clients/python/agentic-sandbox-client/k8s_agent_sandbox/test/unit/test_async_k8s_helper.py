@@ -1735,6 +1735,84 @@ class TestAsyncK8sHelperBatchMethods(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(client.ApiException):
             await self.helper.delete_batch_lease("batch-b1", "default")
 
+    async def test_list_sandbox_warmpools_ready_paginates_and_restarts_once_on_410(self):
+        api = self.helper.custom_objects_api
+        api.list_namespaced_custom_object = AsyncMock(
+            side_effect=[
+                {
+                    "metadata": {"continue": "tok-1"},
+                    "items": [{"metadata": {"name": "pool-a"}, "status": {"readyReplicas": 3}}],
+                },
+                client.ApiException(status=410),
+                {
+                    "metadata": {"continue": "tok-2"},
+                    "items": [{"metadata": {"name": "pool-a"}, "status": {"readyReplicas": 7}}],
+                },
+                {
+                    "metadata": {},
+                    "items": [
+                        {"metadata": {"name": "pool-b"}, "status": {"readyReplicas": 4}},
+                        {"metadata": {"name": "pool-c"}, "status": {}},
+                    ],
+                },
+            ]
+        )
+        ready = await self.helper.list_sandbox_warmpools_ready("default", _request_timeout=15)
+        self.assertEqual(ready, {"pool-a": 7, "pool-b": 4, "pool-c": 0})
+        self.assertEqual(api.list_namespaced_custom_object.await_count, 4)
+
+
+class TestAsyncK8sHelperBatchRawDrain(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_create_and_delete_drain_aiohttp_response_and_surface_errors(self):
+        api_client = MagicMock()
+        helper = AsyncK8sHelper(api_client=api_client)
+        await helper._ensure_initialized()
+
+        class _ChunkedContent:
+            async def iter_any(self):
+                yield b"{}"
+
+        ok_resp = MagicMock(spec=aiohttp.ClientResponse, status=201, headers={})
+        ok_resp.content = _ChunkedContent()
+        err_resp = MagicMock(
+            spec=aiohttp.ClientResponse,
+            status=429,
+            reason="Too Many Requests",
+            headers={"Retry-After": "2"},
+        )
+        err_resp.read = AsyncMock(return_value=b'{"message":"throttled"}')
+
+        class _BrokenContent:
+            async def iter_any(self):
+                yield b"{"
+                raise RuntimeError("mid-drain abort")
+
+        broken_resp = MagicMock(spec=aiohttp.ClientResponse, status=200, headers={})
+        broken_resp.content = _BrokenContent()
+
+        api_client.call_api = AsyncMock(side_effect=[ok_resp, err_resp, ok_resp, broken_resp])
+        out = await helper.create_sandbox_claim("b1-0", "pool-a", "default", batch=True)
+        self.assertEqual(out["metadata"]["name"], "b1-0")
+        self.assertIs(api_client.call_api.await_args.kwargs["_preload_content"], False)
+        ok_resp.release.assert_called_once()
+
+        with self.assertRaises(client.ApiException) as ctx:
+            await helper.create_sandbox_claim("b1-1", "pool-a", "default", batch=True)
+        self.assertEqual(ctx.exception.status, 429)
+        self.assertEqual(ctx.exception.headers.get("Retry-After"), "2")
+        err_resp.release.assert_called_once()
+
+        ok_resp.reset_mock()
+        ok_resp.content = _ChunkedContent()
+        await helper.delete_sandbox_claim("b1-0", "default", batch=True)
+        self.assertIs(api_client.call_api.await_args.kwargs["_preload_content"], False)
+        ok_resp.release.assert_called_once()
+
+        with self.assertRaisesRegex(RuntimeError, "mid-drain abort"):
+            await helper.delete_sandbox_claim("b1-2", "default", batch=True)
+        broken_resp.close.assert_called_once()
+        broken_resp.release.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

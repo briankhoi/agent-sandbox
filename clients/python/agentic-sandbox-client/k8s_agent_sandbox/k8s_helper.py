@@ -153,6 +153,19 @@ def _close_api_client(api_client: client.ApiClient) -> None:
         api_client.rest_client.pool_manager.clear()
 
 
+def _drain_urllib3_response(response: urllib3.HTTPResponse) -> None:
+    """Drains and releases a ``_preload_content=False`` urllib3 response without UTF-8/JSON decoding."""
+    try:
+        for _ in response.stream(decode_content=False):
+            pass
+    finally:
+        # urllib3's release_conn() returns an unfinished response's socket to the pool in
+        # 'Request-sent' state, so close the response first if draining stopped before EOF.
+        if not response.closed:
+            response.close()
+        response.release_conn()
+
+
 def _claim_list_pages(
     list_page: Callable[..., Any],
     namespace: str,
@@ -362,9 +375,29 @@ class K8sHelper:
             "spec": spec,
         }
         # Route per-claim batch creates through _batch_custom_objects_api so urllib3 does not
-        # retry past SandboxBatch._create_one's deadline or Lease budget.
+        # retry past SandboxBatch._create_one's deadline or Lease budget. Batch callers also
+        # discard the returned dict (readiness arrives via the shared watch), so skip decoding
+        # and JSON-parsing the response body when talking to a real CustomObjectsApi.
         api = self._batch_custom_objects_api if batch else self.custom_objects_api
         logger.log(log_level, f"Creating SandboxClaim '{name}' in namespace '{namespace}' using warm pool '{warmpool}'...")
+        if (
+            batch
+            and type(api) is client.CustomObjectsApi
+            and "create_namespaced_custom_object" not in api.__dict__
+        ):
+            raw_resp = api.create_namespaced_custom_object(
+                group=CLAIM_API_GROUP,
+                version=CLAIM_API_VERSION,
+                namespace=namespace,
+                plural=CLAIM_PLURAL_NAME,
+                body=manifest,
+                _preload_content=False,
+                _request_timeout=_request_timeout,
+            )
+            if isinstance(raw_resp, urllib3.HTTPResponse):
+                _drain_urllib3_response(raw_resp)
+                return manifest
+            return cast(dict[str, Any], raw_resp)
         return cast(dict[str, Any], api.create_namespaced_custom_object(
             group=CLAIM_API_GROUP,
             version=CLAIM_API_VERSION,
@@ -626,15 +659,33 @@ class K8sHelper:
         # atexit cleanup) keep default urllib3 retries.
         api = self._batch_custom_objects_api if batch else self.custom_objects_api
         try:
-            api.delete_namespaced_custom_object(
-                group=CLAIM_API_GROUP,
-                version=CLAIM_API_VERSION,
-                namespace=namespace,
-                plural=CLAIM_PLURAL_NAME,
-                name=name,
-                _request_timeout=_request_timeout,
-                **delete_kwargs,
-            )
+            if (
+                batch
+                and type(api) is client.CustomObjectsApi
+                and "delete_namespaced_custom_object" not in api.__dict__
+            ):
+                raw_resp = api.delete_namespaced_custom_object(
+                    group=CLAIM_API_GROUP,
+                    version=CLAIM_API_VERSION,
+                    namespace=namespace,
+                    plural=CLAIM_PLURAL_NAME,
+                    name=name,
+                    _preload_content=False,
+                    _request_timeout=_request_timeout,
+                    **delete_kwargs,
+                )
+                if isinstance(raw_resp, urllib3.HTTPResponse):
+                    _drain_urllib3_response(raw_resp)
+            else:
+                api.delete_namespaced_custom_object(
+                    group=CLAIM_API_GROUP,
+                    version=CLAIM_API_VERSION,
+                    namespace=namespace,
+                    plural=CLAIM_PLURAL_NAME,
+                    name=name,
+                    _request_timeout=_request_timeout,
+                    **delete_kwargs,
+                )
             logger.log(log_level, f"Terminated SandboxClaim: {name}")
         except client.ApiException as e:
             if e.status != 404:
@@ -858,6 +909,11 @@ class K8sHelper:
         # Wrap only the stock Watch, whose stream() calls func and reads _stop the way this code
         # expects.
         if type(w) is watch.Watch:
+            # CustomObjectsApi declares ``:return: object``, which causes Watch.unmarshal_event
+            # to re-serialize ``json.dumps(js['raw_object'])`` and parse it a second time via
+            # ``ApiClient.deserialize``. Returning None skips that redundant round-trip while
+            # keeping ``raw_object`` populated for 410/ERROR handling.
+            w.get_return_type = lambda _func: None  # type: ignore[method-assign]
             stopped = threading.Event()
             w_ref = weakref.ref(w)
             # kubernetes releases before 37 make Watch.stop() only set a flag, so a quiet stream
@@ -1049,15 +1105,131 @@ class K8sHelper:
                 _request_timeout=_request_timeout,
             ),
         )
-        try:
-            for _ in response.stream(decode_content=False):
-                pass
-        finally:
-            # urllib3's release_conn() returns an unfinished response's socket to the pool in
-            # 'Request-sent' state, so close the response first if draining stopped before EOF.
-            if not response.closed:
-                response.close()
-            response.release_conn()
+        _drain_urllib3_response(response)
+
+    def list_sandbox_warmpools_ready(
+        self,
+        namespace: str,
+        _request_timeout: float | tuple[float, float] | None = None,
+    ) -> dict[str, int]:
+        """Lists SandboxWarmPool Ready replica counts across ``namespace`` in paginated chunks."""
+        ready_by_pool: dict[str, int] = {}
+        continue_token: str | None = None
+        restarted = False
+        while True:
+            try:
+                page = cast(
+                    dict[str, Any],
+                    self._batch_custom_objects_api.list_namespaced_custom_object(
+                        group=CLAIM_API_GROUP,
+                        version=CLAIM_API_VERSION,
+                        namespace=namespace,
+                        plural=WARMPOOL_PLURAL_NAME,
+                        limit=CLAIM_LIST_PAGE_SIZE,
+                        _continue=continue_token,
+                        _request_timeout=_request_timeout,
+                    ),
+                )
+            except client.ApiException as e:
+                if e.status != 410 or continue_token is None or restarted:
+                    raise
+                restarted = True
+                continue_token = None
+                ready_by_pool.clear()
+                continue
+            for item in page.get("items", []):
+                name = (item.get("metadata") or {}).get("name")
+                if name:
+                    raw_ready = (item.get("status") or {}).get("readyReplicas")
+                    ready_by_pool[name] = (
+                        raw_ready if isinstance(raw_ready, int) and raw_ready > 0 else 0
+                    )
+            continue_token = (page.get("metadata") or {}).get("continue") or None
+            del page
+            if continue_token is None:
+                return ready_by_pool
+
+    def list_sandbox_warmpool_summaries(
+        self,
+        namespace: str,
+        _request_timeout: float | tuple[float, float] | None = None,
+    ) -> dict[str, tuple[int, str | None]]:
+        """Lists ``(readyReplicas, sandboxTemplateRef.name)`` per SandboxWarmPool in ``namespace``."""
+        summaries: dict[str, tuple[int, str | None]] = {}
+        continue_token: str | None = None
+        restarted = False
+        while True:
+            try:
+                page = cast(
+                    dict[str, Any],
+                    self._batch_custom_objects_api.list_namespaced_custom_object(
+                        group=CLAIM_API_GROUP,
+                        version=CLAIM_API_VERSION,
+                        namespace=namespace,
+                        plural=WARMPOOL_PLURAL_NAME,
+                        limit=CLAIM_LIST_PAGE_SIZE,
+                        _continue=continue_token,
+                        _request_timeout=_request_timeout,
+                    ),
+                )
+            except client.ApiException as e:
+                if e.status != 410 or continue_token is None or restarted:
+                    raise
+                restarted = True
+                continue_token = None
+                summaries.clear()
+                continue
+            for item in page.get("items", []):
+                name = (item.get("metadata") or {}).get("name")
+                if name:
+                    raw_ready = (item.get("status") or {}).get("readyReplicas")
+                    ready = raw_ready if isinstance(raw_ready, int) and raw_ready > 0 else 0
+                    spec = item.get("spec") or {}
+                    tpl = (spec.get("sandboxTemplateRef") or {}).get("name") or None
+                    summaries[name] = (ready, tpl)
+            continue_token = (page.get("metadata") or {}).get("continue") or None
+            del page
+            if continue_token is None:
+                return summaries
+
+    def list_sandbox_template_names(
+        self,
+        namespace: str,
+        _request_timeout: float | tuple[float, float] | None = None,
+    ) -> set[str]:
+        """Lists SandboxTemplate names across ``namespace`` in paginated chunks."""
+        names: set[str] = set()
+        continue_token: str | None = None
+        restarted = False
+        while True:
+            try:
+                page = cast(
+                    dict[str, Any],
+                    self._batch_custom_objects_api.list_namespaced_custom_object(
+                        group=CLAIM_API_GROUP,
+                        version=CLAIM_API_VERSION,
+                        namespace=namespace,
+                        plural=TEMPLATE_PLURAL_NAME,
+                        limit=CLAIM_LIST_PAGE_SIZE,
+                        _continue=continue_token,
+                        _request_timeout=_request_timeout,
+                    ),
+                )
+            except client.ApiException as e:
+                if e.status != 410 or continue_token is None or restarted:
+                    raise
+                restarted = True
+                continue_token = None
+                names.clear()
+                continue
+            for item in page.get("items", []):
+                name = (item.get("metadata") or {}).get("name")
+                if name:
+                    names.add(name)
+            continue_token = (page.get("metadata") or {}).get("continue") or None
+            del page
+            if continue_token is None:
+                return names
 
     def get_sandbox_warmpool(
         self, name: str, namespace: str, _request_timeout: float | tuple[float, float] | None = None

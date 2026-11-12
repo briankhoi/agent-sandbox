@@ -79,6 +79,21 @@ async def _raise_for_status(response: aiohttp.ClientResponse) -> None:
     raise err
 
 
+async def _drain_aiohttp_response(response: aiohttp.ClientResponse) -> None:
+    """Validates HTTP status, drains, and releases a ``_preload_content=False`` aiohttp response."""
+    await _raise_for_status(response)
+    try:
+        async for _ in response.content.iter_any():
+            pass
+    except BaseException:
+        response.close()
+        raise
+    finally:
+        # Release the response so an interruption mid-drain cannot leave its pooled connection
+        # checked out; aiohttp closes incomplete transports on release.
+        response.release()
+
+
 async def _claim_list_pages(
     list_page: Callable[..., Awaitable[Any]],
     namespace: str,
@@ -270,7 +285,26 @@ class AsyncK8sHelper:
             log_level,
             f"Creating SandboxClaim '{name}' in namespace '{namespace}' using warm pool '{warmpool}'...",
         )
-        return cast(dict[str, Any], await self.custom_objects_api.create_namespaced_custom_object(
+        api = self.custom_objects_api
+        if (
+            batch
+            and type(api) is client.CustomObjectsApi
+            and "create_namespaced_custom_object" not in api.__dict__
+        ):
+            raw_resp = await api.create_namespaced_custom_object(
+                group=CLAIM_API_GROUP,
+                version=CLAIM_API_VERSION,
+                namespace=namespace,
+                plural=CLAIM_PLURAL_NAME,
+                body=manifest,
+                _preload_content=False,
+                _request_timeout=_request_timeout,
+            )
+            if isinstance(raw_resp, aiohttp.ClientResponse):
+                await _drain_aiohttp_response(raw_resp)
+                return manifest
+            return cast(dict[str, Any], raw_resp)
+        return cast(dict[str, Any], await api.create_namespaced_custom_object(
             group=CLAIM_API_GROUP,
             version=CLAIM_API_VERSION,
             namespace=namespace,
@@ -553,16 +587,35 @@ class AsyncK8sHelper:
             delete_kwargs["body"] = client.V1DeleteOptions(
                 preconditions=client.V1Preconditions(uid=expected_uid)
             )
+        api = self.custom_objects_api
         try:
-            await self.custom_objects_api.delete_namespaced_custom_object(
-                group=CLAIM_API_GROUP,
-                version=CLAIM_API_VERSION,
-                namespace=namespace,
-                plural=CLAIM_PLURAL_NAME,
-                name=name,
-                _request_timeout=_request_timeout,
-                **delete_kwargs,
-            )
+            if (
+                batch
+                and type(api) is client.CustomObjectsApi
+                and "delete_namespaced_custom_object" not in api.__dict__
+            ):
+                raw_resp = await api.delete_namespaced_custom_object(
+                    group=CLAIM_API_GROUP,
+                    version=CLAIM_API_VERSION,
+                    namespace=namespace,
+                    plural=CLAIM_PLURAL_NAME,
+                    name=name,
+                    _preload_content=False,
+                    _request_timeout=_request_timeout,
+                    **delete_kwargs,
+                )
+                if isinstance(raw_resp, aiohttp.ClientResponse):
+                    await _drain_aiohttp_response(raw_resp)
+            else:
+                await api.delete_namespaced_custom_object(
+                    group=CLAIM_API_GROUP,
+                    version=CLAIM_API_VERSION,
+                    namespace=namespace,
+                    plural=CLAIM_PLURAL_NAME,
+                    name=name,
+                    _request_timeout=_request_timeout,
+                    **delete_kwargs,
+                )
             logger.log(log_level, f"Terminated SandboxClaim: {name}")
         except client.ApiException as e:
             if e.status != 404:
@@ -794,6 +847,12 @@ class AsyncK8sHelper:
             return response
 
         w = watch.Watch()
+        if type(w) is watch.Watch:
+            # CustomObjectsApi declares ``:return: object``, which causes Watch.unmarshal_event
+            # to re-serialize ``json.dumps(js["raw_object"])`` and parse it again via
+            # ``ApiClient.deserialize``. Returning "" skips that round-trip while preserving
+            # resource_version tracking, BOOKMARK handling, and ERROR status exceptions.
+            setattr(w, "get_return_type", lambda _func: "")
         try:
             async for event in w.stream(
                 func=_checked_list,
@@ -917,14 +976,143 @@ class AsyncK8sHelper:
             _preload_content=False,
             _request_timeout=_request_timeout,
         ))
-        await _raise_for_status(response)
-        try:
-            async for _ in response.content.iter_any():
-                pass
-        finally:
-            # Release the response so an interruption mid-drain cannot leave its pooled connection
-            # checked out; aiohttp closes incomplete transports on release.
-            response.release()
+        await _drain_aiohttp_response(response)
+
+    async def list_sandbox_warmpools_ready(
+        self,
+        namespace: str,
+        _request_timeout: float | None = None,
+    ) -> dict[str, int]:
+        """Lists SandboxWarmPool Ready replica counts across ``namespace`` in paginated chunks."""
+        await self._ensure_initialized()
+
+        ready_by_pool: dict[str, int] = {}
+        continue_token: str | None = None
+        restarted = False
+        while True:
+            try:
+                list_kwargs: dict[str, Any] = {
+                    "group": CLAIM_API_GROUP,
+                    "version": CLAIM_API_VERSION,
+                    "namespace": namespace,
+                    "plural": WARMPOOL_PLURAL_NAME,
+                    "limit": CLAIM_LIST_PAGE_SIZE,
+                    "_request_timeout": _request_timeout,
+                }
+                if continue_token is not None:
+                    list_kwargs["_continue"] = continue_token
+                page = cast(
+                    dict[str, Any],
+                    await self.custom_objects_api.list_namespaced_custom_object(**list_kwargs),
+                )
+            except client.ApiException as e:
+                if e.status != 410 or continue_token is None or restarted:
+                    raise
+                restarted = True
+                continue_token = None
+                ready_by_pool.clear()
+                continue
+            for item in page.get("items", []):
+                name = (item.get("metadata") or {}).get("name")
+                if name:
+                    raw_ready = (item.get("status") or {}).get("readyReplicas")
+                    ready_by_pool[name] = (
+                        raw_ready if isinstance(raw_ready, int) and raw_ready > 0 else 0
+                    )
+            continue_token = (page.get("metadata") or {}).get("continue") or None
+            del page
+            if continue_token is None:
+                return ready_by_pool
+
+    async def list_sandbox_warmpool_summaries(
+        self,
+        namespace: str,
+        _request_timeout: float | None = None,
+    ) -> dict[str, tuple[int, str | None]]:
+        """Lists ``(readyReplicas, sandboxTemplateRef.name)`` per SandboxWarmPool in ``namespace``."""
+        await self._ensure_initialized()
+
+        summaries: dict[str, tuple[int, str | None]] = {}
+        continue_token: str | None = None
+        restarted = False
+        while True:
+            try:
+                list_kwargs: dict[str, Any] = {
+                    "group": CLAIM_API_GROUP,
+                    "version": CLAIM_API_VERSION,
+                    "namespace": namespace,
+                    "plural": WARMPOOL_PLURAL_NAME,
+                    "limit": CLAIM_LIST_PAGE_SIZE,
+                    "_request_timeout": _request_timeout,
+                }
+                if continue_token is not None:
+                    list_kwargs["_continue"] = continue_token
+                page = cast(
+                    dict[str, Any],
+                    await self.custom_objects_api.list_namespaced_custom_object(**list_kwargs),
+                )
+            except client.ApiException as e:
+                if e.status != 410 or continue_token is None or restarted:
+                    raise
+                restarted = True
+                continue_token = None
+                summaries.clear()
+                continue
+            for item in page.get("items", []):
+                name = (item.get("metadata") or {}).get("name")
+                if name:
+                    raw_ready = (item.get("status") or {}).get("readyReplicas")
+                    ready = raw_ready if isinstance(raw_ready, int) and raw_ready > 0 else 0
+                    spec = item.get("spec") or {}
+                    tpl = (spec.get("sandboxTemplateRef") or {}).get("name") or None
+                    summaries[name] = (ready, tpl)
+            continue_token = (page.get("metadata") or {}).get("continue") or None
+            del page
+            if continue_token is None:
+                return summaries
+
+    async def list_sandbox_template_names(
+        self,
+        namespace: str,
+        _request_timeout: float | None = None,
+    ) -> set[str]:
+        """Lists SandboxTemplate names across ``namespace`` in paginated chunks."""
+        await self._ensure_initialized()
+
+        names: set[str] = set()
+        continue_token: str | None = None
+        restarted = False
+        while True:
+            try:
+                list_kwargs: dict[str, Any] = {
+                    "group": CLAIM_API_GROUP,
+                    "version": CLAIM_API_VERSION,
+                    "namespace": namespace,
+                    "plural": TEMPLATE_PLURAL_NAME,
+                    "limit": CLAIM_LIST_PAGE_SIZE,
+                    "_request_timeout": _request_timeout,
+                }
+                if continue_token is not None:
+                    list_kwargs["_continue"] = continue_token
+                page = cast(
+                    dict[str, Any],
+                    await self.custom_objects_api.list_namespaced_custom_object(**list_kwargs),
+                )
+            except client.ApiException as e:
+                if e.status != 410 or continue_token is None or restarted:
+                    raise
+                restarted = True
+                continue_token = None
+                names.clear()
+                continue
+            for item in page.get("items", []):
+                name = (item.get("metadata") or {}).get("name")
+                if name:
+                    names.add(name)
+            continue_token = (page.get("metadata") or {}).get("continue") or None
+            del page
+            if continue_token is None:
+                return names
 
     async def get_sandbox_warmpool(
         self, name: str, namespace: str, _request_timeout: float | None = None

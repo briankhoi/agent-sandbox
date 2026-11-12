@@ -2116,6 +2116,62 @@ class TestK8sHelperBatchMethods(unittest.TestCase):
         with self.assertRaises(client.ApiException):
             helper.delete_batch_lease("batch-b1", "default")
 
+    def test_list_sandbox_warmpools_ready_paginates_and_restarts_once_on_410(
+        self, mock_config, mock_api_cls, mock_coord_cls, mock_core_cls
+    ):
+        mock_api = MagicMock()
+        mock_api_cls.return_value = mock_api
+        helper = K8sHelper()
+        mock_api.list_namespaced_custom_object.side_effect = [
+            {
+                "metadata": {"continue": "tok-1"},
+                "items": [{"metadata": {"name": "pool-a"}, "status": {"readyReplicas": 3}}],
+            },
+            client.ApiException(status=410),
+            {
+                "metadata": {"continue": "tok-2"},
+                "items": [{"metadata": {"name": "pool-a"}, "status": {"readyReplicas": 5}}],
+            },
+            {
+                "metadata": {},
+                "items": [
+                    {"metadata": {"name": "pool-b"}, "status": {"readyReplicas": 2}},
+                    {"metadata": {"name": "pool-c"}, "status": {}},
+                ],
+            },
+        ]
+        ready = helper.list_sandbox_warmpools_ready("default", _request_timeout=15)
+        self.assertEqual(ready, {"pool-a": 5, "pool-b": 2, "pool-c": 0})
+        self.assertEqual(mock_api.list_namespaced_custom_object.call_count, 4)
+
+
+class TestK8sHelperBatchRawDrain(unittest.TestCase):
+    def test_batch_create_and_delete_drain_raw_response_on_real_custom_objects_api(self):
+        import urllib3
+
+        api_client = client.ApiClient()
+        self.addCleanup(api_client.close)
+        helper = K8sHelper(api_client=api_client)
+        self.addCleanup(helper.close)
+        http_resp = MagicMock(spec=urllib3.HTTPResponse, closed=True)
+        http_resp.stream.return_value = iter([b"{}"])
+        rest_resp = MagicMock(status=201, response=http_resp)
+        with patch.object(
+            helper._batch_custom_objects_api.api_client,
+            "call_api",
+            return_value=rest_resp,
+        ):
+            out = helper.create_sandbox_claim("b1-0", "pool-a", "default", batch=True)
+            self.assertEqual(out["metadata"]["name"], "b1-0")
+            http_resp.stream.assert_called_once_with(decode_content=False)
+            http_resp.release_conn.assert_called_once()
+
+            http_resp.reset_mock()
+            http_resp.stream.return_value = iter([b"{}"])
+            helper.delete_sandbox_claim("b1-0", "default", batch=True)
+            http_resp.stream.assert_called_once_with(decode_content=False)
+            http_resp.release_conn.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

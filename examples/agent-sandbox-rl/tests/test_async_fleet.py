@@ -453,3 +453,44 @@ async def test_async_acquire_cancellation_reclaims_worker_handle_and_slot(make_c
   assert f2._fleet._claims_reserved == 0
   assert f2.handles() == []
   assert c2.active_claims == 0
+
+
+async def test_handle_aexec_runs_on_event_loop_and_maps_lost_pod():
+  from unittest.mock import AsyncMock, MagicMock
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import ClusterConfig
+  from agent_sandbox_rl.exceptions import SandboxLostError
+  from agent_sandbox_rl.handles import SandboxHandle
+  from agent_sandbox_rl.sources import Task
+  from kubernetes import client
+
+  c = Cluster(ClusterConfig(name="c1", namespace="ns1"), api_client=MagicMock())
+  fake_ws_core = MagicMock()
+  fake_ws_core.connect_get_namespaced_pod_exec = AsyncMock(return_value="ok-async\n")
+  c._async_exec_core_api = fake_ws_core
+  c._async_loop = asyncio.get_running_loop()
+  c._async_init_lock = asyncio.Lock()
+
+  h = SandboxHandle(
+      task=Task(id="t1", image="img:1"),
+      cluster_name="c1",
+      claim_name="cl-1",
+      sandbox_id="sb-1",
+      pod_name="pod-1",
+      hostname="sb-1",
+      _cluster=c,
+  )
+  out = await h.aexec("echo ok-async")
+  assert out == "ok-async\n"
+  kwargs = fake_ws_core.connect_get_namespaced_pod_exec.await_args.kwargs
+  assert kwargs["command"] == ["bash", "-lc", "echo ok-async"]
+  assert kwargs["container"] == "agent-runtime"
+
+  # On transport failure when pod is 404, aexec surfaces SandboxLostError.
+  fake_ws_core.connect_get_namespaced_pod_exec = AsyncMock(
+      side_effect=RuntimeError("ws handshake 404")
+  )
+  c.core_api = MagicMock()
+  c.core_api.read_namespaced_pod_status.side_effect = client.ApiException(status=404)
+  with pytest.raises(SandboxLostError):
+    await h.aexec("echo dead")

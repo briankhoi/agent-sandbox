@@ -243,6 +243,8 @@ class SandboxFleet:
                     labels=self.config.labels,
                     fail_fast=self.config.fail_fast)
         if self.config.claim_mode == "batch" else None)
+    self._async_batch_claims = None
+    self._defer_sync_batch_prepare = False
     if self.config.observability.enable_tracing:
       self._enable_sdk_tracing()
 
@@ -1248,7 +1250,7 @@ class SandboxFleet:
                      len(missing), missing[:5])
     self._warm_entries(entries, wait, replicas_override=replicas_override)
     if wait:
-      self._prepare_batch_clusters(entries, only_unopened=True)
+      self._prepare_batch_clusters(entries, only_unopened=False)
 
   def warm_image(self, image: str, *, replicas_override: int | None = None,
                  wait: bool = True) -> None:
@@ -1455,6 +1457,8 @@ class SandboxFleet:
     self._deleted_namespaces.clear()          # this cycle recreates what it needs
     if self._batch_claims is not None:
       self._batch_claims.reopen()
+    if self._async_batch_claims is not None:
+      self._async_batch_claims.reopen()
     with self._lock:
       # A fresh cycle starts with a clean slate; a slot leaked by a crashed
       # prior cycle must not pre-charge this one's max_live_sandboxes.
@@ -1484,10 +1488,14 @@ class SandboxFleet:
     pools_by_cluster: dict[str, list[str]] = collections.defaultdict(list)
     for entry in entries:
       pools_by_cluster[entry.cluster].append(entry.pool)
-    cluster_pools = [
-        (self.registry.get(cname), pools)
-        for cname, pools in pools_by_cluster.items()
-    ]
+    cluster_pools = []
+    for cname, pools in pools_by_cluster.items():
+      c = self.registry.get(cname)
+      if self._defer_sync_batch_prepare and getattr(c, "supports_native_async_batch", False):
+        continue
+      cluster_pools.append((c, pools))
+    if not cluster_pools:
+      return
     self._batch_claims.prepare_clusters(
         cluster_pools, only_unopened=only_unopened
     )
@@ -2385,28 +2393,31 @@ class SandboxFleet:
       except Exception as exc:  # noqa: BLE001 (sweep remaining run resources first)
         release_err = exc
       finally:
+        failed_batches: dict[int, Exception] = {}
         if self._batch_claims is not None:
           # Deletes any member a handle didn't release, and each batch's Lease,
           # even when a handle's release failed, since a live Lease keeps the
           # batch reaper away.
-          failed_batches = self._batch_claims.release_all()
-          for bid, exc in failed_batches.items():
-            failed_handles = deferred_by_batch.get(bid)
-            if not failed_handles:
-              continue
-            if release_err is None:
-              release_err = exc
-            if self._shared_run_id:
-              for h in failed_handles:
-                try:
-                  self.registry.get(h.cluster_name).resources.delete_claim(
-                      h.claim_name, request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS
-                  )
-                except Exception:  # noqa: BLE001
-                  logger.warning(
-                      "teardown: fallback claim delete failed for %s on %s",
-                      h.claim_name, h.cluster_name, exc_info=True,
-                  )
+          failed_batches.update(self._batch_claims.release_all())
+        if self._async_batch_claims is not None:
+          failed_batches.update(self._async_batch_claims.release_all_sync())
+        for bid, exc in failed_batches.items():
+          failed_handles = deferred_by_batch.get(bid)
+          if not failed_handles:
+            continue
+          if release_err is None:
+            release_err = exc
+          if self._shared_run_id:
+            for h in failed_handles:
+              try:
+                self.registry.get(h.cluster_name).resources.delete_claim(
+                    h.claim_name, request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS
+                )
+              except Exception:  # noqa: BLE001
+                logger.warning(
+                    "teardown: fallback claim delete failed for %s on %s",
+                    h.claim_name, h.cluster_name, exc_info=True,
+                )
       if self._shared_run_id:
         # A sweep by a shared id would tear down the whole job; unwarm only what
         # this fleet warmed and leave the rest for the reaper.
@@ -2447,7 +2458,7 @@ class SandboxFleet:
           claims = _safe_list("claims", c.resources.list_claims)
           leases = (
               _safe_list("leases", c.resources.list_leases)
-              if self._batch_claims is not None else []
+              if (self._batch_claims is not None or self._async_batch_claims is not None) else []
           )
           pools = _safe_list("warmpools", c.resources.list_warmpools)
           tmpls = _safe_list("templates", c.resources.list_templates)
