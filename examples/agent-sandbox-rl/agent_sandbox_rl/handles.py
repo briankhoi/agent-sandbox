@@ -823,37 +823,18 @@ class SandboxHandle:
 
   def _close_sandbox_connection(self) -> None:
     if self.sandbox is not None:
-      close_conn = getattr(self.sandbox, "close_connection", None)
-      if callable(close_conn):
-        try:
-          res = close_conn()
-          if asyncio.iscoroutine(res):
-            bc_loop = getattr(self._batch_claim, "_loop", None)
-            bc_thread = getattr(self._batch_claim, "_loop_thread", None)
-            if bc_loop is None:
-              try:
-                bc_loop = asyncio.get_running_loop()
-                bc_thread = threading.current_thread()
-              except RuntimeError:
-                bc_loop = None
-            if (
-                bc_loop is not None
-                and not bc_loop.is_closed()
-                and bc_loop.is_running()
-            ):
-              if threading.current_thread() is not bc_thread:
-                asyncio.run_coroutine_threadsafe(res, bc_loop).result(timeout=5.0)
-              else:
-                t = bc_loop.create_task(res)
-                t.add_done_callback(
-                    lambda done: None if done.cancelled() else done.exception()
-                )
-            else:
-              res.close()
-        except Exception as exc:  # noqa: BLE001 (best-effort connection close)
-          logger.warning(
-              "failed to close sandbox connection for %s: %s",
-              self.sandbox_id, exc)
+      from .batch_claims import close_async_sandbox_sync
+
+      try:
+        close_async_sandbox_sync(
+            self.sandbox,
+            getattr(self._batch_claim, "_loop", None),
+            getattr(self._batch_claim, "_loop_thread", None),
+        )
+      except Exception as exc:  # noqa: BLE001 (best-effort connection close)
+        logger.warning(
+            "failed to close sandbox connection for %s: %s",
+            self.sandbox_id, exc)
 
   async def _aclose_sandbox_connection(self) -> None:
     if self.sandbox is not None:

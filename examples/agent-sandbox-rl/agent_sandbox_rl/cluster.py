@@ -50,7 +50,16 @@ async def build_async_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000
         context=cfg.context,
         client_configuration=configuration,
     )
-  return async_client.ApiClient(configuration=configuration)
+  api = async_client.ApiClient(configuration=configuration)
+  conn = getattr(
+      getattr(getattr(api, "rest_client", None), "pool_manager", None),
+      "connector",
+      None,
+  )
+  ka = getattr(conn, "_keepalive_timeout", None)
+  if isinstance(ka, (int, float)) and not isinstance(ka, bool) and ka < 75.0:
+    conn._keepalive_timeout = 75.0
+  return api
 
 
 async def _build_fast_ws_core_api(
@@ -78,6 +87,9 @@ async def _build_fast_ws_core_api(
       # sharing the same SSLContext so 500-1000 concurrent execs stay compact.
       old_pm = self.rest_client.pool_manager
       connector = old_pm.connector
+      ka = getattr(connector, "_keepalive_timeout", None)
+      if isinstance(ka, (int, float)) and not isinstance(ka, bool) and ka < 75.0:
+        connector._keepalive_timeout = 75.0
       self.rest_client.pool_manager = aiohttp.ClientSession(
           connector=connector,
           connector_owner=True,
@@ -140,7 +152,18 @@ async def _build_fast_ws_core_api(
             ws_url, **ws_kwargs
         ) as ws:
           async for wsmsg in ws:
+            msg_type = getattr(wsmsg, "type", None)
             raw = wsmsg.data
+            if msg_type == aiohttp.WSMsgType.ERROR:
+              ws_exc = ws.exception() or (
+                  raw
+                  if isinstance(raw, BaseException)
+                  else aiohttp.WebSocketError(
+                      aiohttp.WSCloseCode.ABNORMAL_CLOSURE,
+                      "websocket exec stream error",
+                  )
+              )
+              raise ws_exc
             if isinstance(raw, bytes):
               if len(raw) > 1 and raw[0] in (STDOUT_CHANNEL, STDERR_CHANNEL):
                 buf.extend(raw[1:])
@@ -148,8 +171,15 @@ async def _build_fast_ws_core_api(
               if len(raw) > 1 and ord(raw[0]) in (STDOUT_CHANNEL, STDERR_CHANNEL):
                 buf.extend(raw[1:].encode("utf-8"))
       except aiohttp.WSServerHandshakeError as exc:
-        raise async_client.ApiException(status=exc.status, reason=exc.message) from exc
-      return WsResponse(200, bytes(buf))
+        err = async_client.ApiException(status=exc.status, reason=exc.message)
+        err.body = b""
+        raise err from exc
+      try:
+        buf.decode("utf-8")
+        payload = bytes(buf)
+      except UnicodeDecodeError:
+        payload = buf.decode("utf-8", errors="replace").encode("utf-8")
+      return WsResponse(200, payload)
 
   if base_configuration is not None:
     configuration = copy.copy(base_configuration)
@@ -477,6 +507,54 @@ class Cluster:
       self._async_ws_api_client = ws_api
       self._async_exec_core_api = core_api
       return self._async_exec_core_api
+
+  async def prewarm_async_clients(self, *, connections: int = 64) -> None:
+    """Best-effort pre-initialization of ``WsApiClient`` and HTTP/1.1 TLS keep-alive sockets.
+
+    Runs off the acquire hot path during ``prepare_clusters()`` when a cluster uses real
+    ``kubernetes_asyncio`` clients (skipped for injected test doubles) so ``t=0`` bursts
+    avoid cold CA/SSLContext loading and cold TCP+TLSv1.3 handshake storms.
+    """
+    if self._injected_sync_api_client or self._injected_async_api_client:
+      return
+    try:
+      await self.async_exec_core_api()
+    except Exception:  # noqa: BLE001
+      return
+    api = self._async_api_client
+    if api is None or not type(api).__module__.startswith("kubernetes_asyncio"):
+      return
+    conn = getattr(
+        getattr(getattr(api, "rest_client", None), "pool_manager", None),
+        "connector",
+        None,
+    )
+    conns_map = getattr(conn, "_conns", None)
+    idle_count = sum(len(v) for v in conns_map.values()) if isinstance(conns_map, dict) else 0
+    want = max(0, min(connections, 64) - idle_count)
+    if want <= 0:
+      return
+
+    async def _ping() -> None:
+      resp = await api.call_api(
+          "/livez",
+          "GET",
+          auth_settings=["BearerToken"],
+          _return_http_data_only=True,
+          _preload_content=False,
+          _request_timeout=2.0,
+      )
+      if hasattr(resp, "read") and hasattr(resp, "release"):
+        try:
+          await resp.read()
+        except BaseException:
+          if hasattr(resp, "close"):
+            resp.close()
+          raise
+        finally:
+          resp.release()
+
+    await asyncio.gather(*(_ping() for _ in range(want)), return_exceptions=True)
 
   async def aclose(self) -> None:
     """Close any owned ``kubernetes_asyncio`` ``ApiClient`` and ``WsApiClient`` sessions."""

@@ -1483,13 +1483,18 @@ class SandboxBatch:
             return remaining if remaining > 0 and self._warm_credit.refresh_due(warmpool) else 0.0
 
         helper = self._client.k8s_helper
+        api = getattr(helper, "_batch_custom_objects_api", None)
         with self._lock:
             if (remaining := remaining_if_due()) <= 0:
                 return
             use_bulk = (
                 len(self._checked_pools) > 1
                 and type(helper) is K8sHelper
+                and not getattr(helper, "_bulk_ext_list_forbidden", False)
                 and "get_sandbox_warmpool" not in helper.__dict__
+                and type(api) is client.CustomObjectsApi
+                and "list_namespaced_custom_object" not in api.__dict__
+                and "get_namespaced_custom_object" not in api.__dict__
             )
             refresh_lock = (
                 self._bulk_refresh_lock
@@ -1505,7 +1510,7 @@ class SandboxBatch:
             if remaining <= 0 or not self._in_flight.acquire(timeout=remaining):
                 return
             try:
-                if use_bulk:
+                if use_bulk and not getattr(helper, "_bulk_ext_list_forbidden", False):
                     with self._lock:
                         remaining = remaining_if_due()
                         due_seqs = {
@@ -1520,12 +1525,31 @@ class SandboxBatch:
                         return
                     request_timeout = min(float(batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS), remaining)
                     list_deadline = min(deadline, self._lease_expires_at)
+                    fell_back_403 = False
                     try:
                         ready_map = helper.list_sandbox_warmpools_ready(
                             self.namespace,
                             _request_timeout=request_timeout,
                             deadline=list_deadline,
                         )
+                    except ApiException as e:
+                        if e.status == 403:
+                            helper._bulk_ext_list_forbidden = True
+                            fell_back_403 = True
+                        else:
+                            now = time.monotonic()
+                            if now >= deadline or now >= self._lease_expires_at:
+                                return
+                            logger.debug(
+                                f"Batch '{self.batch_id}' failed to list warm pools in '{self.namespace}': {e}"
+                            )
+                            with self._lock:
+                                if (
+                                    self._state.pool_release_seq(warmpool) == acquire_seq
+                                    and not self._state.release_sweeping(warmpool)
+                                ):
+                                    self._warm_credit.record(warmpool, 0, seq=due_seqs[warmpool][0])
+                            return
                     except Exception as e:
                         now = time.monotonic()
                         if now >= deadline or now >= self._lease_expires_at:
@@ -1540,14 +1564,15 @@ class SandboxBatch:
                             ):
                                 self._warm_credit.record(warmpool, 0, seq=due_seqs[warmpool][0])
                         return
-                    with self._lock:
-                        for p, (w_seq, r_seq) in due_seqs.items():
-                            if (
-                                self._state.pool_release_seq(p) == r_seq
-                                and not self._state.release_sweeping(p)
-                            ):
-                                self._warm_credit.record(p, ready_map.get(p, 0), seq=w_seq)
-                    return
+                    if not fell_back_403:
+                        with self._lock:
+                            for p, (w_seq, r_seq) in due_seqs.items():
+                                if (
+                                    self._state.pool_release_seq(p) == r_seq
+                                    and not self._state.release_sweeping(p)
+                                ):
+                                    self._warm_credit.record(p, ready_map.get(p, 0), seq=w_seq)
+                        return
 
                 # Snapshot the pool sequence before GET so a refresh finishing after exhaust() cannot overwrite 0.
                 with self._lock:
@@ -2817,6 +2842,7 @@ def _precheck_pools(
     if (
         len(pools) >= 4
         and type(helper) is K8sHelper
+        and not getattr(helper, "_bulk_ext_list_forbidden", False)
         and "get_sandbox_warmpool" not in helper.__dict__
         and "get_sandbox_template" not in helper.__dict__
     ):
@@ -2827,66 +2853,85 @@ def _precheck_pools(
             and "get_namespaced_custom_object" not in api.__dict__
         ):
             eff_deadline = deadline() if callable(deadline) else deadline
-            if max_concurrency >= 2:
-                t_wp = timeout() if callable(timeout) else timeout
-                t_tp = timeout() if callable(timeout) else timeout
-                with ThreadPoolExecutor(max_workers=2) as list_exec:
-                    f_wp = list_exec.submit(
-                        helper.list_sandbox_warmpool_summaries,
-                        namespace,
-                        _request_timeout=t_wp,
-                        deadline=eff_deadline,
-                    )
-                    f_tp = list_exec.submit(
-                        helper.list_sandbox_template_names,
-                        namespace,
-                        _request_timeout=t_tp,
-                        deadline=eff_deadline,
-                    )
-                wp_summaries = f_wp.result()
-                tpl_names = f_tp.result()
-            else:
-                t_wp = timeout() if callable(timeout) else timeout
-                wp_summaries = helper.list_sandbox_warmpool_summaries(
-                    namespace, _request_timeout=t_wp, deadline=eff_deadline
-                )
-                eff_deadline = deadline() if callable(deadline) else deadline
-                t_tp = timeout() if callable(timeout) else timeout
-                tpl_names = helper.list_sandbox_template_names(
-                    namespace, _request_timeout=t_tp, deadline=eff_deadline
-                )
-            checked_templates.update(tpl_names)
-            bulk_ready: dict[str, int] = {}
-            for name in pools:
-                if name in wp_summaries:
-                    rdy, template = wp_summaries[name]
-                else:
-                    step_timeout = timeout() if callable(timeout) else timeout
-                    warmpool = helper.get_sandbox_warmpool(
-                        name, namespace, _request_timeout=step_timeout
-                    )
-                    if warmpool is None:
-                        raise SandboxWarmPoolNotFoundError(
-                            f"SandboxWarmPool '{name}' not found in namespace '{namespace}'"
+            list_403 = False
+            try:
+                if max_concurrency >= 2:
+                    t_wp = timeout() if callable(timeout) else timeout
+                    t_tp = timeout() if callable(timeout) else timeout
+                    with ThreadPoolExecutor(max_workers=2) as list_exec:
+                        f_wp = list_exec.submit(
+                            helper.list_sandbox_warmpool_summaries,
+                            namespace,
+                            _request_timeout=t_wp,
+                            deadline=eff_deadline,
                         )
-                    rdy = batch_utils.warmpool_ready_replicas(warmpool)
-                    template = batch_utils.warmpool_template_name(warmpool)
-                bulk_ready[name] = rdy
-                if template is None:
-                    raise SandboxTemplateNotFoundError(
-                        f"SandboxWarmPool '{name}' does not reference a SandboxTemplate"
+                        f_tp = list_exec.submit(
+                            helper.list_sandbox_template_names,
+                            namespace,
+                            _request_timeout=t_tp,
+                            deadline=eff_deadline,
+                        )
+                    try:
+                        wp_summaries = f_wp.result()
+                    finally:
+                        try:
+                            tpl_names = f_tp.result()
+                        except ApiException as e_tp:
+                            if e_tp.status == 403:
+                                helper._bulk_ext_list_forbidden = True
+                                list_403 = True
+                                tpl_names = set()
+                            else:
+                                raise
+                else:
+                    t_wp = timeout() if callable(timeout) else timeout
+                    wp_summaries = helper.list_sandbox_warmpool_summaries(
+                        namespace, _request_timeout=t_wp, deadline=eff_deadline
                     )
-                if template in checked_templates:
-                    continue
-                step_timeout = timeout() if callable(timeout) else timeout
-                if helper.get_sandbox_template(
-                    template, namespace, _request_timeout=step_timeout
-                ) is None:
-                    raise SandboxTemplateNotFoundError(
-                        f"SandboxTemplate '{template}' not found in namespace '{namespace}'"
+                    eff_deadline = deadline() if callable(deadline) else deadline
+                    t_tp = timeout() if callable(timeout) else timeout
+                    tpl_names = helper.list_sandbox_template_names(
+                        namespace, _request_timeout=t_tp, deadline=eff_deadline
                     )
-                checked_templates.add(template)
-            return bulk_ready
+            except ApiException as e:
+                if e.status == 403:
+                    helper._bulk_ext_list_forbidden = True
+                    list_403 = True
+                else:
+                    raise
+            if not list_403:
+                checked_templates.update(tpl_names)
+                bulk_ready: dict[str, int] = {}
+                for name in pools:
+                    if name in wp_summaries:
+                        rdy, template = wp_summaries[name]
+                    else:
+                        step_timeout = timeout() if callable(timeout) else timeout
+                        warmpool = helper.get_sandbox_warmpool(
+                            name, namespace, _request_timeout=step_timeout
+                        )
+                        if warmpool is None:
+                            raise SandboxWarmPoolNotFoundError(
+                                f"SandboxWarmPool '{name}' not found in namespace '{namespace}'"
+                            )
+                        rdy = batch_utils.warmpool_ready_replicas(warmpool)
+                        template = batch_utils.warmpool_template_name(warmpool)
+                    bulk_ready[name] = rdy
+                    if template is None:
+                        raise SandboxTemplateNotFoundError(
+                            f"SandboxWarmPool '{name}' does not reference a SandboxTemplate"
+                        )
+                    if template in checked_templates:
+                        continue
+                    step_timeout = timeout() if callable(timeout) else timeout
+                    if helper.get_sandbox_template(
+                        template, namespace, _request_timeout=step_timeout
+                    ) is None:
+                        raise SandboxTemplateNotFoundError(
+                            f"SandboxTemplate '{template}' not found in namespace '{namespace}'"
+                        )
+                    checked_templates.add(template)
+                return bulk_ready
 
     def check_pool(name: str) -> int:
         step_timeout = timeout() if callable(timeout) else timeout

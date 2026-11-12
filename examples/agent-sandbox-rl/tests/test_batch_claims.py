@@ -1818,8 +1818,8 @@ async def test_native_async_batch_acquires_without_threads_and_bulk_releases_wav
 
 def test_batch_claim_config_rl_defaults_and_explicit_none_override():
   cfg = BatchClaimConfig()
-  assert cfg.create_rps == 300.0
-  assert cfg.max_in_flight == 512
+  assert cfg.create_rps == 500.0
+  assert cfg.max_in_flight == 768
   explicit_sdk = BatchClaimConfig(create_rps=None, max_in_flight=None)
   assert explicit_sdk.create_rps is None
   assert explicit_sdk.max_in_flight is None
@@ -2405,3 +2405,97 @@ def test_sequential_event_loops_teardown_fencing_and_ws_multibyte_utf8():
   asyncio.run(_open_on_loop(1))
   asyncio.run(_open_on_loop(2))
   assert len(opened_loops) == 2 and opened_loops[0] is not opened_loops[1]
+  # Cross-loop release_all() cleanly releases batches from closed Loop 1 as well as active Loop 3.
+  sync_released: list[str] = []
+  abc._sync_release_single_batch = lambda _cl, b, _bl, _lt: sync_released.append(b.batch_id)  # type: ignore[method-assign]
+  assert asyncio.run(abc.release_all()) == {}
+  assert sorted(sync_released) == ["lb-1", "lb-2"]
+
+
+def test_pass2_ws_errors_connected_tuple_atexit_and_bound_executor():
+  import aiohttp
+  from types import SimpleNamespace
+  from kubernetes_asyncio import client as async_k8s_client
+  from kubernetes_asyncio.stream.ws_client import STDOUT_CHANNEL
+  from agent_sandbox_rl.batch_claims import close_async_sandbox_sync
+  from agent_sandbox_rl.cluster import Cluster, _build_fast_ws_core_api
+  from agent_sandbox_rl.config import ClusterConfig
+
+  async def _check_ws_edge_cases():
+    base_cfg = async_k8s_client.Configuration()
+    base_cfg.host = "https://127.0.0.1:6443"
+    ws_api, core = await _build_fast_ws_core_api(
+        ClusterConfig(name="c-ws2", namespace="ns1", in_cluster=True),
+        pool_maxsize=16,
+        base_configuration=base_cfg,
+    )
+    try:
+      # 2a) Invalid UTF-8 bytes are replaced cleanly without UnicodeDecodeError in ApiClient.__call_api
+      class _BinaryWsCtx:
+        async def __aenter__(self):
+          async def _gen():
+            yield SimpleNamespace(type=aiohttp.WSMsgType.BINARY, data=bytes([STDOUT_CHANNEL]) + b"ok\xff\xfe!")
+          return _gen()
+        async def __aexit__(self, *exc):
+          return False
+
+      ws_api.rest_client.pool_manager.ws_connect = lambda *a, **kw: _BinaryWsCtx()
+      out = await core.connect_get_namespaced_pod_exec("p", "ns1", command=["true"])
+      assert "ok" in out and "\ufffd" in out
+
+      # 2b) WSMsgType.ERROR mid-stream raises instead of silently truncating
+      class _ErrWsCtx:
+        async def __aenter__(self):
+          class _Stream:
+            def exception(self):
+              return RuntimeError("pod killed mid-stream")
+            def __aiter__(self):
+              async def _gen():
+                yield SimpleNamespace(type=aiohttp.WSMsgType.ERROR, data=RuntimeError("pod killed"))
+              return _gen()
+          return _Stream()
+        async def __aexit__(self, *exc):
+          return False
+
+      ws_api.rest_client.pool_manager.ws_connect = lambda *a, **kw: _ErrWsCtx()
+      with pytest.raises(RuntimeError, match="pod killed"):
+        await core.connect_get_namespaced_pod_exec("p", "ns1", command=["true"])
+
+      # 2c) WSServerHandshakeError(404) raises ApiException(status=404) (no AttributeError on None.decode)
+      class _Handshake404Ctx:
+        async def __aenter__(self):
+          req_info = MagicMock()
+          raise aiohttp.WSServerHandshakeError(req_info, (), status=404, message="Not Found")
+        async def __aexit__(self, *exc):
+          return False
+
+      ws_api.rest_client.pool_manager.ws_connect = lambda *a, **kw: _Handshake404Ctx()
+      with pytest.raises(async_k8s_client.ApiException) as exc_info:
+        await core.connect_get_namespaced_pod_exec("p", "ns1", command=["true"])
+      assert exc_info.value.status == 404
+    finally:
+      await ws_api.close()
+
+  asyncio.run(_check_ws_edge_cases())
+
+  # 3) close_async_sandbox_sync unpacks (sandbox, pod_ip) tuples and invokes _close_for_atexit on closed loops
+  atexit_called: list[bool] = []
+
+  class _FakeClosedLoopAsyncSb:
+    def _close_for_atexit(self):
+      atexit_called.append(True)
+
+    async def close_connection(self):
+      raise AssertionError("should use _close_for_atexit when loop is None/closed")
+
+  close_async_sandbox_sync((_FakeClosedLoopAsyncSb(), "10.0.0.5"), None, None)
+  assert atexit_called == [True]
+
+  # 4) _is_default_executor recognizes bound self._process_parallel instances
+  c_dummy = Cluster(ClusterConfig(name="c-d", namespace="ns1", in_cluster=True), api_client=MagicMock())
+  af = AsyncSandboxFleet(FleetConfig(claim_mode="batch"), registry=ClusterRegistry([c_dummy]))
+  bound_one = af._process_parallel
+  assert af._is_default_executor(None) is True
+  assert af._is_default_executor(bound_one) is True
+  assert af._is_default_executor(lambda *a, **k: []) is False
+  af.close()

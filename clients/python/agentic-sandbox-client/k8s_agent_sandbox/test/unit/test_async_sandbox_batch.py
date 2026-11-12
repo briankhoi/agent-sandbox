@@ -6721,6 +6721,25 @@ class TestAsyncReleaseAllMembers(BaseClaimBatchTest):
         with self.assertRaises(SandboxWarmPoolNotFoundError):
             await batch.precheck_pools(["pool-z"], 5.0)
 
+        # 403 Forbidden on bulk LIST falls back cleanly to per-pool GET (sandbox-batch-driver RBAC).
+        with patch.object(
+            AsyncK8sHelper,
+            "list_sandbox_warmpool_summaries",
+            side_effect=k8s_client.ApiException(status=403, reason="Forbidden"),
+        ), patch.object(
+            AsyncK8sHelper,
+            "get_sandbox_warmpool",
+            new=AsyncMock(return_value={"spec": {"sandboxTemplateRef": {"name": "tmpl-a"}}, "status": {"readyReplicas": 4}}),
+        ) as m_get_wp, patch.object(
+            AsyncK8sHelper,
+            "get_sandbox_template",
+            new=AsyncMock(return_value={"metadata": {"name": "tmpl-a"}}),
+        ):
+            await batch.precheck_pools([f"pool-rbac-{i}" for i in range(4)], 5.0)
+        self.assertTrue(real_helper._bulk_ext_list_forbidden)
+        self.assertEqual(m_get_wp.await_count, 4)
+        self.assertTrue(batch._warm_credit.take("pool-rbac-0"))
+
 
 if __name__ == "__main__":
     unittest.main()
