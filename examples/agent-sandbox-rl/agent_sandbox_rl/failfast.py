@@ -440,7 +440,12 @@ class BatchWatchdog(threading.Thread):
         with b_lock:
           tracked.update(waiters.keys())
       else:
-        tracked.update(list(waiters.keys()))
+        while True:
+          try:
+            tracked.update(tuple(waiters))
+            break
+          except RuntimeError:
+            continue
 
     now = time.monotonic()
     if not tracked:

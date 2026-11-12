@@ -982,6 +982,8 @@ class AsyncK8sHelper:
         self,
         namespace: str,
         _request_timeout: float | None = None,
+        *,
+        deadline: float | None = None,
     ) -> dict[str, int]:
         """Lists SandboxWarmPool Ready replica counts across ``namespace`` in paginated chunks."""
         await self._ensure_initialized()
@@ -990,6 +992,12 @@ class AsyncK8sHelper:
         continue_token: str | None = None
         restarted = False
         while True:
+            page_timeout = _request_timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("SandboxWarmPool list exceeded its deadline")
+                page_timeout = remaining if page_timeout is None else min(float(page_timeout), remaining)
             try:
                 list_kwargs: dict[str, Any] = {
                     "group": CLAIM_API_GROUP,
@@ -997,7 +1005,7 @@ class AsyncK8sHelper:
                     "namespace": namespace,
                     "plural": WARMPOOL_PLURAL_NAME,
                     "limit": CLAIM_LIST_PAGE_SIZE,
-                    "_request_timeout": _request_timeout,
+                    "_request_timeout": page_timeout,
                 }
                 if continue_token is not None:
                     list_kwargs["_continue"] = continue_token
@@ -1028,6 +1036,8 @@ class AsyncK8sHelper:
         self,
         namespace: str,
         _request_timeout: float | None = None,
+        *,
+        deadline: float | None = None,
     ) -> dict[str, tuple[int, str | None]]:
         """Lists ``(readyReplicas, sandboxTemplateRef.name)`` per SandboxWarmPool in ``namespace``."""
         await self._ensure_initialized()
@@ -1036,6 +1046,12 @@ class AsyncK8sHelper:
         continue_token: str | None = None
         restarted = False
         while True:
+            page_timeout = _request_timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("SandboxWarmPool list exceeded its deadline")
+                page_timeout = remaining if page_timeout is None else min(float(page_timeout), remaining)
             try:
                 list_kwargs: dict[str, Any] = {
                     "group": CLAIM_API_GROUP,
@@ -1043,7 +1059,7 @@ class AsyncK8sHelper:
                     "namespace": namespace,
                     "plural": WARMPOOL_PLURAL_NAME,
                     "limit": CLAIM_LIST_PAGE_SIZE,
-                    "_request_timeout": _request_timeout,
+                    "_request_timeout": page_timeout,
                 }
                 if continue_token is not None:
                     list_kwargs["_continue"] = continue_token
@@ -1075,6 +1091,8 @@ class AsyncK8sHelper:
         self,
         namespace: str,
         _request_timeout: float | None = None,
+        *,
+        deadline: float | None = None,
     ) -> set[str]:
         """Lists SandboxTemplate names across ``namespace`` in paginated chunks."""
         await self._ensure_initialized()
@@ -1083,6 +1101,12 @@ class AsyncK8sHelper:
         continue_token: str | None = None
         restarted = False
         while True:
+            page_timeout = _request_timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("SandboxTemplate list exceeded its deadline")
+                page_timeout = remaining if page_timeout is None else min(float(page_timeout), remaining)
             try:
                 list_kwargs: dict[str, Any] = {
                     "group": CLAIM_API_GROUP,
@@ -1090,7 +1114,7 @@ class AsyncK8sHelper:
                     "namespace": namespace,
                     "plural": TEMPLATE_PLURAL_NAME,
                     "limit": CLAIM_LIST_PAGE_SIZE,
-                    "_request_timeout": _request_timeout,
+                    "_request_timeout": page_timeout,
                 }
                 if continue_token is not None:
                     list_kwargs["_continue"] = continue_token

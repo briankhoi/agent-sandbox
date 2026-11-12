@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 from k8s_agent_sandbox import BatchError, BatchGroup, Member, SandboxBatch
 from k8s_agent_sandbox.batch_state import still_reaches
 from k8s_agent_sandbox.batch_utils import (
+    BATCH_POOL_HEADROOM,
     BATCH_REQUEST_TIMEOUT_SECONDS,
     BATCH_SHUTDOWN_MARGIN_SECONDS,
 )
@@ -170,25 +171,30 @@ class BatchClaims:
       cluster_pools: Sequence[tuple["Cluster", Sequence[str]]],
       *,
       only_unopened: bool = False,
+      verified_ready: dict[str, dict[str, int]] | None = None,
   ) -> None:
     """Pre-open each cluster's batch with its warmed ``pools`` as size-0 groups."""
-    pending: list[tuple["Cluster", list[str]]] = []
+    pending: list[tuple["Cluster", list[str], dict[str, int] | None]] = []
     for cluster, pools in cluster_pools:
       deduped = list(dict.fromkeys(p for p in pools if p))
       if not deduped:
         continue
       if only_unopened and self.has_live_batch(cluster.name):
         continue
-      pending.append((cluster, deduped))
+      vmap = verified_ready.get(cluster.name) if verified_ready else None
+      pending.append((cluster, deduped, vmap))
     if not pending:
       return
     if len(pending) == 1:
-      cluster, deduped = pending[0]
-      self._batch_for(cluster, deduped)
+      cluster, deduped, vmap = pending[0]
+      self._batch_for(cluster, deduped, verified_ready=vmap)
       return
     first_err: BaseException | None = None
     with ThreadPoolExecutor(max_workers=len(pending)) as ex:
-      futs = [ex.submit(self._batch_for, c, p) for c, p in pending]
+      futs = [
+          ex.submit(self._batch_for, c, p, verified_ready=vm)
+          for c, p, vm in pending
+      ]
       for fut in futs:
         try:
           fut.result()
@@ -237,13 +243,35 @@ class BatchClaims:
                          "for new acquires", existing.batch_id, cluster.name, error)
       if reuse_existing is None:
         s = self._settings
+        eff_max_in_flight = s.max_in_flight
+        if (
+            "max_in_flight" not in s.model_fields_set
+            and eff_max_in_flight is not None
+        ):
+          if not getattr(cluster, "_injected_sync_api_client", False) and callable(
+              getattr(cluster, "ensure_pool_maxsize", None)
+          ):
+            cluster.ensure_pool_maxsize(eff_max_in_flight + BATCH_POOL_HEADROOM + 6)
+          sb_c = cluster.sandbox_client
+          helper = getattr(sb_c, "k8s_helper", None)
+          pool_sz_fn = getattr(helper, "api_pool_size", None)
+          pool_sz = pool_sz_fn() if callable(pool_sz_fn) else None
+          if (
+              isinstance(pool_sz, int)
+              and not isinstance(pool_sz, bool)
+              and pool_sz > 0
+              and eff_max_in_flight + BATCH_POOL_HEADROOM > pool_sz
+          ):
+            eff_max_in_flight = max(1, pool_sz - BATCH_POOL_HEADROOM)
+        else:
+          sb_c = cluster.sandbox_client
         batch: SandboxBatch
-        batch = cluster.sandbox_client.claim_batch(
+        batch = sb_c.claim_batch(
             [BatchGroup(warmpool=p, size=0) for p in pool_names],
             namespace=cluster.namespace,
             labels=dict(self._labels),
             create_rps=s.create_rps,
-            max_in_flight=s.max_in_flight,
+            max_in_flight=eff_max_in_flight,
             work_budget=s.work_budget,
             # Part of each acquired claim's shutdownTime, which expires_at assumes.
             quorum_timeout=self._ready_timeout,
@@ -440,21 +468,53 @@ class AsyncBatchClaim:
   def release(self) -> None:
     if (
         self._loop is not None
+        and not self._loop.is_closed()
         and self._loop.is_running()
         and threading.current_thread() is not self._loop_thread
     ):
       asyncio.run_coroutine_threadsafe(self.arelease(), self._loop).result(
-          timeout=BATCH_REQUEST_TIMEOUT_SECONDS
+          timeout=BATCH_REQUEST_TIMEOUT_SECONDS * 4
       )
       return
+    state = getattr(self.batch, "_state", None)
+    seq: int | None = None
     try:
-      self.batch._state.release_member(self.member.claim_name)
+      if state is not None:
+        state.release_member(self.member.claim_name)
+        seq = state.delete_seq(self.member.claim_name)
+      wake = getattr(self.batch, "_wake_acquire", None)
+      if callable(wake):
+        wake(self.member.claim_name)
+      connected = getattr(self.batch, "_connected", None)
+      if isinstance(connected, dict):
+        conn_sb = connected.pop(self.member.claim_name, None)
+        close_conn = getattr(conn_sb, "close_connection", None)
+        if callable(close_conn):
+          res = close_conn()
+          if asyncio.iscoroutine(res):
+            if (
+                self._loop is not None
+                and not self._loop.is_closed()
+                and self._loop.is_running()
+                and threading.current_thread() is self._loop_thread
+            ):
+              t = self._loop.create_task(res)
+              t.add_done_callback(
+                  lambda done: None if done.cancelled() else done.exception()
+              )
+            else:
+              res.close()
     except Exception:  # noqa: BLE001
       pass
     self.cluster.resources.delete_claim(
         self.member.claim_name,
         request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS,
     )
+    if state is not None and seq is not None:
+      try:
+        state.note_deleted(self.member.claim_name, seq)
+      except Exception:  # noqa: BLE001
+        pass
 
 
 class AsyncBatchClaims:
@@ -469,16 +529,21 @@ class AsyncBatchClaims:
     self._fail_fast = fail_fast
     self._lock = threading.Lock()
     self._cluster_locks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
-    self._live: dict[str, Any] = {}
+    self._live: dict[str, tuple[Any, asyncio.AbstractEventLoop]] = {}
     self._watchdogs: dict[str, BatchWatchdog] = {}
     self._verdicts: dict[tuple[str, str], StartVerdict] = {}
-    self._opened: list[tuple["Cluster", Any, asyncio.AbstractEventLoop]] = []
+    self._opened: list[tuple["Cluster", Any, asyncio.AbstractEventLoop, threading.Thread]] = []
     self._closed = False
     self._epoch: int = 0
 
   def reopen(self) -> None:
     with self._lock:
       self._closed = False
+
+  def mark_closing(self) -> None:
+    with self._lock:
+      self._closed = True
+      self._epoch += 1
 
   def _record_verdict(
       self, cluster_name: str, claim_name: str, verdict: StartVerdict
@@ -506,8 +571,17 @@ class AsyncBatchClaims:
 
   def has_live_batch(self, cluster_name: str) -> bool:
     with self._lock:
-      existing = self._live.get(cluster_name)
-    return existing is not None and existing.err() is None
+      entry = self._live.get(cluster_name)
+    if entry is None:
+      return False
+    batch, batch_loop = entry
+    if batch_loop.is_closed() or batch.err() is not None:
+      return False
+    try:
+      cur_loop = asyncio.get_running_loop()
+    except RuntimeError:
+      return True
+    return batch_loop is cur_loop
 
   def has_opened_batches(self) -> bool:
     with self._lock:
@@ -555,41 +629,77 @@ class AsyncBatchClaims:
     )
     if not pool_names:
       raise ValueError("at least one warm pool name is required to open a batch")
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.current_thread()
     if isinstance(pool, str):
       with self._lock:
         if self._closed:
           raise FleetError("fleet was torn down; call setup() before acquiring again")
-        fast = self._live.get(cluster.name)
-      if fast is not None and fast.err() is None:
-        return fast
-    loop = asyncio.get_running_loop()
+        fast_entry = self._live.get(cluster.name)
+      if (
+          fast_entry is not None
+          and fast_entry[1] is loop
+          and not fast_entry[1].is_closed()
+          and fast_entry[0].err() is None
+      ):
+        return fast_entry[0]
     reuse_existing: Any = None
     async with self._cluster_lock(cluster.name):
       with self._lock:
         if self._closed:
           raise FleetError("fleet was torn down; call setup() before acquiring again")
-        existing = self._live.get(cluster.name)
+        existing_entry = self._live.get(cluster.name)
         epoch = self._epoch
-      if existing is not None:
+      if existing_entry is not None:
+        existing, existing_loop = existing_entry
         error = existing.err()
-        if error is None:
+        if existing_loop is loop and not existing_loop.is_closed() and error is None:
           reuse_existing = existing
         else:
           with self._lock:
             old_wd = self._watchdogs.pop(cluster.name, None)
           if old_wd is not None:
             old_wd.stop()
+          reason = error if (existing_loop is loop and not existing_loop.is_closed()) else "event loop changed"
           logger.warning("async batch %s on cluster %s stopped (%s); opening a new one "
-                         "for new acquires", existing.batch_id, cluster.name, error)
+                         "for new acquires", existing.batch_id, cluster.name, reason)
       if reuse_existing is None:
         s = self._settings
+        eff_max_in_flight = s.max_in_flight
+        if (
+            "max_in_flight" not in s.model_fields_set
+            and eff_max_in_flight is not None
+            and not getattr(cluster, "_injected_async_api_client", False)
+            and callable(getattr(cluster, "ensure_pool_maxsize", None))
+        ):
+          cluster.ensure_pool_maxsize(eff_max_in_flight + BATCH_POOL_HEADROOM + 6)
         sb_client = await cluster.get_async_sandbox_client()
+        if (
+            "max_in_flight" not in s.model_fields_set
+            and eff_max_in_flight is not None
+        ):
+          helper = getattr(sb_client, "k8s_helper", None)
+          pool_sz_fn = getattr(helper, "api_pool_size", None)
+          if inspect.iscoroutinefunction(pool_sz_fn):
+            pool_sz = await pool_sz_fn()
+          elif callable(pool_sz_fn):
+            res_sz = pool_sz_fn()
+            pool_sz = await res_sz if inspect.isawaitable(res_sz) else res_sz
+          else:
+            pool_sz = None
+          if (
+              isinstance(pool_sz, int)
+              and not isinstance(pool_sz, bool)
+              and pool_sz > 0
+              and eff_max_in_flight + BATCH_POOL_HEADROOM > pool_sz
+          ):
+            eff_max_in_flight = max(1, pool_sz - BATCH_POOL_HEADROOM)
         batch = await sb_client.claim_batch(
             [BatchGroup(warmpool=p, size=0) for p in pool_names],
             namespace=cluster.namespace,
             labels=dict(self._labels),
             create_rps=s.create_rps,
-            max_in_flight=s.max_in_flight,
+            max_in_flight=eff_max_in_flight,
             work_budget=s.work_budget,
             quorum_timeout=self._ready_timeout,
             lease_duration=s.lease_duration,
@@ -599,12 +709,12 @@ class AsyncBatchClaims:
         wd: BatchWatchdog | None = None
         try:
           with self._lock:
-            self._opened.append((cluster, batch, loop))
+            self._opened.append((cluster, batch, loop, loop_thread))
             registered = True
             if self._closed or self._epoch != epoch:
               stale = True
             else:
-              self._live[cluster.name] = batch
+              self._live[cluster.name] = (batch, loop)
               if self._fail_fast is not None and self._fail_fast.enabled:
                 cluster_name = cluster.name
                 wd = BatchWatchdog(
@@ -619,7 +729,8 @@ class AsyncBatchClaims:
           if wd is not None:
             wd.stop()
           with self._lock:
-            if self._live.get(cluster.name) is batch:
+            cur_live = self._live.get(cluster.name)
+            if cur_live is not None and cur_live[0] is batch:
               self._live.pop(cluster.name, None)
             if wd is not None and self._watchdogs.get(cluster.name) is wd:
               self._watchdogs.pop(cluster.name, None)
@@ -713,7 +824,7 @@ class AsyncBatchClaims:
         return id(batch), exc
       return id(batch), None
 
-    outcomes = await asyncio.gather(*(_release_one(b) for _c, b, _l in opened))
+    outcomes = await asyncio.gather(*(_release_one(b) for _c, b, _l, _lt in opened))
     for bid, err in outcomes:
       if err is not None:
         failed[bid] = err
@@ -742,11 +853,29 @@ class AsyncBatchClaims:
 
     failed: dict[int, Exception] = {}
     succeeded_ids: set[int] = set()
-    for cluster, batch, loop in opened:
+    for cluster, batch, loop, loop_thread in opened:
+      if (
+          loop is not None
+          and not loop.is_closed()
+          and loop.is_running()
+          and threading.current_thread() is not loop_thread
+          and inspect.iscoroutinefunction(getattr(batch, "release", None))
+      ):
+        try:
+          asyncio.run_coroutine_threadsafe(batch.release(), loop).result(
+              timeout=BATCH_REQUEST_TIMEOUT_SECONDS * 4
+          )
+          succeeded_ids.add(id(batch))
+        except Exception as exc:  # noqa: BLE001
+          logger.warning("failed to release async batch %s on running loop", batch.batch_id, exc_info=True)
+          failed[id(batch)] = exc
+        continue
       if loop is not None and not loop.is_closed() and loop.is_running():
         def _stop_bg(b=batch):
           b._detached = True
-          b._stop_creating.set()
+          stop_evt = getattr(b, "_stop_creating", None)
+          if stop_evt is not None:
+            stop_evt.set()
           for attr in ("_watch_task", "_renew_task"):
             t = getattr(b, attr, None)
             if t is not None and not t.done():
@@ -756,20 +885,23 @@ class AsyncBatchClaims:
         except RuntimeError:
           pass
       try:
-        _delete_batch_objects_sync(
-            cluster.k8s_helper,
-            batch.namespace,
-            batch.batch_id,
-            batch._lease_name,
-            batch._holder_identity,
-            batch._lease_duration,
-            batch._lease,
-        )
-        batch._lease_released = True
-        batch._released = True
+        if hasattr(batch, "_lease_name") and hasattr(batch, "_holder_identity"):
+          _delete_batch_objects_sync(
+              cluster.k8s_helper,
+              batch.namespace,
+              batch.batch_id,
+              batch._lease_name,
+              batch._holder_identity,
+              batch._lease_duration,
+              batch._lease,
+          )
+          batch._lease_released = True
+          batch._released = True
+        elif callable(getattr(batch, "release", None)) and not inspect.iscoroutinefunction(batch.release):
+          batch.release()
         succeeded_ids.add(id(batch))
       except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to sync-release async batch %s", batch.batch_id, exc_info=True)
+        logger.warning("failed to sync-release async batch %s", getattr(batch, "batch_id", "?"), exc_info=True)
         failed[id(batch)] = exc
     if succeeded_ids:
       with self._lock:

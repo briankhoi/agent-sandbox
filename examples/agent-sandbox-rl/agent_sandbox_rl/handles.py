@@ -390,11 +390,18 @@ class SandboxHandle:
     is a synchronous test double without ``async_exec_core_api``).
     """
     target = container or self.target_container or self.runtime_container
+    injected_sync = getattr(self._cluster, "_injected_sync_api_client", False) if self._cluster is not None else False
+    injected_async = getattr(self._cluster, "_injected_async_api_client", False) if self._cluster is not None else False
+    has_real_async_cfg = False
+    if injected_async:
+      raw_acfg = getattr(getattr(self._cluster, "_async_api_client", None), "configuration", None)
+      has_real_async_cfg = type(raw_acfg).__module__.startswith("kubernetes_asyncio")
     if (
         (self._session is not None and self._session.is_open and self._session.container == target)
         or self._cluster is None
         or not callable(getattr(self._cluster, "async_exec_core_api", None))
-        or (getattr(self._cluster, "_injected_sync_api_client", False)
+        or (injected_sync
+            and not has_real_async_cfg
             and getattr(self._cluster, "_async_exec_core_api", None) is None)
     ):
       return await asyncio.to_thread(
@@ -408,6 +415,18 @@ class SandboxHandle:
     except asyncio.CancelledError:
       raise
     except Exception as e:  # noqa: BLE001
+      if (
+          not isinstance(e, SandboxLostError)
+          and self._cluster is not None
+          and self._batch_claim is not None
+          and self.pod_uid is None
+          and not self._batch_claim.still_reaches()
+      ):
+        self.close_session()
+        exp = self.claim_expires_at
+        expired = exp is not None and time.monotonic() >= exp
+        raise SandboxLostError(
+            self.pod_name, self.claim_name, e, expired=expired) from e
       await asyncio.to_thread(self._raise_if_lost, e)
       raise
 
@@ -811,13 +830,24 @@ class SandboxHandle:
           if asyncio.iscoroutine(res):
             bc_loop = getattr(self._batch_claim, "_loop", None)
             bc_thread = getattr(self._batch_claim, "_loop_thread", None)
+            if bc_loop is None:
+              try:
+                bc_loop = asyncio.get_running_loop()
+                bc_thread = threading.current_thread()
+              except RuntimeError:
+                bc_loop = None
             if (
                 bc_loop is not None
                 and not bc_loop.is_closed()
                 and bc_loop.is_running()
-                and threading.current_thread() is not bc_thread
             ):
-              asyncio.run_coroutine_threadsafe(res, bc_loop).result(timeout=5.0)
+              if threading.current_thread() is not bc_thread:
+                asyncio.run_coroutine_threadsafe(res, bc_loop).result(timeout=5.0)
+              else:
+                t = bc_loop.create_task(res)
+                t.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
             else:
               res.close()
         except Exception as exc:  # noqa: BLE001 (best-effort connection close)

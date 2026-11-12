@@ -1280,21 +1280,29 @@ class SandboxBatch:
         warmpools: Iterable[str],
         timeout: int | float | None = None,
     ) -> None:
-        """Bulk-verifies unchecked warm pools and their templates, seeding ``WarmCredit``."""
+        """Bulk-verifies unchecked warm pools and their templates, seeding their Ready credit.
+
+        Shares ``self._prechecks`` with concurrent ``acquire()`` calls so each pool is checked at
+        most once, and bounds concurrent API requests strictly to the number of ``max_in_flight``
+        permits acquired so the watch and Lease renewal connections keep their headroom.
+
+        Args:
+            warmpools: Names of ``SandboxWarmPool`` resources to verify in ``self.namespace``.
+            timeout: Seconds to wait across all pool checks. Defaults to ``quorum_timeout``.
+
+        Raises:
+            ValueError: If ``timeout`` is not a finite positive number.
+            BatchError: If this handle has been detached or released, or once its Lease expires.
+            BatchTimeoutError: If the pools are not checked within ``timeout``.
+            SandboxWarmPoolNotFoundError: If a warm pool does not exist.
+            SandboxTemplateNotFoundError: If a warm pool's template does not exist or it names none.
+        """
         wait = batch_utils.positive_number("timeout", timeout, self._quorum_timeout)
         deadline = time.monotonic() + wait
-        with self._lock:
-            now = time.monotonic()
-            self._check_healthy(now)
-            unchecked = [
-                p for p in dict.fromkeys(warmpools)
-                if p
-                and p not in self._checked_pools
-                and p not in self._prechecks
-                and not self._state.release_sweeping(p)
-            ]
-            release_seqs = {p: self._state.pool_release_seq(p) for p in unchecked}
-        if not unchecked:
+        pools = [p for p in dict.fromkeys(warmpools) if p]
+        if not pools:
+            with self._lock:
+                self._check_healthy()
             return
 
         def next_timeout() -> float:
@@ -1311,44 +1319,155 @@ class SandboxBatch:
                     self._lease_expires_at - now,
                 )
 
-        acquired = False
-        try:
-            while not acquired:
-                acquired = self._in_flight.acquire(timeout=next_timeout())
-            ready = _precheck_pools(
-                self._client.k8s_helper,
-                unchecked,
-                self.namespace,
-                timeout=next_timeout,
-                max_concurrency=max(2, min(16, self._max_in_flight)),
-            )
+        while True:
+            owned_checks: dict[str, Future[None]] = {}
+            release_seqs: dict[str, int] = {}
+            inflight_check: Future[None] | None = None
+            wait_timeout = 0.0
             with self._lock:
-                self._check_healthy()
-                for p, rdy in ready.items():
+                now = time.monotonic()
+                self._check_healthy(now)
+                pending = [
+                    p for p in pools
+                    if p not in self._checked_pools and not self._state.release_sweeping(p)
+                ]
+                if not pending:
+                    return
+                if now >= deadline:
+                    raise BatchTimeoutError(f"warm pools weren't checked within {wait:g}s")
+                wait_timeout = min(deadline, self._lease_expires_at) - now
+                for p in pending:
+                    existing = self._prechecks.get(p)
+                    if existing is not None:
+                        if inflight_check is None:
+                            inflight_check = existing
+                    else:
+                        fut: Future[None] = Future()
+                        self._prechecks[p] = fut
+                        owned_checks[p] = fut
+                        release_seqs[p] = self._state.pool_release_seq(p)
+
+            if owned_checks:
+                permits_held = 0
+                try:
+                    try:
+                        while permits_held == 0:
+                            if self._in_flight.acquire(timeout=next_timeout()):
+                                permits_held = 1
+                        want_extra = min(16, self._max_in_flight) - 1
+                        for _ in range(want_extra):
+                            if self._in_flight.acquire(blocking=False):
+                                permits_held += 1
+                            else:
+                                break
+                        try:
+                            ready = _precheck_pools(
+                                self._client.k8s_helper,
+                                list(owned_checks),
+                                self.namespace,
+                                timeout=next_timeout,
+                                max_concurrency=permits_held,
+                                deadline=lambda: min(deadline, self._lease_expires_at),
+                            )
+                        except Exception as e:
+                            with self._lock:
+                                now = time.monotonic()
+                                self._check_healthy(now)
+                            if not isinstance(e, BatchError) and now >= deadline and (
+                                isinstance(e, TimeoutError) or _is_transport_error(e)
+                            ):
+                                raise BatchTimeoutError(
+                                    f"warm pools weren't checked within {wait:g}s"
+                                ) from e
+                            raise
+                        with self._lock:
+                            self._check_healthy()
+                            for p, fut in owned_checks.items():
+                                self._prechecks.pop(p, None)
+                                if (
+                                    p in ready
+                                    and self._state.pool_release_seq(p) == release_seqs[p]
+                                    and not self._state.release_sweeping(p)
+                                ):
+                                    if p not in self._checked_pools:
+                                        self._warm_credit.record(p, ready[p])
+                                        self._checked_pools.add(p)
+                                    fut.set_result(None)
+                                else:
+                                    fut.cancel()
+                    finally:
+                        for _ in range(permits_held):
+                            self._in_flight.release()
+                except BaseException as e:
+                    with self._lock:
+                        same_rels = {
+                            p: self._state.pool_release_seq(p) == release_seqs[p]
+                            for p in owned_checks
+                        }
+                        for p in owned_checks:
+                            self._prechecks.pop(p, None)
+                    for p, fut in owned_checks.items():
+                        if fut.done():
+                            continue
+                        if (
+                            permits_held > 0
+                            and isinstance(e, Exception)
+                            and not isinstance(e, BatchError)
+                            and same_rels[p]
+                        ):
+                            fut.set_exception(e)
+                        else:
+                            fut.cancel()
+                    raise
+
+            if inflight_check is not None:
+                with self._lock:
+                    now = time.monotonic()
+                    self._check_healthy(now)
+                    if now >= deadline:
+                        raise BatchTimeoutError(f"warm pools weren't checked within {wait:g}s")
+                    wait_timeout = min(deadline, self._lease_expires_at) - now
+                try:
+                    inflight_check.result(timeout=wait_timeout)
+                except TimeoutError:
                     if (
-                        p not in self._checked_pools
-                        and self._state.pool_release_seq(p) == release_seqs[p]
-                        and not self._state.release_sweeping(p)
+                        inflight_check.done()
+                        and not inflight_check.cancelled()
+                        and inflight_check.exception() is not None
                     ):
-                        self._warm_credit.record(p, rdy)
-                        self._checked_pools.add(p)
-        finally:
-            if acquired:
-                self._in_flight.release()
+                        inflight_check.result()
+                except CancelledError:
+                    pass
+                continue
+            return
 
     def seed_checked_pools(self, ready_by_pool: Mapping[str, int]) -> None:
-        """Marks caller-verified warm pools as checked and records their Ready counts."""
+        """Marks caller-verified warm pools as checked and records their Ready replica credit.
+
+        Replenishes credit on pools that were already checked in an earlier step or epoch so long
+        as no ``acquire()`` or ``release_group()`` sweep is currently in flight on that pool.
+
+        Args:
+            ready_by_pool: Mapping from verified ``SandboxWarmPool`` name to observed
+                ``status.readyReplicas`` count.
+
+        Raises:
+            BatchError: If this handle has been detached or released, or once its Lease expires.
+        """
         if not ready_by_pool:
             return
         with self._lock:
             self._check_healthy()
             for p, rdy in ready_by_pool.items():
+                if not p or self._state.release_sweeping(p):
+                    continue
                 if (
-                    p
-                    and p not in self._checked_pools
-                    and not self._state.release_sweeping(p)
+                    not self._state._acquiring_by_pool.get(p)
+                    and not self._state._checking_acquires.get(p)
                 ):
                     self._warm_credit.record(p, max(0, int(rdy)))
+                    self._checked_pools.add(p)
+                elif p not in self._checked_pools:
                     self._checked_pools.add(p)
 
     def _refresh_warm_credit(self, warmpool: str, deadline: float, acquire_seq: int) -> None:
@@ -1400,9 +1519,12 @@ class SandboxBatch:
                     if remaining <= 0:
                         return
                     request_timeout = min(float(batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS), remaining)
+                    list_deadline = min(deadline, self._lease_expires_at)
                     try:
                         ready_map = helper.list_sandbox_warmpools_ready(
-                            self.namespace, _request_timeout=request_timeout
+                            self.namespace,
+                            _request_timeout=request_timeout,
+                            deadline=list_deadline,
                         )
                     except Exception as e:
                         now = time.monotonic()
@@ -2680,6 +2802,7 @@ def _precheck_pools(
     timeout: int | float | Callable[[], float] = batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS,
     *,
     max_concurrency: int = 1,
+    deadline: float | Callable[[], float] | None = None,
 ) -> dict[str, int]:
     """Checks that each warm pool and the SandboxTemplate it references exist, and returns each
     pool's Ready replica count.
@@ -2693,7 +2816,6 @@ def _precheck_pools(
 
     if (
         len(pools) >= 4
-        and max_concurrency > 1
         and type(helper) is K8sHelper
         and "get_sandbox_warmpool" not in helper.__dict__
         and "get_sandbox_template" not in helper.__dict__
@@ -2704,21 +2826,35 @@ def _precheck_pools(
             and "list_namespaced_custom_object" not in api.__dict__
             and "get_namespaced_custom_object" not in api.__dict__
         ):
-            t_wp = timeout() if callable(timeout) else timeout
-            t_tp = timeout() if callable(timeout) else timeout
-            with ThreadPoolExecutor(max_workers=2) as list_exec:
-                f_wp = list_exec.submit(
-                    helper.list_sandbox_warmpool_summaries,
-                    namespace,
-                    _request_timeout=t_wp,
+            eff_deadline = deadline() if callable(deadline) else deadline
+            if max_concurrency >= 2:
+                t_wp = timeout() if callable(timeout) else timeout
+                t_tp = timeout() if callable(timeout) else timeout
+                with ThreadPoolExecutor(max_workers=2) as list_exec:
+                    f_wp = list_exec.submit(
+                        helper.list_sandbox_warmpool_summaries,
+                        namespace,
+                        _request_timeout=t_wp,
+                        deadline=eff_deadline,
+                    )
+                    f_tp = list_exec.submit(
+                        helper.list_sandbox_template_names,
+                        namespace,
+                        _request_timeout=t_tp,
+                        deadline=eff_deadline,
+                    )
+                wp_summaries = f_wp.result()
+                tpl_names = f_tp.result()
+            else:
+                t_wp = timeout() if callable(timeout) else timeout
+                wp_summaries = helper.list_sandbox_warmpool_summaries(
+                    namespace, _request_timeout=t_wp, deadline=eff_deadline
                 )
-                f_tp = list_exec.submit(
-                    helper.list_sandbox_template_names,
-                    namespace,
-                    _request_timeout=t_tp,
+                eff_deadline = deadline() if callable(deadline) else deadline
+                t_tp = timeout() if callable(timeout) else timeout
+                tpl_names = helper.list_sandbox_template_names(
+                    namespace, _request_timeout=t_tp, deadline=eff_deadline
                 )
-            wp_summaries = f_wp.result()
-            tpl_names = f_tp.result()
             checked_templates.update(tpl_names)
             bulk_ready: dict[str, int] = {}
             for name in pools:

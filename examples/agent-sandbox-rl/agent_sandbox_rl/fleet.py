@@ -26,6 +26,7 @@ from __future__ import annotations
 import atexit
 import collections
 import contextlib
+import inspect
 import logging
 import math
 import signal
@@ -45,7 +46,12 @@ from k8s_agent_sandbox.utils import select_pod_ip
 from kubernetes import client
 
 from . import constants, sizing
-from .batch_claims import BatchClaim, BatchClaims, extract_batch_claim_name
+from .batch_claims import (
+    AsyncBatchClaim,
+    BatchClaim,
+    BatchClaims,
+    extract_batch_claim_name,
+)
 from .cluster import Cluster, ClusterRegistry
 from .config import ClusterConfig, FleetConfig, run_namespace
 from .exceptions import (
@@ -245,6 +251,7 @@ class SandboxFleet:
         if self.config.claim_mode == "batch" else None)
     self._async_batch_claims = None
     self._defer_sync_batch_prepare = False
+    self._async_tearing_down = False
     if self.config.observability.enable_tracing:
       self._enable_sdk_tracing()
 
@@ -1250,7 +1257,7 @@ class SandboxFleet:
                      len(missing), missing[:5])
     self._warm_entries(entries, wait, replicas_override=replicas_override)
     if wait:
-      self._prepare_batch_clusters(entries, only_unopened=False)
+      self._prepare_batch_clusters(entries, only_unopened=False, just_warmed=True)
 
   def warm_image(self, image: str, *, replicas_override: int | None = None,
                  wait: bool = True) -> None:
@@ -1454,6 +1461,7 @@ class SandboxFleet:
     if self.config.install_teardown_hooks:
       self._install_teardown_hooks()          # (#4) clean up even on kill/crash
     self._torndown = False
+    self._async_tearing_down = False
     self._deleted_namespaces.clear()          # this cycle recreates what it needs
     if self._batch_claims is not None:
       self._batch_claims.reopen()
@@ -1473,21 +1481,33 @@ class SandboxFleet:
                      "start anyway and pull what is missing")
     self.start_warmpools(wait=True, create_budget=create_budget)
     if self.plan_ is not None:
-      self._prepare_batch_clusters(self.plan_.entries)
+      self._prepare_batch_clusters(self.plan_.entries, just_warmed=True)
     return self
 
   def _prepare_batch_clusters(
-      self, entries: list[PlanEntry], *, only_unopened: bool = False
+      self,
+      entries: list[PlanEntry],
+      *,
+      only_unopened: bool = False,
+      just_warmed: bool = False,
   ) -> None:
     """Pre-open each cluster's batch with its warmed pools as size-0 groups."""
     if self._batch_claims is None or not entries:
       return
     with self._lock:
-      if self._torndown:
+      if self._torndown or self._async_tearing_down:
         return
+      warmed_snapshot = (
+          dict(self._warmed)
+          if just_warmed and not self.config.adopt_existing
+          else None
+      )
     pools_by_cluster: dict[str, list[str]] = collections.defaultdict(list)
+    verified_by_cluster: dict[str, dict[str, int]] = collections.defaultdict(dict)
     for entry in entries:
       pools_by_cluster[entry.cluster].append(entry.pool)
+      if warmed_snapshot is not None and entry.image in warmed_snapshot:
+        verified_by_cluster[entry.cluster][entry.pool] = warmed_snapshot[entry.image]
     cluster_pools = []
     for cname, pools in pools_by_cluster.items():
       c = self.registry.get(cname)
@@ -1497,7 +1517,9 @@ class SandboxFleet:
     if not cluster_pools:
       return
     self._batch_claims.prepare_clusters(
-        cluster_pools, only_unopened=only_unopened
+        cluster_pools,
+        only_unopened=only_unopened,
+        verified_ready=(dict(verified_by_cluster) if warmed_snapshot is not None else None),
     )
 
   # --- claims ------------------------------------------------------------ #
@@ -1529,7 +1551,7 @@ class SandboxFleet:
     unbounded claim count.
     """
     with self._lock:
-      if self._torndown:
+      if self._torndown or self._async_tearing_down:
         raise FleetError("fleet was torn down; call setup() before acquiring again")
       hard = self.config.max_live_sandboxes
       if hard and self._claims_reserved >= hard:
@@ -2065,18 +2087,97 @@ class SandboxFleet:
       raise
     self._obs.restored(handle.cluster_name, True)
 
+  def _ensure_ondemand_pool_for_acquire(
+      self, cluster: Cluster, image: str
+  ) -> tuple[str, bool]:
+    """Ensure a size-1 on-demand pool exists for ``(cluster, image)``.
+
+    Returns ``(pool_name, created_pool)``. Callers must have already reserved a
+    claim slot in ``_claims_reserved`` so overcommit/teardown checks never poison
+    ``_ondemand_shared``.
+    """
+    key = (cluster.name, image)
+    pool = self.config.pool_name(image)
+    created_pool = False
+    with self._lock:
+      if self._torndown or self._async_tearing_down:
+        raise FleetError(f"fleet has torn down; cannot acquire on {cluster.name!r}")
+      already_ensured = key in self._ondemand
+      if already_ensured:
+        self._ondemand_shared.add(key)
+    if not already_ensured:
+      with self._ondemand_lock(key):
+        with self._lock:
+          if self._torndown or self._async_tearing_down:
+            raise FleetError(
+                f"fleet has torn down; cannot acquire on {cluster.name!r}")
+          already_ensured = key in self._ondemand
+          if already_ensured:
+            self._ondemand_shared.add(key)
+        if not already_ensured:
+          try:
+            pool = self._ensure_pool(cluster, image, 1)
+            cluster.reserve_replicas(1)
+            created_pool = True
+            with self._lock:
+              if self._torndown or self._async_tearing_down:
+                raise FleetError(
+                    f"fleet has torn down; cannot acquire on {cluster.name!r}")
+              self._ondemand.add(key)
+            logger.warning(
+                "image %s is not in the plan; creating an on-demand size-1 pool "
+                "'%s' on cluster %s. If this image IS already warm here, the pool is "
+                "named something other than %r; set pool_name_format to match, or "
+                "adopt_existing=True to fail instead of provisioning in parallel.",
+                image, pool, cluster.name, self.config.pool_name_format)
+          except BaseException:
+            if created_pool:
+              self._rollback_ondemand_pool(cluster, image, pool)
+            raise
+    return pool, created_pool
+
+  def _rollback_ondemand_pool(
+      self, cluster: Cluster, image: str, pool: str
+  ) -> None:
+    key = (cluster.name, image)
+    with self._ondemand_lock(key):
+      with self._lock:
+        shared_pool = key in self._ondemand_shared
+        if not shared_pool:
+          self._ondemand.discard(key)
+      if not shared_pool:
+        if not self._shared_run_id:
+          try:
+            owned, live = self._pool_ownership(cluster, pool)
+            if owned and live is not None:
+              uid = (live.get("metadata") or {}).get("uid")
+              if isinstance(uid, str) and uid:
+                cluster.resources.delete_warmpool(pool, uid=uid)
+              else:
+                cluster.resources.delete_warmpool(pool)
+            self._delete_template_if_owned(
+                cluster, self.config.template_name(image))
+          except Exception:  # noqa: BLE001
+            logger.warning("failed to remove on-demand pool after acquire error",
+                           exc_info=True)
+        cluster.release_replicas(1)
+
   def _can_bulk_release_batch_handle(
       self, handle: SandboxHandle, *, require_release_members: bool
   ) -> bool:
     if "release" in self.__dict__ or type(self).release is not SandboxFleet.release:
       return False
     bc = handle._batch_claim
-    if bc is None:
+    if bc is None or isinstance(bc, AsyncBatchClaim):
       return False
     if "release" in handle.__dict__ or type(handle).release is not SandboxHandle.release:
       return False
     batch = bc.batch
     if "release_member" in getattr(batch, "__dict__", {}):
+      return False
+    if inspect.iscoroutinefunction(getattr(batch, "release_member", None)):
+      return False
+    if inspect.iscoroutinefunction(getattr(batch, "release_members", None)):
       return False
     if batch.err() is not None:
       return False

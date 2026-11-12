@@ -1107,16 +1107,36 @@ class K8sHelper:
         )
         _drain_urllib3_response(response)
 
+    def _bounded_page_timeout(
+        self,
+        _request_timeout: float | tuple[float, float] | None,
+        deadline: float | None,
+        kind: str,
+    ) -> float | tuple[float, float] | None:
+        if deadline is None:
+            return _request_timeout
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"{kind} list exceeded its deadline")
+        if _request_timeout is None:
+            return remaining
+        if isinstance(_request_timeout, tuple):
+            return (min(float(_request_timeout[0]), remaining), min(float(_request_timeout[1]), remaining))
+        return min(float(_request_timeout), remaining)
+
     def list_sandbox_warmpools_ready(
         self,
         namespace: str,
         _request_timeout: float | tuple[float, float] | None = None,
+        *,
+        deadline: float | None = None,
     ) -> dict[str, int]:
         """Lists SandboxWarmPool Ready replica counts across ``namespace`` in paginated chunks."""
         ready_by_pool: dict[str, int] = {}
         continue_token: str | None = None
         restarted = False
         while True:
+            page_timeout = self._bounded_page_timeout(_request_timeout, deadline, "SandboxWarmPool")
             try:
                 page = cast(
                     dict[str, Any],
@@ -1127,7 +1147,7 @@ class K8sHelper:
                         plural=WARMPOOL_PLURAL_NAME,
                         limit=CLAIM_LIST_PAGE_SIZE,
                         _continue=continue_token,
-                        _request_timeout=_request_timeout,
+                        _request_timeout=page_timeout,
                     ),
                 )
             except client.ApiException as e:
@@ -1153,12 +1173,15 @@ class K8sHelper:
         self,
         namespace: str,
         _request_timeout: float | tuple[float, float] | None = None,
+        *,
+        deadline: float | None = None,
     ) -> dict[str, tuple[int, str | None]]:
         """Lists ``(readyReplicas, sandboxTemplateRef.name)`` per SandboxWarmPool in ``namespace``."""
         summaries: dict[str, tuple[int, str | None]] = {}
         continue_token: str | None = None
         restarted = False
         while True:
+            page_timeout = self._bounded_page_timeout(_request_timeout, deadline, "SandboxWarmPool")
             try:
                 page = cast(
                     dict[str, Any],
@@ -1169,7 +1192,7 @@ class K8sHelper:
                         plural=WARMPOOL_PLURAL_NAME,
                         limit=CLAIM_LIST_PAGE_SIZE,
                         _continue=continue_token,
-                        _request_timeout=_request_timeout,
+                        _request_timeout=page_timeout,
                     ),
                 )
             except client.ApiException as e:
@@ -1196,12 +1219,15 @@ class K8sHelper:
         self,
         namespace: str,
         _request_timeout: float | tuple[float, float] | None = None,
+        *,
+        deadline: float | None = None,
     ) -> set[str]:
         """Lists SandboxTemplate names across ``namespace`` in paginated chunks."""
         names: set[str] = set()
         continue_token: str | None = None
         restarted = False
         while True:
+            page_timeout = self._bounded_page_timeout(_request_timeout, deadline, "SandboxTemplate")
             try:
                 page = cast(
                     dict[str, Any],
@@ -1212,7 +1238,7 @@ class K8sHelper:
                         plural=TEMPLATE_PLURAL_NAME,
                         limit=CLAIM_LIST_PAGE_SIZE,
                         _continue=continue_token,
-                        _request_timeout=_request_timeout,
+                        _request_timeout=page_timeout,
                     ),
                 )
             except client.ApiException as e:
