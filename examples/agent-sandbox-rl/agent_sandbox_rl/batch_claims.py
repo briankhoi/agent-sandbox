@@ -473,6 +473,26 @@ def close_async_sandbox_sync(
       res.close()
 
 
+def _helper_async_session_open(helper: Any) -> bool:
+  if helper is None:
+    return False
+  api = getattr(helper, "_api_client", None)
+  if api is None:
+    return True
+  pm = getattr(getattr(api, "rest_client", None), "pool_manager", None)
+  return getattr(pm, "closed", False) is not True
+
+
+def _batch_async_session_open(batch: Any) -> bool:
+  client_obj = getattr(batch, "_client", None)
+  if client_obj is None:
+    return True
+  helper = getattr(client_obj, "k8s_helper", None)
+  if helper is None:
+    return True
+  return _helper_async_session_open(helper)
+
+
 @dataclass
 class AsyncBatchClaim:
   """One acquired async batch member and the ``AsyncSandboxBatch`` that owns it."""
@@ -492,37 +512,7 @@ class AsyncBatchClaim:
     return still_reaches(
         current, self.member.sandbox_name, select_pod_ip(self.member.pod_ips))
 
-  async def arelease(self) -> None:
-    try:
-      await self.batch.release_member(self.member)
-    except BatchError:
-      helper = getattr(self.cluster, "_async_k8s_helper", None)
-      if helper is not None:
-        await helper.delete_sandbox_claim(
-            self.member.claim_name,
-            self.cluster.namespace,
-            _request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS,
-            log_level=logging.DEBUG,
-            batch=True,
-        )
-      else:
-        await asyncio.to_thread(
-            self.cluster.resources.delete_claim,
-            self.member.claim_name,
-            request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS,
-        )
-
-  def release(self) -> None:
-    if (
-        self._loop is not None
-        and not self._loop.is_closed()
-        and self._loop.is_running()
-        and threading.current_thread() is not self._loop_thread
-    ):
-      asyncio.run_coroutine_threadsafe(self.arelease(), self._loop).result(
-          timeout=BATCH_REQUEST_TIMEOUT_SECONDS * 4
-      )
-      return
+  def _detach_member_locally(self) -> tuple[Any, int | None]:
     state = getattr(self.batch, "_state", None)
     seq: int | None = None
     try:
@@ -539,6 +529,69 @@ class AsyncBatchClaim:
           close_async_sandbox_sync(conn_entry, self._loop, self._loop_thread)
     except Exception:  # noqa: BLE001
       pass
+    return state, seq
+
+  async def arelease(self) -> None:
+    cur_loop = asyncio.get_running_loop()
+    state = None
+    seq: int | None = None
+    if (self._loop is None or self._loop is cur_loop) and _batch_async_session_open(
+        self.batch
+    ):
+      try:
+        await self.batch.release_member(self.member)
+        return
+      except BatchError:
+        pass
+      except RuntimeError:
+        if _batch_async_session_open(self.batch):
+          raise
+        state, seq = self._detach_member_locally()
+    else:
+      state, seq = self._detach_member_locally()
+    helper = getattr(self.cluster, "_async_k8s_helper", None)
+    c_loop = getattr(self.cluster, "_async_loop", None)
+    if (
+        helper is not None
+        and (c_loop is None or c_loop is cur_loop)
+        and _helper_async_session_open(helper)
+    ):
+      await helper.delete_sandbox_claim(
+          self.member.claim_name,
+          self.cluster.namespace,
+          _request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS,
+          log_level=logging.DEBUG,
+          batch=True,
+      )
+    else:
+      await asyncio.to_thread(
+          self.cluster.resources.delete_claim,
+          self.member.claim_name,
+          request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS,
+      )
+    if state is not None and seq is not None:
+      try:
+        state.note_deleted(self.member.claim_name, seq)
+      except Exception:  # noqa: BLE001
+        pass
+
+  def release(self) -> None:
+    if (
+        self._loop is not None
+        and not self._loop.is_closed()
+        and self._loop.is_running()
+        and threading.current_thread() is not self._loop_thread
+        and _batch_async_session_open(self.batch)
+    ):
+      try:
+        asyncio.run_coroutine_threadsafe(self.arelease(), self._loop).result(
+            timeout=BATCH_REQUEST_TIMEOUT_SECONDS * 4
+        )
+        return
+      except RuntimeError:
+        if _batch_async_session_open(self.batch):
+          raise
+    state, seq = self._detach_member_locally()
     self.cluster.resources.delete_claim(
         self.member.claim_name,
         request_timeout=BATCH_REQUEST_TIMEOUT_SECONDS,
@@ -608,7 +661,11 @@ class AsyncBatchClaims:
     if entry is None:
       return False
     batch, batch_loop = entry
-    if batch_loop.is_closed() or batch.err() is not None:
+    if (
+        batch_loop.is_closed()
+        or batch.err() is not None
+        or not _batch_async_session_open(batch)
+    ):
       return False
     try:
       cur_loop = asyncio.get_running_loop()
@@ -674,6 +731,7 @@ class AsyncBatchClaims:
           and fast_entry[1] is loop
           and not fast_entry[1].is_closed()
           and fast_entry[0].err() is None
+          and _batch_async_session_open(fast_entry[0])
       ):
         return fast_entry[0]
     reuse_existing: Any = None
@@ -686,14 +744,25 @@ class AsyncBatchClaims:
       if existing_entry is not None:
         existing, existing_loop = existing_entry
         error = existing.err()
-        if existing_loop is loop and not existing_loop.is_closed() and error is None:
+        session_open = _batch_async_session_open(existing)
+        if (
+            existing_loop is loop
+            and not existing_loop.is_closed()
+            and error is None
+            and session_open
+        ):
           reuse_existing = existing
         else:
           with self._lock:
             old_wd = self._watchdogs.pop(cluster.name, None)
           if old_wd is not None:
             old_wd.stop()
-          reason = error if (existing_loop is loop and not existing_loop.is_closed()) else "event loop changed"
+          if existing_loop is not loop or existing_loop.is_closed():
+            reason: Any = "event loop changed"
+          elif not session_open:
+            reason = "async API session closed"
+          else:
+            reason = error
           logger.warning("async batch %s on cluster %s stopped (%s); opening a new one "
                          "for new acquires", existing.batch_id, cluster.name, reason)
       if reuse_existing is None:
@@ -874,7 +943,7 @@ class AsyncBatchClaims:
         except Exception:  # noqa: BLE001
           pass
     stale_conns = getattr(batch, "_stale_connections", None)
-    if isinstance(stale_conns, list) and stale_conns:
+    if isinstance(stale_conns, (dict, list, set)) and stale_conns:
       stale_entries = list(stale_conns)
       stale_conns.clear()
       for entry in stale_entries:
@@ -928,12 +997,13 @@ class AsyncBatchClaims:
         loop_thread: threading.Thread | None,
     ) -> tuple[int, Exception | None]:
       try:
-        if batch_loop is cur_loop:
+        if batch_loop is cur_loop and _batch_async_session_open(batch):
           await batch.release()
         elif (
             batch_loop is not None
             and not batch_loop.is_closed()
             and batch_loop.is_running()
+            and _batch_async_session_open(batch)
             and inspect.iscoroutinefunction(getattr(batch, "release", None))
         ):
           await asyncio.wrap_future(
@@ -990,6 +1060,7 @@ class AsyncBatchClaims:
           and not loop.is_closed()
           and loop.is_running()
           and threading.current_thread() is not loop_thread
+          and _batch_async_session_open(batch)
           and inspect.iscoroutinefunction(getattr(batch, "release", None))
       ):
         try:

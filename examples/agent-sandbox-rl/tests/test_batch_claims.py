@@ -1798,6 +1798,7 @@ async def test_native_async_batch_acquires_without_threads_and_bulk_releases_wav
 
   async def _async_proc(task, handle):
     seen_threads.add(threading.get_ident())
+    await asyncio.sleep(0)
     return handle.pod_ip
 
   out = await af._process_parallel(af.tasks, _async_proc, concurrency=8)
@@ -1819,7 +1820,7 @@ async def test_native_async_batch_acquires_without_threads_and_bulk_releases_wav
 def test_batch_claim_config_rl_defaults_and_explicit_none_override():
   cfg = BatchClaimConfig()
   assert cfg.create_rps == 500.0
-  assert cfg.max_in_flight == 768
+  assert cfg.max_in_flight == 512
   explicit_sdk = BatchClaimConfig(create_rps=None, max_in_flight=None)
   assert explicit_sdk.create_rps is None
   assert explicit_sdk.max_in_flight is None
@@ -2197,7 +2198,12 @@ async def test_sync_release_all_on_async_batch_handles_and_defer_tail_isolation(
   await af.release(foreign)
 
   fail_bulk = True
-  res_err = await af._process_parallel(tasks[:2], lambda _t, h: h.pod_name, 2)
+
+  async def _yield_proc(_t, h):
+    await asyncio.sleep(0.01)
+    return h.pod_name
+
+  res_err = await af._process_parallel(tasks[:2], _yield_proc, 2)
   assert len(res_err) == 2 and all(isinstance(r, RuntimeError) for r in res_err)
   fail_bulk = False
   await af.release_all()
@@ -2499,3 +2505,141 @@ def test_pass2_ws_errors_connected_tuple_atexit_and_bound_executor():
   assert af._is_default_executor(bound_one) is True
   assert af._is_default_executor(lambda *a, **k: []) is False
   af.close()
+
+
+def test_pass3_stale_dict_cross_loop_session_close_and_ondemand_deadlock_free(make_cluster):
+  from types import SimpleNamespace
+  import warnings
+  from kubernetes_asyncio import client as async_k8s_client
+  from agent_sandbox_rl.batch_claims import AsyncBatchClaims
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import BatchClaimConfig, ClusterConfig
+  from agent_sandbox_rl.exceptions import FleetError
+
+  # 1) _sync_release_single_batch closes dict-typed _stale_connections and clears before unregister
+  c = _batch_cluster(make_cluster, "c-stale")
+  stale_closed: list[str] = []
+
+  class _StaleSb:
+    def __init__(self, tag: str) -> None:
+      self.tag = tag
+
+    def _close_for_atexit(self) -> None:
+      stale_closed.append(self.tag)
+
+  seen_stale_on_unreg: list[int] = []
+  s1, s2 = _StaleSb("s1"), _StaleSb("s2")
+  fake_b = SimpleNamespace(
+      namespace="ns1",
+      batch_id="b-stale",
+      _connected={"cl-0": (_StaleSb("c0"), "10.0.0.2")},
+      _stale_connections={s1: None, s2: None},
+      release=MagicMock(),
+      _client=SimpleNamespace(
+          _unregister_batch=lambda b: seen_stale_on_unreg.append(len(b._stale_connections))
+      ),
+  )
+  abc = AsyncBatchClaims(BatchClaimConfig(), ready_timeout=30, labels={})
+  abc._sync_release_single_batch(c, fake_b, None, None)
+  assert set(stale_closed) == {"c0", "s1", "s2"}
+  assert fake_b._stale_connections == {}
+  assert fake_b.release.called
+
+  # 2a) Sequential asyncio.run() calls on one Cluster leak 0 aiohttp ClientSessions
+  def _make_local_async_api(_cfg, *, pool_maxsize=1000):
+    acfg = async_k8s_client.Configuration()
+    acfg.host = "https://127.0.0.1:6443"
+    api = async_k8s_client.ApiClient(configuration=acfg)
+    _ = api.rest_client.pool_manager
+    return api
+
+  async def _fake_build_async(cfg, *, pool_maxsize=1000):
+    return _make_local_async_api(cfg, pool_maxsize=pool_maxsize)
+
+  c_seq = Cluster(ClusterConfig(name="c-seq", namespace="ns1", in_cluster=True), api_client=MagicMock())
+  c_seq._injected_sync_api_client = False
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    with pytest.MonkeyPatch.context() as mp:
+      mp.setattr("agent_sandbox_rl.cluster.build_async_api_client", _fake_build_async)
+
+      async def _loop1_init():
+        await c_seq.get_async_sandbox_client()
+        await c_seq.async_exec_core_api()
+
+      asyncio.run(_loop1_init())
+      api_r1 = c_seq._async_api_client
+      ws_r1 = c_seq._async_ws_api_client
+      assert not api_r1.rest_client.pool_manager.closed
+      assert not ws_r1.rest_client.pool_manager.closed
+      # Second asyncio.run() transitions away from closed loop 1 -> closes loop 1 sessions cleanly!
+      asyncio.run(c_seq.get_async_sandbox_client())
+      assert api_r1.rest_client.pool_manager.closed
+      assert ws_r1.rest_client.pool_manager.closed
+      asyncio.run(c_seq.aclose())
+  unclosed_warnings = [w for w in caught if "Unclosed client session" in str(w.message)]
+  assert unclosed_warnings == []
+
+  # 2b) Running background loop whose session was closed falls back to sync release in release_all()
+  bg_loop = asyncio.new_event_loop()
+  bg_ready = threading.Event()
+  bg_thread = threading.Thread(
+      target=lambda: (asyncio.set_event_loop(bg_loop), bg_ready.set(), bg_loop.run_forever()),
+      daemon=True,
+  )
+  bg_thread.start()
+  bg_ready.wait(2.0)
+  try:
+    sync_rel_calls: list[str] = []
+
+    async def _fail_if_async_called():
+      raise RuntimeError("Session is closed")
+
+    closed_pm = SimpleNamespace(closed=True)
+    closed_api = SimpleNamespace(rest_client=SimpleNamespace(pool_manager=closed_pm))
+    closed_helper = SimpleNamespace(_api_client=closed_api)
+    closed_batch = SimpleNamespace(
+        batch_id="b-bg-closed",
+        namespace="ns1",
+        _client=SimpleNamespace(k8s_helper=closed_helper),
+        _connected={},
+        _stale_connections={},
+        err=lambda: None,
+        release=_fail_if_async_called,
+    )
+    abc_bg = AsyncBatchClaims(BatchClaimConfig(), ready_timeout=30, labels={})
+    abc_bg._opened.append((c, closed_batch, bg_loop, bg_thread))
+    abc_bg._sync_release_single_batch = lambda cl, b, lp, lt: sync_rel_calls.append(b.batch_id)  # type: ignore[method-assign]
+    failed = asyncio.run(abc_bg.release_all())
+    assert failed == {}
+    assert sync_rel_calls == ["b-bg-closed"]
+  finally:
+    bg_loop.call_soon_threadsafe(bg_loop.stop)
+    bg_thread.join(timeout=2.0)
+    bg_loop.close()
+
+  # 3) _ensure_ondemand_pool_for_acquire rollback on mid-create teardown race does not deadlock
+  c_od = _batch_cluster(make_cluster, "c-od")
+  f_od = _fleet(ClusterRegistry([c_od]), fail_fast=FailFastPolicy(enabled=False))
+
+  def _ensure_then_teardown(cl, img, reps):
+    f_od._torndown = True
+    return f_od.config.pool_name(img)
+
+  f_od._ensure_pool = _ensure_then_teardown  # type: ignore[method-assign]
+  done_evt = threading.Event()
+  err_box: list[BaseException] = []
+
+  def _run_od():
+    try:
+      f_od._ensure_ondemand_pool_for_acquire(c_od, "img-race:1")
+    except BaseException as exc:  # noqa: BLE001
+      err_box.append(exc)
+    finally:
+      done_evt.set()
+
+  th = threading.Thread(target=_run_od, daemon=True)
+  th.start()
+  assert done_evt.wait(2.0), "_ensure_ondemand_pool_for_acquire deadlocked on _ondemand_lock!"
+  assert len(err_box) == 1 and isinstance(err_box[0], FleetError)
+  assert c_od.active_replicas == 0

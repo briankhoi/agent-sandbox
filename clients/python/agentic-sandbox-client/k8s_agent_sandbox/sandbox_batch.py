@@ -1455,20 +1455,27 @@ class SandboxBatch:
             BatchError: If this handle has been detached or released, or once its Lease expires.
         """
         if not ready_by_pool:
+            with self._lock:
+                self._check_healthy()
             return
+        validated: list[tuple[str, int]] = []
+        for p, rdy in ready_by_pool.items():
+            if not isinstance(p, str):
+                raise ValueError(f"warm pool name must be a str, got {type(p).__name__}")
+            if isinstance(rdy, bool) or not isinstance(rdy, int):
+                raise ValueError(f"ready count for '{p}' must be an int, got {type(rdy).__name__}")
+            if p:
+                validated.append((p, max(0, rdy)))
         with self._lock:
             self._check_healthy()
-            for p, rdy in ready_by_pool.items():
-                if not p or self._state.release_sweeping(p):
+            for p, rdy in validated:
+                if self._state.release_sweeping(p):
                     continue
-                if (
-                    not self._state._acquiring_by_pool.get(p)
-                    and not self._state._checking_acquires.get(p)
-                ):
-                    self._warm_credit.record(p, max(0, int(rdy)))
-                    self._checked_pools.add(p)
-                elif p not in self._checked_pools:
-                    self._checked_pools.add(p)
+                if self._state._checking_acquires.get(p):
+                    continue
+                if not self._state._acquiring_by_pool.get(p):
+                    self._warm_credit.record(p, rdy)
+                self._checked_pools.add(p)
 
     def _refresh_warm_credit(self, warmpool: str, deadline: float, acquire_seq: int) -> None:
         """Re-reads the pool's Ready count once callers spend its credit, at most once every

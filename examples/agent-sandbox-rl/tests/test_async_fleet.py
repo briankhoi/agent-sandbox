@@ -494,3 +494,71 @@ async def test_handle_aexec_runs_on_event_loop_and_maps_lost_pod():
   c.core_api.read_namespaced_pod_status.side_effect = client.ApiException(status=404)
   with pytest.raises(SandboxLostError):
     await h.aexec("echo dead")
+
+
+async def test_process_parallel_releases_immediately_while_sibling_waits_in_acquire():
+  from types import SimpleNamespace
+  from unittest.mock import MagicMock
+  from k8s_agent_sandbox import Member, MemberState
+  from agent_sandbox_rl.async_fleet import AsyncSandboxFleet
+  from agent_sandbox_rl.batch_claims import AsyncBatchClaim
+  from agent_sandbox_rl.cluster import Cluster, ClusterRegistry
+  from agent_sandbox_rl.config import ClusterConfig, FleetConfig
+  from agent_sandbox_rl.handles import SandboxHandle
+  from agent_sandbox_rl.sources import Task
+
+  c = Cluster(ClusterConfig(name="c1", namespace="ns1"), api_client=MagicMock())
+  af = AsyncSandboxFleet(
+      FleetConfig(claim_mode="batch", max_concurrent=4),
+      registry=ClusterRegistry([c]),
+  )
+  slot_free = asyncio.Event()
+  slot_free.set()
+  released_claims: list[str] = []
+
+  async def _rel_member(m):
+    released_claims.append(m.claim_name)
+    slot_free.set()
+
+  async def _rel_members():
+    released_claims.append("bulk")
+    slot_free.set()
+
+  fake_batch = SimpleNamespace(
+      err=lambda: None,
+      release_members=_rel_members,
+      release_member=_rel_member,
+  )
+  seq = 0
+
+  async def gated_acquire(task: Task, **kwargs):
+    nonlocal seq
+    await slot_free.wait()
+    slot_free.clear()
+    seq += 1
+    cname = f"cl-{seq}"
+    m = Member(claim_name=cname, sandbox_name=f"sb-{seq}", warmpool="p", pod_ips=("10.0.0.1",), state=MemberState.READY)
+    bc = AsyncBatchClaim(batch=fake_batch, member=m, expires_at=1e12, cluster=c, _loop=asyncio.get_running_loop())
+    h = SandboxHandle(
+        task=task, cluster_name="c1", claim_name=cname,
+        sandbox_id=f"sb-{seq}", pod_name=f"sb-{seq}", hostname=f"sb-{seq}",
+        _cluster=c, _batch_claim=bc,
+    )
+    af._fleet._handles[id(h)] = h
+    c.reserve_claim()
+    af._fleet._claims_reserved += 1
+    return h
+
+  af.acquire = gated_acquire  # type: ignore[method-assign]
+  tasks = [Task(id="t1", image="img:same"), Task(id="t2", image="img:same")]
+  # af.release is unpatched so can_defer_tail is True! With concurrency=4 >= len(tasks)=2,
+  # both tasks enter sem immediately; t1 MUST release immediately (while t2 is still blocked
+  # inside gated_acquire) so t2 unblocks, and then t2 can defer/release cleanly.
+  out = await asyncio.wait_for(
+      af._process_parallel(tasks, lambda t, h: t.id, concurrency=4),
+      timeout=2.0,
+  )
+  assert out == ["t1", "t2"]
+  assert released_claims[0] == "cl-1"
+  assert len(released_claims) == 2
+  af.close()

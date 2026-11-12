@@ -50,7 +50,13 @@ from k8s_agent_sandbox.exceptions import SandboxNotReadyError
 from k8s_agent_sandbox.utils import select_pod_ip
 
 from . import constants
-from .batch_claims import AsyncBatchClaim, AsyncBatchClaims, extract_batch_claim_name
+from .batch_claims import (
+    AsyncBatchClaim,
+    AsyncBatchClaims,
+    _batch_async_session_open,
+    _helper_async_session_open,
+    extract_batch_claim_name,
+)
 from .cluster import Cluster
 from .config import FleetConfig
 from .exceptions import (
@@ -717,6 +723,7 @@ class AsyncSandboxFleet:
     handles = self.handles()
     if not handles:
       return
+    cur_loop = asyncio.get_running_loop()
     unpatched = (
         "release" not in self.__dict__
         and type(self).release is AsyncSandboxFleet.release
@@ -733,6 +740,8 @@ class AsyncSandboxFleet:
         bc = h._batch_claim
         if (
             isinstance(bc, AsyncBatchClaim)
+            and (bc._loop is None or bc._loop is cur_loop)
+            and _batch_async_session_open(bc.batch)
             and "release" not in h.__dict__
             and type(h).release is SandboxHandle.release
             and "release_member" not in getattr(bc.batch, "__dict__", {})
@@ -880,11 +889,17 @@ class AsyncSandboxFleet:
             if async_release_err is None:
               async_release_err = exc
             if fl._shared_run_id:
+              cur_loop = asyncio.get_running_loop()
               for h in failed_handles:
                 cluster_obj = fl.registry.get(h.cluster_name)
                 helper = getattr(cluster_obj, "_async_k8s_helper", None)
+                c_loop = getattr(cluster_obj, "_async_loop", None)
                 try:
-                  if helper is not None:
+                  if (
+                      helper is not None
+                      and (c_loop is None or c_loop is cur_loop)
+                      and _helper_async_session_open(helper)
+                  ):
                     await helper.delete_sandbox_claim(
                         h.claim_name,
                         cluster_obj.namespace,
@@ -970,8 +985,8 @@ class AsyncSandboxFleet:
         and "release_all" not in fl.__dict__
         and type(fl).release_all is SandboxFleet.release_all
     )
-    entered = 0
-    remaining_by_image: collections.Counter[str] = collections.Counter(
+    pending_acquires = total
+    pending_acquires_by_image: collections.Counter[str] = collections.Counter(
         t.image for t in tasks
     )
     deferred_tail: list[tuple[int, str, str, float, SandboxHandle]] = []
@@ -979,6 +994,7 @@ class AsyncSandboxFleet:
     async def _release_deferred_tail(*, capture_errors: bool) -> None:
       if not deferred_tail:
         return
+      cur_loop = asyncio.get_running_loop()
       items = list(deferred_tail)
       deferred_tail.clear()
       item_by_hid = {id(h): (idx, cl, fm, start_t, h) for idx, cl, fm, start_t, h in items}
@@ -994,6 +1010,8 @@ class AsyncSandboxFleet:
         bc = h._batch_claim
         if (
             isinstance(bc, AsyncBatchClaim)
+            and (bc._loop is None or bc._loop is cur_loop)
+            and _batch_async_session_open(bc.batch)
             and "release" not in h.__dict__
             and type(h).release is SandboxHandle.release
             and "release_member" not in getattr(bc.batch, "__dict__", {})
@@ -1065,17 +1083,19 @@ class AsyncSandboxFleet:
             obs.task_done(cl, fm, "ok", now - start_t)
 
     async def _one(i, task):
-      nonlocal entered
+      nonlocal pending_acquires
       fam = repo_family(task)
       t0 = time.monotonic()
       status = "ok"
       cluster = "-"
       deferred = False
       async with sem:
-        entered += 1
-        remaining_by_image[task.image] -= 1
         try:
-          handle = await self.acquire(task)
+          try:
+            handle = await self.acquire(task)
+          finally:
+            pending_acquires -= 1
+            pending_acquires_by_image[task.image] -= 1
           cluster = handle.cluster_name
           task_failed = False
           try:
@@ -1088,9 +1108,10 @@ class AsyncSandboxFleet:
             if (
                 not task_failed
                 and can_defer_tail
-                and entered >= total
-                and remaining_by_image[task.image] <= 0
+                and pending_acquires <= 0
+                and pending_acquires_by_image[task.image] <= 0
                 and isinstance(handle._batch_claim, AsyncBatchClaim)
+                and _batch_async_session_open(handle._batch_claim.batch)
             ):
               deferred = True
               deferred_tail.append((i, cluster, fam, t0, handle))
@@ -1121,8 +1142,8 @@ class AsyncSandboxFleet:
 
   async def _run_windowed(self, process_fn, concurrency, window,
                           replicas_override=None, *, teardown=True, executor=None):
-    default_exec = self._is_default_executor(executor)
     executor = executor or self._process_parallel
+    default_exec = self._is_default_executor(executor)
     self._fleet._defer_sync_batch_prepare = self._sync_acquire_unpatched()
     await self.preflight()
     await self.plan()
@@ -1172,8 +1193,8 @@ class AsyncSandboxFleet:
     ``asyncio.Task``) while window N's tasks run. Footprint ≤ 2 windows — the
     current window is unwarmed before awaiting the next prefetch, and only one
     prefetch task is ever in flight."""
-    default_exec = self._is_default_executor(executor)
     executor = executor or self._process_parallel
+    default_exec = self._is_default_executor(executor)
     self._fleet._defer_sync_batch_prepare = self._sync_acquire_unpatched()
     await self.preflight()
     await self.plan()

@@ -23,7 +23,9 @@ SDK's `K8sHelper` / `SandboxClient` (built lazily). No SDK fork required.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
+import inspect
 import threading
 from collections import OrderedDict
 from urllib.parse import urlencode
@@ -57,8 +59,8 @@ async def build_async_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000
       None,
   )
   ka = getattr(conn, "_keepalive_timeout", None)
-  if isinstance(ka, (int, float)) and not isinstance(ka, bool) and ka < 75.0:
-    conn._keepalive_timeout = 75.0
+  if isinstance(ka, (int, float)) and not isinstance(ka, bool) and ka < 180.0:
+    conn._keepalive_timeout = 180.0
   return api
 
 
@@ -88,8 +90,8 @@ async def _build_fast_ws_core_api(
       old_pm = self.rest_client.pool_manager
       connector = old_pm.connector
       ka = getattr(connector, "_keepalive_timeout", None)
-      if isinstance(ka, (int, float)) and not isinstance(ka, bool) and ka < 75.0:
-        connector._keepalive_timeout = 75.0
+      if isinstance(ka, (int, float)) and not isinstance(ka, bool) and ka < 180.0:
+        connector._keepalive_timeout = 180.0
       self.rest_client.pool_manager = aiohttp.ClientSession(
           connector=connector,
           connector_owner=True,
@@ -405,6 +407,118 @@ class Cluster:
         self._sandbox_client = c
       return self._sandbox_client
 
+  @staticmethod
+  async def _close_async_bundle(
+      cur_loop: asyncio.AbstractEventLoop,
+      target_loop: asyncio.AbstractEventLoop | None,
+      sb_client,
+      api_client,
+      ws_api,
+      *,
+      wait_cross_loop: bool,
+  ) -> None:
+    if target_loop is cur_loop:
+      for obj in (sb_client, api_client, ws_api):
+        if obj is None:
+          continue
+        close_fn = getattr(obj, "close", None)
+        if not callable(close_fn):
+          continue
+        try:
+          res = close_fn()
+          if inspect.isawaitable(res):
+            await res
+        except Exception:  # noqa: BLE001
+          pass
+      return
+
+    if (
+        target_loop is not None
+        and not target_loop.is_closed()
+        and target_loop.is_running()
+    ):
+      for obj in (sb_client, api_client, ws_api):
+        if obj is None:
+          continue
+        close_fn = getattr(obj, "close", None)
+        if not callable(close_fn):
+          continue
+        try:
+          res = close_fn()
+          if asyncio.iscoroutine(res):
+            fut = asyncio.run_coroutine_threadsafe(res, target_loop)
+            fut.add_done_callback(
+                lambda d: None if d.cancelled() else d.exception()
+            )
+            if wait_cross_loop:
+              with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    asyncio.wrap_future(fut, loop=cur_loop), timeout=5.0
+                )
+        except Exception:  # noqa: BLE001
+          pass
+      return
+
+    # target_loop is None, closed, or stopped: avoid awaiting loop-bound tasks on
+    # AsyncSandboxClient while closing all local sandbox handles and aiohttp sessions.
+    extra_api = None
+    if sb_client is not None:
+      if type(sb_client).__name__ == "AsyncSandboxClient":
+        tracked = list(getattr(sb_client, "_active_connection_sandboxes", {}).values())
+        batches = list(getattr(sb_client, "_active_batches", {}).values()) + list(
+            getattr(sb_client, "_closing_batches", ())
+        )
+        for b in batches:
+          b._detached = True
+          stop_evt = getattr(b, "_stop_creating", None)
+          if stop_evt is not None:
+            stop_evt.set()
+          if target_loop is not None and not target_loop.is_closed():
+            for attr in ("_watch_task", "_renew_task"):
+              t = getattr(b, attr, None)
+              if t is not None and not t.done():
+                with contextlib.suppress(Exception):
+                  t.cancel()
+          conn_map = getattr(b, "_connected", None)
+          if isinstance(conn_map, dict):
+            for entry in list(conn_map.values()):
+              tracked.append(entry[0] if isinstance(entry, tuple) else entry)
+          stale_map = getattr(b, "_stale_connections", None)
+          if isinstance(stale_map, (dict, list, set)):
+            tracked.extend(list(stale_map))
+        for sb in tracked:
+          atexit_fn = getattr(type(sb), "_close_for_atexit", None)
+          if callable(atexit_fn):
+            with contextlib.suppress(Exception):
+              atexit_fn(sb)
+        helper = getattr(sb_client, "k8s_helper", None)
+        if getattr(helper, "_owns_api_client", False):
+          extra_api = getattr(helper, "_api_client", None)
+          helper._api_client = None
+          helper._initialized = False
+      else:
+        close_sb = getattr(sb_client, "close", None)
+        if callable(close_sb):
+          try:
+            res = close_sb()
+            if inspect.isawaitable(res):
+              await res
+          except Exception:  # noqa: BLE001
+            pass
+
+    for obj in (extra_api, api_client, ws_api):
+      if obj is None:
+        continue
+      close_fn = getattr(obj, "close", None)
+      if not callable(close_fn):
+        continue
+      try:
+        res = close_fn()
+        if inspect.isawaitable(res):
+          await res
+      except Exception:  # noqa: BLE001
+        pass
+
   async def _ensure_async_loop(self, loop: asyncio.AbstractEventLoop) -> asyncio.Lock:
     """Ensure cached async clients belong to ``loop``, resetting stale loop state atomically."""
     with self._async_state_lock:
@@ -429,23 +543,9 @@ class Cluster:
       self._async_init_lock = init_lock
       self._async_loop = loop
 
-    if old_loop is not None and not old_loop.is_closed():
-      for obj in (old_sb, old_api, old_ws):
-        if obj is None:
-          continue
-        close_fn = getattr(obj, "close", None)
-        if not callable(close_fn):
-          continue
-        try:
-          if old_loop.is_running():
-            fut = asyncio.run_coroutine_threadsafe(close_fn(), old_loop)
-            fut.add_done_callback(lambda d: None if d.cancelled() else d.exception())
-          else:
-            res = close_fn()
-            if asyncio.iscoroutine(res):
-              res.close()
-        except Exception:  # noqa: BLE001
-          pass
+    await self._close_async_bundle(
+        loop, old_loop, old_sb, old_api, old_ws, wait_cross_loop=False
+    )
     return init_lock
 
   async def get_async_sandbox_client(self):
@@ -495,7 +595,7 @@ class Cluster:
       from kubernetes_asyncio import client as async_client
       raw_cfg = (
           getattr(self._async_api_client, "configuration", None)
-          if self._injected_async_api_client and self._async_api_client is not None
+          if self._async_api_client is not None
           else None
       )
       base_cfg = raw_cfg if isinstance(raw_cfg, async_client.Configuration) else None
@@ -558,37 +658,28 @@ class Cluster:
 
   async def aclose(self) -> None:
     """Close any owned ``kubernetes_asyncio`` ``ApiClient`` and ``WsApiClient`` sessions."""
+    cur_loop = asyncio.get_running_loop()
     with self._async_state_lock:
+      target_loop = self._async_loop
       sb_client = self._async_sandbox_client
-      api_client = self._async_api_client
+      api_client = None if self._injected_async_api_client else self._async_api_client
       ws_api = self._async_ws_api_client
       self._async_sandbox_client = None
       self._async_k8s_helper = None
       self._async_ws_api_client = None
       self._async_exec_core_api = None
+      self._async_loop = None
+      self._async_init_lock = None
       if not self._injected_async_api_client:
         self._async_api_client = None
-    if sb_client is not None:
-      close_fn = getattr(sb_client, "close", None)
-      if callable(close_fn):
-        try:
-          await close_fn()
-        except Exception:  # noqa: BLE001
-          pass
-    if api_client is not None and not self._injected_async_api_client:
-      close_api = getattr(api_client, "close", None)
-      if callable(close_api):
-        try:
-          await close_api()
-        except Exception:  # noqa: BLE001
-          pass
-    if ws_api is not None:
-      close_ws = getattr(ws_api, "close", None)
-      if callable(close_ws):
-        try:
-          await close_ws()
-        except Exception:  # noqa: BLE001
-          pass
+    await self._close_async_bundle(
+        cur_loop,
+        target_loop if target_loop is not None else cur_loop,
+        sb_client,
+        api_client,
+        ws_api,
+        wait_cross_loop=True,
+    )
 
   def template_spec(self, base: TemplateSpec) -> TemplateSpec:
     """Merge per-cluster overrides onto a base TemplateSpec."""
