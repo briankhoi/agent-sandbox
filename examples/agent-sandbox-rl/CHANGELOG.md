@@ -27,7 +27,7 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
   permissions from the SDK's batch RBAC (`preflight()` checks `leases` create access
   (dry-run) in `"batch"` mode). `BatchClaimConfig` validates and configures `work_budget`
   (default `3600`), `lease_duration` (default `300`, longer than the SDK's `60` because
-  losing a `Lease` stops the batch), `create_rps` (`None`), and `max_in_flight` (`None`),
+  losing a `Lease` stops the batch), `create_rps` (default `500`), and `max_in_flight` (default `64`),
   auto-sizing each cluster's `urllib3` connection pool for `max_concurrent` and
   `max_in_flight` and raising `AsyncSandboxFleet`'s executor ceiling to `4096`.
 - **Batch handles track liveness, parallel batch acquire/release, fallback release, and fleet teardown across batch restarts.**
