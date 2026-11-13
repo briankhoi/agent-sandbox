@@ -3202,6 +3202,7 @@ def test_batch_handle_deletes_its_sandbox_only_once_the_claim_is_deleted():
   def _handle():
     return types.SimpleNamespace(
         _cluster=cluster, claim_name="claim-1", sandbox=None, sandbox_id="sb-1", pod_name="pod-1",
+        _batch_claim=None,
         delete_released_sandbox=lambda: SandboxHandle.delete_released_sandbox(h))
 
   h = _handle()
@@ -3419,3 +3420,78 @@ def test_exec_retries_a_connection_that_was_never_established():
   exc, calls = asyncio.run(_run([_Ctx(stream_error=not_established)]))
   assert isinstance(exc, aiohttp.ConnectionTimeoutError)
   assert calls == 1
+
+
+def test_released_sandboxes_with_claim_uids_are_deleted_together_by_label(monkeypatch):
+  from kubernetes.client import ApiException
+
+  from agent_sandbox_rl import cluster as cluster_mod
+
+  monkeypatch.setattr(cluster_mod, "RELEASED_SANDBOX_BATCH_WINDOW_SECONDS", 0.05)
+  monkeypatch.setattr(cluster_mod, "RELEASED_SANDBOX_BATCH_SIZE", 3)
+
+  def _labelled(uid):
+    return {"metadata": {"labels": {cluster_mod.CLAIM_UID_LABEL: uid}}}
+
+  # The controller labels Sandboxes: 5 releases go out as 2 batches of 2 requests each.
+  c = _cluster_with_mock_apis()
+  c.custom_api.get_namespaced_custom_object.return_value = _labelled("uid-0")
+  for i in range(5):
+    c.delete_released_sandbox(f"sb-{i}", f"pod-{i}", claim_uid=f"uid-{i}")
+  c._released_sandbox_pool.shutdown(wait=True)
+  sandbox_selectors = [k.kwargs["label_selector"]
+                       for k in c.custom_api.delete_collection_namespaced_custom_object.call_args_list]
+  pod_selectors = [k.kwargs["label_selector"]
+                   for k in c.core_api.delete_collection_namespaced_pod.call_args_list]
+  assert sandbox_selectors == pod_selectors == [
+      "agents.x-k8s.io/claim-uid in (uid-0,uid-1,uid-2)",
+      "agents.x-k8s.io/claim-uid in (uid-3,uid-4)",
+  ]
+  assert c.custom_api.get_namespaced_custom_object.call_count == 1
+  assert c.custom_api.delete_namespaced_custom_object.call_count == 0
+  assert c.core_api.delete_namespaced_pod.call_count == 0
+
+  # A controller that does not label Sandboxes: deleting pods by label would leave
+  # each Sandbox to start a replacement, so every release is deleted by name.
+  c = _cluster_with_mock_apis()
+  c.custom_api.get_namespaced_custom_object.return_value = {"metadata": {"labels": {}}}
+  for i in range(2):
+    c.delete_released_sandbox(f"sb-{i}", f"pod-{i}", claim_uid=f"uid-{i}")
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert c.custom_api.delete_collection_namespaced_custom_object.call_count == 0
+  assert c.core_api.delete_collection_namespaced_pod.call_count == 0
+  assert c.custom_api.delete_namespaced_custom_object.call_count == 2
+  assert c.core_api.delete_namespaced_pod.call_count == 2
+
+  # No deletecollection access: fall back to deleting by name, and stay there.
+  c = _cluster_with_mock_apis()
+  c.custom_api.get_namespaced_custom_object.return_value = _labelled("uid-0")
+  c.custom_api.delete_collection_namespaced_custom_object.side_effect = ApiException(status=403)
+  c.delete_released_sandbox("sb-0", "pod-0", claim_uid="uid-0")
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert c.core_api.delete_collection_namespaced_pod.call_count == 0
+  assert c.custom_api.delete_namespaced_custom_object.call_count == 1
+  assert c._released_sandbox_by_label is False
+  assert c._released_sandbox_disabled is False
+
+  # A failed Sandbox request leaves the pods alone.
+  c = _cluster_with_mock_apis()
+  c.custom_api.get_namespaced_custom_object.return_value = _labelled("uid-0")
+  c.custom_api.delete_collection_namespaced_custom_object.side_effect = ApiException(status=500)
+  c.delete_released_sandbox("sb-0", "pod-0", claim_uid="uid-0")
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert c.core_api.delete_collection_namespaced_pod.call_count == 0
+  assert c.core_api.delete_namespaced_pod.call_count == 0
+
+
+def test_batch_handle_passes_its_claim_uid_to_the_released_sandbox_delete():
+  calls: list[tuple] = []
+  cluster = types.SimpleNamespace(
+      delete_released_sandbox=lambda sb, pod, **kw: calls.append((sb, pod, kw)))
+  handle = types.SimpleNamespace(
+      _cluster=cluster, sandbox_id="sb-1", pod_name="pod-1",
+      _batch_claim=types.SimpleNamespace(member=types.SimpleNamespace(claim_uid="uid-1")))
+  SandboxHandle.delete_released_sandbox(handle)
+  handle._batch_claim = types.SimpleNamespace(member=types.SimpleNamespace(claim_uid=None))
+  SandboxHandle.delete_released_sandbox(handle)
+  assert calls == [("sb-1", "pod-1", {"claim_uid": "uid-1"}), ("sb-1", "pod-1", {})]

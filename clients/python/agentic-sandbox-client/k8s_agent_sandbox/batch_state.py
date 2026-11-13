@@ -163,6 +163,7 @@ def derive_member(claim_obj: dict[str, Any]) -> Member:
 
     return Member(
         claim_name=metadata.get("name", ""),
+        claim_uid=metadata.get("uid") or None,
         sandbox_name=sandbox_name,
         warmpool=(spec.get("warmPoolRef") or {}).get("name", ""),
         pod_ips=() if terminating else tuple(sandbox_status.get("podIPs") or []),

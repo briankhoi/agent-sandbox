@@ -462,6 +462,8 @@ class Member(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     claim_name: str
+    # The claim's UID once the watch has seen it. The controller labels the claim's pod with it.
+    claim_uid: str | None = None
     sandbox_name: str | None = None
     warmpool: str  # The group this member belongs to.
     pod_ips: tuple[str, ...] = ()

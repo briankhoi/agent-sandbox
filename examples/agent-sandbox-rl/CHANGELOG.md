@@ -10,9 +10,12 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
   `Cluster.delete_released_sandbox` runs after a batch claim's delete has succeeded
   (per-member release, bulk `release_all`, and teardown once each batch's claims are
   deleted) so finished pods free their nodes at the fleet's release rate instead of the
-  garbage collector's. Best effort and in the background: it needs `delete` on
-  `sandboxes` and `pods`, turns itself off on the first 403 or after repeated
-  connection failures, and never runs in `per_claim` mode.
+  garbage collector's. Releases are grouped and deleted by the claim UID label
+  (`Member.claim_uid`), two deletecollection requests per 50 releases, falling back
+  to two deletes per release. Best effort and in the background: it needs `delete`
+  (and `deletecollection` for grouping) on `sandboxes` and `pods`, turns itself off
+  on the first 403 or after repeated connection failures, and never runs in
+  `per_claim` mode.
 - **Async exec reconnects when its connection was never established.** A burst
   opens one connection per exec; one whose handshake is lost now fails after 10 s
   instead of aiohttp's 30 s and is tried up to 3 times. The command is only sent

@@ -859,7 +859,12 @@ class SandboxHandle:
     """
     # Cluster doubles in tests and custom registries may not implement it.
     delete_released = getattr(self._cluster, "delete_released_sandbox", None)
-    if callable(delete_released):
+    if not callable(delete_released):
+      return
+    claim_uid = getattr(getattr(self._batch_claim, "member", None), "claim_uid", None)
+    if isinstance(claim_uid, str) and claim_uid:
+      delete_released(self.sandbox_id, self.pod_name, claim_uid=claim_uid)
+    else:
       delete_released(self.sandbox_id, self.pod_name)
 
   def finalize_bulk_batch_release(self, *, claim_deleted: bool = True) -> None:
