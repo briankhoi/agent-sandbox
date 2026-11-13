@@ -59,6 +59,104 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("agent_sandbox_rl.batch_claims")
 
+# A waiter stops waiting for a slot once no acquire has finished for this long.
+# Warm claims bind every few milliseconds, so only a pool that is cold-starting
+# or failing goes this long without one, and holding its creates back would
+# just delay them.
+_UNBOUND_WINDOW_STALL_SECONDS = 0.5
+
+
+class _UnboundClaimWindow:
+  """Bounds the claims of one cluster that are created but not yet Ready.
+
+  The controller waits for a warm candidate only while a claim is younger than
+  its warm-candidate grace period (2 s by default, counted from the claim's
+  creation). A burst creates claims faster than the controller binds them, so
+  the last ones are older than that when they are reconciled, and one that
+  finds the pool's last Ready sandboxes held by other reconciles is started
+  cold beside them. Holding a create back until earlier claims are bound keeps
+  every claim young when the controller reaches it.
+
+  Each acquire holds one slot from before its create until it returns or
+  raises. ``enter``/``exit`` serve threads and ``aenter``/``exit`` an event
+  loop; one window is only ever used by one of the two.
+  """
+
+  def __init__(self, limit: int, *, stall_seconds: float | None = None,
+               clock: Any = time.monotonic) -> None:
+    self._limit = limit
+    self._stall = _UNBOUND_WINDOW_STALL_SECONDS if stall_seconds is None else stall_seconds
+    self._clock = clock
+    self._cond = threading.Condition()
+    self._held = 0
+    self._last_exit = clock()
+    self._async_waiters: list[asyncio.Future[None]] = []
+
+  def _try_take(self, waiting_since: float) -> float:
+    """Takes a slot and returns 0, or returns how long to wait. Requires ``_cond``."""
+    now = self._clock()
+    idle_since = max(self._last_exit, waiting_since)
+    if self._held < self._limit or now - idle_since >= self._stall:
+      self._held += 1
+      return 0.0
+    return self._stall - (now - idle_since)
+
+  def enter(self) -> None:
+    with self._cond:
+      waiting_since = self._clock()
+      while (wait := self._try_take(waiting_since)) > 0:
+        self._cond.wait(wait)
+
+  async def aenter(self) -> None:
+    waiting_since = self._clock()
+    while True:
+      with self._cond:
+        wait = self._try_take(waiting_since)
+        if wait <= 0:
+          return
+        woken: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._async_waiters.append(woken)
+      try:
+        await asyncio.wait_for(asyncio.shield(woken), wait)
+      except asyncio.TimeoutError:
+        pass
+      except asyncio.CancelledError:
+        with self._cond:
+          passed_on = woken.done() and not woken.cancelled()
+        if passed_on:
+          # exit() spent its wake-up on this waiter; hand it to the next one.
+          self._wake_one()
+        raise
+      finally:
+        with self._cond:
+          if woken in self._async_waiters:
+            self._async_waiters.remove(woken)
+
+  def _wake_one(self) -> None:
+    with self._cond:
+      self._cond.notify()
+      woken = self._async_waiters.pop(0) if self._async_waiters else None
+    if woken is not None:
+      def _set(f: asyncio.Future[None] = woken) -> None:
+        if not f.done():
+          f.set_result(None)
+      try:
+        woken.get_loop().call_soon_threadsafe(_set)
+      except RuntimeError:
+        # The waiter's loop is closed, so nothing is waiting on it.
+        pass
+
+  def exit(self) -> None:
+    with self._cond:
+      self._held -= 1
+      self._last_exit = self._clock()
+    self._wake_one()
+
+  def held(self) -> int:
+    with self._cond:
+      return self._held
+
+
 _RELEASED_MEMBER_RE = re.compile(
     r"(?:acquired member|while acquiring|for claim|batch lost) '([^']+)'"
 )
@@ -128,6 +226,7 @@ class BatchClaims:
     self._live: dict[str, SandboxBatch] = {}
     self._watchdogs: dict[str, BatchWatchdog] = {}
     self._verdicts: dict[tuple[str, str], StartVerdict] = {}
+    self._unbound_windows: dict[str, _UnboundClaimWindow] = {}
     # Every batch opened, including ones replaced after an error, so teardown
     # releases their remaining claims and Leases.
     self._opened: list[SandboxBatch] = []
@@ -140,6 +239,16 @@ class BatchClaims:
     """Lets acquires open batches again after `release_all`, for a new setup()."""
     with self._lock:
       self._closed = False
+
+  def _unbound_window(self, cluster_name: str) -> _UnboundClaimWindow | None:
+    limit = self._settings.max_unbound_claims
+    if limit is None:
+      return None
+    with self._lock:
+      window = self._unbound_windows.get(cluster_name)
+      if window is None:
+        window = self._unbound_windows[cluster_name] = _UnboundClaimWindow(limit)
+      return window
 
   def _record_verdict(
       self, cluster_name: str, claim_name: str, verdict: StartVerdict
@@ -359,24 +468,31 @@ class BatchClaims:
     Raises ``FleetError`` once `release_all` has run.
     """
     batch = self._batch_for(cluster, pool)
-    started = time.monotonic()
-    with self._lock:
-      wd = self._watchdogs.get(cluster.name)
-      if wd is not None and wd.batch is not batch:
-        wd = None
-    if wd is not None:
-      wd.enter_acquire(started)
-    acquired_claim: str | None = None
+    window = self._unbound_window(cluster.name)
+    if window is not None:
+      window.enter()
     try:
-      member = batch.acquire(
-          pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
-      acquired_claim = member.claim_name
-    except BaseException as exc:
-      acquired_claim = extract_batch_claim_name(exc)
-      raise
-    finally:
+      started = time.monotonic()
+      with self._lock:
+        wd = self._watchdogs.get(cluster.name)
+        if wd is not None and wd.batch is not batch:
+          wd = None
       if wd is not None:
-        wd.exit_acquire(acquired_claim)
+        wd.enter_acquire(started)
+      acquired_claim: str | None = None
+      try:
+        member = batch.acquire(
+            pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
+        acquired_claim = member.claim_name
+      except BaseException as exc:
+        acquired_claim = extract_batch_claim_name(exc)
+        raise
+      finally:
+        if wd is not None:
+          wd.exit_acquire(acquired_claim)
+    finally:
+      if window is not None:
+        window.exit()
     # construct_sandbox_claim_lifecycle_spec formats shutdownTime to whole
     # seconds via strftime, truncating up to almost 1 s of microseconds.
     expires_at = (started + self._ready_timeout + self._settings.work_budget
@@ -624,6 +740,7 @@ class AsyncBatchClaims:
     self._live: dict[str, tuple[Any, asyncio.AbstractEventLoop]] = {}
     self._watchdogs: dict[str, BatchWatchdog] = {}
     self._verdicts: dict[tuple[str, str], StartVerdict] = {}
+    self._unbound_windows: dict[str, _UnboundClaimWindow] = {}
     self._opened: list[tuple["Cluster", Any, asyncio.AbstractEventLoop, threading.Thread]] = []
     self._closed = False
     self._epoch: int = 0
@@ -636,6 +753,16 @@ class AsyncBatchClaims:
     with self._lock:
       self._closed = True
       self._epoch += 1
+
+  def _unbound_window(self, cluster_name: str) -> _UnboundClaimWindow | None:
+    limit = self._settings.max_unbound_claims
+    if limit is None:
+      return None
+    with self._lock:
+      window = self._unbound_windows.get(cluster_name)
+      if window is None:
+        window = self._unbound_windows[cluster_name] = _UnboundClaimWindow(limit)
+      return window
 
   def _record_verdict(
       self, cluster_name: str, claim_name: str, verdict: StartVerdict
@@ -951,24 +1078,31 @@ class AsyncBatchClaims:
     batch = await self._batch_for(cluster, pool)
     loop = asyncio.get_running_loop()
     loop_thread = threading.current_thread()
-    started = time.monotonic()
-    with self._lock:
-      wd = self._watchdogs.get(cluster.name)
-      if wd is not None and wd.batch is not batch:
-        wd = None
-    if wd is not None:
-      wd.enter_acquire(started)
-    acquired_claim: str | None = None
+    window = self._unbound_window(cluster.name)
+    if window is not None:
+      await window.aenter()
     try:
-      member = await batch.acquire(
-          pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
-      acquired_claim = member.claim_name
-    except BaseException as exc:
-      acquired_claim = extract_batch_claim_name(exc)
-      raise
-    finally:
+      started = time.monotonic()
+      with self._lock:
+        wd = self._watchdogs.get(cluster.name)
+        if wd is not None and wd.batch is not batch:
+          wd = None
       if wd is not None:
-        wd.exit_acquire(acquired_claim)
+        wd.enter_acquire(started)
+      acquired_claim: str | None = None
+      try:
+        member = await batch.acquire(
+            pool, timeout=self._ready_timeout, pod_annotations=pod_annotations)
+        acquired_claim = member.claim_name
+      except BaseException as exc:
+        acquired_claim = extract_batch_claim_name(exc)
+        raise
+      finally:
+        if wd is not None:
+          wd.exit_acquire(acquired_claim)
+    finally:
+      if window is not None:
+        window.exit()
     expires_at = (started + self._ready_timeout + self._settings.work_budget
                   + BATCH_SHUTDOWN_MARGIN_SECONDS - 1.0)
     return AsyncBatchClaim(

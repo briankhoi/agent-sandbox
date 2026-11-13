@@ -3767,3 +3767,182 @@ async def test_async_release_does_not_bulk_release_while_an_acquire_is_in_flight
   assert b.release_members_calls == 1
   assert af.handles() == [] and af._fleet._claims_reserved == 0
   await af.aclose()
+
+
+def _unbound_member(name):
+  return Member(claim_name=name, warmpool="p", state=MemberState.READY)
+
+
+def test_unbound_window_admits_up_to_limit_then_on_exit_or_stall():
+  from agent_sandbox_rl.batch_claims import _UnboundClaimWindow
+  now = [100.0]
+  w = _UnboundClaimWindow(2, stall_seconds=0.5, clock=lambda: now[0])
+  with w._cond:
+    assert w._try_take(now[0]) == 0.0 and w._try_take(now[0]) == 0.0
+    # Full, and nothing has stalled yet: the caller is told how long to wait.
+    assert w._try_take(now[0]) == pytest.approx(0.5)
+  now[0] += 0.3
+  w.exit()
+  with w._cond:
+    assert w._try_take(100.0) == 0.0
+    # The exit 0.3 s in restarts the stall clock for whoever is still waiting.
+    assert w._try_take(100.0) == pytest.approx(0.5)
+    now[0] += 0.5
+    # No acquire finished for 0.5 s (a cold or failing pool): stop holding back.
+    assert w._try_take(100.0) == 0.0
+  assert w.held() == 3
+
+
+def test_batch_acquire_holds_creates_while_max_unbound_claims_are_not_ready(monkeypatch):
+  monkeypatch.setattr("agent_sandbox_rl.batch_claims._UNBOUND_WINDOW_STALL_SECONDS", 60.0)
+  claims = BatchClaims(BatchClaimConfig(max_unbound_claims=2), ready_timeout=60, labels={})
+  entered = threading.Semaphore(0)
+  gates: list[threading.Event] = []
+  lock = threading.Lock()
+
+  class Batch:
+    batch_id = "b"
+
+    def acquire(self, warmpool, timeout=None, *, pod_annotations=None):
+      gate = threading.Event()
+      with lock:
+        gates.append(gate)
+        n = len(gates)
+      entered.release()
+      assert gate.wait(10)
+      if n == 1:
+        raise BatchError("create failed")
+      return _unbound_member(f"c-{n}")
+
+  batch = Batch()
+  monkeypatch.setattr(claims, "_batch_for", lambda cluster, pool: batch)
+  cluster = types.SimpleNamespace(name="solo")
+  with ThreadPoolExecutor(4) as ex:
+    futs = [ex.submit(claims.acquire, cluster, "p") for _ in range(4)]
+    assert entered.acquire(timeout=5) and entered.acquire(timeout=5)
+    # Two claims are created and not Ready, so the other two creates wait.
+    assert not entered.acquire(timeout=0.2)
+    assert claims._unbound_window("solo").held() == 2
+    gates[0].set()  # a failed acquire frees its slot like a Ready one
+    assert entered.acquire(timeout=5)
+    assert not entered.acquire(timeout=0.2)
+    gates[1].set()
+    assert entered.acquire(timeout=5)
+    gates[2].set()
+    gates[3].set()
+    results = [f.exception() or f.result().member.claim_name for f in futs]
+  assert sum(isinstance(r, BatchError) for r in results) == 1
+  assert sorted(r for r in results if isinstance(r, str)) == ["c-2", "c-3", "c-4"]
+  assert claims._unbound_window("solo").held() == 0
+
+
+def test_batch_acquire_stops_holding_creates_when_nothing_becomes_ready(monkeypatch):
+  monkeypatch.setattr("agent_sandbox_rl.batch_claims._UNBOUND_WINDOW_STALL_SECONDS", 0.05)
+  claims = BatchClaims(BatchClaimConfig(max_unbound_claims=1), ready_timeout=60, labels={})
+  entered = threading.Semaphore(0)
+  done = threading.Event()
+
+  class Batch:
+    batch_id = "b"
+
+    def acquire(self, warmpool, timeout=None, *, pod_annotations=None):
+      entered.release()
+      assert done.wait(10)
+      return _unbound_member("c")
+
+  batch = Batch()
+  monkeypatch.setattr(claims, "_batch_for", lambda cluster, pool: batch)
+  cluster = types.SimpleNamespace(name="solo")
+  with ThreadPoolExecutor(3) as ex:
+    futs = [ex.submit(claims.acquire, cluster, "p") for _ in range(3)]
+    # The first claim never becomes Ready (a cold pool); the rest must still be created.
+    assert all(entered.acquire(timeout=5) for _ in range(3))
+    done.set()
+    for f in futs:
+      f.result()
+
+
+def test_batch_acquire_is_unbounded_by_default(monkeypatch):
+  assert BatchClaimConfig().max_unbound_claims is None
+  claims = BatchClaims(BatchClaimConfig(), ready_timeout=60, labels={})
+  assert claims._unbound_window("solo") is None
+  with pytest.raises(ValidationError):
+    BatchClaimConfig(max_unbound_claims=0)
+
+
+async def test_async_batch_acquire_holds_creates_while_max_unbound_claims_are_not_ready(monkeypatch):
+  from agent_sandbox_rl.batch_claims import AsyncBatchClaims
+  monkeypatch.setattr("agent_sandbox_rl.batch_claims._UNBOUND_WINDOW_STALL_SECONDS", 60.0)
+  claims = AsyncBatchClaims(BatchClaimConfig(max_unbound_claims=2), ready_timeout=60, labels={})
+  gates: list[asyncio.Event] = []
+
+  class Batch:
+    batch_id = "b"
+
+    async def acquire(self, warmpool, timeout=None, *, pod_annotations=None):
+      gate = asyncio.Event()
+      gates.append(gate)
+      n = len(gates)
+      await gate.wait()
+      if n == 1:
+        raise BatchError("create failed")
+      return _unbound_member(f"c-{n}")
+
+  batch = Batch()
+
+  async def batch_for(cluster, pool):
+    return batch
+
+  monkeypatch.setattr(claims, "_batch_for", batch_for)
+  cluster = types.SimpleNamespace(name="solo")
+  tasks = [asyncio.ensure_future(claims.acquire(cluster, "p")) for _ in range(5)]
+  await asyncio.sleep(0.05)
+  assert len(gates) == 2 and claims._unbound_window("solo").held() == 2
+  # A waiter cancelled before it gets a slot neither takes one nor swallows a wake-up.
+  tasks[4].cancel()
+  await asyncio.sleep(0)
+  gates[0].set()
+  await asyncio.sleep(0.05)
+  assert len(gates) == 3
+  gates[1].set()
+  await asyncio.sleep(0.05)
+  assert len(gates) == 4
+  gates[2].set()
+  gates[3].set()
+  results = await asyncio.gather(*tasks, return_exceptions=True)
+  assert isinstance(results[0], BatchError) and isinstance(results[4], asyncio.CancelledError)
+  assert sorted(r.member.claim_name for r in results[1:4]) == ["c-2", "c-3", "c-4"]
+  assert claims._unbound_window("solo").held() == 0
+
+
+async def test_async_batch_acquire_stops_holding_creates_when_nothing_becomes_ready(monkeypatch):
+  from agent_sandbox_rl.batch_claims import AsyncBatchClaims
+  monkeypatch.setattr("agent_sandbox_rl.batch_claims._UNBOUND_WINDOW_STALL_SECONDS", 0.05)
+  claims = AsyncBatchClaims(BatchClaimConfig(max_unbound_claims=1), ready_timeout=60, labels={})
+  entered = 0
+  done = asyncio.Event()
+
+  class Batch:
+    batch_id = "b"
+
+    async def acquire(self, warmpool, timeout=None, *, pod_annotations=None):
+      nonlocal entered
+      entered += 1
+      await done.wait()
+      return _unbound_member("c")
+
+  batch = Batch()
+
+  async def batch_for(cluster, pool):
+    return batch
+
+  monkeypatch.setattr(claims, "_batch_for", batch_for)
+  cluster = types.SimpleNamespace(name="solo")
+  tasks = [asyncio.ensure_future(claims.acquire(cluster, "p")) for _ in range(3)]
+  for _ in range(100):
+    if entered == 3:
+      break
+    await asyncio.sleep(0.02)
+  assert entered == 3
+  done.set()
+  await asyncio.gather(*tasks)
