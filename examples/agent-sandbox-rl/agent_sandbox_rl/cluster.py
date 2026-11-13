@@ -52,6 +52,13 @@ RELEASED_SANDBOX_DELETE_TIMEOUT = (3, 10)
 # not look like a lost connection.
 RELEASED_SANDBOX_MAX_ERRORS = 2 * RELEASED_SANDBOX_DELETE_WORKERS
 RELEASED_SANDBOX_PAUSE_SECONDS = 30.0
+# The controller's label for the claim that owns a Sandbox and its pod.
+CLAIM_UID_LABEL = "agents.x-k8s.io/claim-uid"
+# Releases deleted by one pair of deletecollection requests. Each UID adds 37
+# characters to the label selector, so this keeps the request line near 2 KB.
+RELEASED_SANDBOX_BATCH_SIZE = 50
+RELEASED_SANDBOX_BATCH_WINDOW_SECONDS = 0.1
+RELEASED_SANDBOX_BATCH_TIMEOUT = (3, 30)
 
 # aiohttp gives a new connection 30 s to be established. A burst opens one
 # connection per exec, and the rare one whose handshake is lost would hold its
@@ -84,6 +91,17 @@ def _skip_unused_trust_env(session) -> None:
   """
   if getattr(session, "_trust_env", False) is True and not _env_configures_proxy_or_netrc():
     session._trust_env = False
+
+
+def _finish_unread_response(resp) -> None:
+  """Hand a ``_preload_content=False`` response's connection back to the pool.
+
+  An unread body would make urllib3 discard the connection instead of reusing it.
+  """
+  for finish in ("drain_conn", "release_conn"):
+    fn = getattr(resp, finish, None)
+    if callable(fn):
+      fn()
 
 
 async def build_async_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000):
@@ -486,6 +504,10 @@ class Cluster:
     self._released_sandbox_errors = 0
     self._released_sandbox_paused_until = 0.0
     self._released_sandbox_workers = RELEASED_SANDBOX_DELETE_WORKERS
+    self._released_sandbox_pending: list[tuple[str, str | None, str]] = []
+    self._released_sandbox_flush_queued = False
+    # None until the first release shows whether Sandboxes carry the claim UID label.
+    self._released_sandbox_by_label: bool | None = None
     self.tracer_config = None                 # optional SDK SandboxTracerConfig
     # Placement / capacity bookkeeping. Mutated from parallel claim workers, so
     # guard with a per-cluster lock and only touch via the methods below.
@@ -849,7 +871,8 @@ class Cluster:
       self._released_sandbox_workers = max(
           1, min(RELEASED_SANDBOX_DELETE_WORKERS, int(max_in_flight)))
 
-  def delete_released_sandbox(self, sandbox_name: str | None, pod_name: str | None) -> None:
+  def delete_released_sandbox(self, sandbox_name: str | None, pod_name: str | None, *,
+                              claim_uid: str | None = None) -> None:
     """Delete a released batch claim's Sandbox and pod now, in the background.
 
     Deleting a claim leaves its Sandbox, and then the Sandbox's pod, to the cluster's
@@ -857,6 +880,13 @@ class Cluster:
     releases hundreds of claims per step kept finished pods on the nodes and the warm
     pools' replacement pods waited behind them for minutes. Deleting both directly
     frees the nodes as fast as the fleet releases.
+
+    With ``claim_uid``, releases are collected for a moment and deleted together by
+    the claim UID label the controller puts on a claim's Sandbox and pod: two
+    deletecollection requests for up to `RELEASED_SANDBOX_BATCH_SIZE` releases
+    instead of two requests each. Sending two requests per release from these
+    threads cost about as much interpreter time as claiming did, and slowed the
+    event loop while the next claims were going out.
 
     Call it only after the claim is gone: a live claim whose Sandbox disappears adopts
     another warm sandbox. Best effort: the garbage collector still removes whatever
@@ -868,16 +898,90 @@ class Cluster:
     """
     if not sandbox_name or not self._released_sandbox_deletes_enabled():
       return
+    flush = False
     with self._released_sandbox_lock:
       if self._released_sandbox_pool is None:
         self._released_sandbox_pool = ThreadPoolExecutor(
             max_workers=self._released_sandbox_workers,
             thread_name_prefix=f"asrl-reclaim-{self.name}")
       pool = self._released_sandbox_pool
+      by_label = bool(claim_uid) and self._released_sandbox_by_label is not False
+      if by_label:
+        self._released_sandbox_pending.append((sandbox_name, pod_name, claim_uid))
+        flush = not self._released_sandbox_flush_queued
+        self._released_sandbox_flush_queued = True
     try:
-      pool.submit(self._delete_released_sandbox, sandbox_name, pod_name)
+      if not by_label:
+        pool.submit(self._delete_released_sandbox, sandbox_name, pod_name)
+      elif flush:
+        pool.submit(self._flush_released_sandboxes)
     except RuntimeError:  # interpreter shutting down; garbage collection takes over
       pass
+
+  def _flush_released_sandboxes(self) -> None:
+    # Releases of one step or one finished window arrive within milliseconds of
+    # each other; waiting this long lets them share requests.
+    time.sleep(RELEASED_SANDBOX_BATCH_WINDOW_SECONDS)
+    while True:
+      with self._released_sandbox_lock:
+        batch = self._released_sandbox_pending[:RELEASED_SANDBOX_BATCH_SIZE]
+        del self._released_sandbox_pending[:RELEASED_SANDBOX_BATCH_SIZE]
+        if not batch:
+          self._released_sandbox_flush_queued = False
+          return
+      self._delete_released_batch(batch)
+
+  def _delete_released_batch(self, batch: list[tuple[str, str | None, str]]) -> None:
+    if not self._released_sandbox_deletes_enabled():
+      return
+    if self._released_sandbox_by_label is None:
+      self._released_sandbox_by_label = self._sandbox_has_claim_uid_label(batch[0])
+    if not self._released_sandbox_by_label:
+      for sandbox_name, pod_name, _uid in batch:
+        self._delete_released_sandbox(sandbox_name, pod_name)
+      return
+    selector = f"{CLAIM_UID_LABEL} in ({','.join(uid for _sb, _pod, uid in batch)})"
+    try:
+      resp = self.custom_api.delete_collection_namespaced_custom_object(
+          group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
+          namespace=self.namespace, plural=constants.SANDBOXES_PLURAL,
+          label_selector=selector, _preload_content=False,
+          _request_timeout=RELEASED_SANDBOX_BATCH_TIMEOUT)
+      _finish_unread_response(resp)
+      resp = self.core_api.delete_collection_namespaced_pod(
+          self.namespace, label_selector=selector, grace_period_seconds=0,
+          _preload_content=False, _request_timeout=RELEASED_SANDBOX_BATCH_TIMEOUT)
+      _finish_unread_response(resp)
+    except Exception as e:  # noqa: BLE001 - best effort; garbage collection still runs
+      if getattr(e, "status", None) == 403:
+        # No deletecollection access; plain delete may still be allowed.
+        self._released_sandbox_by_label = False
+        for sandbox_name, pod_name, _uid in batch:
+          self._delete_released_sandbox(sandbox_name, pod_name)
+        return
+      # After a failed Sandbox request the pods are not touched: the Sandboxes may
+      # still exist, and their controller replaces a missing pod.
+      self._released_sandbox_delete_failed("released sandbox batch", e)
+      return
+    self._released_sandbox_reached_server()
+
+  def _sandbox_has_claim_uid_label(self, release: tuple[str, str | None, str]) -> bool | None:
+    """Whether this cluster's controller labels a claim's Sandbox with the claim UID.
+
+    Deleting by that label is only safe if the Sandboxes carry it: otherwise the
+    request matches none, the pods are deleted by label, and each surviving
+    Sandbox starts a replacement pod. Returns None when the Sandbox could not be read.
+    """
+    sandbox_name, _pod_name, claim_uid = release
+    try:
+      sandbox = self.custom_api.get_namespaced_custom_object(
+          group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
+          namespace=self.namespace, plural=constants.SANDBOXES_PLURAL, name=sandbox_name,
+          _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT)
+    except Exception:  # noqa: BLE001 - undecided; this batch is deleted by name
+      return None
+    labels = ((sandbox or {}).get("metadata") or {}).get("labels") or {}
+    return labels.get(CLAIM_UID_LABEL) == claim_uid
 
   def _released_sandbox_deletes_enabled(self) -> bool:
     return (not self._released_sandbox_disabled
@@ -887,10 +991,10 @@ class Cluster:
     if not self._released_sandbox_deletes_enabled():
       return
     try:
-      self.custom_api.delete_namespaced_custom_object(
+      _finish_unread_response(self.custom_api.delete_namespaced_custom_object(
           group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
           namespace=self.namespace, plural=constants.SANDBOXES_PLURAL, name=sandbox_name,
-          _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT)
+          _preload_content=False, _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT))
     except Exception as e:  # noqa: BLE001 - best effort; garbage collection still runs
       if not self._released_sandbox_delete_failed("Sandbox", e):
         # The Sandbox may still exist, and its controller replaces a missing pod.
@@ -905,11 +1009,7 @@ class Cluster:
       resp = self.core_api.delete_namespaced_pod(
           pod_name, self.namespace, grace_period_seconds=0,
           _preload_content=False, _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT)
-      # An unread body would make urllib3 discard the connection instead of reusing it.
-      for finish in ("drain_conn", "release_conn"):
-        fn = getattr(resp, finish, None)
-        if callable(fn):
-          fn()
+      _finish_unread_response(resp)
     except Exception as e:  # noqa: BLE001 - best effort; garbage collection still runs
       self._released_sandbox_delete_failed("pod", e)
     else:
