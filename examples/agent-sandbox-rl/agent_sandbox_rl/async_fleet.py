@@ -985,190 +985,38 @@ class AsyncSandboxFleet:
       return await result
     return result
 
-  async def _process_parallel(self, tasks, process_fn, concurrency, *, _defer_tail: bool = True):
+  async def _process_parallel(self, tasks, process_fn, concurrency):
     total = len(tasks)
     sem = asyncio.Semaphore(max(1, concurrency))
     results = [None] * total
     obs = self._fleet._obs
-    fl = self._fleet
-    can_defer_tail = (
-        _defer_tail
-        and self._async_batch_claims is not None
-        and fl.config.max_live_sandboxes is None
-        and total >= 2
-        and not self.handles()
-        and "release" not in self.__dict__
-        and type(self).release is AsyncSandboxFleet.release
-        and "release_all" not in self.__dict__
-        and type(self).release_all is AsyncSandboxFleet.release_all
-        and "release" not in fl.__dict__
-        and type(fl).release is SandboxFleet.release
-        and "release_all" not in fl.__dict__
-        and type(fl).release_all is SandboxFleet.release_all
-    )
-    pending_acquires = total
-    pending_acquires_by_image: collections.Counter[str] = collections.Counter(
-        t.image for t in tasks
-    )
-    deferred_tail: list[tuple[int, str, str, float, SandboxHandle]] = []
-
-    async def _release_deferred_tail(*, capture_errors: bool) -> None:
-      if not deferred_tail:
-        return
-      cur_loop = asyncio.get_running_loop()
-      items = list(deferred_tail)
-      deferred_tail.clear()
-      item_by_hid = {id(h): (idx, cl, fm, start_t, h) for idx, cl, fm, start_t, h in items}
-      with fl._lock:
-        active_by_batch: dict[int, set[int]] = {}
-        for live_h in fl._handles.values():
-          if live_h._batch_claim is not None:
-            active_by_batch.setdefault(id(live_h._batch_claim.batch), set()).add(id(live_h))
-        acquire_in_flight = fl._acquire_in_flight_locked()
-
-      by_batch: dict[int, tuple[object, str, list[SandboxHandle]]] = {}
-      remaining: list[SandboxHandle] = []
-      for _idx, cl, _fm, _st, h in items:
-        bc = h._batch_claim
-        if (
-            isinstance(bc, AsyncBatchClaim)
-            and (bc._loop is None or bc._loop is cur_loop)
-            and _batch_async_session_open(bc.batch)
-            and "release" not in h.__dict__
-            and type(h).release is SandboxHandle.release
-            and "release_member" not in getattr(bc.batch, "__dict__", {})
-            and bc.batch.err() is None
-            and callable(getattr(bc.batch, "release_members", None))
-            and active_by_batch.get(id(bc.batch), set()).issubset(item_by_hid.keys())
-            and not acquire_in_flight
-        ):
-          key = id(bc.batch)
-          if key not in by_batch:
-            by_batch[key] = (bc.batch, cl, [])
-          by_batch[key][2].append(h)
-        else:
-          remaining.append(h)
-
-      bulk_groups: list[tuple[object, str, list[SandboxHandle]]] = []
-      for _key, (b_obj, cname, gh) in by_batch.items():
-        if len(gh) >= 2:
-          bulk_groups.append((b_obj, cname, gh))
-        else:
-          remaining.extend(gh)
-
-      rel_errors: dict[int, Exception] = {}
-
-      async def _rel_bulk(b_obj, cname: str, gh: list[SandboxHandle]) -> None:
-        with fl._lock:
-          claimed = [h for h in gh if fl._handles.pop(id(h), None) is not None]
-        if not claimed:
-          return
-        try:
-          with obs.phase("release", cluster=cname):
-            await getattr(b_obj, "release_members")()
-        except RuntimeError as e:
-          with fl._lock:
-            for h in claimed:
-              fl._handles[id(h)] = h
-          if not _batch_async_session_open(b_obj):
-            await asyncio.gather(
-                *(_rel_one(h) for h in claimed), return_exceptions=not capture_errors
-            )
-            return
-          if not capture_errors:
-            raise
-          for h in claimed:
-            rel_errors[id(h)] = e
-          return
-        except Exception as e:
-          with fl._lock:
-            for h in claimed:
-              fl._handles[id(h)] = h
-          if not capture_errors:
-            raise
-          for h in claimed:
-            rel_errors[id(h)] = e
-          return
-        except BaseException:
-          with fl._lock:
-            for h in claimed:
-              fl._handles[id(h)] = h
-          raise
-        await self._afinalize_claimed_batch_handles(claimed)
-
-      async def _rel_one(h: SandboxHandle) -> None:
-        try:
-          await self.release(h)
-        except Exception as e:
-          if not capture_errors:
-            raise
-          rel_errors[id(h)] = e
-
-      coros = [_rel_bulk(b_obj, cname, gh) for b_obj, cname, gh in bulk_groups]
-      coros.extend(_rel_one(h) for h in remaining)
-      await asyncio.gather(*coros, return_exceptions=not capture_errors)
-
-      if capture_errors:
-        now = time.monotonic()
-        for idx, cl, fm, start_t, h in items:
-          err = rel_errors.get(id(h))
-          if err is not None:
-            logger.error("task %s release failed: %s", tasks[idx].id, err)
-            results[idx] = err
-            obs.task_done(cl, fm, "error", now - start_t)
-          else:
-            obs.task_done(cl, fm, "ok", now - start_t)
 
     async def _one(i, task):
-      nonlocal pending_acquires
       fam = repo_family(task)
       t0 = time.monotonic()
       status = "ok"
       cluster = "-"
-      deferred = False
       async with sem:
         try:
-          try:
-            handle = await self.acquire(task)
-          finally:
-            pending_acquires -= 1
-            pending_acquires_by_image[task.image] -= 1
+          handle = await self.acquire(task)
           cluster = handle.cluster_name
-          task_failed = False
           try:
             with obs.phase("process", cluster=cluster, family=fam):
               results[i] = await self._call(process_fn, task, handle)
-          except BaseException:
-            task_failed = True
-            raise
           finally:
-            if (
-                not task_failed
-                and can_defer_tail
-                and pending_acquires <= 0
-                and pending_acquires_by_image[task.image] <= 0
-                and isinstance(handle._batch_claim, AsyncBatchClaim)
-                and _batch_async_session_open(handle._batch_claim.batch)
-            ):
-              deferred = True
-              deferred_tail.append((i, cluster, fam, t0, handle))
-            else:
-              await self.release(handle)
+            # Released as each task finishes, in batch claim mode too. Holding a wave's finished
+            # claims for one batch.release_members() made the wave wait for that delete after
+            # its last task (about 0.5 s for 500 claims), and kept finished sandboxes running
+            # until then.
+            await self.release(handle)
         except Exception as e:  # noqa: BLE001
           status = "error"
           logger.error("task %s failed: %s", task.id, e)
           results[i] = e
         finally:
-          if not deferred:
-            obs.task_done(cluster, fam, status, time.monotonic() - t0)
+          obs.task_done(cluster, fam, status, time.monotonic() - t0)
 
-    try:
-      await asyncio.gather(*(_one(i, t) for i, t in enumerate(tasks)))
-      if deferred_tail:
-        await _release_deferred_tail(capture_errors=True)
-    finally:
-      if deferred_tail:
-        await asyncio.gather(_release_deferred_tail(capture_errors=False), return_exceptions=True)
+    await asyncio.gather(*(_one(i, t) for i, t in enumerate(tasks)))
     return results
 
   def _is_default_executor(self, executor) -> bool:
@@ -1211,9 +1059,7 @@ class AsyncSandboxFleet:
         batch_pairs = [(i, t) for img in batch for (i, t) in by_image[img]]
         batch_tasks = [t for _i, t in batch_pairs]
         if default_exec and len(batch_tasks) <= 256:
-          batch_results = await self._process_parallel(
-              batch_tasks, process_fn, concurrency, _defer_tail=False
-          )
+          batch_results = await self._process_parallel(batch_tasks, process_fn, concurrency)
         else:
           batch_results = await executor(batch_tasks, process_fn, concurrency)
         for (i, _t), r in zip(batch_pairs, batch_results, strict=True):
@@ -1291,9 +1137,7 @@ class AsyncSandboxFleet:
         batch_pairs = [(i, t) for img in batch for (i, t) in by_image[img]]
         batch_tasks = [t for _i, t in batch_pairs]
         if default_exec and len(batch_tasks) <= 256:
-          batch_results = await self._process_parallel(
-              batch_tasks, process_fn, concurrency, _defer_tail=False
-          )
+          batch_results = await self._process_parallel(batch_tasks, process_fn, concurrency)
         else:
           batch_results = await executor(batch_tasks, process_fn, concurrency)
         for (i, _t), r in zip(batch_pairs, batch_results, strict=True):

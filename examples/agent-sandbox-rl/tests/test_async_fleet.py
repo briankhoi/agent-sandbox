@@ -551,9 +551,8 @@ async def test_process_parallel_releases_immediately_while_sibling_waits_in_acqu
 
   af.acquire = gated_acquire  # type: ignore[method-assign]
   tasks = [Task(id="t1", image="img:same"), Task(id="t2", image="img:same")]
-  # af.release is unpatched so can_defer_tail is True! With concurrency=4 >= len(tasks)=2,
-  # both tasks enter sem immediately; t1 MUST release immediately (while t2 is still blocked
-  # inside gated_acquire) so t2 unblocks, and then t2 can defer/release cleanly.
+  # With concurrency=4 >= len(tasks)=2, both tasks enter sem immediately; t1 MUST release
+  # immediately (while t2 is still blocked inside gated_acquire) so t2 unblocks.
   out = await asyncio.wait_for(
       af._process_parallel(tasks, lambda t, h: t.id, concurrency=4),
       timeout=2.0,
