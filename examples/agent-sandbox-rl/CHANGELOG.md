@@ -6,6 +6,13 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
 ## [0.1.0.dev0] — unreleased
 
 ### Added (batch claim mode)
+- **Batch releases delete the released claim's Sandbox and pod directly.**
+  `Cluster.delete_released_sandbox` runs after a batch claim's delete has succeeded
+  (per-member release, bulk `release_all`, and teardown once each batch's claims are
+  deleted) so finished pods free their nodes at the fleet's release rate instead of the
+  garbage collector's. Best effort and in the background: it needs `delete` on
+  `sandboxes` and `pods`, turns itself off on the first 403 or after repeated
+  connection failures, and never runs in `per_claim` mode.
 - **`FleetConfig.claim_mode="batch"` and `BatchClaimConfig` claim through one `SandboxBatch` per cluster.**
   `claim_mode` defaults to `"per_claim"`, leaving existing `create_sandbox` behavior
   unchanged (`constants.CLAIM_MODES`). In `"batch"` mode each fleet pre-opens one

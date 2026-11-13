@@ -2191,10 +2191,11 @@ class SandboxFleet:
       return False
     return True
 
-  def _finalize_claimed_batch_handles(self, claimed: list[SandboxHandle]) -> None:
+  def _finalize_claimed_batch_handles(self, claimed: list[SandboxHandle], *,
+                                      claim_deleted: bool = True) -> None:
     released_slots = 0
     for h in claimed:
-      h.finalize_bulk_batch_release()
+      h.finalize_bulk_batch_release(claim_deleted=claim_deleted)
       if not h._slot_released:
         self.registry.get(h.cluster_name).release_claim()
         released_slots += 1
@@ -2360,7 +2361,8 @@ class SandboxFleet:
         for h in claimed:
           assert h._batch_claim is not None
           deferred_by_batch.setdefault(id(h._batch_claim.batch), []).append(h)
-        self._finalize_claimed_batch_handles(claimed)
+        # Teardown deletes these claims afterwards, with each batch's release.
+        self._finalize_claimed_batch_handles(claimed, claim_deleted=False)
     err = self._release_handles_individually(individual)
     if err is not None:
       raise err
@@ -2508,6 +2510,10 @@ class SandboxFleet:
           failed_batches.update(self._batch_claims.release_all())
         if self._async_batch_claims is not None and not self._async_tearing_down:
           failed_batches.update(self._async_batch_claims.release_all_sync())
+        for bid, released_handles in deferred_by_batch.items():
+          if bid not in failed_batches:
+            for h in released_handles:
+              h.delete_released_sandbox()
         for bid, exc in failed_batches.items():
           failed_handles = deferred_by_batch.get(bid)
           if not failed_handles:
