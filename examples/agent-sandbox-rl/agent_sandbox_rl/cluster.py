@@ -508,6 +508,7 @@ class Cluster:
     self._released_sandbox_flush_queued = False
     # None until the first release shows whether Sandboxes carry the claim UID label.
     self._released_sandbox_by_label: bool | None = None
+    self._released_sandbox_api_objects = None
     self.tracer_config = None                 # optional SDK SandboxTracerConfig
     # Placement / capacity bookkeeping. Mutated from parallel claim workers, so
     # guard with a per-cluster lock and only touch via the methods below.
@@ -922,33 +923,50 @@ class Cluster:
     # Releases of one step or one finished window arrive within milliseconds of
     # each other; waiting this long lets them share requests.
     time.sleep(RELEASED_SANDBOX_BATCH_WINDOW_SECONDS)
-    while True:
+    try:
+      while True:
+        with self._released_sandbox_lock:
+          batch = self._released_sandbox_pending[:RELEASED_SANDBOX_BATCH_SIZE]
+          del self._released_sandbox_pending[:RELEASED_SANDBOX_BATCH_SIZE]
+          if not batch:
+            self._released_sandbox_flush_queued = False
+            return
+          pool = self._released_sandbox_pool
+        if self._released_sandbox_by_label is None:
+          by_label = self._sandbox_has_claim_uid_label(batch[0])
+          self._released_sandbox_by_label = by_label
+          if by_label is not None:
+            logger.debug("cluster %s: deleting released sandboxes %s", self.name,
+                         "by claim UID label" if by_label else "by name")
+        # Batches hold different claims, so they can run side by side; within a
+        # batch the Sandboxes still go before the pods.
+        try:
+          pool.submit(self._delete_released_batch, batch)
+        except RuntimeError:  # the pool is shutting down: finish on this thread
+          self._delete_released_batch(batch)
+    except BaseException:
+      # Without this the flag stays set and no later release starts a flusher.
       with self._released_sandbox_lock:
-        batch = self._released_sandbox_pending[:RELEASED_SANDBOX_BATCH_SIZE]
-        del self._released_sandbox_pending[:RELEASED_SANDBOX_BATCH_SIZE]
-        if not batch:
-          self._released_sandbox_flush_queued = False
-          return
-      self._delete_released_batch(batch)
+        self._released_sandbox_flush_queued = False
+      raise
 
   def _delete_released_batch(self, batch: list[tuple[str, str | None, str]]) -> None:
     if not self._released_sandbox_deletes_enabled():
       return
-    if self._released_sandbox_by_label is None:
-      self._released_sandbox_by_label = self._sandbox_has_claim_uid_label(batch[0])
     if not self._released_sandbox_by_label:
       for sandbox_name, pod_name, _uid in batch:
         self._delete_released_sandbox(sandbox_name, pod_name)
       return
+    custom_api, core_api = self._released_sandbox_apis()
     selector = f"{CLAIM_UID_LABEL} in ({','.join(uid for _sb, _pod, uid in batch)})"
     try:
-      resp = self.custom_api.delete_collection_namespaced_custom_object(
+      resp = custom_api.delete_collection_namespaced_custom_object(
           group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
           namespace=self.namespace, plural=constants.SANDBOXES_PLURAL,
           label_selector=selector, _preload_content=False,
           _request_timeout=RELEASED_SANDBOX_BATCH_TIMEOUT)
       _finish_unread_response(resp)
-      resp = self.core_api.delete_collection_namespaced_pod(
+      resp = core_api.delete_collection_namespaced_pod(
           self.namespace, label_selector=selector, grace_period_seconds=0,
           _preload_content=False, _request_timeout=RELEASED_SANDBOX_BATCH_TIMEOUT)
       _finish_unread_response(resp)
@@ -965,6 +983,26 @@ class Cluster:
       return
     self._released_sandbox_reached_server()
 
+  def _released_sandbox_apis(self):
+    """The API objects the background deletes use.
+
+    The kubernetes client re-sends a DELETE that timed out three more times. A
+    deletecollection the API server found slow should not be repeated, and a
+    by-name delete that is lost is left to the garbage collector, so these go
+    through a client that does not retry.
+    """
+    apis = self._released_sandbox_api_objects
+    if apis is None:
+      if self._injected_sync_api_client:
+        apis = (self.custom_api, self.core_api)
+      else:
+        configuration = copy.copy(self.api_client.configuration)
+        configuration.retries = False
+        no_retry = client.ApiClient(configuration)
+        apis = (client.CustomObjectsApi(no_retry), client.CoreV1Api(no_retry))
+      self._released_sandbox_api_objects = apis
+    return apis
+
   def _sandbox_has_claim_uid_label(self, release: tuple[str, str | None, str]) -> bool | None:
     """Whether this cluster's controller labels a claim's Sandbox with the claim UID.
 
@@ -974,7 +1012,7 @@ class Cluster:
     """
     sandbox_name, _pod_name, claim_uid = release
     try:
-      sandbox = self.custom_api.get_namespaced_custom_object(
+      sandbox = self._released_sandbox_apis()[0].get_namespaced_custom_object(
           group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
           namespace=self.namespace, plural=constants.SANDBOXES_PLURAL, name=sandbox_name,
           _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT)
@@ -991,7 +1029,8 @@ class Cluster:
     if not self._released_sandbox_deletes_enabled():
       return
     try:
-      _finish_unread_response(self.custom_api.delete_namespaced_custom_object(
+      custom_api, core_api = self._released_sandbox_apis()
+      _finish_unread_response(custom_api.delete_namespaced_custom_object(
           group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
           namespace=self.namespace, plural=constants.SANDBOXES_PLURAL, name=sandbox_name,
           _preload_content=False, _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT))
@@ -1006,7 +1045,7 @@ class Cluster:
     try:
       # The pod is not parsed: at hundreds of releases a second, building the returned
       # V1Pod on these threads competes with the event loop for the interpreter lock.
-      resp = self.core_api.delete_namespaced_pod(
+      resp = core_api.delete_namespaced_pod(
           pod_name, self.namespace, grace_period_seconds=0,
           _preload_content=False, _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT)
       _finish_unread_response(resp)
