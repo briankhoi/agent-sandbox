@@ -3059,6 +3059,15 @@ def test_trust_env_skipped_only_when_no_proxy_or_netrc(monkeypatch, tmp_path):
   assert session._trust_env is False
   cluster_mod._skip_unused_trust_env(None)
 
+  async def _real_session_trust_env() -> bool:
+    import aiohttp
+
+    async with aiohttp.ClientSession(trust_env=True) as real:
+      cluster_mod._skip_unused_trust_env(real)
+      return real.trust_env
+
+  assert asyncio.run(_real_session_trust_env()) is False
+
   monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://proxy:3128"})
   session = _Session()
   cluster_mod._skip_unused_trust_env(session)

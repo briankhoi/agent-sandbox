@@ -28,6 +28,7 @@ import copy
 import inspect
 import os
 import threading
+import urllib.request
 from collections import OrderedDict
 from urllib.parse import urlencode
 
@@ -41,18 +42,14 @@ from .resources import Resources
 def _env_configures_proxy_or_netrc() -> bool:
   """Whether this process has a proxy or netrc that aiohttp's ``trust_env`` would apply."""
   try:
-    import urllib.request
     if urllib.request.getproxies():
       return True
   except Exception:  # noqa: BLE001 - when unsure, keep aiohttp's default behaviour
     return True
   if os.environ.get("NETRC"):
     return True
-  try:
-    home = os.path.expanduser("~")
-    return any(os.path.isfile(os.path.join(home, n)) for n in (".netrc", "_netrc"))
-  except Exception:  # noqa: BLE001
-    return True
+  home = os.path.expanduser("~")
+  return any(os.path.isfile(os.path.join(home, n)) for n in (".netrc", "_netrc"))
 
 
 def _skip_unused_trust_env(session) -> None:
@@ -60,6 +57,9 @@ def _skip_unused_trust_env(session) -> None:
 
   With ``trust_env`` aiohttp hands the netrc lookup and the proxy lookup of each request to the
   loop's thread pool, which costs two thread hops per claim create, delete and exec.
+
+  The environment is read once, when the client is built: a proxy variable or netrc file added
+  later is not picked up until the client is rebuilt.
   """
   if getattr(session, "_trust_env", False) is True and not _env_configures_proxy_or_netrc():
     session._trust_env = False
@@ -81,12 +81,9 @@ async def build_async_api_client(cfg: ClusterConfig, *, pool_maxsize: int = 1000
         client_configuration=configuration,
     )
   api = async_client.ApiClient(configuration=configuration)
-  _skip_unused_trust_env(getattr(getattr(api, "rest_client", None), "pool_manager", None))
-  conn = getattr(
-      getattr(getattr(api, "rest_client", None), "pool_manager", None),
-      "connector",
-      None,
-  )
+  session = getattr(getattr(api, "rest_client", None), "pool_manager", None)
+  _skip_unused_trust_env(session)
+  conn = getattr(session, "connector", None)
   ka = getattr(conn, "_keepalive_timeout", None)
   if isinstance(ka, (int, float)) and not isinstance(ka, bool) and ka < 180.0:
     conn._keepalive_timeout = 180.0
