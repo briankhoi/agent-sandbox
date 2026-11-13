@@ -1,5 +1,8 @@
 # RL batch-mode optimizations
 
+> **Superseded on 2026-11-13:** the final commit list (tip `9188a6e9`), results and the complete change and experiment list are in [RL_BATCH_FINAL_REPORT.md](RL_BATCH_FINAL_REPORT.md). The numbers below are from the earlier tip `3a14c1dc`.
+
+
 Status as of 2026-11-13. Branch `feat/c5-batch-rebased-300d05e7`, tip `3a14c1dc`,
 12 commits on top of `feat/rl-batch-hardening` at `300d05e7` ("upstream" below).
 The branch is local and has not been pushed, so the commit ids below do not resolve
