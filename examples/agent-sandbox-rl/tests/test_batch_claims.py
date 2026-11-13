@@ -3040,3 +3040,40 @@ async def test_pipelined_batch_fresh_warm_credit_and_foreground_create_gate(
   assert seed1_time > warm1_time + 0.02
   assert min(proc1_times) - seed1_time < 0.08
   await af.aclose()
+
+
+def test_trust_env_skipped_only_when_no_proxy_or_netrc(monkeypatch, tmp_path):
+  import urllib.request
+  import agent_sandbox_rl.cluster as cluster_mod
+
+  class _Session:
+    def __init__(self):
+      self._trust_env = True
+
+  monkeypatch.setenv("HOME", str(tmp_path))
+  monkeypatch.delenv("NETRC", raising=False)
+  monkeypatch.setattr(urllib.request, "getproxies", lambda: {})
+  assert cluster_mod._env_configures_proxy_or_netrc() is False
+  session = _Session()
+  cluster_mod._skip_unused_trust_env(session)
+  assert session._trust_env is False
+  cluster_mod._skip_unused_trust_env(None)
+
+  monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://proxy:3128"})
+  session = _Session()
+  cluster_mod._skip_unused_trust_env(session)
+  assert session._trust_env is True
+
+  monkeypatch.setattr(urllib.request, "getproxies", lambda: {})
+  monkeypatch.setenv("NETRC", str(tmp_path / "custom_netrc"))
+  assert cluster_mod._env_configures_proxy_or_netrc() is True
+  monkeypatch.delenv("NETRC")
+  (tmp_path / ".netrc").write_text("machine example.invalid login a password b\n")
+  assert cluster_mod._env_configures_proxy_or_netrc() is True
+
+  def _boom():
+    raise RuntimeError("proxy lookup failed")
+
+  (tmp_path / ".netrc").unlink()
+  monkeypatch.setattr(urllib.request, "getproxies", _boom)
+  assert cluster_mod._env_configures_proxy_or_netrc() is True
