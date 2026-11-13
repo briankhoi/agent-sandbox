@@ -1289,6 +1289,111 @@ class TestAcquired(unittest.TestCase):
         self.assertEqual(state._acquiring_by_pool, {})
 
 
+class TestReleasedClaimsAreNotKeptByName(unittest.TestCase):
+    """A batch that lives as long as its caller releases far more claims than it holds, so a
+    released claim is kept by name only while its delete or its first watch event is outstanding.
+    """
+
+    def _acquire_and_release(self, state, pool="pool-a"):
+        name = state.start_acquire(pool)
+        state.upsert_claim(_ready(name, pool, fill=False))
+        self.assertIsNotNone(state.acquired_member(name))
+        self.assertTrue(state.release_member(name))
+        return name
+
+    def test_released_claims_do_not_accumulate_once_deleted(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=0))
+        held = state.start_acquire("pool-a")  # A long-lived member among the released ones.
+        state.upsert_claim(_ready(held, fill=False))
+        names = [self._acquire_and_release(state) for _ in range(500)]
+        self.assertEqual(len(state._released), 500)  # Their deletes are still pending.
+        for name in names:
+            state.note_deleted(name, state.delete_seq(name))
+            state.mark_lost(name)
+        self.assertEqual(state._released, {})
+        self.assertEqual(len(state._released_settled), 1)
+        # A second long-lived member splits the released ordinals into one more range, not more.
+        state.upsert_claim(_ready(state.start_acquire("pool-a"), fill=False))
+        for _ in range(500):
+            name = self._acquire_and_release(state)
+            state.mark_lost(name)  # The DELETED event may also arrive before the delete returns.
+            state.note_deleted(name, state.delete_seq(name))
+        self.assertEqual(state._released, {})
+        self.assertEqual(len(state._released_settled), 2)
+        self.assertEqual(len(state.members()), 2)
+
+    def test_late_events_for_a_settled_claim_are_ignored(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=0), mode=batch_state.ConsumerMode.STREAM)
+        name = self._acquire_and_release(state)
+        state.note_deleted(name, state.delete_seq(name))
+        state.mark_lost(name)
+        self.assertNotIn(name, state._released)
+        _drain_events(state)
+
+        self.assertIsNone(state.upsert_claim(_ready(name, fill=False)))
+        self.assertIsNone(state.upsert_claim(_ready(name)))
+        self.assertIsNone(state.mark_lost(name))
+        state.record_create_failure(name, "pool-a", "conflict")
+        self.assertEqual(state.members(), [])
+        self.assertEqual(_drain_events(state), [])
+        self.assertEqual(state.take_watch_deletes(), [])
+        self.assertTrue(state.fill_creates_released("pool-a", name))
+        self.assertFalse(state.release_member(name))
+        with self.assertRaises(BatchError):
+            state.acquired_member(name)
+        self.assertFalse(state.drop_acquired(name, "pool-a", created=True))
+        # A name that was never released is still unknown, and a new claim is still a member.
+        with self.assertRaises(ValueError):
+            state.release_member("b1-999")
+        self.assertIsNotNone(state.upsert_claim(_ready("b1-999", fill=False)))
+
+    def test_a_settled_claim_that_needs_another_delete_is_found_by_pool_again(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=0))
+        name = self._acquire_and_release(state)
+        state.note_deleted(name, state.delete_seq(name))
+        self.assertNotIn(name, state._released)
+        # A create retry may have recreated the claim after its delete.
+        self.assertTrue(state.drop_acquired(name, "pool-a", created=True, retried=True))
+        self.assertEqual(state.pending_deletes_in_pool("pool-a"), {name: state.delete_seq(name)})
+        self.assertEqual(state.release_not_ready(), [name])
+        state.note_deleted(name, state.delete_seq(name))
+        self.assertEqual(state._released, {})
+
+    def test_a_released_claim_the_watch_has_not_seen_is_kept_until_it_lands(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=0))
+        name = state.start_acquire("pool-a")
+        state.release_group("pool-a")
+        state.mark_lost("unrelated")
+        self.assertIn(name, state._released)
+        # Its create lands after the release, so the watch still queues its delete.
+        self.assertIsNone(state.upsert_claim(_pending(name)))
+        self.assertEqual(state.take_watch_deletes(), [name])
+        self.assertEqual(state.pending_deletes_in_pool("pool-a"), {name: state.delete_seq(name)})
+        state.note_deleted(name, state.delete_seq(name))
+        self.assertEqual(state._released, {})
+        self.assertIsNone(state.upsert_claim(_pending(name)))
+        self.assertEqual(state.take_watch_deletes(), [])
+
+    def test_only_generated_claim_names_are_settled(self):
+        state = _state(BatchGroup(warmpool="pool-a", size=0))
+        state.upsert_claim(_ready("b1-007", fill=False))
+        self.assertTrue(state.release_member("b1-007"))
+        state.note_deleted("b1-007", state.delete_seq("b1-007"))
+        self.assertIn("b1-007", state._released)
+        self.assertIsNotNone(state.upsert_claim(_ready("b1-7", fill=False)))
+
+    def test_ordinal_ranges_merge_neighbours(self):
+        ranges = batch_state._OrdinalRanges()
+        for ordinal in (5, 3, 9, 4, 4, 8, 0):
+            ranges.add(ordinal)
+        self.assertEqual([n for n in range(-1, 12) if n in ranges], [0, 3, 4, 5, 8, 9])
+        self.assertEqual(len(ranges), 3)
+        for ordinal in (1, 2, 6, 7):
+            ranges.add(ordinal)
+        self.assertEqual([n for n in range(-1, 12) if n in ranges], list(range(10)))
+        self.assertEqual(len(ranges), 1)
+
+
 class TestMemberClaimUid(unittest.TestCase):
     """A Member carries its claim's UID so callers can select the claim's Sandbox and pod by label."""
 
