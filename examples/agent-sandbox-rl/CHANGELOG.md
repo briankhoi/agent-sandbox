@@ -12,7 +12,9 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
   deleted) so finished pods free their nodes at the fleet's release rate instead of the
   garbage collector's. Releases are grouped and deleted by the claim UID label
   (`Member.claim_uid`), two deletecollection requests per 50 releases, falling back
-  to two deletes per release. Best effort and in the background: it needs `delete`
+  to two deletes per release. Grouping starts once a `get` of a released Sandbox, or
+  a one-item `list` of the namespace's Sandboxes, shows the controller sets that
+  label; until then releases are deleted by name. Best effort and in the background: it needs `delete`
   (and `deletecollection` for grouping) on `sandboxes` and `pods`, turns itself off
   on the first 403 or after repeated connection failures, and never runs in
   `per_claim` mode.
