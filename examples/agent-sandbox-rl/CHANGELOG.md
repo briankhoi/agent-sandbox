@@ -6,6 +6,17 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
 ## [0.1.0.dev0] — unreleased
 
 ### Added (batch claim mode)
+- **`BatchClaimConfig.max_unbound_claims` (256) holds creates back while that many
+  claims of a cluster are created but not yet Ready.** The controller only waits
+  for a warm sandbox while a claim is younger than its
+  `--sandbox-claim-warm-candidate-grace-period` (2 s), so the last claims of a
+  burst sized to its pool could be started cold beside Ready sandboxes: 4 of 8
+  bursts of 1,000 without it, 0 of 8 with it, at the same claims per second (one
+  cluster, 8 bursts each). An acquire stops waiting once nothing has become Ready
+  for 0.5 s, or after 5 s, so a cold pool loses up to 0.5 s once per stalled burst
+  and at most 5 s per acquire when claims become Ready slowly. `None` or `0` turns
+  it off; raising the controller's grace period is the server-side mitigation.
+  Batch mode only.
 - **Batch releases delete the released claim's Sandbox and pod directly.**
   `Cluster.delete_released_sandbox` runs after a batch claim's delete has succeeded
   (per-member release, bulk `release_all`, and teardown once each batch's claims are
