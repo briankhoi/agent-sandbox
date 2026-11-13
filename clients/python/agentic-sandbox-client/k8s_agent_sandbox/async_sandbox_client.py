@@ -242,6 +242,9 @@ class AsyncSandboxClient(Generic[T]):
     @contextlib.asynccontextmanager
     async def _batch_op(self) -> AsyncIterator[None]:
         current_task = asyncio.current_task()
+        # Let a close_connection() hook called inside close() bypass the gate instead of
+        # deadlocking on itself, and re-check in a loop because a second close() can clear
+        # _not_closing before a woken waiter resumes.
         if current_task is not self._close_owner:
             while not self._not_closing.is_set():
                 await self._not_closing.wait()
@@ -310,6 +313,9 @@ class AsyncSandboxClient(Generic[T]):
                             if self._active_connection_sandboxes.get(key) is sandbox:
                                 del self._active_connection_sandboxes[key]
                 await self._stop_batches()
+                # AsyncK8sHelper._ensure_initialized() recreates an owned ApiClient on the next
+                # request and leaves an injected one open, so delete_all() can still retry a
+                # failed batch release after __aexit__ or close() closes k8s_helper.
                 await self.k8s_helper.close()
                 self._default_ssl_context = _DefaultSSLContext()
             finally:
@@ -329,6 +335,9 @@ class AsyncSandboxClient(Generic[T]):
             # close() returns early inside a batch's lifecycle call, so this task never holds the lock.
             async with batch._lifecycle_lock:
                 async with batch._lock:
+                    # __aexit__ calls close() after _delete_automatic_sandboxes(), so keep a
+                    # batch whose release() failed in _active_batches for delete_all() or atexit
+                    # to retry. Leaving _detach_grace unset blocks detach() after renewal stops.
                     keep_for_release_retry = (
                         batch._release_attempted
                         and not batch._released
@@ -801,6 +810,9 @@ class AsyncSandboxClient(Generic[T]):
             self._register_batch(batch)
         return batch
 
+    # Keep _register_batch, _unregister_batch, and _track_closing synchronous so callers
+    # after _claim/_attach and inside _close_one's finally block update batch tracking
+    # atomically on the event loop without adding a cancellation point.
     def _register_batch(self, batch: AsyncSandboxBatch) -> None:
         key = (batch.namespace, batch.batch_id)
         replaced = self._active_batches.get(key)

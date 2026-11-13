@@ -66,6 +66,8 @@ BATCH_REQUEST_TIMEOUT_SECONDS = 30
 # deletecollection first.
 BATCH_COLLECTION_REQUEST_TIMEOUT_SECONDS = 90
 
+# Cold-started claims name their Sandbox (and any backing Service) <batch_id>-<ordinal>; Service
+# names require DNS-1035 labels (leading [a-z], <= 63 chars), leaving 11 chars for -<ordinal>.
 _BATCH_ID_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
 BATCH_ID_MAX_LENGTH = 52
 _BATCH_ID_ALPHABET = string.ascii_lowercase + string.digits
@@ -88,7 +90,8 @@ BATCH_WARM_CREDIT_REFRESH_SECONDS = 1.0
 BATCH_WARM_CREDIT_THROTTLE_SECONDS = 5.0
 BATCH_DEFAULT_QUORUM_TIMEOUT_SECONDS = 600
 BATCH_DEFAULT_WORK_BUDGET_SECONDS = 3600
-# Added to each claim's shutdownTime
+# Cushions each claim's upfront shutdownTime against setup, create retry/429 backoffs, clock
+# skew, and release() teardown so the controller does not expire claims during work_budget.
 BATCH_SHUTDOWN_MARGIN_SECONDS = 600
 BATCH_CREATE_ATTEMPTS = 3
 BATCH_DELETE_ATTEMPTS = 3
@@ -132,6 +135,8 @@ def validate_batch_id(batch_id: str) -> None:
 
 def generate_holder_identity() -> str:
     """Generates a unique Lease holder identity for the current Batch handle user."""
+    # Include a per-handle suffix so two handles in the same process (such as after detach()
+    # and get_batch()) never share holderIdentity and still fence each other on Lease conflicts.
     return f"{socket.gethostname()}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
 
 
@@ -145,6 +150,7 @@ def validate_lease_duration_value(value: object) -> int:
     """Validates that caller-supplied ``leaseDurationSeconds`` value is an int
     and is greater than ``CLOCK_SKEW_MARGIN``.
     """
+    # Check exact type so bool (a subclass of int) does not pass as 1 or 0.
     if type(value) is not int:
         raise ValueError(f"Duration must be an int, got {type(value).__name__}")
     return _require_duration_exceeds_skew_margin(value)
@@ -263,6 +269,8 @@ def backoff_delay(
 
 def generate_batch_id() -> str:
     """Generates a batch id: ``"b"`` followed by 11 random lowercase letters and digits."""
+    # Draw from OS entropy rather than random so caller random.seed() calls in deterministic
+    # workloads do not produce colliding batch IDs across runs.
     return "b" + "".join(
         secrets.choice(_BATCH_ID_ALPHABET) for _ in range(_GENERATED_BATCH_ID_RANDOM_LENGTH)
     )
@@ -283,6 +291,7 @@ class ClaimBatchArgs(NamedTuple):
 def _positive_int(name: str, value: object, default: int) -> int:
     if value is None:
         return default
+    # Check exact type so bool (a subclass of int) does not pass as 1 or 0.
     if type(value) is not int or value <= 0:
         raise ValueError(f"{name} must be a positive int, got {value!r}")
     return value
@@ -326,6 +335,8 @@ def check_pool_size(pool_size: int | None, max_in_flight: int, *, explicit: bool
                 max_in_flight + BATCH_POOL_HEADROOM,
             )
             return available
+        # No create slot fits at all; report the minimum viable pool (3) without suggesting
+        # lowering a max_in_flight the caller never passed.
         max_in_flight = 1
     needed = max_in_flight + BATCH_POOL_HEADROOM
     remedy = "Lower max_in_flight, or construct" if max_in_flight > 1 else "Construct"

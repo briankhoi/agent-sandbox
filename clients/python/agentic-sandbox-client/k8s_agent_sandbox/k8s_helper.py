@@ -269,6 +269,8 @@ class K8sHelper:
         this helper.
         """
         try:
+            # _UnretriedApiClient always builds its own PoolManager, so close _batch_api_client
+            # even when the caller injected api_client (which leaves _owned_api_client unset).
             if self._batch_api_client is not None:
                 _close_api_client(self._batch_api_client)
                 self._batch_api_client = None
@@ -875,6 +877,9 @@ class K8sHelper:
 
             # stop() can run before Watch.stream() makes its list call, and stream() resets _stop on
             # entry, so this checks again and skips the request once the watch is stopped.
+            # Preserve orig_list_fn's signature and docstring: Watch.stream() inspects them to
+            # infer the return type, and Watch.unmarshal_event() skips tracking resource_version
+            # when return_type is empty.
             @functools.wraps(orig_list_fn)
             def _checked_list(*args: Any, **kwargs: Any) -> Any:
                 nonlocal active_resp
@@ -915,6 +920,9 @@ class K8sHelper:
                 allow_watch_bookmarks=True,
                 _request_timeout=_request_timeout,
             )
+            # Watch.stop() only sets _stop and shuts down the socket; Watch.stream() releases
+            # its pooled HTTP connection in the generator's finally block, so close raw_stream
+            # deterministically on early exit (while tolerating plain iterators in tests).
             stream_cm: contextlib.AbstractContextManager[Any] = (
                 contextlib.closing(raw_stream)
                 if hasattr(raw_stream, "close")
@@ -1006,6 +1014,8 @@ class K8sHelper:
         Raises:
             ValueError: If ``resource_version`` is an empty string.
         """
+        # Kubernetes treats an empty Preconditions.resourceVersion as unset and deletes
+        # the Lease unconditionally instead of fencing on a version match.
         if resource_version is not None and not resource_version:
             raise ValueError("resource_version must not be empty")
         delete_kwargs: dict[str, Any] = {}
@@ -1079,6 +1089,8 @@ class K8sHelper:
         _request_timeout: float | tuple[float, float] | None,
     ) -> dict[str, Any] | None:
         """Gets an object in the extensions API group, or ``None`` if it doesn't exist."""
+        # Only batch pool/template prechecks and warm-credit refreshes call this, so route
+        # through _batch_custom_objects_api to avoid urllib3 retries stretching Lease deadlines.
         try:
             return cast(dict[str, Any], self._batch_custom_objects_api.get_namespaced_custom_object(
                 group=CLAIM_API_GROUP,

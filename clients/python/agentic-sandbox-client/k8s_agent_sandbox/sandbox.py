@@ -99,6 +99,8 @@ class Sandbox:
         self._sandbox_name_hash: str | None = None
         # Set by a batch's connect() to the pod IP its watch already saw.
         self._seeded_pod_ip: str | None = None
+        # Also set by connect(): _on_close evicts this handle from the batch's connection
+        # cache on local close, and _claim_deleter fences terminate() through release_member().
         self._on_close: Callable[[], None] | None = None
         self._claim_deleter: Callable[[], None] | None = None
         
@@ -301,6 +303,9 @@ class Sandbox:
             return
 
         if self._claim_deleter is not None:
+            # Run _claim_deleter() before close_connection() so release_member() checks the
+            # batch Lease first and keeps any failed cached-connection close tracked on the
+            # batch while still deleting the claim.
             try:
                 self._claim_deleter()
             except BaseException:
@@ -311,6 +316,9 @@ class Sandbox:
                 except Exception as e:
                     logger.warning(f"Failed to close the connection to sandbox claim '{self.claim_name}': {e}")
                 raise
+            # _claim_deleter() no-ops after batch release, and release_member() only logs a
+            # failed cached close. Run close_connection() to finish or raise that close, and
+            # clear claim_name in finally so a retry only re-runs close_connection() above.
             try:
                 self.close_connection()
             finally:

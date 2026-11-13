@@ -784,6 +784,8 @@ class AsyncK8sHelper:
 
         list_fn = self.custom_objects_api.list_namespaced_custom_object
 
+        # Preserve list_fn's signature and docstring: Watch.stream() inspects them to infer
+        # the return type and watch parameter instead of seeing _checked_list's annotations.
         @functools.wraps(list_fn)
         async def _checked_list(*args: Any, **kwargs: Any) -> aiohttp.ClientResponse:
             # Watch.stream passes _preload_content=False, which skips the generated client's HTTP
@@ -877,6 +879,8 @@ class AsyncK8sHelper:
         Raises:
             ValueError: If ``resource_version`` is an empty string.
         """
+        # Kubernetes treats an empty Preconditions.resourceVersion as unset and deletes
+        # the Lease unconditionally instead of fencing on a version match.
         if resource_version is not None and not resource_version:
             raise ValueError("resource_version must not be empty")
         await self._ensure_initialized()
@@ -968,6 +972,9 @@ class AsyncK8sHelper:
         A caller-injected ``api_client`` is left open and remains attached to
         this helper. Only a client created internally is closed and cleared.
         """
+        # Reset _api_client and _initialized under _init_lock before awaiting close() so a
+        # concurrent or retried caller initializes a fresh ApiClient instead of reusing a
+        # closing session, even if close() is cancelled.
         async with self._init_lock:
             if not (self._api_client and self._owns_api_client):
                 return

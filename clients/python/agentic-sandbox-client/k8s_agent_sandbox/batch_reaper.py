@@ -146,6 +146,7 @@ def find_stale_leases(
                     resource_version=metadata.resource_version,
                     lease_duration=spec.lease_duration_seconds,
                 ))
+        # V1ListMeta exposes the JSON "continue" field as _continue because continue is a keyword.
         continue_token = page.metadata._continue if page.metadata else None
         if not continue_token:
             return stale
@@ -224,6 +225,8 @@ def reap(
     # sent_at + leaseDurationSeconds self-fences. Waiting the full lease_duration from listed_at
     # guarantees a connected driver whose wall clock lags behind the reaper either updates
     # resourceVersion (failing the delete precondition below) or self-fences before the delete runs.
+    # Stamp listed_at after all namespace lists finish so slow earlier lists never shorten the
+    # post-read wait for Leases read in later namespaces.
     listed_at = time.monotonic()
     reaped: list[tuple[str, str]] = []
     for namespace, lease in sorted(stale, key=lambda item: item[1].lease_duration):
@@ -254,6 +257,8 @@ def _default_namespace() -> str:
 
 def _skew_margin(value: str) -> int:
     margin = int(value)
+    # Floor at CLOCK_SKEW_MARGIN so the reaper never picks a Lease while get_batch() on a clock
+    # skewed within CLOCK_SKEW_MARGIN could still treat it as attachable.
     if margin < batch_utils.CLOCK_SKEW_MARGIN:
         raise argparse.ArgumentTypeError(
             f"must be at least the SDK's clock skew margin ({batch_utils.CLOCK_SKEW_MARGIN}s)"

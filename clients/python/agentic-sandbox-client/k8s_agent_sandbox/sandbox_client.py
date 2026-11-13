@@ -602,6 +602,9 @@ class SandboxClient(Generic[T]):
         # A handle that is no longer its batch's live one waits here, and cleanup only closes its
         # connections.
         key = (batch.namespace, batch.batch_id)
+        # Enforce lock order batches_lock -> batch._lock, and read connection tables inside
+        # batches_lock so a stale empty snapshot cannot discard a batch after another thread
+        # re-queues a failed close.
         with batches_lock:
             with batch._lock:
                 has_connections = bool(batch._connected or batch._stale_connections)
@@ -714,6 +717,8 @@ class SandboxClient(Generic[T]):
             SandboxClient._release_batches(active_batches, closing_batches, batches_lock, exiting=True)
         finally:
             if k8s_helper is not None:
+                # urllib3 and ApiClient recreate their pools on the next request, so delete_all()
+                # can still retry a failed batch release after __exit__ closes k8s_helper.
                 k8s_helper.close()
 
     @staticmethod

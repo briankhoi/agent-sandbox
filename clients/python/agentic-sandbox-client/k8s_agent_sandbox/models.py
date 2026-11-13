@@ -428,6 +428,8 @@ class BatchGroup(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _fill_min_ready_default(cls, data: Any) -> Any:
+        # frozen=True rejects attribute assignment in mode="after", so fill the default beforehand
+        # on a shallow copy without mutating a caller dict passed to model_validate().
         if isinstance(data, dict) and data.get("min_ready") is None:
             data = {**data, "min_ready": data.get("size")}
         return data

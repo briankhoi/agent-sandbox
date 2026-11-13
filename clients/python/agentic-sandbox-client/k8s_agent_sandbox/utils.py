@@ -135,6 +135,7 @@ def validate_pool_size(pool_size: object, api_client: object) -> None:
     """
     if pool_size is None:
         return
+    # Check exact type so bool (a subclass of int) does not pass as 1 or 0.
     if type(pool_size) is not int or pool_size <= 0:
         raise ValueError(f"pool_size must be a positive int, got {pool_size!r}")
     if api_client is not None:

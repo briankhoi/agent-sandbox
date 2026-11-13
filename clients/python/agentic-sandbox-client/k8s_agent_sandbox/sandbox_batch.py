@@ -287,6 +287,8 @@ class SandboxBatch:
         # create's pacing slot is taken, or at attach for a re-attached batch.
         self._fill_deadline: float | None = None
         self._last_fill_slot: float = 0.0
+        # Share a 1-element list with _make_sandbox_callbacks so Sandbox.terminate() sees a
+        # completed release() even after GC collects this handle, without keeping self alive.
         self._released_cell: list[bool] = [False]
         self._creators: list[threading.Thread] = []
         self._stop_creating = _StopEvent()
@@ -369,6 +371,8 @@ class SandboxBatch:
         )
 
         lease_name = f"{BATCH_LEASE_NAME_PREFIX}{args.batch_id}"
+        # Omit lease_uid so the setup list catches lingering or terminating claims from an earlier
+        # batch with this id whose Lease is already gone, before <id>-<ordinal> creates hit 409s.
         label_selector = batch_utils.batch_claim_label_selector(args.batch_id)
         holder_identity = batch_utils.generate_holder_identity()
         lease_labels, lease_annotations = batch_utils.batch_lease_metadata(args)
@@ -539,6 +543,8 @@ class SandboxBatch:
                 f"batch '{batch_id}' is held by '{spec.holder_identity}'"
             )
 
+        # Validate and seed state before taking the Lease, so a failed list or bad claim annotation
+        # never strands holderIdentity on the Lease with no handle to renew or detach it.
         groups = batch_state.reconstruct_groups(batch_id, claim_items)
         state = batch_state.BatchState(batch_id, groups, settings.next_ordinal)
         state.seed_from_claims(claim_items)
@@ -767,6 +773,8 @@ class SandboxBatch:
             # here rather than moved to _stale_connections to be closed later.
             if cached is not None and cached[0].is_active:
                 return cached[0]
+            # Omit unset file_config and attach batch hooks as attributes so custom sandbox_class
+            # subclasses need only the 6-argument constructor.
             sandbox: Sandbox = self._client.sandbox_class(
                 claim_name=member.claim_name,
                 sandbox_id=current.sandbox_name,
@@ -786,6 +794,8 @@ class SandboxBatch:
                 self.batch_id,
                 self._released_cell,
             )
+            # Cache on the batch rather than client._active_connection_sandboxes so client exit
+            # does not terminate members one by one or delete claims on an attached batch.
             self._connected[member.claim_name] = (sandbox, pod_ip)
             return sandbox
 
@@ -917,6 +927,8 @@ class SandboxBatch:
             raise error
         return members
 
+    # Keep yield in a helper so events() and group_outcomes() validate state and fix the consumer
+    # mode when called rather than on the first next() advance.
     def _iterate(self, pop: Callable[[], _T | None], done: Callable[[], bool]) -> Iterator[_T]:
         while (item := self._next(pop, done)) is not None:
             yield item
@@ -926,6 +938,8 @@ class SandboxBatch:
             while True:
                 self._check_active()
                 self._expire_lease_if_due()
+                # Skip expiring the fill once err() is set so pop() drains only earlier outcomes
+                # instead of synthesizing BatchTimeoutError over a lost Lease or watch error.
                 if self._batch_error_locked() is None:
                     self._expire_fill_if_due()
                 item = pop()
@@ -1200,6 +1214,8 @@ class SandboxBatch:
             try:
                 check.result(timeout=wait_timeout)
             except TimeoutError:
+                # TimeoutError also catches a request TimeoutError the leader published on check;
+                # re-raise a finished check's error instead of running a duplicate pool check.
                 if check.done() and not check.cancelled() and check.exception() is not None:
                     check.result()
                 continue
@@ -1289,6 +1305,8 @@ class SandboxBatch:
             if (remaining := remaining_if_due()) <= 0:
                 return
             refresh_lock = self._credit_refresh_locks.setdefault(warmpool, threading.Lock())
+        # Serialize per pool before taking an _in_flight slot so concurrent acquires cannot exhaust
+        # max_in_flight waiting on one GET, then re-check refresh_due after the leader finishes.
         if not refresh_lock.acquire(timeout=remaining):
             # Fall back to normal pacing, which checks whether a paced slot fits the deadline.
             return
@@ -1398,6 +1416,8 @@ class SandboxBatch:
             self._drop_planned_creates(None)
             names = self._state.release_not_ready()
             self._changed.notify_all()
+        # names can still have cached connections from a Ready member connected via members() that
+        # later went PENDING before dispatch, or from an earlier failed release_member() close.
         self._close_cached_connections("release_not_ready", names)
         if not names:
             return
@@ -1503,6 +1523,8 @@ class SandboxBatch:
                 guard=self._member_delete,
                 deadline=self._lease_deadline,
             )
+            # Clear only sequences snapshotted before the sweep so a create landing after
+            # deletecollection keeps its newer pending delete.
             if pending_seqs:
                 with self._lock:
                     for name, seq in pending_seqs.items():
@@ -1524,6 +1546,8 @@ class SandboxBatch:
         """
         had_plan = bool(self._create_plan)
         if warmpool is None:
+            # Leave any claim the watch already observed in _state so release_not_ready() keeps
+            # Ready or handed-out members and queues deletes for non-Ready ones.
             for claim_name, group in self._create_plan:
                 if self._state.get_member(claim_name) is None:
                     self._state.release_claim(claim_name, group.warmpool)
@@ -1658,6 +1682,7 @@ class SandboxBatch:
                 # The batch is another handle's now, so neither a retry nor client cleanup may delete anything.
                 with self._lock:
                     self._lease_released = True
+                    # Wake any other thread waiting in _wait_active_requests(for_detach=True).
                     self._changed.notify_all()
                 self._client._unregister_batch(self)
                 raise
@@ -1670,7 +1695,8 @@ class SandboxBatch:
     def _stop_background_threads(self) -> None:
         """Stops claim creators and stops the watcher and lease renewal loop."""
         self._stop_creating.set()
-        # Pause to ensure each in-progress create request has been responded to
+        # Let in-flight create POSTs finish so none commits a claim on the apiserver after
+        # release()'s deletecollection or detach()'s Lease release.
         deadline = time.monotonic() + batch_utils.BATCH_REQUEST_TIMEOUT_SECONDS + batch_utils.BATCH_CREATOR_STOP_GRACE_SECONDS
         for creator in self._creators:
             creator.join(max(0.0, deadline - time.monotonic()))
@@ -1690,6 +1716,8 @@ class SandboxBatch:
         for delete_thread in watch_delete_threads:
             if delete_thread is not threading.current_thread():
                 delete_thread.join(max(0.0, deadline - time.monotonic()))
+        # Join without sharing deadline (_renew_request_timeout() bounds any in-flight PUT)
+        # so at most one timed-out renewal can conflict with detach() or _take_batch_lease().
         if self._renew_thread is not None and self._renew_thread is not threading.current_thread():
             self._renew_thread.join()
 
@@ -1720,6 +1748,8 @@ class SandboxBatch:
             ):
                 sandbox = self._connected.pop(claim_name)[0]
                 stale.append(sandbox)
+                # Park in _stale_connections before releasing _lock so cleanup still closes
+                # remaining items if the caller is cancelled or interrupted mid-loop.
                 self._stale_connections[sandbox] = None
         return stale
 
@@ -1745,8 +1775,8 @@ class SandboxBatch:
             )
         finally:
             if not closed:
-                # A connection that fails to close is kept on the handle rather than dropped, and the
-                # client keeps the handle for its next cleanup.
+                # Restore in finally so BaseException (e.g. KeyboardInterrupt) as well as
+                # Exception keeps the unclosed connection for the next client cleanup.
                 with self._lock:
                     keep()
                 self._client._track_closing(self)
@@ -1810,6 +1840,8 @@ class SandboxBatch:
             # acquire() takes no ordinal once the handle is detached, so this is final.
             next_ordinal = self._state.next_ordinal
 
+        # Drain and stop outside _lifecycle_lock so neither a signal handler on an in-flight
+        # thread nor a concurrent release() blocks waiting for detach() before taking over.
         self._wait_active_requests(for_detach=True)
         with self._lock:
             if self._detach_done():
@@ -1878,6 +1910,8 @@ class SandboxBatch:
                                 if spec.holder_identity != self._holder_identity:
                                     break
             except Exception:
+                # A same-thread signal handler may have finished detach() or started release()
+                # before the interrupted outer request raised.
                 with self._lock:
                     if self._detach_done():
                         return
@@ -1887,6 +1921,7 @@ class SandboxBatch:
                 if self._detach_done():
                     return
                 self._lease_released = True
+                # Wake any other thread waiting in _wait_active_requests(for_detach=True).
                 self._changed.notify_all()
         self._client._unregister_batch(self)
 
@@ -1984,6 +2019,8 @@ class SandboxBatch:
                         _request_timeout=_WATCH_REQUEST_TIMEOUT,
                         on_watch=self._set_active_watch,
                     )
+                    # Close a generator stream on early return so watch_sandbox_claims clears
+                    # _active_watch and closes Watch._api_client without waiting for GC.
                     stream_cm: contextlib.AbstractContextManager[Iterator[dict[str, Any]]] = (
                         contextlib.closing(raw_stream)
                         if hasattr(raw_stream, "close")
@@ -2000,6 +2037,8 @@ class SandboxBatch:
                             seen_rv = (obj.get("metadata") or {}).get("resourceVersion")
                             if seen_rv:
                                 rv = seen_rv
+                            # Bookmarks carry only resourceVersion, advancing rv on idle streams
+                            # so reconnects avoid 410s.
                             if event_type == "BOOKMARK":
                                 continue
                             claim_name = (obj.get("metadata") or {}).get("name", "")
@@ -2047,6 +2086,8 @@ class SandboxBatch:
                         self._notify_all()
                     return
                 except Exception as e:
+                    # active_watch.stop() shuts down the socket after setting _watch_stop, so the
+                    # interrupted read raises here and must exit cleanly rather than set err().
                     if self._watch_stop.is_set():
                         return
                     if _is_transport_error(e):
@@ -2152,6 +2193,8 @@ class SandboxBatch:
                 self._mark_renewal_degraded(e)
             return True
         with self._lock:
+            # Re-check after the HTTP call so a renewal finishing after _expire_lease_if_due()
+            # or detach() cannot extend _lease_expires_at or clear sticky _renewal_degraded.
             if self._detached or self._lease_error is not None:
                 return False
             self._lease = written
@@ -2183,6 +2226,8 @@ class SandboxBatch:
         # Neither Kubernetes client has a default request timeout, so a hung apiserver would
         # otherwise stall renewal past the Lease's expiry.
         timeout = self._renew_request_timeout()
+        # Read before stamping renewTime so a slow PUT never pushes _lease_expires_at past
+        # the expiry other clients observe from renewTime.
         sent_at = time.monotonic()
         spec = batch_utils.lease_parts(lease)[1]
         spec.holder_identity = self._holder_identity
@@ -2222,6 +2267,8 @@ class SandboxBatch:
                 if self._warm_credit.take(group.warmpool):
                     slot = now
                 else:
+                    # take() also returns False during a 429 cooldown while credit remains; spend
+                    # one anyway because this paced create still adopts a Ready warm-pool sandbox.
                     self._warm_credit.spend(group.warmpool)
                     slot = self._reserve_create_slot(now)
                 self._last_fill_slot = max(self._last_fill_slot, slot)
@@ -2286,8 +2333,11 @@ class SandboxBatch:
                     can_send=can_send,
                     on_send=on_send,
                 )
+                # _create_one returns without sending when can_send or _stop_creating skips it.
                 may_exist = sent > 0
             except Exception as e:
+                # A create that ended in a transient error, or failed after retrying one, may
+                # have stored a claim on an attempt whose response never arrived.
                 may_exist = sent > 1 or _is_transient_error(e)
                 with self._lock:
                     self._state.record_create_failure(
@@ -2456,6 +2506,8 @@ class SandboxBatch:
                         self._active_creates[tid] -= 1
                         if not self._active_creates[tid]:
                             del self._active_creates[tid]
+                        # Notify whenever _detached is set, not only when _active_creates is empty:
+                        # a signal handler in _wait_active_requests() keeps its tid in the Counter.
                         if self._detached or not self._active_creates:
                             self._changed.notify_all()
         finally:
@@ -2635,6 +2687,8 @@ def _take_batch_lease(
             raise BatchInUseError(f"batch '{batch_id}' changed hands since this handle held it")
         if spec.holder_identity and spec.holder_identity != holder_identity:
             raise BatchInUseError(f"batch '{batch_id}' is held by '{spec.holder_identity}'")
+        # Keep lease_transitions unchanged so later delete rounds and release() retries, which
+        # compare against the same last_lease snapshot, do not mistake this write for a takeover.
         spec.holder_identity = holder_identity
         spec.renew_time = now
         spec.lease_duration_seconds = lease_duration
@@ -2811,8 +2865,8 @@ def _delete_claims_in_rounds(
                     raise
                 last_error = e
 
-        # A round that shrinks the number of live claims doesn't count toward giving up, so a large
-        # batch that takes many rounds to delete isn't abandoned while it is still making progress.
+        # Seed the baseline from round 1's post-delete count (avoiding a pre-delete list on
+        # healthy 1-round deletes), and reset idle_rounds whenever a round shrinks live claims.
         progressed = live is not None and (remaining_before is None or live < remaining_before)
         idle_rounds = 0 if progressed else idle_rounds + 1
         if idle_rounds >= batch_utils.BATCH_RELEASE_MAX_IDLE_ROUNDS:

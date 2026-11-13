@@ -147,6 +147,8 @@ def derive_member(claim_obj: dict[str, Any]) -> Member:
         reason = ready_condition.get("reason")
         message = ready_condition.get("message")
         if ready_condition.get("status") == "True":
+            # connect() passes member.sandbox_name straight to Sandbox(sandbox_id=...) without
+            # resolving the claim, so keep the member PENDING until status.sandbox.name is set.
             if sandbox_name is not None:
                 state = MemberState.READY
         # We do not treat WarmPoolNotFound or TemplateNotFound as terminal, because the controller
@@ -305,6 +307,8 @@ class BatchState:
         """Reconstructs state from the batch's existing claims."""
         for claim_obj in claim_objs:
             self.upsert_claim(claim_obj)
+        # get_batch() seeds pre-existing claims before acquire() reads any pool's current Ready
+        # count, so pre-attach cold or unreconciled claims must not zero fresh WarmCredit later.
         self._pending_launch.clear()
         self._exhausted_pools.clear()
         self._watch_deletes.clear()
@@ -474,9 +478,12 @@ class BatchState:
         member = self._members.get(claim_name)
         if member is None:
             if claim_name in self._released:
+                # First release popped _members; retry only while the API delete is still pending.
                 return claim_name in self._pending_deletes
             raise ValueError(f"'{claim_name}' is not a member of batch '{self.batch_id}'")
         self.release_claim(claim_name, member.warmpool)
+        # release_member() owns the per-name delete, so clear _acquiring to skip a duplicate
+        # cleanup delete when the woken acquire() unwinds through drop_acquired().
         self._pop_acquiring(claim_name)
         return bool(self._take_deletes([member]))
 
@@ -514,6 +521,8 @@ class BatchState:
         self._fill_stopped_pools.add(warmpool)
         self._pool_release_seq[warmpool] = self._pool_release_seq.get(warmpool, 0) + 1
         members = list(self._members_by_pool.get(warmpool, {}).values())
+        # Keep _acquiring intact so release_claim() skips fill accounting for unseen acquires and
+        # drop_acquired() deletes by name if an in-flight POST lands after deletecollection.
         acquiring = list(self._acquiring_by_pool.get(warmpool, ()))
         for name in (*(m.claim_name for m in members), *acquiring):
             self.release_claim(name, warmpool)
@@ -928,7 +937,8 @@ class BatchState:
                 consumer fixed the mode, or ``wait_for_quorum()`` is called a second time.
         """
         if self._mode is not None:
-            # events() can join any mode, and group_outcomes() can be called again to continue.
+            # events() joins GROUP or QUORUM without changing _mode or flushing _waiting, so held
+            # members stay reserved for the quorum consumer; group_outcomes() can also resume.
             if mode == ConsumerMode.STREAM or mode == self._mode == ConsumerMode.GROUP:
                 return
             if mode == self._mode == ConsumerMode.QUORUM:
@@ -1045,6 +1055,7 @@ class BatchState:
         return self._fill_expired or len(self._resolved) + self._never_created >= self.size
 
     def events_done(self) -> bool:
+        # _iterate() calls pop_event() first, which drains skipped released MEMBER_READY events.
         return self.fill_settled() and not self._events_to_yield
 
     def groups_done(self) -> bool:
