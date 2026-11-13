@@ -59,6 +59,9 @@ CLAIM_UID_LABEL = "agents.x-k8s.io/claim-uid"
 RELEASED_SANDBOX_BATCH_SIZE = 50
 RELEASED_SANDBOX_BATCH_WINDOW_SECONDS = 0.1
 RELEASED_SANDBOX_BATCH_TIMEOUT = (3, 30)
+# How many released Sandboxes of a batch are read to learn whether the controller
+# labels them, before falling back to one list of the namespace.
+RELEASED_SANDBOX_PROBE_CANDIDATES = 3
 
 # aiohttp gives a new connection 30 s to be established. A burst opens one
 # connection per exec, and the rare one whose handshake is lost would hold its
@@ -508,6 +511,7 @@ class Cluster:
     self._released_sandbox_flush_queued = False
     # None until the first release shows whether Sandboxes carry the claim UID label.
     self._released_sandbox_by_label: bool | None = None
+    self._released_sandbox_undecided_flushes = 0
     self._released_sandbox_api_objects = None
     self.tracer_config = None                 # optional SDK SandboxTracerConfig
     # Placement / capacity bookkeeping. Mutated from parallel claim workers, so
@@ -933,11 +937,18 @@ class Cluster:
             return
           pool = self._released_sandbox_pool
         if self._released_sandbox_by_label is None:
-          by_label = self._sandbox_has_claim_uid_label(batch[0])
-          self._released_sandbox_by_label = by_label
-          if by_label is not None:
-            logger.debug("cluster %s: deleting released sandboxes %s", self.name,
-                         "by claim UID label" if by_label else "by name")
+          # Where the garbage collector removes a released Sandbox within
+          # milliseconds the question can stay open for a whole run. Asking on the
+          # 1st, 2nd, 4th, 8th... undecided batch keeps that from costing requests
+          # for every batch; the batches in between are deleted by name.
+          self._released_sandbox_undecided_flushes += 1
+          undecided = self._released_sandbox_undecided_flushes
+          if undecided & (undecided - 1) == 0:
+            by_label = self._sandbox_has_claim_uid_label(batch)
+            self._released_sandbox_by_label = by_label
+            if by_label is not None:
+              logger.debug("cluster %s: deleting released sandboxes %s", self.name,
+                           "by claim UID label" if by_label else "by name")
         # Batches hold different claims, so they can run side by side; within a
         # batch the Sandboxes still go before the pods.
         try:
@@ -1003,23 +1014,43 @@ class Cluster:
       self._released_sandbox_api_objects = apis
     return apis
 
-  def _sandbox_has_claim_uid_label(self, release: tuple[str, str | None, str]) -> bool | None:
+  def _sandbox_has_claim_uid_label(
+      self, batch: list[tuple[str, str | None, str]]) -> bool | None:
     """Whether this cluster's controller labels a claim's Sandbox with the claim UID.
 
     Deleting by that label is only safe if the Sandboxes carry it: otherwise the
     request matches none, the pods are deleted by label, and each surviving
-    Sandbox starts a replacement pod. Returns None when the Sandbox could not be read.
+    Sandbox starts a replacement pod. The pods' own labels are no evidence, for
+    the same reason. Returns None when no Sandbox could be read.
+
+    A released Sandbox may already be gone when it is read, so up to
+    `RELEASED_SANDBOX_PROBE_CANDIDATES` of the batch are tried. If all are gone,
+    any Sandbox in the namespace that carries the label shows the controller sets it.
     """
-    sandbox_name, _pod_name, claim_uid = release
+    custom_api = self._released_sandbox_apis()[0]
+    for sandbox_name, _pod_name, claim_uid in batch[:RELEASED_SANDBOX_PROBE_CANDIDATES]:
+      try:
+        sandbox = custom_api.get_namespaced_custom_object(
+            group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
+            namespace=self.namespace, plural=constants.SANDBOXES_PLURAL, name=sandbox_name,
+            _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT)
+      except Exception as e:  # noqa: BLE001 - undecided; this batch is deleted by name
+        if getattr(e, "status", None) == 404:
+          continue
+        return None
+      labels = ((sandbox or {}).get("metadata") or {}).get("labels") or {}
+      return labels.get(CLAIM_UID_LABEL) == claim_uid
     try:
-      sandbox = self._released_sandbox_apis()[0].get_namespaced_custom_object(
+      listed = custom_api.list_namespaced_custom_object(
           group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
-          namespace=self.namespace, plural=constants.SANDBOXES_PLURAL, name=sandbox_name,
+          namespace=self.namespace, plural=constants.SANDBOXES_PLURAL,
+          label_selector=CLAIM_UID_LABEL, limit=1,
           _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT)
-    except Exception:  # noqa: BLE001 - undecided; this batch is deleted by name
+    except Exception:  # noqa: BLE001 - undecided, also without list access
       return None
-    labels = ((sandbox or {}).get("metadata") or {}).get("labels") or {}
-    return labels.get(CLAIM_UID_LABEL) == claim_uid
+    items = listed.get("items") if isinstance(listed, dict) else None
+    # No labelled Sandbox proves nothing: there may be no claimed Sandbox right now.
+    return True if items else None
 
   def _released_sandbox_deletes_enabled(self) -> bool:
     return (not self._released_sandbox_disabled
@@ -1067,7 +1098,8 @@ class Cluster:
         self._released_sandbox_errors = 0
         if status == 403 and not self._released_sandbox_disabled:
           self._released_sandbox_disabled = True
-          reason = f"no delete access to released {kind}s; leaving released sandboxes"
+          plural = "Sandboxes" if kind == "Sandbox" else f"{kind}s"
+          reason = f"no delete access to released {plural}; leaving released sandboxes"
       else:
         self._released_sandbox_errors += 1
         if self._released_sandbox_errors >= RELEASED_SANDBOX_MAX_ERRORS:

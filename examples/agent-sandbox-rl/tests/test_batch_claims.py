@@ -3486,6 +3486,116 @@ def test_released_sandboxes_with_claim_uids_are_deleted_together_by_label(monkey
   assert c.core_api.delete_namespaced_pod.call_count == 0
 
 
+def _release_and_wait_for_flush(c, i):
+  c.delete_released_sandbox(f"sb-{i}", f"pod-{i}", claim_uid=f"uid-{i}")
+  deadline = time.monotonic() + 5
+  while c._released_sandbox_flush_queued and time.monotonic() < deadline:
+    time.sleep(0.005)
+  assert c._released_sandbox_flush_queued is False
+
+
+def test_released_sandbox_label_probe_decides_when_the_first_sandbox_is_gone(monkeypatch):
+  from kubernetes.client import ApiException
+
+  from agent_sandbox_rl import cluster as cluster_mod
+
+  monkeypatch.setattr(cluster_mod, "RELEASED_SANDBOX_BATCH_WINDOW_SECONDS", 0.05)
+
+  def _get(present):
+    def get(**kw):
+      if kw["name"] not in present:
+        raise ApiException(status=404)
+      return {"metadata": {"labels": present[kw["name"]]}}
+    return get
+
+  # The garbage collector already removed the first released Sandbox; the next
+  # one of the batch still shows the label.
+  c = _cluster_with_mock_apis()
+  c.custom_api.get_namespaced_custom_object.side_effect = _get(
+      {"sb-1": {cluster_mod.CLAIM_UID_LABEL: "uid-1"}})
+  for i in range(3):
+    c.delete_released_sandbox(f"sb-{i}", f"pod-{i}", claim_uid=f"uid-{i}")
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert c._released_sandbox_by_label is True
+  assert [k.kwargs["name"] for k in c.custom_api.get_namespaced_custom_object.call_args_list] == [
+      "sb-0", "sb-1"]
+  assert c.custom_api.list_namespaced_custom_object.call_count == 0
+  assert c.custom_api.delete_collection_namespaced_custom_object.call_count == 1
+  assert c.custom_api.delete_namespaced_custom_object.call_count == 0
+
+  # The next one exists without the label: this controller does not set it.
+  c = _cluster_with_mock_apis()
+  c.custom_api.get_namespaced_custom_object.side_effect = _get({"sb-1": {}})
+  for i in range(3):
+    c.delete_released_sandbox(f"sb-{i}", f"pod-{i}", claim_uid=f"uid-{i}")
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert c._released_sandbox_by_label is False
+  assert c.custom_api.list_namespaced_custom_object.call_count == 0
+  assert c.custom_api.delete_collection_namespaced_custom_object.call_count == 0
+  assert c.core_api.delete_collection_namespaced_pod.call_count == 0
+  assert c.custom_api.delete_namespaced_custom_object.call_count == 3
+
+  # Every candidate is gone, but another claim's Sandbox in the namespace carries
+  # the label. Only three of the batch are read before the one list.
+  c = _cluster_with_mock_apis()
+  c.custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+  c.custom_api.list_namespaced_custom_object.return_value = {
+      "items": [{"metadata": {"labels": {cluster_mod.CLAIM_UID_LABEL: "other"}}}]}
+  for i in range(5):
+    c.delete_released_sandbox(f"sb-{i}", f"pod-{i}", claim_uid=f"uid-{i}")
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert c._released_sandbox_by_label is True
+  assert c.custom_api.get_namespaced_custom_object.call_count == 3
+  listed = c.custom_api.list_namespaced_custom_object.call_args
+  assert listed.kwargs["label_selector"] == "agents.x-k8s.io/claim-uid"
+  assert listed.kwargs["limit"] == 1
+  assert listed.kwargs["namespace"] == "ns1"
+  assert c.custom_api.delete_collection_namespaced_custom_object.call_count == 1
+  assert c.custom_api.delete_namespaced_custom_object.call_count == 0
+
+
+def test_released_sandbox_label_probe_backs_off_while_undecided(monkeypatch):
+  from kubernetes.client import ApiException
+
+  from agent_sandbox_rl import cluster as cluster_mod
+
+  monkeypatch.setattr(cluster_mod, "RELEASED_SANDBOX_BATCH_WINDOW_SECONDS", 0.005)
+  # Every released Sandbox is gone and no Sandbox carries the label: nothing to
+  # decide on, so each batch is deleted by name and the probe runs on the 1st,
+  # 2nd, 4th and 8th of 8 batches instead of on every one.
+  c = _cluster_with_mock_apis()
+  c.custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+  c.custom_api.list_namespaced_custom_object.return_value = {"items": []}
+  for i in range(8):
+    _release_and_wait_for_flush(c, i)
+  assert c._released_sandbox_by_label is None
+  assert c.custom_api.get_namespaced_custom_object.call_count == 4
+  assert c.custom_api.list_namespaced_custom_object.call_count == 4
+  # No list access leaves the question open; it does not turn the deletes off.
+  c.custom_api.list_namespaced_custom_object.side_effect = ApiException(status=403)
+  for i in range(8, 16):
+    _release_and_wait_for_flush(c, i)
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert c.custom_api.list_namespaced_custom_object.call_count == 5
+  assert c._released_sandbox_by_label is None
+  assert c._released_sandbox_disabled is False
+  assert c.custom_api.delete_collection_namespaced_custom_object.call_count == 0
+  assert c.core_api.delete_collection_namespaced_pod.call_count == 0
+  assert c.custom_api.delete_namespaced_custom_object.call_count == 16
+  assert c.core_api.delete_namespaced_pod.call_count == 16
+
+
+def test_released_sandbox_403_log_names_the_object(caplog):
+  from kubernetes.client import ApiException
+
+  c = _cluster_with_mock_apis()
+  c.custom_api.delete_namespaced_custom_object.side_effect = ApiException(status=403)
+  with caplog.at_level("INFO", logger="agent_sandbox_rl.cluster"):
+    c.delete_released_sandbox("sb-1", "pod-1")
+    c._released_sandbox_pool.shutdown(wait=True)
+  assert "no delete access to released Sandboxes;" in caplog.text
+
+
 def test_batch_handle_passes_its_claim_uid_to_the_released_sandbox_delete():
   calls: list[tuple] = []
   cluster = types.SimpleNamespace(
@@ -3506,8 +3616,8 @@ def test_released_sandbox_flusher_recovers_after_it_raises(monkeypatch):
   c = _cluster_with_mock_apis()
   probes: list[str] = []
 
-  def probe(release):
-    probes.append(release[2])
+  def probe(batch):
+    probes.append(batch[0][2])
     if len(probes) == 1:
       raise TypeError("unexpected")
     return True
