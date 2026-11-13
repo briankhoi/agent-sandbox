@@ -658,14 +658,18 @@ fleet = SandboxFleet(FleetConfig(
   when `claim_mode="batch"`).
 - After a release deletes a claim, the fleet also deletes that claim's Sandbox and pod
   itself, in the background. Left alone they wait for the cluster's garbage collector,
-  which on GKE removed about 13 objects a second: a fleet releasing hundreds of claims
-  per step then keeps finished pods on the nodes, and warm pools take minutes to refill
-  behind them. In a 6-step run of 500 claims per step this cut wall time from about
-  400 s to about 195 s on 10 nodes. It needs `delete` and `deletecollection` on
+  which on two of the three GKE clusters measured removed about 13 objects a second
+  (it ran at about 40 API requests a second and spends three per object): a fleet
+  releasing hundreds of claims per step then keeps finished pods on the nodes, and warm
+  pools take minutes to refill behind them. In a 6-step run of 500 claims per step this
+  cut wall time from about 400 s to about 195 s on 10 such nodes; on the third cluster,
+  whose garbage collector kept up, it made little difference. It needs `delete` and `deletecollection` on
   `sandboxes` (`agents.x-k8s.io`) and on `pods` in the namespace, in addition to the
   SDK's batch Role. With `deletecollection`, and a controller that labels a claim's
   Sandbox with the claim UID, up to 50 releases share two requests; with `delete`
-  only, each release costs two. Without either the first 403 turns it off and
+  only, each release costs two. Whether the controller sets that label is read from a
+  released Sandbox (`get`), or, when those are already gone, from a one-item `list` of
+  the namespace's Sandboxes; without `list` such a cluster stays on two per release. Without either the first 403 turns it off and
   released sandboxes are left to the garbage collector as before; nothing else
   changes. These requests are sent beside the batch's own, at most 16 at a time and
   never more than `max_in_flight`, so the driver's concurrent API requests peak at
