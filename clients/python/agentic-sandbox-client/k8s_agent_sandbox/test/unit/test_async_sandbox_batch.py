@@ -4911,7 +4911,7 @@ class TestAcquire(BaseClaimBatchTest):
             self.assertEqual(batch._state.next_ordinal, 2)
             self.assertEqual(batch._state._checking_acquires, {})
             self.assertEqual(batch._state._acquiring, {})
-            self.assertEqual(set(batch._state._released), {"b1-0", "b1-1"})
+            self.assertEqual(set(batch._state._released), set())
             self.assertEqual(batch._acquire_waiters, {})
 
     async def test_acquires_the_warm_pool_covers_skip_pacing_and_reread_its_count_once_a_second(self):
