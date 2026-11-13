@@ -706,11 +706,12 @@ class AsyncSandboxFleet:
     return await self._to_thread(self._fleet.release, handle,
                                  delete_snapshots=delete_snapshots)
 
-  async def _afinalize_claimed_batch_handles(self, claimed: list[SandboxHandle]) -> None:
+  async def _afinalize_claimed_batch_handles(self, claimed: list[SandboxHandle], *,
+                                             claim_deleted: bool = True) -> None:
     fl = self._fleet
     released_slots = 0
     for h in claimed:
-      await h.afinalize_bulk_batch_release()
+      await h.afinalize_bulk_batch_release(claim_deleted=claim_deleted)
       if not h._slot_released:
         fl.registry.get(h.cluster_name).release_claim()
         released_slots += 1
@@ -893,8 +894,13 @@ class AsyncSandboxFleet:
                 for h in claimed:
                   assert h._batch_claim is not None
                   deferred_async.setdefault(id(h._batch_claim.batch), []).append(h)
-                await self._afinalize_claimed_batch_handles(claimed)
+                # The claims are deleted just below, with each batch's release.
+                await self._afinalize_claimed_batch_handles(claimed, claim_deleted=False)
           failed_async = await self._async_batch_claims.release_all()
+          for bid, released_handles in deferred_async.items():
+            if bid not in failed_async:
+              for h in released_handles:
+                h.delete_released_sandbox()
           for bid, exc in failed_async.items():
             failed_handles = deferred_async.get(bid)
             if not failed_handles:

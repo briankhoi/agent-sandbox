@@ -3086,3 +3086,252 @@ def test_trust_env_skipped_only_when_no_proxy_or_netrc(monkeypatch, tmp_path):
   (tmp_path / ".netrc").unlink()
   monkeypatch.setattr(urllib.request, "getproxies", _boom)
   assert cluster_mod._env_configures_proxy_or_netrc() is True
+
+
+def _cluster_with_mock_apis():
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import ClusterConfig
+
+  c = Cluster(ClusterConfig(name="c-reclaim", namespace="ns1", in_cluster=True), api_client=MagicMock())
+  c.custom_api = MagicMock()
+  c.core_api = MagicMock()
+  return c
+
+
+def test_delete_released_sandbox_deletes_sandbox_then_pod():
+  c = _cluster_with_mock_apis()
+  order: list[str] = []
+  c.custom_api.delete_namespaced_custom_object.side_effect = lambda **kw: order.append("sandbox")
+  c.core_api.delete_namespaced_pod.side_effect = lambda *a, **kw: order.append("pod")
+
+  c.delete_released_sandbox("sb-1", "pod-1")
+  c.delete_released_sandbox(None, "pod-2")  # claim never bound a sandbox: nothing to delete
+  c.delete_released_sandbox("sb-3", None)   # no pod recorded: only the Sandbox is deleted
+  c._released_sandbox_pool.shutdown(wait=True)
+
+  assert sorted(order) == ["pod", "sandbox", "sandbox"]
+  assert order.index("sandbox") < order.index("pod")
+  first = c.custom_api.delete_namespaced_custom_object.call_args_list[0].kwargs
+  assert (first["plural"], first["name"], first["namespace"]) == ("sandboxes", "sb-1", "ns1")
+  assert c.core_api.delete_namespaced_pod.call_args.args[:2] == ("pod-1", "ns1")
+
+
+def test_delete_released_sandbox_error_handling():
+  from kubernetes.client import ApiException
+
+  # A Sandbox that is already gone still has its pod deleted.
+  c = _cluster_with_mock_apis()
+  c.custom_api.delete_namespaced_custom_object.side_effect = ApiException(status=404)
+  c.delete_released_sandbox("sb-gone", "pod-1")
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert c.core_api.delete_namespaced_pod.call_count == 1
+  assert c._released_sandbox_disabled is False
+
+  # A Sandbox whose delete failed may still exist, so its pod is left alone.
+  c = _cluster_with_mock_apis()
+  c.custom_api.delete_namespaced_custom_object.side_effect = ApiException(status=500)
+  c.delete_released_sandbox("sb-1", "pod-1")
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert c.core_api.delete_namespaced_pod.call_count == 0
+  assert c._released_sandbox_disabled is False
+
+  # The first 403, on either object, turns the deletes off.
+  for forbidden in ("sandbox", "pod"):
+    c = _cluster_with_mock_apis()
+    if forbidden == "sandbox":
+      c.custom_api.delete_namespaced_custom_object.side_effect = ApiException(status=403)
+    else:
+      c.core_api.delete_namespaced_pod.side_effect = ApiException(status=403)
+    c.delete_released_sandbox("sb-1", "pod-1")
+    c._released_sandbox_pool.shutdown(wait=True)
+    assert c._released_sandbox_disabled is True
+    assert c.core_api.delete_namespaced_pod.call_count == (0 if forbidden == "sandbox" else 1)
+    c.delete_released_sandbox("sb-2", "pod-2")  # nothing more is queued
+    assert c.custom_api.delete_namespaced_custom_object.call_count == 1
+
+  # Enough requests in a row that never reach the API server ...
+  from agent_sandbox_rl import cluster as cluster_mod
+
+  c = _cluster_with_mock_apis()
+  c.custom_api.delete_namespaced_custom_object.side_effect = OSError("connection refused")
+  for i in range(cluster_mod.RELEASED_SANDBOX_MAX_ERRORS + 5):
+    c._delete_released_sandbox(f"sb-{i}", "pod")
+  # ... pause them for a while, without turning them off for good.
+  assert (c.custom_api.delete_namespaced_custom_object.call_count
+          == cluster_mod.RELEASED_SANDBOX_MAX_ERRORS)
+  assert c._released_sandbox_disabled is False
+  c._released_sandbox_paused_until = 0.0
+  c.custom_api.delete_namespaced_custom_object.side_effect = None
+  c._delete_released_sandbox("sb-later", "pod")
+  assert c.core_api.delete_namespaced_pod.call_count == 1
+
+  # A response with a status, even a failure, means the API server is reachable.
+  c = _cluster_with_mock_apis()
+  for i in range(cluster_mod.RELEASED_SANDBOX_MAX_ERRORS - 1):
+    c.custom_api.delete_namespaced_custom_object.side_effect = OSError("reset")
+    c._delete_released_sandbox(f"sb-{i}", None)
+  c.custom_api.delete_namespaced_custom_object.side_effect = ApiException(status=500)
+  c._delete_released_sandbox("sb-500", None)
+  c.custom_api.delete_namespaced_custom_object.side_effect = OSError("reset")
+  c._delete_released_sandbox("sb-after", None)
+  assert c._released_sandbox_paused_until == 0.0
+
+
+def test_batch_handle_deletes_its_sandbox_only_once_the_claim_is_deleted():
+  calls: list[tuple] = []
+  cluster = types.SimpleNamespace(
+      delete_released_sandbox=lambda sb, pod: calls.append((sb, pod)),
+      _sandbox_client=None, _async_sandbox_client=None)
+
+  def _handle():
+    return types.SimpleNamespace(
+        _cluster=cluster, claim_name="claim-1", sandbox=None, sandbox_id="sb-1", pod_name="pod-1",
+        delete_released_sandbox=lambda: SandboxHandle.delete_released_sandbox(h))
+
+  h = _handle()
+  SandboxHandle._cleanup_batch_after_remote_delete(h)
+  assert calls == [("sb-1", "pod-1")]
+
+  # Teardown finalizes handles before the batch's deletecollection has run.
+  calls.clear()
+  h = _handle()
+  SandboxHandle._cleanup_batch_after_remote_delete(h, claim_deleted=False)
+  assert calls == []
+  SandboxHandle.delete_released_sandbox(h)
+  assert calls == [("sb-1", "pod-1")]
+
+
+# Paste at the end of examples/agent-sandbox-rl/tests/test_batch_claims.py.
+# Uses names that file already defines or imports: FakeBatch (via _batch_cluster),
+# _FakeAsyncBatch, _fleet, AsyncSandboxFleet, BatchError, ClusterRegistry,
+# FailFastPolicy, FleetConfig, AsyncMock, MagicMock, asyncio, pytest.
+
+
+def _record_teardown_order(cluster, events: list[tuple]) -> None:
+  """Record this cluster's released-sandbox deletes in ``events``."""
+  cluster.delete_released_sandbox = (
+      lambda sandbox, pod: events.append(("delete_sandbox", sandbox, pod)))
+
+
+def test_teardown_deletes_released_sandboxes_only_after_the_batch_claims(make_cluster):
+  c = _batch_cluster(make_cluster)
+  events: list[tuple] = []
+  _record_teardown_order(c, events)
+  f = _fleet(ClusterRegistry([c]), fail_fast=FailFastPolicy(enabled=False))
+  f.load_tasks(["img"] * 3)
+  f.plan()
+  handles = [f.acquire(t) for t in f.tasks]
+  batch = c.batches[0]
+  delete_claims = batch.release
+
+  def release():
+    # A live claim whose Sandbox is gone adopts another warm sandbox, so nothing
+    # may have been deleted by the time the batch starts deleting its claims.
+    events.append(("claims_delete_started", len(events)))
+    delete_claims()
+    events.append(("claims_deleted",))
+  batch.release = release
+
+  f.teardown()
+
+  assert events[0] == ("claims_delete_started", 0)
+  assert events[1] == ("claims_deleted",)
+  assert sorted(events[2:]) == sorted(
+      ("delete_sandbox", h.sandbox_id, h.pod_name) for h in handles)
+  assert batch.released_members == []            # the claims went with batch.release()
+
+
+def test_teardown_keeps_sandboxes_of_a_batch_whose_release_failed(make_cluster):
+  c = _batch_cluster(make_cluster)
+  events: list[tuple] = []
+  _record_teardown_order(c, events)
+  f = _fleet(ClusterRegistry([c]), fail_fast=FailFastPolicy(enabled=False))
+  f.load_tasks(["img"] * 3)
+  f.plan()
+  for t in f.tasks:
+    f.acquire(t)
+  c.batches[0].release = MagicMock(side_effect=BatchError("lease lost"))
+
+  with pytest.raises(BatchError, match="lease lost"):
+    f.teardown()
+
+  c.batches[0].release.assert_called_once()
+  assert events == []                            # the claims may still be live
+
+
+def _native_async_batch_fleet(name: str):
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import ClusterConfig
+
+  c = Cluster(ClusterConfig(name=name, namespace="ns1"),
+              api_client=MagicMock(), async_api_client=MagicMock())
+  c.resources = MagicMock()
+  c.resources.labels = {}
+  c.resources.namespace = "ns1"
+  c.resources.ensure_template.return_value = "tmpl"
+  c.resources.create_warmpool.return_value = True
+  c.resources.wait_for_pool_ready.return_value = True
+  for listing in ("list_claims", "list_leases", "list_warmpools", "list_templates"):
+    getattr(c.resources, listing).return_value = []
+  c.resources.count_pods.return_value = 0
+
+  batches: list[_FakeAsyncBatch] = []
+
+  async def claim_batch(groups, **kwargs):
+    batches.append(_FakeAsyncBatch(f"{name}-{len(batches) + 1}", groups, **kwargs))
+    return batches[-1]
+
+  async_client = MagicMock()
+  async_client.claim_batch = AsyncMock(side_effect=claim_batch)
+  async_client.close = AsyncMock()
+  c._async_sandbox_client = async_client
+  c._async_loop = asyncio.get_running_loop()
+  c._async_init_lock = asyncio.Lock()
+  af = AsyncSandboxFleet(
+      FleetConfig(claim_mode="batch", max_concurrent=8,
+                  fail_fast=FailFastPolicy(enabled=False)),
+      registry=ClusterRegistry([c]))
+  return c, af, batches
+
+
+async def test_async_teardown_deletes_released_sandboxes_only_after_the_batch_claims():
+  c, af, batches = _native_async_batch_fleet("order-ok")
+  events: list[tuple] = []
+  _record_teardown_order(c, events)
+  af.load_tasks(["img-a"] * 3)
+  af._fleet.plan()
+  handles = await af.acquire_batch(af.tasks)
+  assert len(batches) == 1
+  delete_claims = batches[0].release
+
+  async def release():
+    events.append(("claims_delete_started", len(events)))
+    await delete_claims()
+    events.append(("claims_deleted",))
+  batches[0].release = release
+
+  await af.teardown()
+  await af.aclose()
+
+  assert events[0] == ("claims_delete_started", 0)
+  assert events[1] == ("claims_deleted",)
+  assert sorted(events[2:]) == sorted(
+      ("delete_sandbox", h.sandbox_id, h.pod_name) for h in handles)
+  assert batches[0].released_members == []
+
+
+async def test_async_teardown_keeps_sandboxes_of_a_batch_whose_release_failed():
+  c, af, batches = _native_async_batch_fleet("order-fail")
+  events: list[tuple] = []
+  _record_teardown_order(c, events)
+  af.load_tasks(["img-a"] * 3)
+  af._fleet.plan()
+  await af.acquire_batch(af.tasks)
+  batches[0].release = AsyncMock(side_effect=BatchError("lease lost"))
+
+  with pytest.raises(BatchError, match="lease lost"):
+    await af.teardown()
+  await af.aclose()
+
+  assert batches[0].release.await_count >= 1
+  assert events == []

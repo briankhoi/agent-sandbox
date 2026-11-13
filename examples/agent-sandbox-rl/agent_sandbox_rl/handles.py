@@ -799,9 +799,11 @@ class SandboxHandle:
     """Whether the Sandbox's ``spec.operatingMode`` is ``Suspended``."""
     return bool(self._snapshot_sandbox().is_suspended())
 
-  def _cleanup_batch_after_remote_delete(self) -> None:
+  def _cleanup_batch_after_remote_delete(self, *, claim_deleted: bool = True) -> None:
     if self._cluster is not None:
       forget_claim_in_client(self._cluster, self.claim_name)
+      if claim_deleted:
+        self.delete_released_sandbox()
     if self.sandbox is not None:
       try:
         sb_vars = vars(self.sandbox)
@@ -849,20 +851,34 @@ class SandboxHandle:
               "failed to close sandbox connection for %s: %s",
               self.sandbox_id, exc)
 
-  def finalize_bulk_batch_release(self) -> None:
+  def delete_released_sandbox(self) -> None:
+    """Have the cluster delete this handle's Sandbox and pod, now that its claim is gone.
+
+    Only call this after the claim's delete has succeeded: a live claim whose
+    Sandbox disappears adopts another warm sandbox to replace it.
+    """
+    # Cluster doubles in tests and custom registries may not implement it.
+    delete_released = getattr(self._cluster, "delete_released_sandbox", None)
+    if callable(delete_released):
+      delete_released(self.sandbox_id, self.pod_name)
+
+  def finalize_bulk_batch_release(self, *, claim_deleted: bool = True) -> None:
     """Clean up local session, client tracking, snapshot triggers, and connection
-    for a batch handle whose remote claim is deleted by batch deletecollection."""
+    for a batch handle whose remote claim is deleted by batch deletecollection.
+
+    Pass ``claim_deleted=False`` when the deletecollection has not run yet, and call
+    `delete_released_sandbox` once it has succeeded."""
     self.close_session()
     try:
-      self._cleanup_batch_after_remote_delete()
+      self._cleanup_batch_after_remote_delete(claim_deleted=claim_deleted)
     finally:
       self._close_sandbox_connection()
 
-  async def afinalize_bulk_batch_release(self) -> None:
+  async def afinalize_bulk_batch_release(self, *, claim_deleted: bool = True) -> None:
     """Async counterpart to `finalize_bulk_batch_release`."""
     self.close_session()
     try:
-      self._cleanup_batch_after_remote_delete()
+      self._cleanup_batch_after_remote_delete(claim_deleted=claim_deleted)
     finally:
       await self._aclose_sandbox_connection()
 

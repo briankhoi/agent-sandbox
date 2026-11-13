@@ -26,17 +26,32 @@ import asyncio
 import contextlib
 import copy
 import inspect
+import logging
 import os
 import threading
+import time
 import urllib.request
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
 
 from kubernetes import client
 from kubernetes import config as k8s_config
 
+from . import constants
 from .config import ClusterConfig, TemplateSpec
 from .resources import Resources
+
+logger = logging.getLogger(__name__)
+
+# Background deletes of released sandboxes per cluster: enough to keep up with a few
+# hundred releases a second without adding much API-server load.
+RELEASED_SANDBOX_DELETE_WORKERS = 16
+RELEASED_SANDBOX_DELETE_TIMEOUT = (3, 10)
+# More than the workers, so one stalled moment with every worker mid-request does
+# not look like a lost connection.
+RELEASED_SANDBOX_MAX_ERRORS = 2 * RELEASED_SANDBOX_DELETE_WORKERS
+RELEASED_SANDBOX_PAUSE_SECONDS = 30.0
 
 
 def _env_configures_proxy_or_netrc() -> bool:
@@ -435,6 +450,11 @@ class Cluster:
     # Separate from _sandbox_client_lock, which is held while sandbox_client reads
     # k8s_helper, because threading.Lock is not reentrant.
     self._k8s_helper_lock = threading.Lock()
+    self._released_sandbox_lock = threading.Lock()
+    self._released_sandbox_pool: ThreadPoolExecutor | None = None
+    self._released_sandbox_disabled = False
+    self._released_sandbox_errors = 0
+    self._released_sandbox_paused_until = 0.0
     self.tracer_config = None                 # optional SDK SandboxTracerConfig
     # Placement / capacity bookkeeping. Mutated from parallel claim workers, so
     # guard with a per-cluster lock and only touch via the methods below.
@@ -785,6 +805,103 @@ class Cluster:
       self._async_ws_api_client = ws_api
       self._async_exec_core_api = core_api
       return self._async_exec_core_api
+
+  def delete_released_sandbox(self, sandbox_name: str | None, pod_name: str | None) -> None:
+    """Delete a released batch claim's Sandbox and pod now, in the background.
+
+    Deleting a claim leaves its Sandbox, and then the Sandbox's pod, to the cluster's
+    garbage collector. On GKE that removed about 13 objects a second, so a fleet that
+    releases hundreds of claims per step kept finished pods on the nodes and the warm
+    pools' replacement pods waited behind them for minutes. Deleting both directly
+    frees the nodes as fast as the fleet releases.
+
+    Call it only after the claim is gone: a live claim whose Sandbox disappears adopts
+    another warm sandbox. Best effort: the garbage collector still removes whatever
+    this misses. The first 403, on either object, turns it off for this cluster, so
+    a driver without delete access does not repeat a failing request for every
+    release. `RELEASED_SANDBOX_MAX_ERRORS` requests in a row that never reached the
+    API server pause it for `RELEASED_SANDBOX_PAUSE_SECONDS`, so a driver that has
+    lost its connection does not sit at exit working through a queue of timeouts.
+    """
+    if not sandbox_name or not self._released_sandbox_deletes_enabled():
+      return
+    with self._released_sandbox_lock:
+      if self._released_sandbox_pool is None:
+        self._released_sandbox_pool = ThreadPoolExecutor(
+            max_workers=RELEASED_SANDBOX_DELETE_WORKERS,
+            thread_name_prefix=f"asrl-reclaim-{self.name}")
+      pool = self._released_sandbox_pool
+    try:
+      pool.submit(self._delete_released_sandbox, sandbox_name, pod_name)
+    except RuntimeError:  # interpreter shutting down; garbage collection takes over
+      pass
+
+  def _released_sandbox_deletes_enabled(self) -> bool:
+    return (not self._released_sandbox_disabled
+            and time.monotonic() >= self._released_sandbox_paused_until)
+
+  def _delete_released_sandbox(self, sandbox_name: str, pod_name: str | None) -> None:
+    if not self._released_sandbox_deletes_enabled():
+      return
+    try:
+      self.custom_api.delete_namespaced_custom_object(
+          group=constants.SANDBOX_GROUP, version=constants.SANDBOX_VERSION,
+          namespace=self.namespace, plural=constants.SANDBOXES_PLURAL, name=sandbox_name,
+          _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT)
+    except Exception as e:  # noqa: BLE001 - best effort; garbage collection still runs
+      if not self._released_sandbox_delete_failed("Sandbox", e):
+        # The Sandbox may still exist, and its controller replaces a missing pod.
+        return
+    else:
+      self._released_sandbox_reached_server()
+    if not pod_name or self._released_sandbox_disabled:
+      return
+    try:
+      # The pod is not parsed: at hundreds of releases a second, building the returned
+      # V1Pod on these threads competes with the event loop for the interpreter lock.
+      resp = self.core_api.delete_namespaced_pod(
+          pod_name, self.namespace, grace_period_seconds=0,
+          _preload_content=False, _request_timeout=RELEASED_SANDBOX_DELETE_TIMEOUT)
+      # An unread body would make urllib3 discard the connection instead of reusing it.
+      for finish in ("drain_conn", "release_conn"):
+        fn = getattr(resp, finish, None)
+        if callable(fn):
+          fn()
+    except Exception as e:  # noqa: BLE001 - best effort; garbage collection still runs
+      self._released_sandbox_delete_failed("pod", e)
+    else:
+      self._released_sandbox_reached_server()
+
+  def _released_sandbox_reached_server(self) -> None:
+    with self._released_sandbox_lock:
+      self._released_sandbox_errors = 0
+
+  def _released_sandbox_delete_failed(self, kind: str, error: Exception) -> bool:
+    """Record a failed delete; returns True when the object is already gone."""
+    status = getattr(error, "status", None)
+    reason = None
+    with self._released_sandbox_lock:
+      if status:
+        self._released_sandbox_errors = 0
+        if status == 403 and not self._released_sandbox_disabled:
+          self._released_sandbox_disabled = True
+          reason = f"no delete access to released {kind}s; leaving released sandboxes"
+      else:
+        self._released_sandbox_errors += 1
+        if self._released_sandbox_errors >= RELEASED_SANDBOX_MAX_ERRORS:
+          self._released_sandbox_errors = 0
+          self._released_sandbox_paused_until = (
+              time.monotonic() + RELEASED_SANDBOX_PAUSE_SECONDS)
+          reason = (f"{RELEASED_SANDBOX_MAX_ERRORS} deletes in a row did not reach the "
+                    f"API server; for {RELEASED_SANDBOX_PAUSE_SECONDS:.0f}s leaving "
+                    "released sandboxes")
+    if status == 404:
+      return True
+    if reason is not None:
+      logger.info("cluster %s: %s to garbage collection", self.name, reason)
+    else:
+      logger.debug("cluster %s: deleting released %s failed: %s", self.name, kind, error)
+    return False
 
   async def prewarm_async_clients(self, *, connections: int = 64) -> None:
     """Best-effort pre-initialization of ``WsApiClient`` and HTTP/1.1 TLS keep-alive sockets.

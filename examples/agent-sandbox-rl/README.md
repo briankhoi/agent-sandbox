@@ -656,6 +656,15 @@ fleet = SandboxFleet(FleetConfig(
   [RBAC section](../../clients/python/agentic-sandbox-client/README.md#rbac), which
   adds Leases to what per-claim needs (`preflight()` checks Lease create access (dry-run)
   when `claim_mode="batch"`).
+- After a release deletes a claim, the fleet also deletes that claim's Sandbox and pod
+  itself, in the background. Left alone they wait for the cluster's garbage collector,
+  which on GKE removed about 13 objects a second: a fleet releasing hundreds of claims
+  per step then keeps finished pods on the nodes, and warm pools take minutes to refill
+  behind them. In a 6-step run of 500 claims per step this cut wall time from about
+  400 s to about 195 s on 10 nodes. It needs `delete` on `sandboxes`
+  (`agents.x-k8s.io`) and on `pods` in the namespace, in addition to the SDK's batch
+  Role. Without that access the first 403 turns it off and released sandboxes are
+  left to the garbage collector as before; nothing else changes.
 
 **BatchClaimConfig:** `work_budget` (3600), `lease_duration` (300, longer than the
 SDK's 60 because losing the Lease ends every rollout in flight on the batch, and each
