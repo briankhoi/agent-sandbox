@@ -1,6 +1,6 @@
 # RL batch claim mode: final report (2026-11-13)
 
-Batch claim mode vs upstream `per_claim` (`300d05e7`, unchanged), three GKE clusters, gVisor, image streaming on. Benchmark numbers in sections 2, 4 and 5 are read from the raw result JSON and pod logs in `scratch/gke_bench_v8/runs/` (full tables: `scratch/gke_bench_v8/tables_k1.md`) and were recomputed independently by an auditor, whose corrections are applied here (`brain/4fbea1c2-e01e-40b1-9cd4-773c916a7f11/AUDIT_RL_BATCH_FINAL_REPORT.md`). Sections 3 and 7 summarise investigation reports and were not recomputed. Batch runs use the defaults `create_rps` 500, `max_in_flight` 64 and async exec. "n" is the number of runs; ranges are min–max.
+Batch claim mode vs upstream `per_claim` (`300d05e7`, unchanged), three GKE clusters, gVisor, image streaming on. Benchmark numbers in sections 2, 4 and 5 are read from the raw result JSON and pod logs in `scratch/gke_bench_v8/runs/` (full tables: `scratch/gke_bench_v8/tables_k1.md`) and were recomputed independently by an auditor, whose corrections are applied here (`brain/4fbea1c2-e01e-40b1-9cd4-773c916a7f11/AUDIT_RL_BATCH_FINAL_REPORT.md`). Sections 3 and 7 summarise investigation reports and were not recomputed. Batch runs use `max_in_flight` 64 and async exec; eval, 3k and parity pass `create_rps` 500 and the burst and step drivers leave it at the library default. "n" is the number of runs; ranges are min–max.
 
 ## 1. PR candidate
 
@@ -46,11 +46,11 @@ All batch tasks succeeded in the runs in this table. Exceptions and failures:
 | 1k burst c=500, claims/s | older, 10 nodes | 260 (240–281, n=3) | 92 (88–94, n=3) | 2.8× |
 | Soak, 20,000 claims in waves of 200 | older, 10 nodes | 20,000 / 20,000, 0 errors | not rerun | – |
 
-Same shapes on the previous image (`k1-final` = `aefae49e`, which differs from the final SHA only by the SDK memory fix, the bulk-release guard and the label probe) agree: R2E older 208 s (n=2) vs 1,000 s; eval 15.6 s (n=3) vs 18.8 s (n=3), TTFI p50 1.81 vs 3.41 s; 3k naive 150 vs 392 s; burst c=1000 234 vs 108 claims/s. On the fresh cluster the 1k burst gives 230 vs 117 claims/s at c=1000 (TTFI p50 8.6 vs 17.2 s; p99 21.2 vs 22.2 s, ranges overlap).
+Same shapes on the previous image (`k1-final` = `aefae49e`, which differs from the final SHA only by the SDK memory fix, the bulk-release guard, the label probe and a test-only commit) agree: R2E older 208 s (n=2) vs 1,000 s; eval 15.6 s (n=3) vs 18.8 s (n=3), TTFI p50 1.81 vs 3.41 s; 3k naive 150 vs 392 s; burst c=1000 234 vs 108 claims/s. On the fresh cluster the 1k burst gives 230 vs 117 claims/s at c=1000 (TTFI p50 8.6 vs 17.2 s; p99 21.2 vs 22.2 s, ranges overlap).
 
 Where batch is worse or equal:
 
-- **Fresh-cluster R2E is a tie on the previous image and 6% slower on the single final-image run**, which had no per_claim run beside it. The scheduler reports `Insufficient memory` there for both arms, so node capacity sets the pace. One batch run on an earlier image had an 86 s step (one pool waited 56 s).
+- **Fresh-cluster R2E is a tie on the previous image and 6% slower on the single final-image run**, which had no per_claim run beside it. The scheduler logged `Insufficient memory` events there during both arms' runs (from the cluster's event stream, not the result files). Time until all environments are ready is the same in both arms (153–168 s batch vs 163 s per_claim); batch adds 5–7 s per run between the last task and the end of each step, against 1.5–1.7 s (Appendix D). One batch run on an earlier image had an 86 s step (one pool waited 56 s).
 - **3k TTFI p50 is worse for batch** (18.6–22.5 s vs 6–14 s) while p99 is far better (40.7–62.4 s vs 229–357 s). Per_claim serves most tasks quickly and then stalls; batch waits evenly on pool refill.
 - **Bulk release throughput in the burst** is lower for batch on the older 10-node cluster with the final image (about 750 vs 1,000–1,100 sandboxes/s at c=500 and c=1000, ranges overlap). On the fresh cluster batch was faster (1,520 vs 892 at c=1000). No cause identified.
 - **Sliding and pipelined 500×2**: batch 41.7 / 43.0 s. Per_claim was not rerun on this image; its runs earlier today were 41.9–42.6 s. Both are bound by pod start rate.
@@ -214,3 +214,332 @@ Rebuilt by the auditor from the conversation log (`Step` is the log step). Effec
 
 Prefix `g2`: `plan_g2_c1.txt` produced runs named `g3_*` (tracker 13:02Z). I found no experiment named `x8`; the `x8`/`g1_`/`g2_` hits before step 11511 are unrelated strings.
 
+## Appendix B. Recipes
+
+Notes that apply to every table below:
+
+- The `commit_sha` column is the label the plan passed to the launcher (`PLAN_SHA`), not the image commit. Per_claim runs carry the batch round's label. The image is fixed by tag and digest.
+- Image commits from `IMAGE_DIGESTS.txt`: `k3-final` = `80c6ae71`, `k1-final` = `aefae49e`, `j2-300d05e7` and `f1-300d05e7` = upstream `300d05e7` (`j2` adds cold-launch counters to the burst and step drivers).
+- Registry path for all driver images: `us-central1-docker.pkg.dev/<PROJECT>/rl-gke-bench/asrl-driver@<digest>`.
+- Settle is the third field of the plan line (seconds slept after the namespace is confirmed empty).
+- Burst and step commands do not pass `--batch-create-rps`; their result JSON records `batch_create_rps` 0.0. The eval, 3k and parity commands pass 500.
+- Clusters: `asrl-c4-1` and `asrl-c4-6` use node pool `gvisor-pool`; `asrl-c4-t0` uses `gvisor-n2-ssd`. All three pools are n2-standard-32 (sources in B.10).
+
+### B.1 R2E 500×2×8
+
+| Arm | Runs | Cluster | Node pool | Image tag | Digest | `commit_sha` label in meta | Settle |
+|---|---|---|---|---|---|---|---|
+| batch | `k3_r2e500x2x8_batch_r1`, `k3_r2e500x2x8_batch_r2`, `k3_r2e500x2x8_batch_r3` | asrl-c4-t0 | gvisor-n2-ssd | `k3-final` | `sha256:f7390a93d7c7a78557241efa58eb75c4cb0e0d3b4b10544a96de7f5fd624d7e1` | `80c6ae71` | 25 s |
+| batch | `k3c6_r2e500x2x8_batch_r1` | asrl-c4-6 | gvisor-pool | `k3-final` | `sha256:f7390a93d7c7a78557241efa58eb75c4cb0e0d3b4b10544a96de7f5fd624d7e1` | `80c6ae71` | 25 s |
+| batch | `k1_r2e500x2x8_batch_r1`, `k1_r2e500x2x8_batch_r2` | asrl-c4-t0 | gvisor-n2-ssd | `k1-final` | `sha256:13e37ac0637117684e46d9c8756c9461718e863029f19361f910370aecaa4b58` | `aefae49e` | 25 s |
+| batch | `k1c6_r2e500x2x8_batch_r1`, `k1c6_r2e500x2x8_batch_r2` | asrl-c4-6 | gvisor-pool | `k1-final` | `sha256:13e37ac0637117684e46d9c8756c9461718e863029f19361f910370aecaa4b58` | `aefae49e` | 25 s |
+| per_claim | `k3_r2e500x2x8_pc_up_r1`, `k3_r2e500x2x8_pc_up_r2` | asrl-c4-t0 | gvisor-n2-ssd | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `80c6ae71` | 25 s |
+| per_claim | `k1_r2e500x2x8_pc_up_r1` | asrl-c4-t0 | gvisor-n2-ssd | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `aefae49e` | 25 s |
+| per_claim | `k1c6_r2e500x2x8_pc_up_r1`, `k1c6_r2e500x2x8_pc_up_r2` | asrl-c4-6 | gvisor-pool | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `aefae49e` | 25 s |
+
+Batch command (prefixes k1, k3):
+
+```
+python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-n2-ssd --runtime-class gvisor --images-file /app/drivers/images/r2e_subset_500.txt --problems 500 --rollouts 2 --steps 8 --concurrency 500 --strategies naive --warm-per-task --max-warmpool-size 2 --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 500 --probe 'cd /testbed && git status >/dev/null && git log --oneline -5 >/dev/null && sleep 5' --claim-mode batch --async-exec --batch-max-in-flight 64
+```
+
+Batch command (prefixes k1c6, k3c6):
+
+```
+python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/r2e_subset_500.txt --problems 500 --rollouts 2 --steps 8 --concurrency 500 --strategies naive --warm-per-task --max-warmpool-size 2 --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 500 --probe 'cd /testbed && git status >/dev/null && git log --oneline -5 >/dev/null && sleep 5' --claim-mode batch --async-exec --batch-max-in-flight 64
+```
+
+Per_claim command (prefixes k1, k3):
+
+```
+python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-n2-ssd --runtime-class gvisor --images-file /app/drivers/images/r2e_subset_500.txt --problems 500 --rollouts 2 --steps 8 --concurrency 500 --strategies naive --warm-per-task --max-warmpool-size 2 --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 500 --probe 'cd /testbed && git status >/dev/null && git log --oneline -5 >/dev/null && sleep 5' --claim-mode per_claim
+```
+
+Per_claim command (prefixes k1c6):
+
+```
+python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/r2e_subset_500.txt --problems 500 --rollouts 2 --steps 8 --concurrency 500 --strategies naive --warm-per-task --max-warmpool-size 2 --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 500 --probe 'cd /testbed && git status >/dev/null && git log --oneline -5 >/dev/null && sleep 5' --claim-mode per_claim
+```
+
+
+### B.2 Multi-step 250×2×6
+
+| Arm | Runs | Cluster | Node pool | Image tag | Digest | `commit_sha` label in meta | Settle |
+|---|---|---|---|---|---|---|---|
+| batch | `k3_stept0_250x2x6_batch_r1` | asrl-c4-t0 | gvisor-n2-ssd | `k3-final` | `sha256:f7390a93d7c7a78557241efa58eb75c4cb0e0d3b4b10544a96de7f5fd624d7e1` | `80c6ae71` | 25 s |
+| per_claim | `k3_stept0_250x2x6_pc_up_r1` | asrl-c4-t0 | gvisor-n2-ssd | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `80c6ae71` | 25 s |
+
+Batch command (prefixes k3):
+
+```
+python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-n2-ssd --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --problems 250 --rollouts 2 --steps 6 --concurrency 500 --strategies naive --warm-per-task --max-warmpool-size 2 --enable-cow --overcommit-factor 10 --unmanaged-network-policy --termination-grace-seconds 0 --probe 'sleep 10' --claim-mode batch --async-exec --batch-max-in-flight 64
+```
+
+Per_claim command (prefixes k3):
+
+```
+python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-n2-ssd --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --problems 250 --rollouts 2 --steps 6 --concurrency 500 --strategies naive --warm-per-task --max-warmpool-size 2 --enable-cow --overcommit-factor 10 --unmanaged-network-policy --termination-grace-seconds 0 --probe 'sleep 10' --claim-mode per_claim
+```
+
+
+### B.3 Eval 500×1
+
+| Arm | Runs | Cluster | Node pool | Image tag | Digest | `commit_sha` label in meta | Settle |
+|---|---|---|---|---|---|---|---|
+| batch | `k3_eval500_batch_r1`, `k3_eval500_batch_r2` | asrl-c4-1 | gvisor-pool | `k3-final` | `sha256:f7390a93d7c7a78557241efa58eb75c4cb0e0d3b4b10544a96de7f5fd624d7e1` | `80c6ae71` | 20 s |
+| batch | `k3c6_eval500_batch_r1` | asrl-c4-6 | gvisor-pool | `k3-final` | `sha256:f7390a93d7c7a78557241efa58eb75c4cb0e0d3b4b10544a96de7f5fd624d7e1` | `80c6ae71` | 20 s |
+| batch | `k1_eval500_batch_r1`, `k1_eval500_batch_r2`, `k1_eval500_batch_r3` | asrl-c4-1 | gvisor-pool | `k1-final` | `sha256:13e37ac0637117684e46d9c8756c9461718e863029f19361f910370aecaa4b58` | `aefae49e` | 20 s |
+| batch | `k1c6_eval500_batch_r1`, `k1c6_eval500_batch_r2` | asrl-c4-6 | gvisor-pool | `k1-final` | `sha256:13e37ac0637117684e46d9c8756c9461718e863029f19361f910370aecaa4b58` | `aefae49e` | 20 s |
+| per_claim | `k3_eval500_pc_up_r1` | asrl-c4-1 | gvisor-pool | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `80c6ae71` | 20 s |
+| per_claim | `k1_eval500_pc_up_r1`, `k1_eval500_pc_up_r2`, `k1_eval500_pc_up_r3` | asrl-c4-1 | gvisor-pool | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `aefae49e` | 20 s |
+| per_claim | `k1c6_eval500_pc_up_r1`, `k1c6_eval500_pc_up_r2` | asrl-c4-6 | gvisor-pool | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `aefae49e` | 20 s |
+
+Batch command (prefixes k1, k1c6, k3, k3c6):
+
+```
+python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --problems 500 --rollouts 1 --concurrency 500 --strategies naive --unmanaged-network-policy --termination-grace-seconds 0 --probe true --claim-mode batch --async-exec --batch-max-in-flight 64 --batch-create-rps 500
+```
+
+Per_claim command (prefixes k1, k1c6, k3):
+
+```
+python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --problems 500 --rollouts 1 --concurrency 500 --strategies naive --unmanaged-network-policy --termination-grace-seconds 0 --probe true --claim-mode per_claim
+```
+
+
+### B.4 3k (500×6; naive, sliding, pipelined)
+
+| Arm | Runs | Cluster | Node pool | Image tag | Digest | `commit_sha` label in meta | Settle |
+|---|---|---|---|---|---|---|---|
+| batch | `k3_3k_500x6_batch_r1`, `k3_3k_500x6_batch_r2` | asrl-c4-1 | gvisor-pool | `k3-final` | `sha256:f7390a93d7c7a78557241efa58eb75c4cb0e0d3b4b10544a96de7f5fd624d7e1` | `80c6ae71` | 25 s |
+| batch | `k1_3k_500x6_batch_r1` | asrl-c4-1 | gvisor-pool | `k1-final` | `sha256:13e37ac0637117684e46d9c8756c9461718e863029f19361f910370aecaa4b58` | `aefae49e` | 25 s |
+| per_claim | `k3_3k_500x6_pc_up_r1` | asrl-c4-1 | gvisor-pool | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `80c6ae71` | 25 s |
+| per_claim | `k1_3k_500x6_pc_up_r1` | asrl-c4-1 | gvisor-pool | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `aefae49e` | 25 s |
+
+Batch command (prefixes k1, k3):
+
+```
+python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --problems 500 --rollouts 6 --concurrency 500 --strategies naive,sliding,pipelined --enable-cow --overcommit-factor 10 --unmanaged-network-policy --termination-grace-seconds 0 --probe true --claim-mode batch --async-exec --batch-max-in-flight 64 --batch-create-rps 500
+```
+
+Per_claim command (prefixes k1, k3):
+
+```
+python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --problems 500 --rollouts 6 --concurrency 500 --strategies naive,sliding,pipelined --enable-cow --overcommit-factor 10 --unmanaged-network-policy --termination-grace-seconds 0 --probe true --claim-mode per_claim
+```
+
+
+### B.5 500×2 parity (naive, sliding, pipelined)
+
+| Arm | Runs | Cluster | Node pool | Image tag | Digest | `commit_sha` label in meta | Settle |
+|---|---|---|---|---|---|---|---|
+| batch | `k3_parity500x2_batch_r1` | asrl-c4-t0 | gvisor-n2-ssd | `k3-final` | `sha256:f7390a93d7c7a78557241efa58eb75c4cb0e0d3b4b10544a96de7f5fd624d7e1` | `80c6ae71` | 20 s |
+| batch | `k1_parity500x2_batch_r1` | asrl-c4-t0 | gvisor-n2-ssd | `k1-final` | `sha256:13e37ac0637117684e46d9c8756c9461718e863029f19361f910370aecaa4b58` | `aefae49e` | 20 s |
+| per_claim | `h1_parity500x2_pc_up_r1`, `h1_parity500x2_pc_up_r2` (no k-prefix run of this arm; latest earlier run shown) | asrl-c4-t0 | gvisor-n2-ssd | `f1-300d05e7` | `sha256:16af39f9332f6839b201071a3d2de2d222c36356c7513682e82af71a6fe06095` | `f85a5072` | 20 s |
+
+Batch command (prefixes k1, k3):
+
+```
+python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-n2-ssd --runtime-class gvisor --images-file /app/drivers/images/mixed_interleaved_500.txt --problems 500 --rollouts 2 --concurrency 200 --strategies naive,sliding,pipelined --window-size 100 --warm-per-task --max-warmpool-size 2 --overcommit-factor 10 --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --probe true --claim-mode batch --async-exec --batch-max-in-flight 64 --batch-create-rps 500
+```
+
+Per_claim command (prefixes h1):
+
+```
+python run_basic_swebench_3000.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-n2-ssd --runtime-class gvisor --images-file /app/drivers/images/mixed_interleaved_500.txt --problems 500 --rollouts 2 --concurrency 200 --strategies naive,sliding,pipelined --window-size 100 --warm-per-task --max-warmpool-size 2 --overcommit-factor 10 --enable-cow --unmanaged-network-policy --termination-grace-seconds 0 --probe true --claim-mode per_claim
+```
+
+
+### B.6 1k burst
+
+| Arm | Runs | Cluster | Node pool | Image tag | Digest | `commit_sha` label in meta | Settle |
+|---|---|---|---|---|---|---|---|
+| batch | `k3_burst_1x1000_batch_r1`, `k3_burst_1x1000_batch_r2` (failed) | asrl-c4-1 | gvisor-pool | `k3-final` | `sha256:f7390a93d7c7a78557241efa58eb75c4cb0e0d3b4b10544a96de7f5fd624d7e1` | `80c6ae71` | 25 s |
+| batch | `k1_burst_1x1000_batch_r1` | asrl-c4-1 | gvisor-pool | `k1-final` | `sha256:13e37ac0637117684e46d9c8756c9461718e863029f19361f910370aecaa4b58` | `aefae49e` | 25 s |
+| batch | `k1c6_burst_1x1000_batch_r1` | asrl-c4-6 | gvisor-pool | `k1-final` | `sha256:13e37ac0637117684e46d9c8756c9461718e863029f19361f910370aecaa4b58` | `aefae49e` | 25 s |
+| per_claim | `k3_burst_1x1000_pc_up_r1` | asrl-c4-1 | gvisor-pool | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `80c6ae71` | 25 s |
+| per_claim | `k1_burst_1x1000_pc_up_r1` | asrl-c4-1 | gvisor-pool | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `aefae49e` | 25 s |
+| per_claim | `k1c6_burst_1x1000_pc_up_r1` | asrl-c4-6 | gvisor-pool | `j2-300d05e7` | `sha256:70f7e94d365f1aabc3b29b2be6d4c7d38816b982d977eea73c6a50e4261b2898` | `aefae49e` | 25 s |
+
+Batch command (prefixes k1, k1c6, k3):
+
+```
+ASRL_COUNT_COLD=1 python run_claim_soak_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --mode burst --problems 1 --replicas-per-image 1000 --concurrencies 100,250,500,1000 --repeats 3 --post-warm-settle-s 10 --verify-exec --unmanaged-network-policy --termination-grace-seconds 0 --claim-mode batch --async-exec --batch-max-in-flight 64
+```
+
+Per_claim command (prefixes k1, k1c6, k3):
+
+```
+ASRL_COUNT_COLD=1 python run_claim_soak_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --mode burst --problems 1 --replicas-per-image 1000 --concurrencies 100,250,500,1000 --repeats 3 --post-warm-settle-s 10 --verify-exec --unmanaged-network-policy --termination-grace-seconds 0 --claim-mode per_claim
+```
+
+
+### B.7 20k soak
+
+| Arm | Runs | Cluster | Node pool | Image tag | Digest | `commit_sha` label in meta | Settle |
+|---|---|---|---|---|---|---|---|
+| batch | `k3_soak20k_batch_r1` | asrl-c4-1 | gvisor-pool | `k3-final` | `sha256:f7390a93d7c7a78557241efa58eb75c4cb0e0d3b4b10544a96de7f5fd624d7e1` | `80c6ae71` | 25 s |
+| per_claim | `f1_soak20k_pc_up_r1` (no k-prefix run of this arm; latest earlier run shown) | asrl-c4-1 | gvisor-pool | `f1-300d05e7` | `sha256:16af39f9332f6839b201071a3d2de2d222c36356c7513682e82af71a6fe06095` | `final` | 25 s |
+
+Batch command (prefixes k3):
+
+```
+python run_claim_soak_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --mode soak --problems 200 --replicas-per-image 2 --wave-size 200 --total-claims 20000 --no-verify-exec --overcommit-factor 10 --unmanaged-network-policy --termination-grace-seconds 0 --claim-mode batch --async-exec --batch-max-in-flight 64
+```
+
+Per_claim command (prefixes f1):
+
+```
+python run_claim_soak_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-pool --runtime-class gvisor --images-file /app/drivers/images/swebench500.txt --mode soak --problems 200 --replicas-per-image 2 --wave-size 200 --total-claims 20000 --no-verify-exec --overcommit-factor 10 --unmanaged-network-policy --termination-grace-seconds 0 --claim-mode per_claim
+```
+
+
+### B.8 Tunix-shaped 64×16×6
+
+| Arm | Runs | Cluster | Node pool | Image tag | Digest | `commit_sha` label in meta | Settle |
+|---|---|---|---|---|---|---|---|
+| batch | `k1_tunix_64x16x6_batch_r1` | asrl-c4-t0 | gvisor-n2-ssd | `k1-final` | `sha256:13e37ac0637117684e46d9c8756c9461718e863029f19361f910370aecaa4b58` | `aefae49e` | 25 s |
+| per_claim | `h1_tunix_64x16x6_pc_up_r1`, `h1_tunix_64x16x6_pc_up_r2` (no k-prefix run of this arm; latest earlier run shown) | asrl-c4-t0 | gvisor-n2-ssd | `f1-300d05e7` | `sha256:16af39f9332f6839b201071a3d2de2d222c36356c7513682e82af71a6fe06095` | `f85a5072` | 25 s |
+
+Batch command (prefixes k1):
+
+```
+python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-n2-ssd --runtime-class gvisor --images-file /app/drivers/images/r2e_subset_500.txt --problems 64 --rollouts 16 --steps 6 --concurrency 1024 --cpu 125m --memory 512Mi --strategies naive --warm-per-task --max-warmpool-size 16 --enable-cow --overcommit-factor 10 --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 512 --probe 'if [ -d /testbed ]; then cd /testbed; fi; (git status >/dev/null 2>&1 || true); sleep 10' --claim-mode batch --async-exec --batch-max-in-flight 64
+```
+
+Per_claim command (prefixes h1):
+
+```
+python run_step_bench.py --in-cluster --namespace agent-sandbox-rl --node-selector cloud.google.com/gke-nodepool=gvisor-n2-ssd --runtime-class gvisor --images-file /app/drivers/images/r2e_subset_500.txt --problems 64 --rollouts 16 --steps 6 --concurrency 1024 --cpu 125m --memory 512Mi --strategies naive --warm-per-task --max-warmpool-size 16 --enable-cow --overcommit-factor 10 --unmanaged-network-policy --termination-grace-seconds 0 --warm-create-budget 512 --probe 'if [ -d /testbed ]; then cd /testbed; fi; (git status >/dev/null 2>&1 || true); sleep 10' --claim-mode per_claim
+```
+
+Soak: no per_claim soak was run in the k rounds. Cross-round only: batch `k3_soak20k_batch_r1` soak wall 1,752 s, 20,000/20,000 ok; per_claim `f1_soak20k_pc_up_r1` (image `f1-300d05e7`, earlier the same day, 10:09Z) soak wall 3,178 s, 20,000/20,000 ok, 0 errors.
+
+### B.9 How to rerun
+
+Add a line `name|tag|settle|command` to a plan file and run `PLAN_SHA=<label> bash gke_bench_v8/exp_plan8.sh <cluster> <planfile>`. That calls, per line, `COMMIT_SHA=<label> DRIVER_TAG=<tag> SETTLE_S=<settle> CTX=<kube context> KUBECONFIG=gke_bench_v4/kubeconfig_<cluster>.yaml bash gke_bench_v8/run_job_v8.sh <name> "<command>"`. A name that already has `runs/<name>.json` is skipped, so a rerun needs a new name. The launcher resolves the tag to a digest in `gke_bench_v7/IMAGE_DIGESTS.txt` and refuses to run if none is recorded. It deletes leftovers in namespace `agent-sandbox-rl`, waits until pods, claims, warm pools, sandboxes, templates, daemonsets and leases are all zero, then sleeps the settle time. It snapshots API priority-and-fairness metrics and the controller pods before and after. The driver runs as a Kubernetes Job (service account `asrl-driver`, node selector `bench-role=driver`, requests 8 CPU / 16 Gi, limits 14 CPU / 28 Gi, `backoffLimit` 0). The result JSON is cut out of the pod log and saved with `meta.json`. One retry happens only if the pod log shows an API 500.
+
+### B.10 Cluster configuration established from files
+
+| Fact | asrl-c4-1 | asrl-c4-t0 | asrl-c4-6 | Source |
+|---|---|---|---|---|
+| Region | us-central1 | us-central1 | us-central1, nodes in zones a and b | meta `context`; `provision_c6.sh` |
+| Sandbox node pool | `gvisor-pool`, 10× n2-standard-32, 600 GB disk | `gvisor-n2-ssd`, 20× n2-standard-32, 1,000 GB pd-ssd | `gvisor-pool`, 10× n2-standard-32 (5 per zone × 2), pd-balanced 1,400 GB, max 256 pods per node | tracker lines 40–41; `provision_c6.sh` |
+| Runtime | gVisor (`--runtime-class gvisor` in every command) | same | same; pool created with `--sandbox=type=gvisor` | driver_cmd; `provision_c6.sh` |
+| Image streaming | on (tracker: "Riptide V2") | on (tracker: "Riptide V2") | on (`--enable-image-streaming` on cluster and pool) | tracker; `provision_c6.sh` |
+| Driver pool | not recorded | not recorded | 1 node per zone × 2, n2-standard-16, label `bench-role=driver` | `provision_c6.sh` |
+| Controller pool | not recorded | node names contain `ctrl-pool` | e2-standard-32, 1 per zone × 2, tainted `dedicated=ctrl` | `ctrl_before.json`; `provision_c6.sh` |
+| Release channel | not recorded | not recorded | rapid | `provision_c6.sh` |
+| GKE version | not recorded | not recorded | not recorded | no version string in runs, meta, pod logs or tracker |
+
+Controller, identical in `ctrl_before.json` on all three clusters for the k3 runs checked (`k3_eval500_batch_r1`, `k3_r2e500x2x8_batch_r1`, `k3c6_r2e500x2x8_batch_r1`):
+
+- Image `us-central1-docker.pkg.dev/<PROJECT>/rl-gke-bench/agent-sandbox-controller@sha256:8d11e685651cfb17e406d3440256dedb8317c219a7fe80a789999290d3161ab1`.
+- Args: `--leader-elect=true --extensions --sandbox-concurrent-workers=1000 --sandbox-claim-concurrent-workers=500 --sandbox-warm-pool-concurrent-workers=500 --sandbox-template-concurrent-workers=100 --sandbox-warm-pool-max-batch-size=500 --sandbox-warm-pool-max-refill-rate=500 --sandbox-warm-pool-readiness-grace-period=30m --kube-api-qps=-1 --api-connections=4 --separate-watch-connection=true --cache-label-selectors=true --disable-claim-events=true --disable-sandbox-events=true --disable-claim-observability-annotations=true`.
+- Resources: requests 14 CPU / 28 Gi, limits 28 CPU / 32 Gi. Leader election on, 2 replicas.
+- `asrl-c4-6` was built with a 170-node-per-zone spot e2-medium warm-up pool, private nodes, and bootstrap tier `t1` (`gke_bench_v4/bootstrap_cluster_v4.sh`), then the controller image and args were copied from `asrl-c4-t0`.
+
+## Appendix C. Metrics a lab would rank: final image (`k3-final`) vs upstream per_claim
+
+Ratio is per_claim ÷ batch for times and resources, batch ÷ per_claim for claims/s, so above 1 means batch is better. TTFI in the eval is `paired_ttfi_s`; in the burst it is `ttfi_s` of each burst. Threads, sockets and RSS are `proc_held` of the three c=1000 bursts.
+
+| Metric | Shape | Cluster | Batch (median, range, n) | per_claim (median, range, n) | Ratio | Runs |
+|---|---|---|---|---|---|---|
+| Wall s | R2E 500×2×8 | asrl-c4-t0 | 207 (203–220, n=3) | 1,015 (1,004–1,027, n=2) | 4.90× | B: k3_r2e500x2x8_batch_r1, k3_r2e500x2x8_batch_r2, k3_r2e500x2x8_batch_r3; P: k3_r2e500x2x8_pc_up_r1, k3_r2e500x2x8_pc_up_r2 |
+| Wall s | R2E 500×2×8 | asrl-c4-6 (per_claim from the k1c6 round, not paired) | 253 (n=1) | 239 (237–240, n=2) | 0.94× | B: k3c6_r2e500x2x8_batch_r1; P: k1c6_r2e500x2x8_pc_up_r1, k1c6_r2e500x2x8_pc_up_r2 |
+| Wall s | 3k naive | asrl-c4-1 | 160 (158–162, n=2) | 393 (n=1) | 2.46× | B: k3_3k_500x6_batch_r1, k3_3k_500x6_batch_r2; P: k3_3k_500x6_pc_up_r1 |
+| Wall s | 3k sliding | asrl-c4-1 | 166 (157–175, n=2) | 398 (n=1) | 2.39× | B: k3_3k_500x6_batch_r1, k3_3k_500x6_batch_r2; P: k3_3k_500x6_pc_up_r1 |
+| Wall s | 3k pipelined | asrl-c4-1 | 180 (169–192, n=2) | 420 (n=1) | 2.33× | B: k3_3k_500x6_batch_r1, k3_3k_500x6_batch_r2; P: k3_3k_500x6_pc_up_r1 |
+| Wall s | Eval 500×1 | asrl-c4-1 | 16.3 (16.0–16.6, n=2) | 18.7 (n=1) | 1.15× | B: k3_eval500_batch_r1, k3_eval500_batch_r2; P: k3_eval500_pc_up_r1 |
+| TTFI p50 s | Eval 500×1 | asrl-c4-1 | 2.09 (1.87–2.30, n=2) | 3.40 (n=1) | 1.63× | B: k3_eval500_batch_r1, k3_eval500_batch_r2; P: k3_eval500_pc_up_r1 |
+| TTFI p99 s | Eval 500×1 | asrl-c4-1 | 3.08 (2.92–3.25, n=2) | 4.08 (n=1) | 1.32× | B: k3_eval500_batch_r1, k3_eval500_batch_r2; P: k3_eval500_pc_up_r1 |
+| TTFI p50 s | Burst c=500 | asrl-c4-1 | 1.72 (1.70–1.90, n=3) | 3.83 (3.57–3.84, n=3) | 2.23× | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| TTFI p99 s | Burst c=500 | asrl-c4-1 | 2.46 (2.44–2.87, n=3) | 5.30 (4.98–5.41, n=3) | 2.15× | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| TTFI p50 s | Burst c=1000 | asrl-c4-1 | 2.69 (2.47–3.14, n=3) | 10.9 (6.36–10.9, n=3) | 4.07× | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| TTFI p99 s | Burst c=1000 | asrl-c4-1 | 4.71 (4.42–4.84, n=3) | 12.1 (8.46–12.2, n=3) | 2.56× | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| Claims/s | Burst c=500 | asrl-c4-1 | 260 (240–281, n=3) | 92.5 (87.9–94.3, n=3) | 2.81× | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| Claims/s | Burst c=1000 | asrl-c4-1 | 233 (233–253, n=3) | 107 (106–119, n=3) | 2.17× | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| Driver threads (proc_held) | Burst c=1000 | asrl-c4-1 | 19 (16–19, n=3) | 3,017 (3,017–3,017, n=3) | 159× | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| Driver open sockets (proc_held) | Burst c=1000 | asrl-c4-1 | 84 (78–84, n=3) | 1,064 (991–1,151, n=3) | 12.7× | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| Driver RSS MB (proc_held) | Burst c=1000 | asrl-c4-1 | 371 (353–376, n=3) | 3,748 (2,782–4,313, n=3) | 10.1× | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| Task success, exec errors | R2E 500×2×8 | asrl-c4-t0 | 24,000 / 24,000 ok (100.00%); errors 0; empty-probe 0; n=3 | 16,000 / 16,000 ok (100.00%); errors 0; empty-probe 0; n=2 | – | B: k3_r2e500x2x8_batch_r1, k3_r2e500x2x8_batch_r2, k3_r2e500x2x8_batch_r3; P: k3_r2e500x2x8_pc_up_r1, k3_r2e500x2x8_pc_up_r2 |
+| Task success, exec errors | R2E 500×2×8 | asrl-c4-6 | 8,000 / 8,000 ok (100.00%); errors 0; empty-probe 0; n=1 | – | – | B: k3c6_r2e500x2x8_batch_r1 |
+| Task success, exec errors | Multi-step 250×2×6 | asrl-c4-t0 | 3,000 / 3,000 ok (100.00%); errors 0; empty-probe 0; n=1 | 3,000 / 3,000 ok (100.00%); errors 0; empty-probe 0; n=1 | – | B: k3_stept0_250x2x6_batch_r1; P: k3_stept0_250x2x6_pc_up_r1 |
+| Task success, exec errors | Eval 500×1 | asrl-c4-1 | 1,000 / 1,000 ok (100.00%); errors 0; empty-probe 0; n=2 | 500 / 500 ok (100.00%); errors 0; empty-probe 0; n=1 | – | B: k3_eval500_batch_r1, k3_eval500_batch_r2; P: k3_eval500_pc_up_r1 |
+| Task success, exec errors | Eval 500×1 | asrl-c4-6 | 500 / 500 ok (100.00%); errors 0; empty-probe 0; n=1 | – | – | B: k3c6_eval500_batch_r1 |
+| Task success, exec errors | 3k (3 strategies) | asrl-c4-1 | 18,000 / 18,000 ok (100.00%); errors 0; empty-probe 0; n=2 | 9,000 / 9,000 ok (100.00%); errors 0; empty-probe 0; n=1 | – | B: k3_3k_500x6_batch_r1, k3_3k_500x6_batch_r2; P: k3_3k_500x6_pc_up_r1 |
+| Task success, exec errors | 500×2 parity | asrl-c4-t0 | 3,000 / 3,000 ok (100.00%); errors 0; empty-probe 0; n=1 | – | – | B: k3_parity500x2_batch_r1 |
+| Task success, exec errors | Burst (all c) | asrl-c4-1 | 5,550 / 5,550 ok (100.00%); errors 0; empty-probe 0; n=1 | 5,550 / 5,550 claims ok; 3 probes returned empty output (5,547 / 5,550 = 99.95%); n=1 | – | B: k3_burst_1x1000_batch_r1; P: k3_burst_1x1000_pc_up_r1 |
+| Task success, exec errors | Soak 20k | asrl-c4-1 | 20,000 / 20,000 ok (100.00%); errors 0; empty-probe 0; n=1 | – | – | B: k3_soak20k_batch_r1 |
+| Task success, all k3/k3c6 runs with a result | all | all | 83,050 / 83,050 (100.000%) | 34,050 / 34,050 (100.000%) | – | rows above |
+
+Notes:
+
+- Every per_claim cell for eval and 3k is n=1. The burst cells are 3 bursts inside one run per arm (one driver process).
+- The fresh-cluster R2E row compares the final-image batch run with per_claim runs from the previous round; it is not a paired comparison.
+- Per_claim RSS rises burst by burst inside the run (2,782, 3,748, 4,313 MB at the three c=1000 bursts), so the median depends on burst order. Batch stays at 353–376 MB.
+- Per_claim threads read 3,017 in all three c=1000 bursts.
+- The 3 per_claim exec errors are empty probe output at the first c=1000 burst (`errors_sample`: `probe non-zero exit: ''`). The claims themselves are counted ok.
+- `k3_burst_1x1000_batch_r2` produced no result (warm pool 992 of 1,000 ready, timeout after 601 s) and is in no row.
+
+## Appendix D. Comparisons where batch is within 10% of per_claim or worse (k1 and k3 rounds)
+
+Scope: every wall, TTFI p50/p99, claims/s, burst+exec wall, release throughput and (step runs) env-ready p50 pair that exists for the same shape and cluster in the k1, k1c6, k3 and k3c6 rounds: 110 pairs. 22 have a ratio below 1.10 (same ratio convention as Appendix C). `k3c6` batch has no per_claim run of its own and is compared with the `k1c6` per_claim runs. For step runs TTFI p50 is the median of the per-step p50s and TTFI p99 is the largest per-step p99.
+
+| # | Shape | Cluster | Batch runs / per_claim runs | Metric | Batch | per_claim | Ratio |
+|---|---|---|---|---|---|---|---|
+| D1 | r2e500x2x8 | asrl-c4-6 | k1c6_r2e500x2x8_batch_r1, k1c6_r2e500x2x8_batch_r2 / k1c6_r2e500x2x8_pc_up_r1, k1c6_r2e500x2x8_pc_up_r2 | wall s | 239 (229–249, n=2) | 239 (237–240, n=2) | 1.00× |
+| D2 | r2e500x2x8 | asrl-c4-6 | k1c6_r2e500x2x8_batch_r1, k1c6_r2e500x2x8_batch_r2 / k1c6_r2e500x2x8_pc_up_r1, k1c6_r2e500x2x8_pc_up_r2 | TTFI p99 s (max of per-step p99) | 11.9 (10.6–13.2, n=2) | 12.9 (12.6–13.2, n=2) | 1.08× |
+| D3 | r2e500x2x8 | asrl-c4-6 | k1c6_r2e500x2x8_batch_r1, k1c6_r2e500x2x8_batch_r2 / k1c6_r2e500x2x8_pc_up_r1, k1c6_r2e500x2x8_pc_up_r2 | env-ready p50 s (median of per-step p50) | 14.8 (13.5–16.1, n=2) | 13.1 (13.1–13.2, n=2) | 0.89× |
+| D4 | r2e500x2x8 | asrl-c4-6 | k3c6_r2e500x2x8_batch_r1 / k1c6_r2e500x2x8_pc_up_r1, k1c6_r2e500x2x8_pc_up_r2 | wall s | 253 (n=1) | 239 (237–240, n=2) | 0.94× |
+| D5 | r2e500x2x8 | asrl-c4-6 | k3c6_r2e500x2x8_batch_r1 / k1c6_r2e500x2x8_pc_up_r1, k1c6_r2e500x2x8_pc_up_r2 | TTFI p99 s (max of per-step p99) | 12.2 (n=1) | 12.9 (12.6–13.2, n=2) | 1.06× |
+| D6 | r2e500x2x8 | asrl-c4-6 | k3c6_r2e500x2x8_batch_r1 / k1c6_r2e500x2x8_pc_up_r1, k1c6_r2e500x2x8_pc_up_r2 | env-ready p50 s (median of per-step p50) | 14.7 (n=1) | 13.1 (13.1–13.2, n=2) | 0.89× |
+| D7 | 3k_500x6 | asrl-c4-1 | k3_3k_500x6_batch_r1, k3_3k_500x6_batch_r2 / k3_3k_500x6_pc_up_r1 | naive TTFI p50 s | 21.7 (20.8–22.5, n=2) | 6.31 (n=1) | 0.29× |
+| D8 | 3k_500x6 | asrl-c4-1 | k3_3k_500x6_batch_r1, k3_3k_500x6_batch_r2 / k3_3k_500x6_pc_up_r1 | sliding TTFI p50 s | 19.2 (18.6–19.8, n=2) | 6.46 (n=1) | 0.34× |
+| D9 | 3k_500x6 | asrl-c4-1 | k3_3k_500x6_batch_r1, k3_3k_500x6_batch_r2 / k3_3k_500x6_pc_up_r1 | pipelined TTFI p50 s | 19.1 (18.7–19.5, n=2) | 14.2 (n=1) | 0.75× |
+| D10 | 3k_500x6 | asrl-c4-1 | k1_3k_500x6_batch_r1 / k1_3k_500x6_pc_up_r1 | naive TTFI p50 s | 18.3 (n=1) | 6.79 (n=1) | 0.37× |
+| D11 | 3k_500x6 | asrl-c4-1 | k1_3k_500x6_batch_r1 / k1_3k_500x6_pc_up_r1 | sliding TTFI p50 s | 19.5 (n=1) | 6.25 (n=1) | 0.32× |
+| D12 | 3k_500x6 | asrl-c4-1 | k1_3k_500x6_batch_r1 / k1_3k_500x6_pc_up_r1 | pipelined TTFI p50 s | 18.5 (n=1) | 13.9 (n=1) | 0.75× |
+| D13 | burst_1x1000 | asrl-c4-1 | k3_burst_1x1000_batch_r1 / k3_burst_1x1000_pc_up_r1 | c=100 release sandboxes/s | 688 (641–719, n=3) | 949 (847–1,017, n=3) | 0.73× |
+| D14 | burst_1x1000 | asrl-c4-1 | k3_burst_1x1000_batch_r1 / k3_burst_1x1000_pc_up_r1 | c=250 release sandboxes/s | 801 (640–853, n=3) | 1,012 (935–1,053, n=3) | 0.79× |
+| D15 | burst_1x1000 | asrl-c4-1 | k3_burst_1x1000_batch_r1 / k3_burst_1x1000_pc_up_r1 | c=500 release sandboxes/s | 746 (644–877, n=3) | 996 (738–1,000, n=3) | 0.75× |
+| D16 | burst_1x1000 | asrl-c4-1 | k3_burst_1x1000_batch_r1 / k3_burst_1x1000_pc_up_r1 | c=1000 release sandboxes/s | 757 (634–951, n=3) | 1,113 (937–1,142, n=3) | 0.68× |
+| D17 | burst_1x1000 | asrl-c4-1 | k1_burst_1x1000_batch_r1 / k1_burst_1x1000_pc_up_r1 | c=100 release sandboxes/s | 648 (477–708, n=3) | 791 (745–919, n=3) | 0.82× |
+| D18 | burst_1x1000 | asrl-c4-1 | k1_burst_1x1000_batch_r1 / k1_burst_1x1000_pc_up_r1 | c=250 release sandboxes/s | 699 (559–896, n=3) | 1,019 (1,012–1,040, n=3) | 0.69× |
+| D19 | burst_1x1000 | asrl-c4-1 | k1_burst_1x1000_batch_r1 / k1_burst_1x1000_pc_up_r1 | c=1000 release sandboxes/s | 884 (868–999, n=3) | 1,121 (1,114–1,159, n=3) | 0.79× |
+| D20 | burst_1x1000 | asrl-c4-6 | k1c6_burst_1x1000_batch_r1 / k1c6_burst_1x1000_pc_up_r1 | c=250 release sandboxes/s | 1,188 (1,066–1,261, n=3) | 1,100 (1,080–1,116, n=3) | 1.08× |
+| D21 | burst_1x1000 | asrl-c4-6 | k1c6_burst_1x1000_batch_r1 / k1c6_burst_1x1000_pc_up_r1 | c=500 TTFI p99 s | 8.69 (8.62–8.69, n=3) | 9.10 (8.74–9.57, n=3) | 1.05× |
+| D22 | burst_1x1000 | asrl-c4-6 | k1c6_burst_1x1000_batch_r1 / k1c6_burst_1x1000_pc_up_r1 | c=1000 TTFI p99 s | 21.2 (18.0–22.1, n=3) | 22.2 (19.9–28.1, n=3) | 1.05× |
+
+No per_claim run exists in the k rounds for 500×2 parity, the soak or the Tunix shape, so those have no pair here. Cross-round figures for parity are in D-x below.
+
+### Causes
+
+**D1, D4. Fresh-cluster R2E wall (1.00× and 0.94×).** What the JSON shows, per run, summed over the 8 steps:
+
+| Run | Wall | Until all envs ready (`env_ready_all_s`) | Ready to last task done | Last task done to step end | Outside steps |
+|---|---|---|---|---|---|
+| k1c6 batch r1 | 249.4 | 166.3 | 66.2 | 6.7 | 10.2 |
+| k1c6 batch r2 | 228.8 | 153.4 | 58.1 | 5.1 | 12.1 |
+| k3c6 batch r1 | 253.3 | 168.3 | 67.4 | 6.2 | 11.4 |
+| k1c6 per_claim r1 | 236.9 | 162.6 | 65.4 | 1.5 | 7.4 |
+| k1c6 per_claim r2 | 240.2 | 162.8 | 65.3 | 1.7 | 10.5 |
+
+- About two thirds of the wall in both arms is waiting for environments to become ready, and the totals are the same (153–168 s batch, 163 s per_claim). The claim phase is about 1 s per task in both arms. So the step time is set by environment readiness, where the two arms do not differ.
+- Batch spends 5–7 s per run between the last task finishing and the step ending, per_claim 1.5–1.7 s. That is the only phase where batch is consistently slower here (about 4–5 s per run).
+- Why environments take about 20 s per step to become ready is **not established** from these files. The pod logs of these five runs contain no `Insufficient memory` line (0 matches), so the report's capacity explanation cannot be checked from them. Scheduler events and a pod start timeline per step would settle it.
+- The 253 s of the final image against 229–249 s of the previous image: step 0 took 39.4 s (previous image 30.7 and 33.4 s; per_claim 34.7 and 36.6 s). One run, no per_claim run beside it. Whether this is the image or run-to-run spread is **not established**; a paired batch and per_claim rerun on `asrl-c4-6` with `k3-final` would settle it.
+
+**D3, D6. Fresh-cluster R2E env-ready p50 (0.89×).** The JSON shows the warm-pool wait is longer for batch in steps 1–7: `wait_pool_ready` average 0.2–1.8 s per step for batch against 0.05–0.28 s for per_claim, and the per-step maximum up to 11.7 s against up to 5.9 s. Why the pools become ready later for batch is **not established**; per-pool create and ready timestamps set against the deletion times of the previous step's pods would settle it.
+
+**D2, D5. Fresh-cluster R2E TTFI p99 (1.06–1.08×, batch slightly ahead).** Shown in the data: the probe in this shape ends with `sleep 5`, and first-command time is about 6 s in both arms (5.9–6.7 s batch, 6.0–7.4 s per_claim). TTFI is claim time plus that, so a fixed 5 s is in both sides and compresses the ratio. Ranges also overlap (10.6–13.2 vs 12.6–13.2 s).
+
+**D7–D12. 3k TTFI p50 (0.29–0.75×).** Shown in the data: TTFI here is almost all claim time. First-command p50 is 0.32–0.36 s in both arms. Batch claim time is even: average 17–20 s, p50 18–22 s, maximum 82–145 s. Per_claim is skewed: p50 6–14 s, average 48–57 s, maximum 244–373 s. So per_claim's median task is claimed sooner and its tail much later (TTFI p99 229–357 s against 39–62 s for batch), and batch finishes the run 2.3–2.5× sooner. Why batch's median claim waits longer is **not established** from the JSON: it holds no timeline of pool refill against claim arrival. Per-claim start and bind timestamps next to the warm-pool ready count over time would settle it.
+
+**D13–D19. Burst bulk-release throughput on `asrl-c4-1` (0.68–0.82×).** The JSON records only `release_wall_s` per burst (for example 1.58 s for 1,000 sandboxes in the last final-image burst). There is no breakdown of the release, and the pod log has none either. It is not consistent across cells: on the previous image at c=500 batch was ahead (899 vs 718/s), and on the fresh cluster batch was ahead at c=100, 500 and 1000 (1.12–1.71×). **Cause not established.** Timing each request inside the release (the claim deletecollection and the grouped Sandbox and pod deletes), with direct delete on and off on `asrl-c4-1`, would settle it.
+
+**D20. Fresh-cluster release throughput at c=250 (1.08×, batch ahead).** Ranges overlap (1,066–1,261 vs 1,080–1,116/s). **Cause not established**; same measurement as D13–D19.
+
+**D21, D22. Fresh-cluster burst TTFI p99 at c=500 and c=1000 (1.05×, batch ahead).** Shown in the data: on this cluster the first exec, not the claim, sets the p99. At c=1000 claim latency p99 is 3.3–4.8 s for batch against 6.3–8.4 s for per_claim, but first-exec p99 is 14.2–18.4 s against 16.8–22.6 s. At c=500 claim p99 is 1.6–1.8 s against 3.8–3.9 s, and first-exec p99 is 7.3–7.6 s for batch against 5.7–6.4 s for per_claim, which cancels the claim gain. On `asrl-c4-1` batch first-exec p99 at c=1000 is 1.1–1.3 s. Why first exec is slow on the fresh cluster, and slower for batch at c=500, is **not established**; splitting exec time into connect and run, and recording whether the image was already on the node, would settle it.
+
+**D-x. 500×2 parity, cross-round only (not a k pair).** Batch `k3_parity500x2_batch_r1` on `asrl-c4-t0`: naive 31.9 s, sliding 41.7 s, pipelined 43.0 s (`k1_parity500x2_batch_r1`: 31.0, 42.2, 40.2 s). Per_claim `h1_parity500x2_pc_up_r1`/`r2`, image `f1-300d05e7`, earlier the same day: naive 35.0 / 36.6 s, sliding 42.4 / 42.6 s, pipelined 41.9 / 42.2 s. Sliding is level. Pipelined is 2–3% worse on the final image and 4% better on the previous one. The per-task phases do not explain the wall (claim plus process is about 1.5 s per task in both arms; prefetch averages 8.9 s batch and 8.2 s per_claim). **Cause not established**; a per-window timeline (window start, pool ready, last release) would settle it.
