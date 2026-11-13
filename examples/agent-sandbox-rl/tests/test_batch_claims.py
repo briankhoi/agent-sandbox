@@ -1743,7 +1743,7 @@ class _FakeAsyncBatch:
     self._members.clear()
 
 
-async def test_native_async_batch_acquires_without_threads_and_bulk_releases_wave():
+async def test_native_async_batch_acquires_and_releases_wave_without_threads():
   from agent_sandbox_rl.cluster import Cluster
   from agent_sandbox_rl.config import ClusterConfig
 
@@ -1792,23 +1792,48 @@ async def test_native_async_batch_acquires_without_threads_and_bulk_releases_wav
   assert len(async_batches) == 1
   # Zero sync batches opened on native-async cluster.
   assert af._fleet._batch_claims.has_live_batch("native-c1") is False
-  # Zero ThreadPoolExecutor instantiated during native async acquire + process + bulk release!
+  # Zero ThreadPoolExecutor instantiated during native async acquire + process + release!
   assert af._executor is None
 
   seen_threads: set[int] = set()
+  processing = 0
+  all_processing = asyncio.Event()
+  last_may_finish = asyncio.Event()
+  released_before_last_finished: list[str] = []
 
   async def _async_proc(task, handle):
+    nonlocal processing
     seen_threads.add(threading.get_ident())
-    await asyncio.sleep(0)
+    processing += 1
+    if processing == len(af.tasks):
+      all_processing.set()
+    await all_processing.wait()
+    if task is af.tasks[-1]:
+      await last_may_finish.wait()
     return handle.pod_ip
 
-  out = await af._process_parallel(af.tasks, _async_proc, concurrency=8)
+  async def _let_last_finish_once_others_released():
+    # A finished task's claim is released while the wave is still running, even once every
+    # acquire of the wave is done. Times out if finished claims are held for the wave's end.
+    while len(async_batches[0].released_members) < len(af.tasks) - 1:
+      await asyncio.sleep(0)
+    released_before_last_finished.extend(async_batches[0].released_members)
+    last_may_finish.set()
+
+  out, _ = await asyncio.wait_for(
+      asyncio.gather(
+          af._process_parallel(af.tasks, _async_proc, concurrency=8),
+          _let_last_finish_once_others_released(),
+      ),
+      timeout=5,
+  )
   assert out == ["10.2.0.5"] * 8
   assert af._executor is None
   assert seen_threads == {threading.get_ident()}
-  # Wave of 8 @ concurrency=8 deferred individual deletes into 1 bulk release_members()!
-  assert async_batches[0].released_members == []
-  assert async_batches[0].release_members_calls == 1
+  assert len(released_before_last_finished) == 7
+  assert len(set(async_batches[0].released_members)) == 8
+  # release_members() would also fail an acquire a later wave already has in flight.
+  assert async_batches[0].release_members_calls == 0
   assert af.handles() == []
   assert af._fleet._claims_reserved == 0
   assert c.active_claims == 0
@@ -2094,7 +2119,7 @@ async def test_async_precheck_pools_uses_bulk_lists_and_windowed_fleet_prechecks
 
 
 @pytest.mark.asyncio
-async def test_sync_release_all_on_async_batch_handles_and_defer_tail_isolation(
+async def test_sync_release_all_on_async_batch_handles_and_foreign_handle_isolation(
     make_cluster, monkeypatch
 ):
   from agent_sandbox_rl.cluster import Cluster
@@ -2115,7 +2140,6 @@ async def test_sync_release_all_on_async_batch_handles_and_defer_tail_isolation(
   c.resources.count_pods.return_value = 0
 
   released_members: list[str] = []
-  fail_bulk = False
 
   class _FakeAsyncBatch:
     def __init__(self, batch_id: str, groups, **kwargs):
@@ -2153,8 +2177,7 @@ async def test_sync_release_all_on_async_batch_handles_and_defer_tail_isolation(
       return sb
 
     async def release_members(self):
-      if fail_bulk:
-        raise RuntimeError("simulated bulk deletecollection error")
+      return None
 
     async def release_member(self, member):
       released_members.append(member.claim_name)
@@ -2190,23 +2213,12 @@ async def test_sync_release_all_on_async_batch_handles_and_defer_tail_isolation(
   assert set(released_members) == {h1.claim_name, h2.claim_name}
   assert af.handles() == []
 
-  # Finding #7: Foreign handle held outside _process_parallel is NOT bulk-deleted,
-  # and bulk release errors are captured into results rather than crashing.
+  # Finding #7: Foreign handle held outside _process_parallel is NOT released by it.
   foreign = await af.acquire(tasks[2])
   res_ok = await af._process_parallel(tasks[:2], lambda _t, h: h.pod_name, 2)
   assert len(res_ok) == 2 and all(isinstance(r, str) for r in res_ok)
   assert [h.claim_name for h in af.handles()] == [foreign.claim_name]
   await af.release(foreign)
-
-  fail_bulk = True
-
-  async def _yield_proc(_t, h):
-    await asyncio.sleep(0.01)
-    return h.pod_name
-
-  res_err = await af._process_parallel(tasks[:2], _yield_proc, 2)
-  assert len(res_err) == 2 and all(isinstance(r, RuntimeError) for r in res_err)
-  fail_bulk = False
   await af.release_all()
   await af.aclose()
 
@@ -3748,22 +3760,10 @@ async def test_async_release_does_not_bulk_release_while_an_acquire_is_in_flight
   assert [h.claim_name for h in af.handles()] == [late.claim_name]
   await af.release(late)
 
-  # The release at the end of a processed wave takes the same care.
-  b.released_members.clear()
-  in_flight, gate = await _hold_next_acquire()
-  out = await af._process_parallel(tasks[:2], lambda _t, h: h.claim_name, 2)
-  assert b.release_members_calls == 0
-  assert sorted(b.released_members) == sorted(out)
-  gate.set()
-  late = await asyncio.wait_for(in_flight, 5)
-  await af.release(late)
-
-  # With no acquire in flight both paths use one bulk release.
+  # With no acquire in flight release_all() uses one bulk release.
   await af.acquire(tasks[0])
   await af.acquire(tasks[1])
   await af.release_all()
   assert b.release_members_calls == 1
-  await af._process_parallel(tasks[:2], lambda _t, h: h.claim_name, 2)
-  assert b.release_members_calls == 2
   assert af.handles() == [] and af._fleet._claims_reserved == 0
   await af.aclose()
