@@ -1289,5 +1289,32 @@ class TestAcquired(unittest.TestCase):
         self.assertEqual(state._acquiring_by_pool, {})
 
 
+class TestMemberClaimUid(unittest.TestCase):
+    """A Member carries its claim's UID so callers can select the claim's Sandbox and pod by label."""
+
+    def test_derive_member_reads_the_claim_uid(self):
+        claim = _claim("b1-0", conditions=[])
+        self.assertIsNone(batch_state.derive_member(claim).claim_uid)
+        claim["metadata"]["uid"] = "0b7d1c7e-6c0f-4f0e-9a43-1f1f6f3c9d11"
+        self.assertEqual(
+            batch_state.derive_member(claim).claim_uid, "0b7d1c7e-6c0f-4f0e-9a43-1f1f6f3c9d11"
+        )
+        claim["metadata"]["uid"] = ""
+        self.assertIsNone(batch_state.derive_member(claim).claim_uid)
+
+    def test_lost_member_keeps_its_claim_uid(self):
+        state = batch_state.BatchState("b1", [BatchGroup(warmpool="pool-a", size=1)])
+        claim = _claim(
+            "b1-0",
+            conditions=[{"type": "Ready", "status": "True"}],
+            sandbox={"name": "sbx-1", "podIPs": ["10.0.0.1"]},
+        )
+        claim["metadata"]["uid"] = "uid-1"
+        state.upsert_claim(claim)
+        lost = state.mark_lost("b1-0")
+        self.assertEqual(lost.state, MemberState.LOST)
+        self.assertEqual(lost.claim_uid, "uid-1")
+
+
 if __name__ == "__main__":
     unittest.main()

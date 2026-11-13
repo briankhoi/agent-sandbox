@@ -3443,7 +3443,8 @@ def test_released_sandboxes_with_claim_uids_are_deleted_together_by_label(monkey
                        for k in c.custom_api.delete_collection_namespaced_custom_object.call_args_list]
   pod_selectors = [k.kwargs["label_selector"]
                    for k in c.core_api.delete_collection_namespaced_pod.call_args_list]
-  assert sandbox_selectors == pod_selectors == [
+  # Batches run side by side, so only their contents are fixed, not their order.
+  assert sorted(sandbox_selectors) == sorted(pod_selectors) == [
       "agents.x-k8s.io/claim-uid in (uid-0,uid-1,uid-2)",
       "agents.x-k8s.io/claim-uid in (uid-3,uid-4)",
   ]
@@ -3495,3 +3496,39 @@ def test_batch_handle_passes_its_claim_uid_to_the_released_sandbox_delete():
   handle._batch_claim = types.SimpleNamespace(member=types.SimpleNamespace(claim_uid=None))
   SandboxHandle.delete_released_sandbox(handle)
   assert calls == [("sb-1", "pod-1", {"claim_uid": "uid-1"}), ("sb-1", "pod-1", {})]
+
+
+def test_released_sandbox_flusher_recovers_after_a_batch_raises(monkeypatch):
+  from agent_sandbox_rl import cluster as cluster_mod
+
+  monkeypatch.setattr(cluster_mod, "RELEASED_SANDBOX_BATCH_WINDOW_SECONDS", 0.01)
+  c = _cluster_with_mock_apis()
+  # The first release is the one whose Sandbox is read to see how this cluster labels them.
+  c.custom_api.get_namespaced_custom_object.return_value = {
+      "metadata": {"labels": {cluster_mod.CLAIM_UID_LABEL: "uid-0"}}}
+  delete_batch = c._delete_released_batch
+  seen: list[list[str]] = []
+
+  def flaky(batch):
+    seen.append([uid for _sb, _pod, uid in batch])
+    if len(seen) == 1:
+      raise TypeError("unexpected")
+    delete_batch(batch)
+  c._delete_released_batch = flaky
+
+  c.delete_released_sandbox("sb-0", "pod-0", claim_uid="uid-0")
+  deadline = time.monotonic() + 5
+  while not seen and time.monotonic() < deadline:
+    time.sleep(0.01)
+  assert seen == [["uid-0"]]
+  # The failed flusher must not leave later releases queued behind a flag nobody clears.
+  deadline = time.monotonic() + 5
+  while c._released_sandbox_flush_queued and time.monotonic() < deadline:
+    time.sleep(0.01)
+  assert c._released_sandbox_flush_queued is False
+
+  c.delete_released_sandbox("sb-1", "pod-1", claim_uid="uid-1")
+  c._released_sandbox_pool.shutdown(wait=True)
+  assert seen == [["uid-0"], ["uid-1"]]
+  assert c.core_api.delete_collection_namespaced_pod.call_count == 1
+  assert c._released_sandbox_pending == []
