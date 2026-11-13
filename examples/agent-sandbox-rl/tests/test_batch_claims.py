@@ -3351,3 +3351,71 @@ async def test_async_teardown_keeps_sandboxes_of_a_batch_whose_release_failed():
 
   assert batches[0].release.await_count >= 1
   assert events == []
+
+
+def test_exec_retries_a_connection_that_was_never_established():
+  import aiohttp
+  from kubernetes_asyncio import client as async_k8s_client
+  from kubernetes_asyncio.stream.ws_client import STDOUT_CHANNEL
+
+  from agent_sandbox_rl import cluster as cluster_mod
+  from agent_sandbox_rl.cluster import _build_fast_ws_core_api
+  from agent_sandbox_rl.config import ClusterConfig
+
+  url = "https://127.0.0.1:6443/api/v1/namespaces/ns1/pods/p/exec"
+
+  class _Ctx:
+    def __init__(self, enter_error=None, stream_error=None):
+      self.enter_error, self.stream_error = enter_error, stream_error
+
+    async def __aenter__(self):
+      if self.enter_error is not None:
+        raise self.enter_error
+      stream_error = self.stream_error
+
+      async def _gen():
+        yield types.SimpleNamespace(data=bytes([STDOUT_CHANNEL]) + b"ok")
+        if stream_error is not None:
+          raise stream_error
+      return _gen()
+
+    async def __aexit__(self, *exc):
+      return False
+
+  async def _run(outcomes):
+    base_cfg = async_k8s_client.Configuration()
+    base_cfg.host = "https://127.0.0.1:6443"
+    ws_api, _core = await _build_fast_ws_core_api(
+        ClusterConfig(name="c-ws", namespace="ns1", in_cluster=True),
+        pool_maxsize=32, base_configuration=base_cfg)
+    calls = []
+    try:
+      assert ws_api.rest_client.pool_manager.timeout.sock_connect == (
+          cluster_mod.EXEC_CONNECT_TIMEOUT_SECONDS)
+
+      def _connect(*a, **kw):
+        calls.append(1)
+        return outcomes[min(len(calls), len(outcomes)) - 1]
+      ws_api.rest_client.pool_manager.ws_connect = _connect
+      try:
+        return (await ws_api.request("GET", url)).data, len(calls)
+      except Exception as exc:  # noqa: BLE001
+        return exc, len(calls)
+    finally:
+      await ws_api.close()
+
+  not_established = aiohttp.ConnectionTimeoutError("Connection timeout to host")
+
+  # Two lost connections, then one that works: the command runs once.
+  data, calls = asyncio.run(_run([_Ctx(enter_error=not_established)] * 2 + [_Ctx()]))
+  assert (data, calls) == (b"ok", 3)
+
+  # It gives up after EXEC_CONNECT_ATTEMPTS and reports the connection error.
+  exc, calls = asyncio.run(_run([_Ctx(enter_error=not_established)]))
+  assert isinstance(exc, aiohttp.ConnectionTimeoutError)
+  assert calls == cluster_mod.EXEC_CONNECT_ATTEMPTS
+
+  # A failure after the connection is up may have run the command: no retry.
+  exc, calls = asyncio.run(_run([_Ctx(stream_error=not_established)]))
+  assert isinstance(exc, aiohttp.ConnectionTimeoutError)
+  assert calls == 1

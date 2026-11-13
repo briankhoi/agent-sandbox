@@ -53,6 +53,12 @@ RELEASED_SANDBOX_DELETE_TIMEOUT = (3, 10)
 RELEASED_SANDBOX_MAX_ERRORS = 2 * RELEASED_SANDBOX_DELETE_WORKERS
 RELEASED_SANDBOX_PAUSE_SECONDS = 30.0
 
+# aiohttp gives a new connection 30 s to be established. A burst opens one
+# connection per exec, and the rare one whose handshake is lost would hold its
+# task for the full 30 s and then fail it, so give up sooner and connect again.
+EXEC_CONNECT_TIMEOUT_SECONDS = 10.0
+EXEC_CONNECT_ATTEMPTS = 3
+
 
 def _env_configures_proxy_or_netrc() -> bool:
   """Whether this process has a proxy or netrc that aiohttp's ``trust_env`` would apply."""
@@ -123,6 +129,9 @@ async def _build_fast_ws_core_api(
       get_websocket_url,
   )
 
+  class _ExecNotSent(Exception):
+    """An exec whose connection to the API server was never established."""
+
   class _FastWsApiClient(WsApiClient):
     def __init__(self, configuration) -> None:
       super().__init__(configuration=configuration)
@@ -138,6 +147,9 @@ async def _build_fast_ws_core_api(
           connector_owner=True,
           trust_env=_env_configures_proxy_or_netrc(),
           read_bufsize=65536,
+          timeout=aiohttp.ClientTimeout(
+              total=aiohttp.client.DEFAULT_TIMEOUT.total,
+              sock_connect=EXEC_CONNECT_TIMEOUT_SECONDS),
       )
       old_pm._connector_owner = False
       # Old session has made 0 requests; detach cleanly without closing connector.
@@ -189,11 +201,25 @@ async def _build_fast_ws_core_api(
         ws_kwargs["server_hostname"] = server_hostname
       if not _preload_content:
         return self.rest_client.pool_manager.ws_connect(ws_url, **ws_kwargs)
+      attempt = 0
+      while True:
+        try:
+          return await self._exec_once(ws_url, ws_kwargs)
+        except _ExecNotSent as exc:
+          # The connection was never established, so the command was not sent
+          # and running it again cannot run it twice.
+          attempt += 1
+          if attempt >= EXEC_CONNECT_ATTEMPTS:
+            raise exc.__cause__ from None
+
+    async def _exec_once(self, ws_url, ws_kwargs):
       buf = bytearray()
+      connected = False
       try:
         async with self.rest_client.pool_manager.ws_connect(
             ws_url, **ws_kwargs
         ) as ws:
+          connected = True
           async for wsmsg in ws:
             msg_type = getattr(wsmsg, "type", None)
             raw = wsmsg.data
@@ -217,6 +243,10 @@ async def _build_fast_ws_core_api(
         err = async_client.ApiException(status=exc.status, reason=exc.message)
         err.body = b""
         raise err from exc
+      except (aiohttp.ConnectionTimeoutError, aiohttp.ClientConnectorError) as exc:
+        if connected:
+          raise
+        raise _ExecNotSent() from exc
       try:
         buf.decode("utf-8")
         payload = bytes(buf)
