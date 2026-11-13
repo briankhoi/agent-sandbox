@@ -664,7 +664,10 @@ fleet = SandboxFleet(FleetConfig(
   400 s to about 195 s on 10 nodes. It needs `delete` on `sandboxes`
   (`agents.x-k8s.io`) and on `pods` in the namespace, in addition to the SDK's batch
   Role. Without that access the first 403 turns it off and released sandboxes are
-  left to the garbage collector as before; nothing else changes.
+  left to the garbage collector as before; nothing else changes. These deletes are
+  sent beside the batch's own requests, at most 16 at a time and never more than
+  `max_in_flight`, so the driver's concurrent API requests peak at `max_in_flight`
+  plus that many.
 
 **BatchClaimConfig:** `work_budget` (3600), `lease_duration` (300, longer than the
 SDK's 60 because losing the Lease ends every rollout in flight on the batch, and each

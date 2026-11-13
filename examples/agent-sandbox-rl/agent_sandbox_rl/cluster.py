@@ -455,6 +455,7 @@ class Cluster:
     self._released_sandbox_disabled = False
     self._released_sandbox_errors = 0
     self._released_sandbox_paused_until = 0.0
+    self._released_sandbox_workers = RELEASED_SANDBOX_DELETE_WORKERS
     self.tracer_config = None                 # optional SDK SandboxTracerConfig
     # Placement / capacity bookkeeping. Mutated from parallel claim workers, so
     # guard with a per-cluster lock and only touch via the methods below.
@@ -806,6 +807,18 @@ class Cluster:
       self._async_exec_core_api = core_api
       return self._async_exec_core_api
 
+  def limit_released_sandbox_deletes(self, max_in_flight: int) -> None:
+    """Run at most ``max_in_flight`` background deletes of released sandboxes at once.
+
+    These deletes are extra API requests beside the batch's own, so a batch opened
+    with a low ``max_in_flight`` to protect a small control plane lowers them too.
+    They never exceed `RELEASED_SANDBOX_DELETE_WORKERS`. Takes effect for deletes
+    started after the call; a pool that is already running keeps its size.
+    """
+    with self._released_sandbox_lock:
+      self._released_sandbox_workers = max(
+          1, min(RELEASED_SANDBOX_DELETE_WORKERS, int(max_in_flight)))
+
   def delete_released_sandbox(self, sandbox_name: str | None, pod_name: str | None) -> None:
     """Delete a released batch claim's Sandbox and pod now, in the background.
 
@@ -828,7 +841,7 @@ class Cluster:
     with self._released_sandbox_lock:
       if self._released_sandbox_pool is None:
         self._released_sandbox_pool = ThreadPoolExecutor(
-            max_workers=RELEASED_SANDBOX_DELETE_WORKERS,
+            max_workers=self._released_sandbox_workers,
             thread_name_prefix=f"asrl-reclaim-{self.name}")
       pool = self._released_sandbox_pool
     try:

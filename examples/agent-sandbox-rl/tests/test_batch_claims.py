@@ -3116,6 +3116,22 @@ def test_delete_released_sandbox_deletes_sandbox_then_pod():
   assert c.core_api.delete_namespaced_pod.call_args.args[:2] == ("pod-1", "ns1")
 
 
+def test_released_sandbox_deletes_stay_within_max_in_flight():
+  from agent_sandbox_rl import cluster as cluster_mod
+
+  c = _cluster_with_mock_apis()
+  c.limit_released_sandbox_deletes(4)
+  c.delete_released_sandbox("sb-1", None)
+  assert c._released_sandbox_pool._max_workers == 4
+  c._released_sandbox_pool.shutdown(wait=True)
+
+  c = _cluster_with_mock_apis()
+  c.limit_released_sandbox_deletes(1000)
+  c.delete_released_sandbox("sb-1", None)
+  assert c._released_sandbox_pool._max_workers == cluster_mod.RELEASED_SANDBOX_DELETE_WORKERS
+  c._released_sandbox_pool.shutdown(wait=True)
+
+
 def test_delete_released_sandbox_error_handling():
   from kubernetes.client import ApiException
 
