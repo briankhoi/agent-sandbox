@@ -24,16 +24,18 @@ unless noted:
 
 | Shape | Cluster | batch | upstream `per_claim` |
 |---|---|---|---|
-| Multi-step 250×2×6, 10 s per step | 20 nodes, 4 days old | 116, 117, 119 | 281 |
+| Multi-step 250×2×6, 10 s per step | 20 nodes, 4 days old | 116, 117, 117, 119, 123 | 251, 266, 281 |
 | Multi-step 250×2×6, 10 s per step | 10 nodes, 4 days old | 172, 180, 197, 199 | 364, 402, 456 |
-| R2E 500×2×8, 5 s per step | 20 nodes, 4 days old | 209, 222, 279 | 993, 1,007, 1,010, 1,010 |
-| 3,000 tasks 500×6, naive / sliding / pipelined | 10 nodes, 4 days old | 148 / 163 (2,998 of 3,000 OK) / 181 | 390 / 394 / 421 |
-| R2E 500×2×8, 5 s per step | 10 nodes, freshly created | 292, 337 | 252 |
+| R2E 500×2×8, 5 s per step | 20 nodes, 4 days old | 209, 222, 224, 279 | 993, 1,007, 1,010, 1,010, 1,010 |
+| 3,000 tasks 500×6, naive / sliding / pipelined | 10 nodes, 4 days old | 148 / 163 (2,998 of 3,000 OK) / 181 and 154 / 164 / 181 | 390 / 394 / 421 and 393 / 397 / 403 |
+| Multi-step 250×2×6, 10 s per step | 10 nodes, freshly created | 99, 102 | 108, 108 |
+| R2E 500×2×8, 5 s per step | 10 nodes, freshly created | 236, 243 (and 292, 337 right after a run that exhausted node pod IPs) | 236, 250, 252 |
 
-Read the last row with the others: on a freshly created cluster released sandboxes
-were cleared promptly, upstream `per_claim` did not stall, and batch was not faster.
-The large ratios are specific to clusters where cleanup is slow. Why the two older
-clusters clear slowly has not been identified.
+Read the last two rows with the others: on a freshly created cluster released
+sandboxes were cleared promptly, upstream `per_claim` did not stall, and batch was
+level on R2E and about 7% faster on multi-step. The large ratios are specific to
+clusters where cleanup is slow. Why the two older clusters clear slowly has not been
+identified.
 
 Before #1, batch and upstream `per_claim` were level on these shapes (for example
 multi-step on the 10-node cluster: batch 394–405 s, `per_claim` 368–381 s).
