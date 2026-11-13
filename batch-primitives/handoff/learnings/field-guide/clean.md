@@ -189,7 +189,7 @@ This section covers who owns each resource the batch SDK creates (cached connect
 
 - **Situation:** A standalone `Sandbox.terminate()` calls `_on_terminated` to evict the handle from `SandboxClient._active_connection_sandboxes` (`7b1a9fbc`). `SandboxBatch.connect()` instead caches `(sandbox, pod_ip)` in `batch._connected[claim_name]`, seeded with the pod IP the watch saw.
 - **What goes wrong:** Suppose `_on_terminated` popped `batch._connected[claim_name]` when the caller ran `sandbox.terminate()` directly. Until the watch sees the claim's deletion, `batch._state` still marks the member `READY` while `batch._connected` is empty. A second `batch.connect(member)` in that window builds a fresh handle seeded with the terminating pod's IP.
-- **What we do:** Leave `_on_terminated` unset on batch-connected handles. `batch._connected` keeps the closed `(sandbox, pod_ip)` entry, which fails closed because `is_active == False`, until `batch.release_member()` or the watch marks the member `LOST` and moves the entry to `_stale_connections`.
+- **What we do:** In 24/N we initially left `_on_terminated` unset and kept the closed `(sandbox, pod_ip)` entry in `batch._connected` (`is_active == False`). In 25/N (`bf2742e0`), `connect()` wires two weakref-only callbacks via `_make_sandbox_callbacks`: `_claim_deleter` routes `sandbox.terminate()` through Lease-fenced `batch.release_member()` *before* closing the connection (so `batch._state` drops the member first and a subsequent `connect()` cannot re-seed the terminating pod's IP), and `_on_close` evicts the handle on `close_connection()` so calling `connect()` again on a still-Ready member opens a fresh connection instead of returning an inactive handle.
 - **Example:**
   ```
   t0  caller: sandbox.terminate()     (entry stays, is_active False)
@@ -608,6 +608,28 @@ This section covers who owns each resource the batch SDK creates (cached connect
   3. **Cancelled `AsyncSandboxFleet.acquire` during `close(wait=True)` (`27/N`, `async_fleet.py`):** When an `asyncio` task awaiting `wrap_future(pool.submit(self._fleet.acquire, ...))` is cancelled right before `afleet.close(wait=True)` runs `executor.shutdown(wait=True)`, submitting the delayed `self._fleet.release(handle)` callback back onto `pool` raises `RuntimeError: cannot schedule new futures after shutdown`, whereas spawning a detached daemon thread lets `close(wait=True)` return before the handle is released.
 - **What we do:** Pass `weakref.ref(self.k8s_helper)` to `SandboxClient._atexit_cleanup` (`26/N`), call `forget_claim_in_client(self._cluster, self.claim_name)` immediately inside `SandboxHandle._get_direct_sandbox()` and batch `release()` (`27/N`), and execute `self._fleet.release(handle)` inline on the worker thread inside `_reclaim_cancelled_future` whenever `threading.current_thread() is not loop_thread` so `executor.shutdown(wait=True)` naturally waits for the reclaim to finish (`27/N`).
 - **Related:** [CLEAN-1](#clean-1), [CLEAN-11](#clean-11), [CANCEL-1](cancel.md#cancel-1).
+
+</details>
+
+<a id="clean-29"></a>
+
+## CLEAN-29 Separate local transport close (`AsyncSandboxClient.close()`) from remote claim termination (`__exit__` / `__aexit__` / `delete_all()`), and preserve failed releases across two-phase `__aexit__`
+
+**Takeaway:** `AsyncSandboxClient.close()` is non-terminating (it shuts down local connections, background tasks, and the `aiohttp` session while leaving remote `SandboxClaim`s and batch Leases in place), whereas `SandboxClient` has no `close()` and only terminates or detaches on `__exit__()` and `delete_all()`. Because `AsyncSandboxClient.__aexit__()` runs terminating cleanup first and `close()` second, `close()` must retain unreleased batches whose `release()` started and failed, and both helpers must recreate their HTTP pools lazily if `delete_all()` retries later (`25/N`).
+
+<details>
+<summary>The full story (9/N, 12/N, 25/N: sandbox_client.py, async_sandbox_client.py, k8s_helper.py, async_k8s_helper.py)</summary>
+
+- **Situation:** `asyncio` tasks and `aiohttp.ClientSession`s are bound to a running event loop and leak warnings or run forever unless explicitly closed before the loop exits, even when a caller intentionally keeps remote sandboxes or batches alive outside `async with`. `AsyncSandboxClient` therefore exposes `await client.close()`, which calls `sandbox.close_connection()` on tracked sandboxes, runs `_stop_batches()` to cancel watch and Lease-renewal tasks without deleting claims or releasing Leases, and closes `k8s_helper`. Synchronous `SandboxClient` has no loop-bound tasks or sessions, so it exposes no `close()`; its `__exit__()` and `delete_all()` terminate automatic claims (`delete_sandbox`), release claimed batches (`batch.release()`), detach `get_batch`-attached batches on `__exit__()`, and close `K8sHelper`'s `urllib3` pools in `finally`.
+- **What goes wrong:**
+  1. **Two-phase `__aexit__` drops failed batch releases (`25/N`):** `AsyncSandboxClient.__aexit__()` runs `try: await self._delete_automatic_sandboxes() finally: await self.close()`. When a batch's `release()` failed transiently in `_delete_automatic_sandboxes()`, `close()` ran `_stop_batches()` right after and unconditionally unregistered the batch, so a follow-up `await client.delete_all()` had nothing left to retry (unlike sync `__exit__()`, which has no `close()` phase and left the failed batch in `_active_batches`).
+  2. **Post-close `detach()` and post-exit `delete_all()` retries (`25/N`):** Once `close()` stops a batch's Lease renewal without releasing the Lease, allowing a later `detach()` would advertise a dead or expiring Lease as handoff-ready; meanwhile, closing `k8s_helper` on `__exit__()` or `__aexit__()` would break a subsequent `delete_all()` retry if closed HTTP pools stayed dead.
+  3. **Concurrent batch creation during `close()` (`25/N`):** Unlike sync, an `await` inside `AsyncSandboxClient.close()` yields to concurrent tasks calling `claim_batch()` or `get_batch()`, which could register new background tasks after `_stop_batches()` already ran.
+- **What we do:**
+  - `AsyncSandboxBatch.release()` sets `_release_attempted = True` (separate from `_release_started()`, because a cancelled `close()` also leaves `_detached = True` with `_detach_grace = None`). `_stop_batches()` checks `keep_for_release_retry = batch._release_attempted and not batch._released and not batch._lease_released` and keeps such batches in `_active_batches` for `delete_all()` or `atexit` to retry, while setting `_detached = True` with `_detach_grace = None` so a later `detach()` fails closed with `BatchError`.
+  - Both helpers support lazy pool recreation after close: `urllib3.PoolManager` and `kubernetes.client.ApiClient` recreate pools on the next sync request, and `AsyncK8sHelper.close()` resets `_api_client = None` and `_initialized = False` under `_init_lock` so `_ensure_initialized()` builds a fresh owned `ApiClient` on a retry (while leaving caller-injected clients open).
+  - `AsyncSandboxClient` wraps `claim_batch()` and `get_batch()` in a writer-preferring `_batch_op()` gate (`_close_lock` + `_not_closing` and `_no_batch_ops` `Event`s so `finally` decrements without `await`).
+- **Related:** [CLEAN-4](#clean-4), [CLEAN-10](#clean-10), [CLEAN-11](#clean-11), [LEASE-22](lease.md#lease-22), [LOCK-22](lock.md#lock-22), [CANCEL-4](cancel.md#cancel-4).
 
 </details>
 

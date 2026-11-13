@@ -401,16 +401,16 @@ A few terms used throughout: a **lock** (mutex) lets one thread in at a time. A 
 
 <a id="lock-18"></a>
 
-## LOCK-18 Pick lock reentrancy per concurrency model: RLock for sync teardown, plain asyncio.Lock for async
+## LOCK-18 Pick lock reentrancy per concurrency model: RLock for sync teardown, task-owner tracking for async
 
-**Takeaway:** A sync teardown lock that a signal handler or callback can reach on the same thread must be reentrant (an RLock, which the holding thread may take again). An asyncio lock does not need to be, because re-entry there always comes from another task.
+**Takeaway:** A sync teardown lock that a signal handler or callback can reach on the same thread must be reentrant (`threading.RLock`). Because `asyncio.Lock` has no reentrant variant, any async teardown lock held across an extensible callback (`await sandbox.close_connection()`) must record the owning `asyncio.Task` so same-task re-entry into client cleanup skips re-acquiring the lock instead of deadlocking (`11/N`, `12/N`, `25/N`).
 
 <details>
-<summary>The full story (11/N, 12/N, review round 3)</summary>
+<summary>The full story (11/N, 12/N, 25/N)</summary>
 
-- **Situation:** in sync code a POSIX signal handler (for example Ctrl-C's `SIGINT`) runs on the main thread between bytecodes, so it can call `detach()` or `release()` while that same thread is already inside one of them holding `_lifecycle_lock`.
-- **What goes wrong:** with a plain `threading.Lock`, a same-thread re-entry (a signal handler, or a `finally`, the case behind 11/N) hangs forever. A non-blocking acquire that raises on contention would break 11/N's rule that two concurrent `detach()` calls both succeed.
-- **What we do:** `SandboxBatch.__init__` sets `_lifecycle_lock = threading.RLock()`: calls from other threads are serialized, and a same-thread re-entry goes through, after which the outer call sees the end state. `AsyncSandboxBatch.__init__` uses `asyncio.Lock()`, because overlapping calls can only come from separate tasks, and a loop signal callback runs as its own task that simply waits. Plain Lock (hangs) and non-blocking-raise (breaks 11/N) were compared and rejected in `temp-prompts/pr2_round3_decisions.md` section 2 (12/N `522dad4c`).
+- **Situation:** in sync code a POSIX signal handler (for example Ctrl-C's `SIGINT`) runs on the main thread between bytecodes, so it can call `detach()` or `release()` while that same thread is already inside one of them holding `_lifecycle_lock`. In async code, signals run as separate loop tasks, *but* `release()` and `detach()` await `sandbox.close_connection()` while holding `batch._lifecycle_lock`, and a custom `AsyncSandbox` subclass can call `await client.close()` or `await client.delete_all()` from inside `close_connection()` on that same task.
+- **What goes wrong:** with a plain `threading.Lock`, a same-thread sync re-entry hangs forever. In async, `asyncio.Lock` is non-reentrant: if `close_connection()` calls `client.close()` or `delete_all()`, re-acquiring `batch._lifecycle_lock` on the same task deadlocks immediately, closing `k8s_helper` mid-call breaks the outer `release()` or `detach()`, and waiting on `client._close_lock` while another task's `close()` holds `_close_lock` and waits on `batch._lifecycle_lock` forms a two-task lock-order cycle.
+- **What we do:** `SandboxBatch.__init__` sets `_lifecycle_lock = threading.RLock()`: calls from other threads are serialized, and a same-thread re-entry goes through, after which the outer call sees the end state. `AsyncSandboxBatch` uses `asyncio.Lock()` and records `_lifecycle_owner = asyncio.current_task()` inside `release()` and `detach()` (`25/N`): `AsyncSandboxClient.close()` returns early whenever the current task owns `_close_owner` or any tracked batch's `_lifecycle_owner`, and `_release_batches()` skips any batch whose `_lifecycle_owner` is the current task. Plain Lock (hangs) and non-blocking-raise (breaks 11/N) were compared and rejected in `temp-prompts/pr2_round3_decisions.md` section 2 (12/N `522dad4c`).
 - **Example:**
   ```
   T1: detach() -> holds RLock -> PUT Lease ...
