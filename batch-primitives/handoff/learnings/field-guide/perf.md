@@ -521,6 +521,74 @@ This section covers how the batch handle stays fast and lean when a batch holds 
 
 </details>
 
+<a id="perf-25"></a>
+
+## PERF-25 Fan out multi-pool prechecks in parallel while raising errors in input order, and reset waves with whole-batch `release_members()`
+
+**Takeaway:** When validating $G$ pools before creating a Lease, run the pool and deduplicated template `GET`s concurrently under `max_in_flight`, then inspect outcomes in caller input order so error determinism stays identical to a sequential loop. When resetting all claims between waves on a reusable batch, run one batch-wide `deletecollection` sweep (`release_members()`) instead of $G$ per-pool sweeps or tearing down the batch.
+
+<details>
+<summary>The full story (25/N, #2252, 4bd5de49)</summary>
+
+- **Situation:** `claim_batch()` validates every declared warm pool and its referenced `SandboxTemplate` before creating the batch Lease ([PERF-10](#perf-10)), and multi-step callers periodically wipe active claims across many pools before acquiring the next wave.
+- **What goes wrong:** Sequential `_precheck_pools` across $G = 200$ pools pays up to $400$ serial network RTTs before sending a single create. Between waves, calling `release_group(pool)` in a loop sends $G$ separate `deletecollection` + `count_live` sweeps, whereas calling `release()` + `claim_batch()` destroys and recreates the Lease, restarts the watch stream, and discards `_checked_pools`.
+- **What we do:** `sandbox_batch.py: _precheck_pools` and `async_sandbox_batch.py: _precheck_pools` deduplicate pool names in order (`list(dict.fromkeys(warmpools))`), share `checked_templates`, and fan out `check_pool` across `ThreadPoolExecutor(min(len(pools), max_concurrency))` on sync and `BoundedSemaphore(max_concurrency)` + `asyncio.gather(..., return_exceptions=True)` on async. Both shells then iterate `zip(pools, results)` and raise the first exception in caller input order. For wave resets, `SandboxBatch.release_members()` (`_release_pools(None)`) deletes every claim across all pools in one batch-wide label `deletecollection` sweep while keeping the batch handle, its Lease heartbeat, its watch stream, and `_checked_pools` open, fencing concurrent `acquire()` calls via `_release_sweeps` until the sweep finishes.
+- **Related:** [PERF-10](#perf-10), [OPT-29](../optimizations.md#opt-29), [K8S-8](k8s.md#k8s-8).
+
+</details>
+
+<a id="perf-26"></a>
+
+## PERF-26 Bypass slow Kubernetes cascading garbage collection on churned clusters by deleting released Sandboxes and Pods directly in a bounded background pool
+
+**Takeaway:** Deleting an owner resource (`SandboxClaim`) frees node capacity only after Kubernetes's `GarbageCollectorController` cascades the delete to child `Sandbox` and `Pod` objects. When heavy multi-day cluster churn lags GC, warm-pool refills stall; issuing best-effort direct `Sandbox` and `Pod` `DELETE`s after claim deletion removes the stall, and a fresh-cluster control isolates GC lag from client bottlenecks.
+
+<details>
+<summary>The full story (Campaign 5: 2eb5ef6d, 3a14c1dc, 7769066b)</summary>
+
+- **Situation:** On GKE clusters running heavy RL benchmarks for 4 days, synchronous multi-step runs (`250x2x6` and R2E `500x2x8`) stalled waiting for `SandboxWarmPool` replicas to refill between steps (`993-1,010 s` on R2E `500x2x8`). Before this change, `batch` and `per_claim` had nearly identical multi-step wall times (`394-405 s` vs `368-381 s` on the 10-node cluster) because both waited on the cluster to clear released pods.
+- **What goes wrong:** After a `SandboxClaim` is deleted, node `maxPods`, IPAM slots, and warm-pool replacement budgets remain occupied until Kubernetes cascading GC deletes the `Sandbox` and its `Pod`. When cascading GC falls behind burst churn, warm pools sit starved of free slots.
+- **What we do:** In `claim_mode="batch"` (`feat/c5-batch-rebased-300d05e7`, `2eb5ef6d`, `3a14c1dc`), once a released claim's own `DELETE` succeeds, a background pool bounded by `min(16, max_in_flight)` deletes the `Sandbox` and then its `Pod` directly. On the first `403 Forbidden` (if the driver lacks optional `delete` RBAC on `sandboxes`/`pods`), it disables itself cleanly and falls back to standard GC. On the 4-day-old 20-node cluster, R2E `500x2x8` wall dropped from `993-1,010 s` to `209-279 s` (`~4.5x`) and `250x2x6` dropped from `251-281 s` to `116-123 s`. Re-testing on a freshly created 10-node cluster (`7769066b`, where GC cleared sandboxes promptly) gave `236-243 s` vs `236-252 s` on R2E and `99-102 s` vs `108 s` on multi-step, confirming that slow cluster GC was the exact root cause.
+- **Related:** [OPT-31](../optimizations.md#opt-31), [GKE-7](../gke-benchmarking.md#gke-7), [GKE-9](../gke-benchmarking.md#gke-9).
+
+</details>
+
+<a id="perf-27"></a>
+
+## PERF-27 Run high-concurrency RL claims and WebSocket exec natively on `asyncio`, prewarm TLS pools, and disable unused `aiohttp` `.netrc`/proxy thread-pool lookups
+
+**Takeaway:** At `1,000` concurrent rollouts, `run_in_executor` bridges and thread-per-exec `kubernetes.stream` clients spawn thousands of OS threads, and even pure `aiohttp` secretly dispatches per-request `.netrc` filesystem lookups to the thread pool unless unconfigured proxy/netrc checks are skipped. Moving claims and multiplexed WebSocket exec onto the event loop with prewarmed keep-alive TLS sockets collapses `~3,000` threads and `~1,050` sockets to `3` threads and `68` sockets.
+
+<details>
+<summary>The full story (Campaign 5: b386d881, 93f93fc9, feffbac2, 03390885)</summary>
+
+- **Situation:** At `concurrency = 1,000`, `per_claim` held `~3,000` OS threads and `~1,050` sockets (`10.0 s` TTFI P50, `12.5 s` burst + first exec wall). Even after moving batch claims and WebSocket exec onto `asyncio`, `/proc/self` still showed `23` active threads and extra client CPU during `1,000`-claim bursts.
+- **What goes wrong:**
+  1. Wrapping sync claims and `kubernetes.stream` pod exec in `run_in_executor` allocates threads and per-thread `PoolManager`s proportional to rollout concurrency.
+  2. Cold HTTPS pools pay `64` simultaneous TCP + TLS handshakes on the critical path of burst 0.
+  3. `aiohttp` checks environment proxies and `~/.netrc` via `loop.run_in_executor()` on every request when enabled, waking `20` executor threads just to look up nonexistent files.
+  4. Instantiating OpenAPI models on watch events and JSON-decoding unread claim create/delete bodies burns event-loop CPU.
+- **What we do:** Run batch claims natively on `asyncio` (`AsyncBatchClaims`), multiplex pod exec over a shared event-loop WebSocket client (`handle.aexec()`), pass raw watch events through without re-serialization while draining create/delete bodies unparsed (`b386d881`), prewarm `64` keep-alive TLS connections per cluster before the first burst (`93f93fc9`), and skip `aiohttp` proxy/`.netrc` lookups whenever neither is configured in the process (`feffbac2`, `03390885`). Skipping `.netrc`/proxy lookups alone cut driver threads from `23` to `3`, cut client CPU by `10-20%`, and lifted `1,000`-claim burst rate from `191-211/s` to `~240/s`. Together, `c = 1,000` ran in `3` threads and `68` sockets with `2.9 s` TTFI P50 and `5.4 s` burst + first exec wall.
+- **Related:** [OPT-32](../optimizations.md#opt-32), [OPT-33](../optimizations.md#opt-33), [OPT-34](../optimizations.md#opt-34), [OPT-35](../optimizations.md#opt-35), [CLEAN-12](clean.md#clean-12).
+
+</details>
+
+<a id="perf-28"></a>
+
+## PERF-28 Replace $O(P)$ warm-pool `GET`s with one paginated `LIST`, flush deferred tail releases when a sibling `acquire()` waits, and yield background prefetch to foreground creates
+
+**Takeaway:** On multi-hundred-pool RL workloads, fetch warm-pool readiness via one paginated namespace `LIST` rather than $P$ `GET`s, coalesce large release tails into `deletecollection` only while no sibling `acquire()` is waiting for capacity, and yield background pipelined prefetch for `250 ms` when foreground creates are active.
+
+<details>
+<summary>The full story (Campaign 5: b386d881, 2f87f7a9, 5f87abe9, 50e4531b)</summary>
+
+- **Situation:** SWE-bench and R2E-Gym run across `500` distinct single-image `SandboxWarmPool`s under synchronous, sliding-window, and pipelined strategies (`RL_BATCH_OPTIMIZATIONS.md` §2 & §3).
+- **What goes wrong:** Issuing `1` `GET` per pool during prechecks or warm-credit refreshes costs `500` RPCs; running `deletecollection` on tiny sliding-window releases costs more than individual `DELETE`s while holding finished claims in a coalescing buffer stalls sibling `acquire()` calls waiting on capacity; and eager pipelined prefetch steals `WarmCredit` and controller reconciliation seats from the active window.
+- **What we do:** Use one paginated namespace `LIST` for warm-pool prechecks and credit refreshes (`b386d881`); coalesce large release tails into `deletecollection` while keeping small windows per-claim (`b386d881`), deferring tail releases only while zero sibling `acquire()` calls are waiting (`2f87f7a9`); seed warm-pool readiness at pipelined window start while yielding background prefetch up to `250 ms` behind foreground creates (`5f87abe9`); and set RL defaults to `create_rps=500`, `max_in_flight=64` (`50e4531b`), confirmed optimal by `mif=64/128/256` and `rps=50/500/2000` sweeps showing controller and node pod-start (`~50 pods/s`) ceilings above `mif=64`.
+- **Related:** [OPT-37](../optimizations.md#opt-37), [OPT-38](../optimizations.md#opt-38), [OPT-39](../optimizations.md#opt-39), [PERF-21](#perf-21).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

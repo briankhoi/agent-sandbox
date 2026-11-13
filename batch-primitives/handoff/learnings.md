@@ -175,7 +175,7 @@ This is the deep part. Each section is its own page and groups entries around on
 | [Completion and accounting: when is the batch done?](learnings/field-guide/count.md) | `COUNT-` | 15 |
 | [Kubernetes API semantics that bit us (or could have)](learnings/field-guide/k8s.md) | `K8S-` | 22 |
 | [HTTP client and Python runtime quirks](learnings/field-guide/lib.md) | `LIB-` | 23 |
-| [Performance and memory at scale](learnings/field-guide/perf.md) | `PERF-` | 24 |
+| [Performance and memory at scale](learnings/field-guide/perf.md) | `PERF-` | 28 |
 | [API design: making the right thing easy and the wrong thing hard](learnings/field-guide/api.md) | `API-` | 31 |
 
 ## The other pages
@@ -185,7 +185,7 @@ This is the deep part. Each section is its own page and groups entries around on
 | [Kubernetes primer: the concepts this feature taught us](learnings/kubernetes-primer.md) | The Kubernetes concepts behind the feature, each with how we use it, a gotcha, and a snippet to try. |
 | [Patterns and code structure worth stealing](learnings/patterns.md) | Elegant code structures (`PAT-1`..`PAT-35`) with small snippets and when to reach for them. |
 | [Best practices we followed, and where they come from](learnings/best-practices.md) | Industry practices (`BP-1`..`BP-37`) we followed, why they scale, and their sources. |
-| [Optimization showcase: how batch claim got fast and lean](learnings/optimizations.md) | The performance wins (`OPT-`) side by side: what each limit protects, why a shortcut may skip it, the guard that keeps it correct, and the measured result. |
+| [Optimization showcase: how batch claim and RL orchestration got fast and lean](learnings/optimizations.md) | Every Python SDK (`OPT-1`..`OPT-24`, `OPT-29`) and `agent-sandbox-rl` (`OPT-25`..`OPT-28`, `OPT-30`..`OPT-39`) optimization in depth: bottleneck, mechanism, guard, and measured result. |
 | [Benchmarking and GKE at 1,000-sandbox scale](learnings/gke-benchmarking.md) | Production GKE control-plane, APF, GCFS vs. Secondary Boot Disk, Kubelet ImageGC, and gVisor lessons (`GKE-1`..`GKE-12`) plus benchmark harness engineering (`BENCH-1`..`BENCH-9`) from `148,544` Campaign 2 rollouts. |
 | [Testing techniques for concurrent and distributed code](learnings/testing.md) | Techniques (`TEST-1`..`TEST-35`) for deterministic concurrency testing, stateful Hypothesis fuzzing + `ReferenceBatchModel` shadow oracles, CAS `Barrier` stress & lock-starvation probes, lockstep differential simulation, and in-process OS/wire/clock fault simulation. |
 | [Verification: checking every interleaving, not just the ones you thought of](learnings/verification.md) | Model checking and strategy selection (`VER-1`..`VER-17`): the 10-strategy verification menu, in-process BFS over lock/signal/cancel interleavings, cross-class AST lock-rank & sync/async parity checks, two-sided `/tmp` negative controls, and `SimKube`/MitM/flight-recorder chaos. |
