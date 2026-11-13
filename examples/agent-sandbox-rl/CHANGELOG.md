@@ -13,6 +13,8 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
   garbage collector's. Best effort and in the background: it needs `delete` on
   `sandboxes` and `pods`, turns itself off on the first 403 or after repeated
   connection failures, and never runs in `per_claim` mode.
+- **Async API and exec sessions skip aiohttp's proxy and netrc lookups** when the
+  process has neither configured, removing two thread hops per request.
 - **`FleetConfig.claim_mode="batch"` and `BatchClaimConfig` claim through one `SandboxBatch` per cluster.**
   `claim_mode` defaults to `"per_claim"`, leaving existing `create_sandbox` behavior
   unchanged (`constants.CLAIM_MODES`). In `"batch"` mode each fleet pre-opens one
