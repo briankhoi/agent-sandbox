@@ -16,6 +16,7 @@
 SDK batch per cluster, against a fake batch."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 import types
@@ -3528,3 +3529,131 @@ def test_released_sandbox_flusher_recovers_after_it_raises(monkeypatch):
   assert probes == ["uid-0", "uid-1"]
   assert c.core_api.delete_collection_namespaced_pod.call_count == 1
   assert c._released_sandbox_pending == []
+
+
+def test_release_all_does_not_bulk_release_while_an_acquire_is_in_flight(make_cluster):
+  c = _batch_cluster(make_cluster)
+  f = _fleet(ClusterRegistry([c]), max_concurrent=8,
+             fail_fast=FailFastPolicy(enabled=False))
+  tasks = f.load_tasks(["img-0", "img-1", "img-2"])
+  f.plan()
+  held = [f.acquire(tasks[0]), f.acquire(tasks[1])]
+  b = c.batches[0]
+  real_acquire = b.acquire
+  entered, gate = threading.Event(), threading.Event()
+
+  def held_acquire(warmpool, timeout=None, *, pod_annotations=None):
+    entered.set()
+    assert gate.wait(10)
+    return real_acquire(warmpool, timeout=timeout, pod_annotations=pod_annotations)
+
+  b.acquire = held_acquire
+  with ThreadPoolExecutor(max_workers=1) as ex:
+    in_flight = ex.submit(f.acquire, tasks[2])
+    assert entered.wait(10)
+    # release_members() would release the whole batch and fail the acquire in flight.
+    f.release_all()
+    assert b.release_members_calls == 0
+    assert sorted(b.released_members) == sorted(h.claim_name for h in held)
+    gate.set()
+    late = in_flight.result(10)
+  assert [h.claim_name for h in f.handles()] == [late.claim_name]
+  assert f._claims_reserved == 1
+
+  # With no acquire in flight the same call uses one bulk release.
+  b.acquire = real_acquire
+  f.acquire(tasks[0])
+  f.release_all()
+  assert b.release_members_calls == 1
+  assert f.handles() == [] and f._claims_reserved == 0
+  f.teardown()
+
+
+async def test_async_release_does_not_bulk_release_while_an_acquire_is_in_flight(monkeypatch):
+  from agent_sandbox_rl.cluster import Cluster
+  from agent_sandbox_rl.config import ClusterConfig
+
+  monkeypatch.setattr("agent_sandbox_rl.preflight.preflight_cluster",
+                      lambda cluster, **kw: MagicMock(ok=True, checks=[]))
+  c = Cluster(ClusterConfig(name="c-in-flight", namespace="ns1", in_cluster=True),
+              api_client=MagicMock(),
+              async_api_client=MagicMock())
+  c.resources = MagicMock()
+  c.resources.labels = {}
+  c.resources.namespace = "ns1"
+  c.resources.list_claims.return_value = []
+  c.resources.list_leases.return_value = []
+  c.resources.list_warmpools.return_value = []
+  c.resources.list_templates.return_value = []
+  c.resources.count_pods.return_value = 0
+
+  async_batches: list[_FakeAsyncBatch] = []
+
+  async def _claim_batch(groups, **kwargs):
+    async_batches.append(_FakeAsyncBatch("ab-1", groups, **kwargs))
+    return async_batches[-1]
+
+  fake_async_client = MagicMock()
+  fake_async_client.claim_batch = AsyncMock(side_effect=_claim_batch)
+  fake_async_client.close = AsyncMock()
+  c._async_sandbox_client = fake_async_client
+  c._async_loop = asyncio.get_running_loop()
+  c._async_init_lock = asyncio.Lock()
+
+  af = AsyncSandboxFleet(
+      FleetConfig(claim_mode="batch", max_concurrent=4,
+                  fail_fast=FailFastPolicy(enabled=False)),
+      registry=ClusterRegistry([c]),
+  )
+  tasks = af.load_tasks(["img-a", "img-b", "img-c"])
+  af._fleet.plan()
+  for e in af._fleet.plan_.entries:
+    af._fleet._warmed[e.image] = 1
+  await af._prepare_async_batch_clusters(af._fleet.plan_.entries, just_warmed=True)
+  b = async_batches[0]
+  real_acquire = b.acquire
+
+  async def _hold_next_acquire():
+    entered, gate = asyncio.Event(), asyncio.Event()
+
+    async def held_acquire(warmpool, timeout=None, *, pod_annotations=None):
+      b.acquire = real_acquire
+      entered.set()
+      await gate.wait()
+      return await real_acquire(warmpool, timeout=timeout, pod_annotations=pod_annotations)
+
+    b.acquire = held_acquire
+    in_flight = asyncio.create_task(af.acquire(tasks[2]))
+    await asyncio.wait_for(entered.wait(), 5)
+    return in_flight, gate
+
+  # release_members() would release the whole batch and fail the acquire in flight.
+  held = [await af.acquire(tasks[0]), await af.acquire(tasks[1])]
+  in_flight, gate = await _hold_next_acquire()
+  await af.release_all()
+  assert b.release_members_calls == 0
+  assert sorted(b.released_members) == sorted(h.claim_name for h in held)
+  gate.set()
+  late = await asyncio.wait_for(in_flight, 5)
+  assert [h.claim_name for h in af.handles()] == [late.claim_name]
+  await af.release(late)
+
+  # The release at the end of a processed wave takes the same care.
+  b.released_members.clear()
+  in_flight, gate = await _hold_next_acquire()
+  out = await af._process_parallel(tasks[:2], lambda _t, h: h.claim_name, 2)
+  assert b.release_members_calls == 0
+  assert sorted(b.released_members) == sorted(out)
+  gate.set()
+  late = await asyncio.wait_for(in_flight, 5)
+  await af.release(late)
+
+  # With no acquire in flight both paths use one bulk release.
+  await af.acquire(tasks[0])
+  await af.acquire(tasks[1])
+  await af.release_all()
+  assert b.release_members_calls == 1
+  await af._process_parallel(tasks[:2], lambda _t, h: h.claim_name, 2)
+  assert b.release_members_calls == 2
+  assert af.handles() == [] and af._fleet._claims_reserved == 0
+  await af.aclose()

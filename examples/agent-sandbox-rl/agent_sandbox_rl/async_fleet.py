@@ -758,9 +758,11 @@ class AsyncSandboxFleet:
             excluded_batches.add(id(bc.batch))
           remaining.append(h)
 
+      with fl._lock:
+        acquire_in_flight = fl._acquire_in_flight_locked()
       bulk_groups: list[tuple[object, str, list[SandboxHandle]]] = []
       for key, (b, cname, gh) in by_batch.items():
-        if key not in excluded_batches and len(gh) >= 2:
+        if key not in excluded_batches and len(gh) >= 2 and not acquire_in_flight:
           bulk_groups.append((b, cname, gh))
         else:
           remaining.extend(gh)
@@ -1022,6 +1024,7 @@ class AsyncSandboxFleet:
         for live_h in fl._handles.values():
           if live_h._batch_claim is not None:
             active_by_batch.setdefault(id(live_h._batch_claim.batch), set()).add(id(live_h))
+        acquire_in_flight = fl._acquire_in_flight_locked()
 
       by_batch: dict[int, tuple[object, str, list[SandboxHandle]]] = {}
       remaining: list[SandboxHandle] = []
@@ -1037,6 +1040,7 @@ class AsyncSandboxFleet:
             and bc.batch.err() is None
             and callable(getattr(bc.batch, "release_members", None))
             and active_by_batch.get(id(bc.batch), set()).issubset(item_by_hid.keys())
+            and not acquire_in_flight
         ):
           key = id(bc.batch)
           if key not in by_batch:
