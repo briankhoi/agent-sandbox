@@ -64,10 +64,18 @@ logger = logging.getLogger("agent_sandbox_rl.batch_claims")
 # or failing goes this long without one, and holding its creates back would
 # just delay them.
 _UNBOUND_WINDOW_STALL_SECONDS = 0.5
+# The longest one acquire waits for a slot. A pool whose claims become Ready
+# slowly but steadily never stalls, and without this its acquires would queue
+# behind the window for as long as that lasts. A warm burst of 1,000 drains in
+# about 3 s at the 250 binds a second measured, so this does not cut it short.
+_UNBOUND_WINDOW_MAX_WAIT_SECONDS = 5.0
 
 
 class _UnboundClaimWindow:
-  """Bounds the claims of one cluster that are created but not yet Ready.
+  """Holds creates back while a cluster has ``limit`` claims created but not yet Ready.
+
+  ``limit`` is a target, not a hard bound: waiters that stop waiting (see the
+  two constants above) create their claims beyond it.
 
   The controller waits for a warm candidate only while a claim is younger than
   its warm-candidate grace period (2 s by default, counted from the claim's
@@ -83,9 +91,12 @@ class _UnboundClaimWindow:
   """
 
   def __init__(self, limit: int, *, stall_seconds: float | None = None,
+               max_wait_seconds: float | None = None,
                clock: Any = time.monotonic) -> None:
     self._limit = limit
     self._stall = _UNBOUND_WINDOW_STALL_SECONDS if stall_seconds is None else stall_seconds
+    self._max_wait = (
+        _UNBOUND_WINDOW_MAX_WAIT_SECONDS if max_wait_seconds is None else max_wait_seconds)
     self._clock = clock
     self._cond = threading.Condition()
     self._held = 0
@@ -96,10 +107,12 @@ class _UnboundClaimWindow:
     """Takes a slot and returns 0, or returns how long to wait. Requires ``_cond``."""
     now = self._clock()
     idle_since = max(self._last_exit, waiting_since)
-    if self._held < self._limit or now - idle_since >= self._stall:
+    waited = now - waiting_since
+    if (self._held < self._limit or now - idle_since >= self._stall
+        or waited >= self._max_wait):
       self._held += 1
       return 0.0
-    return self._stall - (now - idle_since)
+    return min(self._stall - (now - idle_since), self._max_wait - waited)
 
   def enter(self) -> None:
     with self._cond:
@@ -140,8 +153,16 @@ class _UnboundClaimWindow:
       def _set(f: asyncio.Future[None] = woken) -> None:
         if not f.done():
           f.set_result(None)
+      waiter_loop = woken.get_loop()
       try:
-        woken.get_loop().call_soon_threadsafe(_set)
+        running = asyncio.get_running_loop()
+      except RuntimeError:
+        running = None
+      try:
+        if running is waiter_loop:
+          waiter_loop.call_soon(_set)
+        else:
+          waiter_loop.call_soon_threadsafe(_set)
       except RuntimeError:
         # The waiter's loop is closed, so nothing is waiting on it.
         pass
@@ -242,7 +263,7 @@ class BatchClaims:
 
   def _unbound_window(self, cluster_name: str) -> _UnboundClaimWindow | None:
     limit = self._settings.max_unbound_claims
-    if limit is None:
+    if not limit:
       return None
     with self._lock:
       window = self._unbound_windows.get(cluster_name)
@@ -756,7 +777,7 @@ class AsyncBatchClaims:
 
   def _unbound_window(self, cluster_name: str) -> _UnboundClaimWindow | None:
     limit = self._settings.max_unbound_claims
-    if limit is None:
+    if not limit:
       return None
     with self._lock:
       window = self._unbound_windows.get(cluster_name)

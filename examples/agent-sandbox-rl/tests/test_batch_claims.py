@@ -3862,12 +3862,40 @@ def test_batch_acquire_stops_holding_creates_when_nothing_becomes_ready(monkeypa
       f.result()
 
 
-def test_batch_acquire_is_unbounded_by_default(monkeypatch):
-  assert BatchClaimConfig().max_unbound_claims is None
-  claims = BatchClaims(BatchClaimConfig(), ready_timeout=60, labels={})
-  assert claims._unbound_window("solo") is None
+def test_max_unbound_claims_defaults_to_256_and_none_or_zero_turn_it_off():
+  from agent_sandbox_rl.batch_claims import AsyncBatchClaims
+  assert BatchClaimConfig().max_unbound_claims == 256
+  assert BatchClaims(BatchClaimConfig(), ready_timeout=60, labels={})._unbound_window("solo")._limit == 256
+  for off in (None, 0):
+    cfg = BatchClaimConfig(max_unbound_claims=off)
+    assert BatchClaims(cfg, ready_timeout=60, labels={})._unbound_window("solo") is None
+    assert AsyncBatchClaims(cfg, ready_timeout=60, labels={})._unbound_window("solo") is None
   with pytest.raises(ValidationError):
-    BatchClaimConfig(max_unbound_claims=0)
+    BatchClaimConfig(max_unbound_claims=-1)
+
+
+def test_unbound_window_admits_a_waiter_after_max_wait_while_claims_keep_becoming_ready():
+  from agent_sandbox_rl.batch_claims import _UnboundClaimWindow
+  now = [100.0]
+  w = _UnboundClaimWindow(1, stall_seconds=0.5, max_wait_seconds=5.0, clock=lambda: now[0])
+  with w._cond:
+    assert w._try_take(now[0]) == 0.0
+  waiting_since = now[0]
+  # A slow pool: one claim becomes Ready every 0.1 s, but another acquire takes
+  # the freed slot each time, so the window never stalls and never has room.
+  for _ in range(49):
+    now[0] += 0.1
+    w.exit()
+    with w._cond:
+      assert w._try_take(now[0]) == 0.0
+      assert 0 < w._try_take(waiting_since) <= 0.5
+  now[0] = waiting_since + 4.95
+  with w._cond:
+    # The remaining wait is cut to what is left of max_wait, not a full stall.
+    assert w._try_take(waiting_since) == pytest.approx(0.05)
+    now[0] = waiting_since + 5.0
+    assert w._try_take(waiting_since) == 0.0
+  assert w.held() == 2
 
 
 async def test_async_batch_acquire_holds_creates_while_max_unbound_claims_are_not_ready(monkeypatch):

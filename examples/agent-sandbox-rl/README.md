@@ -679,7 +679,8 @@ fleet = SandboxFleet(FleetConfig(
 SDK's 60 because losing the Lease ends every rollout in flight on the batch, and each
 fleet process renews its own), `create_rps` (500) and `max_in_flight` (64), which pace
 and cap API requests only, not the wait for Ready. Pass `None` for either to use the
-SDK's defaults of 50 and 20.
+SDK's defaults of 50 and 20. `max_unbound_claims` (256) holds creates back while that
+many claims of a cluster are created but not yet Ready; `None` or `0` turns it off.
 
 #### Tuning batch claims
 
@@ -698,6 +699,20 @@ with a controller running 500 claim workers. Measured there:
 - A fleet whose pools already hold a Ready sandbox for every claim is not paced by
   `create_rps` at all, so sizing pools to the workload (`warm_per_task=True`) matters
   more than either setting.
+- **`max_unbound_claims`** is for a burst the size of its warm pool. The controller
+  waits for a warm sandbox only while a claim is younger than its
+  `--sandbox-claim-warm-candidate-grace-period` (2 s from the claim's creation). The
+  last claims of a burst can find the pool's last Ready sandboxes held by other
+  reconciles, and are then started cold beside them unless they are still young
+  enough to wait.
+  With 1,000 claims against a pool of 1,000 on one cluster, 4 of 8 bursts had 18 to
+  54 cold starts without it and 0 of 8 with it at 256, at the same claims per second
+  (8 bursts each). It is a target rather than a hard bound: an acquire stops waiting
+  once nothing has become Ready for 0.5 s, or after 5 s. So a burst on a pool that
+  is cold-starting loses up to 0.5 s once, and an acquire on a pool whose claims
+  become Ready slowly but steadily waits at most 5 s. Set it to `None` or `0` to
+  turn it off. Raising the controller's grace period is the server-side mitigation:
+  15 s also gave 0 of 8 there.
 
 The benchmarks in this repository pass both values explicitly; they equal the defaults.
 

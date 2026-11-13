@@ -145,18 +145,19 @@ class BatchClaimConfig(BaseModel):
   once. ``create_rps`` paces only the creates a warm pool cannot cover, and
   ``max_in_flight`` caps concurrent API requests, matching the 64 keep-alive
   connections opened per cluster before the first burst. The README section
-  "Tuning batch claims" has the measurements behind both values. Pass ``None``
-  explicitly to defer to the SDK defaults."""
+  "Tuning batch claims" has the measurements behind both values and behind
+  ``max_unbound_claims``. Pass ``None`` explicitly to defer to the SDK defaults."""
 
   create_rps: Annotated[float | None, Field(gt=0)] = 500.0
   max_in_flight: Annotated[int | None, Field(ge=1)] = 64
-  # Most claims per cluster that may be created but not yet Ready; further
+  # While this many claims of a cluster are created but not yet Ready, further
   # acquires wait before creating theirs. The controller only waits for a warm
   # candidate while a claim is younger than its 2 s grace period, so claims
-  # that queue behind a burst can be started cold beside Ready sandboxes.
-  # A pool that stops binding (cold starts, errors) is not held back. None
-  # disables the bound.
-  max_unbound_claims: Annotated[int | None, Field(ge=1)] = None
+  # that queue behind a burst can be started cold beside Ready sandboxes. It
+  # is a target, not a hard bound: an acquire stops waiting once nothing has
+  # become Ready for 0.5 s, or after 5 s, and creates its claim anyway. None
+  # or 0 turns it off.
+  max_unbound_claims: Annotated[int | None, Field(ge=0)] = 256
   # Longer than the SDK's 60 s, because losing the Lease ends every in-flight
   # rollout of the batch, and a driver that shares its process with a trainer can
   # stall for tens of seconds. Renewals happen every lease_duration // 3 per
