@@ -140,11 +140,13 @@ class ObservabilityConfig(BaseModel):
 class BatchClaimConfig(BaseModel):
   """SDK batch settings for ``FleetConfig(claim_mode="batch")``.
 
-  Defaults are tuned for high-concurrency RL rollouts and evals (``create_rps=500.0``
-  when cold-pool pacing applies, ``max_in_flight=64`` concurrent API operations
-  matching the 64 pre-warmed HTTP/1.1 TLSv1.3 keep-alive sockets per cluster to
-  dispatch ~1,600 creates/s without cold-handshake or HA APF queue stalls).
-  Pass ``None`` explicitly to defer to the lower general-purpose SDK defaults."""
+  ``create_rps=500.0`` and ``max_in_flight=64`` are above the SDK's general-purpose
+  defaults (50 and 20) because RL rollouts and evals claim hundreds of sandboxes at
+  once. ``create_rps`` paces only the creates a warm pool cannot cover, and
+  ``max_in_flight`` caps concurrent API requests, matching the 64 keep-alive
+  connections opened per cluster before the first burst. The README section
+  "Tuning batch claims" has the measurements behind both values. Pass ``None``
+  explicitly to defer to the SDK defaults."""
 
   create_rps: Annotated[float | None, Field(gt=0)] = 500.0
   max_in_flight: Annotated[int | None, Field(ge=1)] = 64

@@ -659,8 +659,29 @@ fleet = SandboxFleet(FleetConfig(
 
 **BatchClaimConfig:** `work_budget` (3600), `lease_duration` (300, longer than the
 SDK's 60 because losing the Lease ends every rollout in flight on the batch, and each
-fleet process renews its own), `create_rps` and `max_in_flight` (None, the SDK's
-defaults of 50 and 20, which pace and cap creates only, not the wait for Ready).
+fleet process renews its own), `create_rps` (500) and `max_in_flight` (64), which pace
+and cap API requests only, not the wait for Ready. Pass `None` for either to use the
+SDK's defaults of 50 and 20.
+
+#### Tuning batch claims
+
+The defaults were chosen on GKE clusters of 10 and 20 `n2-standard-32` gVisor nodes
+with a controller running 500 claim workers. Measured there:
+
+- **`max_in_flight`** made no difference to wall time between 64, 128 and 256, for
+  500 claims at concurrency 500 and for 1,000 claims at concurrency 200. Claim
+  throughput was limited by the controller, whose claim workers were all busy during
+  a burst, not by the client. Raising it adds API-server load without a measured
+  gain; lower it on a small or shared control plane.
+- **`create_rps`** applies only to creates that no Ready warm sandbox covers. With
+  pools half the size of the workload, 50, 500 and 2,000 gave the same wall time
+  (33.3–33.5 s for 1,000 tasks); only the slowest claims moved (time to first
+  instruction p99 9.9 s, 8.6 s and 8.2 s). Lower it if the API server returns 429s.
+- A fleet whose pools already hold a Ready sandbox for every claim is not paced by
+  `create_rps` at all, so sizing pools to the workload (`warm_per_task=True`) matters
+  more than either setting.
+
+The benchmarks in this repository pass both values explicitly; they equal the defaults.
 
 ## Configuration reference
 
