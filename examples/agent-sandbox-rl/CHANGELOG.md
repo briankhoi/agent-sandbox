@@ -91,6 +91,8 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
   longest task and rotate a batch claim once less than `2 * longest_task + reset_timeout`
   remains before `claim_expires_at`, leaving headroom before `shutdownTime` deletes the
   claim.
+- **Docs**: README → *Tuning batch claims* says how to choose `concurrency` when most
+  claims start cold, with the measured effect on time to first instruction and wall time.
 
 ### Fixed
 - **Concurrent first acquires build one `SandboxClient` per cluster.**

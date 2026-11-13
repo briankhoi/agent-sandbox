@@ -716,6 +716,29 @@ with a controller running 500 claim workers. Measured there:
 
 The benchmarks in this repository pass both values explicitly; they equal the defaults.
 
+**Concurrency when most claims start cold.** When pools hold fewer Ready sandboxes
+than an image has tasks, most claims wait for a new pod, and the cluster readies pods
+at its own rate. Claims in flight beyond that rate only wait longer: time to first
+instruction grows with `concurrency` while tasks per second stay the same. Measured
+on one 10-node cluster, 3,000 tasks over 500 images with one warm sandbox per image
+(16–18 tasks/s at every setting, all tasks ok):
+
+| `concurrency` | wall | time to first instruction p50 | p99 |
+| --- | --- | --- | --- |
+| 500 | 164 s | 18.8 s | 40.7 s |
+| 250 | 168–187 s | 11–12 s | 27 s |
+| 150 | 170–181 s | 6.6–6.9 s | 17–18 s |
+
+Lower concurrency cost 3–14% more wall time in these runs; the larger figures came
+from runs that followed a `per_claim` job, so the cost is not settled. To pick a
+value, read `fleet.report.summary()` from one run: tasks per second is tasks ok over
+`TOTAL`, and the average claim time is the `claim` line's total over its `n`. If the
+average claim time is close to `concurrency` divided by tasks per second, claims are
+queueing, and a `concurrency` near tasks per second times the claim time of the
+fastest cold claims (about 6 s here) gives the same throughput with shorter waits.
+This does not apply when pools already hold a Ready sandbox for every claim: those
+claims do not wait for a pod, and higher concurrency finishes sooner.
+
 ## Configuration reference
 
 **FleetConfig:** `clusters`, `placement`, `max_concurrent` (1), `max_warmpool_size`
