@@ -13,6 +13,10 @@ All notable changes to `agent-sandbox-rl`. Format loosely follows
   garbage collector's. Best effort and in the background: it needs `delete` on
   `sandboxes` and `pods`, turns itself off on the first 403 or after repeated
   connection failures, and never runs in `per_claim` mode.
+- **Async exec reconnects when its connection was never established.** A burst
+  opens one connection per exec; one whose handshake is lost now fails after 10 s
+  instead of aiohttp's 30 s and is tried up to 3 times. The command is only sent
+  once a connection exists, so it is never run twice.
 - **Async API and exec sessions skip aiohttp's proxy and netrc lookups** when the
   process has neither configured, removing two thread hops per request.
 - **`FleetConfig.claim_mode="batch"` and `BatchClaimConfig` claim through one `SandboxBatch` per cluster.**
