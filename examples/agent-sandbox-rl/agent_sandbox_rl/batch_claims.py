@@ -245,6 +245,9 @@ class BatchClaims:
       if reuse_existing is None:
         s = self._settings
         eff_max_in_flight = s.max_in_flight
+        limit_deletes = getattr(cluster, "limit_released_sandbox_deletes", None)
+        if eff_max_in_flight is not None and callable(limit_deletes):
+          limit_deletes(eff_max_in_flight)
         if (
             "max_in_flight" not in s.model_fields_set
             and eff_max_in_flight is not None
@@ -825,6 +828,9 @@ class AsyncBatchClaims:
       if reuse_existing is None:
         s = self._settings
         eff_max_in_flight = s.max_in_flight
+        limit_deletes = getattr(cluster, "limit_released_sandbox_deletes", None)
+        if eff_max_in_flight is not None and callable(limit_deletes):
+          limit_deletes(eff_max_in_flight)
         if (
             "max_in_flight" not in s.model_fields_set
             and eff_max_in_flight is not None
