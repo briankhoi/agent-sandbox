@@ -2191,6 +2191,20 @@ class SandboxFleet:
       return False
     return True
 
+  def _acquire_in_flight_locked(self) -> bool:
+    """Whether an acquire may be waiting on a claim that has no handle yet.
+    Requires ``_lock``.
+
+    The batch's ``release_members()`` releases every claim of the batch, so it
+    fails such an acquire with "released while acquiring". An acquire holds a
+    slot in ``_claims_reserved`` from its start but registers its handle only
+    once the sandbox is Ready, so more slots than handles holding one means an
+    acquire, or a release that has not returned its slot yet, is in flight. The
+    count is fleet-wide, so this also reports acquires on other batches.
+    """
+    holding = sum(1 for h in self._handles.values() if not h._slot_released)
+    return self._claims_reserved > holding
+
   def _finalize_claimed_batch_handles(self, claimed: list[SandboxHandle], *,
                                       claim_deleted: bool = True) -> None:
     released_slots = 0
@@ -2278,9 +2292,12 @@ class SandboxFleet:
           excluded_batches.add(id(h._batch_claim.batch))
         individual.append(h)
 
+    with self._lock:
+      acquire_in_flight = self._acquire_in_flight_locked()
     bulk_groups: list[tuple[object, str, list[SandboxHandle]]] = []
     for key, (b, cname, group_handles) in by_batch.items():
-      if key not in excluded_batches and len(group_handles) >= 2:
+      if (key not in excluded_batches and len(group_handles) >= 2
+          and not acquire_in_flight):
         bulk_groups.append((b, cname, group_handles))
       else:
         individual.extend(group_handles)
