@@ -307,6 +307,26 @@
 
 </details>
 
+<a id="gke-17"></a>
+
+## GKE-17 Distinguish all five tiers of the GKE sandbox "warmness spectrum" so cache state never confounds A/B benchmarks
+
+**Takeaway:** "Warm" vs. "cold" is not binary on GKE: container sandboxes sit on a five-tier spectrum (**Pod/RAM-warm**, **OS page-cache-warm**, **disk-warm / hydrated SSD**, **cold SBD with lazy GCS block hydration**, and **network-cold / uncached GCFS streaming**). Always pin and verify which tier both A/B arms start in, because sliding silently up one tier between Run 1 and Run 2 creates `2x-20x` phantom speedups.
+
+<details>
+<summary>The full story (Campaigns 2-5 across WarmPool, GCFS T0, and Secondary Boot Disks)</summary>
+
+- **Situation:** Across `500`-image SWE-bench and R2E-Gym benchmarks, two runs with the exact same YAML manifests can differ by an order of magnitude depending on where image layers and container processes sit in the node storage/memory hierarchy:
+  1. **Pod / RAM-warm (`SandboxWarmPool` Ready replica):** The pod is already scheduled, the `gVisor` (`runsc`) sentry and container entrypoint have already booted, and hot binary/filesystem pages sit in RAM. Claiming only updates Kubernetes ownership metadata (`< 1 s`, zero kubelet/container startup).
+  2. **Node OS page-cache-warm (recent container run on the same node):** A new pod still pays scheduling + `runsc` boot, *but* `containerd` overlayfs blocks already reside in the host kernel's RAM page cache, so the first `exec` (`git status` / `pytest`) hits zero disk or remote block faults.
+  3. **Disk-warm / hydrated local SSD (`prepull` DaemonSet or post-hydration SBD):** Image layers are unpacked on the node's attached Persistent Disk / SSD (`wait_pool_ready ~3.7-4.1 s`), avoiding network pulls while remaining bounded by disk IOPS and Kubelet's `85%` `ImageGC` eviction mark ([GKE-6](#gke-6)).
+  4. **Cold Secondary Boot Disk (first read on a fresh GCE `CONTAINER_IMAGE_CACHE` SBD):** Even though the disk is attached at VM creation, GCE streams underlying blocks lazily from GCS on first read (`wait_pool_ready ~64-67 s` on Run 1 vs `~3.7-4.1 s` on Run 2, [GKE-14](#gke-14)).
+  5. **Network-cold (Artifact Registry pull or unhydrated `T0` GCFS Image Streaming):** Layers are absent from the node; GCFS streams metadata and data chunks over the network on demand, contending on Cloud NAT ports and registry QPS across `500` distinct images ([GKE-5](#gke-5), [GKE-11](#gke-11)).
+- **What we do:** Match warmness tiers explicitly per benchmark goal: use standing `SandboxWarmPool`s with verified `readyReplicas` before timing Pod/RAM-warm bursts; run chunked `100%`-node hydration `DaemonSet`s ([BENCH-6](#bench-6)) before disk-warm `T0` runs; recreate SBD nodepools from scratch before *each* arm for cold-SBD comparisons ([GKE-14](#gke-14)); and interleave `ABABAB` repetitions once disk/page caches are symmetrically warm.
+- **Related:** [GKE-5](#gke-5), [GKE-6](#gke-6), [GKE-14](#gke-14), [BENCH-2](#bench-2), [BENCH-6](#bench-6).
+
+</details>
+
 ---
 
 ## Benchmark harness and measurement engineering
