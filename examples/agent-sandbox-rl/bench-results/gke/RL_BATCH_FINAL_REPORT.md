@@ -18,8 +18,8 @@ Sections 1 to 8 describe tip `9188a6e9` (image `k3-final`). Since then the branc
 
 | Shape | Cluster | `k4-final` | `k3-final` | Upstream per_claim |
 |---|---|---|---|---|
-| Eval 500×1 wall | older, 10 nodes | 16.2 / 15.4 s (third run in the raw files) | 16.2 s | 18.3 s |
-| Eval 500×1 TTFI p50 | older, 10 nodes | 1.65 / 1.86 s | 1.82 s | 3.34 s |
+| Eval 500×1 wall | older, 10 nodes | 16.2 / 15.4 / 15.4 s | 16.2 s | 18.3 s |
+| Eval 500×1 TTFI p50 | older, 10 nodes | 1.65 / 1.86 / 1.79 s | 1.82 s | 3.34 s |
 | 1k burst c=1000 claims/s | older, 10 nodes | 207–240, 0 cold launches in 12 bursts | 233–253 (earlier) | 106–119 (earlier) |
 | 3k naive / sliding / pipelined wall | older, 10 nodes | 167 / 163 / 155 s | 156 / 150 / 168 s | 393 / 398 / 420 s (earlier) |
 | R2E 500×2×8 wall | older, 20 nodes | 237 / 207 s | 202–222 s (earlier) | 1,004–1,027 s (earlier) |
