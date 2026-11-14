@@ -4,12 +4,13 @@
 
 | Branch | Tip | Use |
 |---|---|---|
-| `feat/rl-batch-released-sandbox-delete` | `74d65bda` | **Open the PR from this one.** Everything, including the cold-launch fix and per-task release |
-| `feat/rl-batch-released-sandbox-delete-k3` | `9188a6e9` | Fallback: the same branch three commits earlier, if a reviewer objects to the two behaviour changes below |
+| `feat/rl-batch-released-sandbox-delete-rebased` | `ec01bf0d` | **Open the PR from this one.** The same 24 commits rebased onto the current `feat/rl-batch-hardening` (`e0639edd`); no conflicts; RL suite 803 passed, SDK suite 1528 passed on the rebased tree |
+| `feat/rl-batch-released-sandbox-delete` | `74d65bda` | The same commits on the old base `300d05e7`, which is what the benchmark images were built from. Do not open the PR from it: neither upstream `main` nor the current `feat/rl-batch-hardening` contains `300d05e7` |
+| `feat/rl-batch-released-sandbox-delete-k3` | `9188a6e9` | Old base, three commits earlier. Fallback only if a reviewer objects to the two default-behaviour changes; it would need the same rebase |
 
-There are two only because the last three commits change default behaviour. The first branch is the better one: it has no measured regression against the second, removes the cold launches, and is faster on multi-step runs. The second is a subset of the first, not an alternative design.
+The first is the one to use. The other two exist because the benchmarks ran on the old base and because the last three commits change default behaviour.
 
-Both sit on `300d05e7` (`feat/rl-batch-hardening`), 24 commits for the first.
+PR base: `feat/rl-batch-hardening`, or `main` once that branch's PR has merged. If it merged as a squash commit, rebase once more onto `main`.
 
 ## PR title
 
@@ -47,12 +48,12 @@ Risks: extra RBAC as above; released pods are force-deleted; up to 16 extra conc
 
 ## Left before merge
 
-1. **Rebase check.** The branch sits on `300d05e7`. If the previous PR in the stack merged with a different hash (squash), rebase onto upstream `main` first. Not done.
+1. **Rebase: done** onto the current `feat/rl-batch-hardening` (see the branch table). The benchmark images were built before the rebase; the rebased tree passes both test suites but was not benchmarked again.
 2. **`make all`** has not been run on this branch. No Go files changed. RL suite (803) and SDK unit suite (1528) pass. mypy reports 2 errors in `trace_manager.py`, a file this branch does not touch.
 3. **`docs/python_sdk_reference.md`** is changed by the branch; run `make fix-api-docs` and commit any difference.
 4. **CHANGELOG / README** already describe every change above. The commit message of `aa0fe12f` quotes the first experiment's numbers (108.0 / 107.7 vs 112.6 / 111.8 s) rather than the later three-run comparison; both are correct.
 5. **Fresh-cluster numbers for the last three commits** are not measured yet (the replacement fresh cluster is having its images pre-pulled). The fresh-cluster row above is from the tip three commits earlier.
-6. **Open the PR** from the first branch with the text above.
+6. **Open the PR** from `feat/rl-batch-released-sandbox-delete-rebased` with the text above.
 
 ## Follow-ups, not blocking
 
