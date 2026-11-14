@@ -2,6 +2,45 @@
 
 Batch claim mode vs upstream `per_claim` (`300d05e7`, unchanged), three GKE clusters, gVisor, image streaming on. Benchmark numbers in sections 2, 4 and 5 are read from the raw result JSON and pod logs in `scratch/gke_bench_v8/runs/` (full tables: `scratch/gke_bench_v8/tables_k1.md`) and were recomputed independently by an auditor, whose corrections are applied here (`brain/4fbea1c2-e01e-40b1-9cd4-773c916a7f11/AUDIT_RL_BATCH_FINAL_REPORT.md`). Sections 3 and 7 summarise investigation reports and were not recomputed. Batch runs use `max_in_flight` 64 and async exec; eval, 3k and parity pass `create_rps` 500 and the burst and step drivers leave it at the library default. "n" is the number of runs; ranges are min–max.
 
+## 0. Update, 2026-11-14 01:15Z: four more commits (tip `74d65bda`, image `k4-final`)
+
+Sections 1 to 8 describe tip `9188a6e9` (image `k3-final`). Since then the branch gained the changes below, each reviewed with no blockers. RL suite 803 passed, SDK suite 1528 passed on the merged tree. Still local, not pushed.
+
+| Commit | What | Measured |
+|---|---|---|
+| `aa0fe12f` | Step runs release each batch claim when its task finishes, instead of one bulk release at the end of the step | Multi-step 250×2×6, older 20-node cluster, 3 runs each: 107.6 / 107.6 / 107.6 s vs 112.4 / 113.1 / 113.1 s (4.6%). End-of-step tail 0.02–0.03 s vs 0.43–0.62 s. R2E 500×2×8: 202–208 s vs 202–222 s, a tie |
+| `af804da9`, `c93592bd` | `BatchClaimConfig.max_unbound_claims`, default 256: creates wait while that many claims are created but not Ready (never more than 5 s) | Fresh cluster, c=1000, 8 bursts per arm: cold launches in 4 of 8 bursts without it (20, 30, 18, 54), 0 of 8 with it, at 201–258 vs 206–248 claims/s |
+| `74d65bda` | README: how to choose concurrency when most claims start cold | 3k batch at c=500 / 250 / 150: TTFI p50 18.8 / 10.9–11.8 / 6.6–6.9 s, wall 164 / 168–187 / 170–181 s |
+
+**Cost of `aa0fe12f`:** one claim DELETE per task, the same count per_claim sends, instead of one bulk request per step. A grouped delete would need a per-claim label in the SDK, which is a wire change and was not made.
+
+**`k4-final` validation, all tasks succeeded in every run:**
+
+| Shape | Cluster | `k4-final` | `k3-final` | Upstream per_claim |
+|---|---|---|---|---|
+| Eval 500×1 wall | older, 10 nodes | 16.2 / 15.4 s (third run in the raw files) | 16.2 s | 18.3 s |
+| Eval 500×1 TTFI p50 | older, 10 nodes | 1.65 / 1.86 s | 1.82 s | 3.34 s |
+| 1k burst c=1000 claims/s | older, 10 nodes | 207–240, 0 cold launches in 12 bursts | 233–253 (earlier) | 106–119 (earlier) |
+| 3k naive / sliding / pipelined wall | older, 10 nodes | 167 / 163 / 155 s | 156 / 150 / 168 s | 393 / 398 / 420 s (earlier) |
+| R2E 500×2×8 wall | older, 20 nodes | 237 / 207 s | 202–222 s (earlier) | 1,004–1,027 s (earlier) |
+| Multi-step 250×2×6 wall | older, 20 nodes | 110.0 / 108.8 s | 112.4–113.1 s (earlier) | 226–270 s (earlier) |
+| Tunix 64×16×6 wall | older, 20 nodes | 160 s | 173 s (previous image) | 513 / 515 s (earlier) |
+| 500×2 naive / sliding / pipelined | older, 20 nodes | 31.3 / 43.1 / 40.0 s | 31.9 / 41.7 / 43.0 s | 41.9–42.6 s sliding and pipelined (earlier) |
+
+- The 3k differences between `k4-final` and `k3-final` are inside the earlier run-to-run range (149–192 s), one run each.
+- The 237 s R2E run started right after another test left 1,000 pool pods on the cluster; the second run was 207 s.
+
+**Cold launches: cause found** (replaces the "cause unknown" statements in sections 5 and 6). Two controller behaviours combine. A stale second reconcile of an already-bound claim takes another Ready sandbox out of the queue and returns it only after a conflict and a re-read, so at the end of an exact-fit burst the last Ready sandboxes are unavailable. Claims arriving then either cold-start at once or retry only until they are 2 s old. Measured: cold claims are always the last-created (ranks 957–999 of 1,000) and each cold burst leaves at least as many original Ready sandboxes unclaimed. Raising the controller's `--sandbox-claim-warm-candidate-grace-period` to 15 s also gave 0 of 8 bursts. The client window does not remove the race: it keeps the last claims young enough to take a refill sandbox. Evidence is 8 bursts per arm on one cluster. Report: `brain/a4cd77c4-c7eb-4fe1-a033-3a148909780c/cold-launch-cause-report.md`.
+
+**Ties and losses investigated** (replaces "no cause identified" in section 2):
+
+- **3k TTFI p50** is a queueing effect: both modes keep nearly all 500 slots waiting on a claim. Batch serves evenly (mean 19.9 s); per_claim is skewed (median 6.3 s, mean 57.3 s). Lower concurrency cuts batch TTFI in proportion (table above) for 3–14% more wall time; that cost is not settled.
+- **Per-task claim time** (1.25 vs 0.50 s) compared different spans. On the same clock batch takes 1.2–1.6 s and per_claim 2.8–2.9 s; per_claim's worker threads starve its event loop.
+- **Sliding and pipelined 500×2:** the window cycle is fixed at about 8.4 s by pod starts however the client splits it. Not client-fixable.
+- **Bulk release throughput:** over 90% of the time is inside one deletecollection and one confirming list. Parallel deletes did not help. Not client-fixable.
+
+**Fresh cluster: not yet re-measured for these commits.** The first fresh cluster was deleted; its replacement degraded under an R2E warm-up with empty image caches (kill timeouts, then pod IP exhaustion), with upstream per_claim alone as well as batch. Its nodes were recycled and images are being pre-pulled before the comparison is rerun.
+
 ## 1. PR candidate
 
 Branch `feat/c5-batch-rebased-300d05e7`, tip **`9188a6e9`**, local only (not pushed). Benchmarked as image `k3-final` (= `80c6ae71`; the tip adds a README-only commit). RL suite 796 passed, SDK suite 1528 passed (SDK suite last run at `3faf09ca`; the later commits touch only RL code and docs).
