@@ -633,6 +633,26 @@ This section covers who owns each resource the batch SDK creates (cached connect
 
 </details>
 
+<a id="clean-30"></a>
+
+## CLEAN-30 Enforce causal delete order (`Claim -> Sandbox -> Pod`) when bypassing cascading GC, never infer `Sandbox` labels from `Pod` labels, and fall back to a `1`-item label `LIST` when fast GC collects probed `Sandbox`es
+
+**Takeaway:** Direct cleanup of Kubernetes child objects must strictly follow owner deletion (`SandboxClaim` deleted -> `Sandbox` deleted -> `Pod` deleted), or surviving owners immediately reconcile replacement pods or re-adopt. Never use a `Pod`'s `claim-uid` label as proof that its parent `Sandbox` carries `claim-uid`, and when fast GC removes probed `Sandbox`es (`404`) within the `100 ms` batching window, fall back to a `limit=1` namespace `Sandbox` label `LIST` with power-of-two re-probe backoff (`ec8dead1`, `df95d2cd`, `046df8d5`).
+
+<details>
+<summary>The full story (Campaign 5 review & kind e2e verification: 20583e9d, ec8dead1, df95d2cd, 046df8d5)</summary>
+
+- **Situation:** To bypass `~13.3 objects/s` cascading GC on `324`-seat GKE clusters ([PERF-26](perf.md#perf-26)), `Cluster.delete_released_sandbox` deletes released `Sandbox`es and `Pod`s in groups of up to `50` via `deletecollection` on `agents.x-k8s.io/claim-uid in (...)`. We verified every path both by adversarial review and on a real `kind` cluster under two regimes: `kube-controller-manager` stopped (`GC off`) and running (`fast GC`).
+- **What goes wrong (four real traps caught across review + `kind` e2e):**
+  1. **Deleting `Sandbox`/`Pod` before `SandboxClaim` (`20583e9d` review blocker B1) or `Pod` after failed `Sandbox` delete (S1):** Deleting a `Pod` while its `Sandbox` survives (or a `Sandbox` while its `SandboxClaim` survives) makes the controller create a replacement `Pod` or cold-launch a replacement `Sandbox`. Teardown must defer direct deletes until `release_members()` / `release()` confirms the claims are gone, and each batch must finish `Sandbox` deletion without error before touching `Pod`s.
+  2. **Inferring `Sandbox` labels from `Pod` labels:** Upstream controllers label `Pod`s with `claim-uid`, whereas `Sandbox` `claim-uid` labeling depends on controller version. If `_sandbox_has_claim_uid_label` checked `Pod`s and returned `True` against an unlabeled-`Sandbox` controller, `Sandbox` `deletecollection` would match `0` objects (`200 OK`) and `Pod` `deletecollection` would kill `50` live `Sandbox`es' pods, triggering `50` controller pod recreations! (Conversely, skipping `Pod` `deletecollection` whenever `Sandbox` `deletecollection` matches `0` items breaks `fast GC` clusters, where Kubernetes GC already deleted the `Sandbox`es and the `Pod` `deletecollection` with `grace_period_seconds=0` is what eliminates the `30 s` pod grace tail!)
+  3. **Fast-GC `404` probe livelock (`kind` discrepancy D1, fixed in `046df8d5`):** On `kind` (`fast GC`), Kubernetes GC deleted the first released `Sandbox` before the `100 ms` batching window flushed. Probing `batch[0]` always hit `404`, leaving `_released_sandbox_by_label = None` forever, paying `1` wasted `GET` on every flush, and never activating `deletecollection`!
+  4. **Flusher liveness & `urllib3` hidden retries (`df95d2cd`):** Leaving `_released_sandbox_flush_queued = True` on an unexpected exception wedged future flushes, and using default `ApiClient` (`Retry(3)`) multiplied transient blips across background threads.
+- **What we do:** Clear `_released_sandbox_flush_queued` in `except BaseException`, submit batches in parallel to an unretried `ApiClient` (`retries=False`), try up to `3` `Sandbox`es from the pending batch on `404` followed by one `list_namespaced_custom_object(..., label_selector="agents.x-k8s.io/claim-uid", limit=1)` (`046df8d5`), and probe only on undecided batch `#1, 2, 4, 8, ...` while falling back to by-name deletes. Confirmed on `kind` (`18/18` checks across `3` fast-GC runs: `1` `GET` `404` -> `1` `LIST` `200` -> `by_label=True`, zero replacement `Sandbox`es, causal `resourceVersion` order intact).
+- **Related:** [CLEAN-13](#clean-13), [CLEAN-14](#clean-14), [PERF-26](perf.md#perf-26), [OPT-31](../optimizations.md#opt-31), [LIB-21](lib.md#lib-21).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

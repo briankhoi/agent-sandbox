@@ -503,6 +503,24 @@ The batch SDK talks to Kubernetes through four libraries: `urllib3` (the HTTP po
 
 </details>
 
+<a id="lib-24"></a>
+
+## LIB-24 Retry `aiohttp` WebSocket `/exec` connects strictly before `ws_connect` upgrades (`_ExecNotSent`), and be aware that unread `v4.channel.k8s.io` status channels turn early stream closes into empty strings
+
+**Takeaway:** `aiohttp` defaults `sock_connect` to `30 s` with zero retries, so a single dropped SYN during a `1,000`-exec burst stalls `30 s` and raises `ConnectionTimeoutError`; retry with `sock_connect=10 s` strictly while `connected == False` (`14cf3c74`). Separately, both `kubernetes.stream` and `kubernetes_asyncio` `WsApiClient` return `""` without raising when a WebSocket `/exec` stream closes early unless callers inspect Kubernetes `ERROR_CHANNEL` (`channel 3`) or assert an explicit stdout completion sentinel.
+
+<details>
+<summary>The full story (Campaign 5: 14cf3c74 & 300k-task empty-exec forensics, cluster.py & handles.py)</summary>
+
+- **Situation:** `agent-sandbox-rl` executes rollout commands over Kubernetes `/exec` WebSockets (`sec-websocket-protocol: v4.channel.k8s.io`), collecting `STDOUT_CHANNEL` (`1`) and `STDERR_CHANNEL` (`2`) via `_FastWsApiClient._exec_once` (`cluster.py:236-275`) on async and `kubernetes.stream.stream(..., _preload_content=True)` on sync.
+- **What goes wrong:**
+  1. **Lost pre-upgrade handshakes (`4` `ConnectionTimeoutError`s in `~270,000` batch tasks):** `aiohttp` never retries a failed TCP/TLS connect, waiting the full `30 s` `sock_connect` timeout on a dropped SYN. Retrying blindly *after* `ws_connect` succeeds would risk running a non-idempotent rollout command twice!
+  2. **Silent early WebSocket EOFs (`>=5` tasks in `300,000+` across both `batch` and `per_claim`):** Neither `_FastWsApiClient._exec_once` nor `_preload_content=True` `stream()` parses the JSON `Status` frame on `ERROR_CHANNEL` (`channel 3`) or verifies one arrived before WebSocket `CLOSE`. When a kubelet/apiserver proxy stream closes early (or `bash` is absent when a string command wraps `["bash", "-lc", ...]`), `exec`/`aexec` returns `""` with no exception; our benchmark driver caught all `5` occurrences only because `exec_checked` / `aexec_checked` appended `&& printf '\n__ASRL_OK__\n'` and raised on missing sentinel!
+- **What we do:** In `_FastWsApiClient._exec_once` (`14cf3c74`), track `connected = False`, flip `connected = True` only inside `async with pool_manager.ws_connect(...) as ws:`, catch `(aiohttp.ConnectionTimeoutError, aiohttp.ClientConnectorError)` when `not connected` to raise `_ExecNotSent()`, and retry up to `3` attempts at `sock_connect=10 s`. For callers needing exit-code or truncation guarantees today, wrap commands with an explicit sentinel or parse `ERROR_CHANNEL` status frames (tracked as a follow-up in `RL_BATCH_FINAL_REPORT.md` §6).
+- **Related:** [LIB-20](#lib-20), [OPT-34](../optimizations.md#opt-34), [OPT-40](../optimizations.md#opt-40), [GKE-16](../gke-benchmarking.md#gke-16).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

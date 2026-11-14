@@ -10,7 +10,7 @@
 > **About the numbers.**
 > - **Bench tip:** the kind benchmark on `origin/bench/batch-claim` (`test/benchmarks/batch-claim/bench-report.md`), running `44fb487f` (`results/PROVENANCE.md`).
 > - **GKE Campaign 2 & 4 (`27/N`):** production GKE scale benchmarks (`origin/bench/rl-gke`, `examples/agent-sandbox-rl/bench-results/gke/campaign-v2/` and `campaign-v4/`), running `25/N` + `27/N` (`feat/rl-batch-hardening`). See [Benchmarking and GKE at 1,000-sandbox scale](gke-benchmarking.md).
-> - **GKE Campaign 5 (`c5`):** the 2026-11-13 RL batch-mode optimization runs (`examples/agent-sandbox-rl/bench-results/gke/RL_BATCH_OPTIMIZATIONS.md`, branch `feat/c5-batch-rebased-300d05e7` stacked on `feat/rl-batch-hardening`).
+> - **GKE Campaign 5 (`c5`):** the 2026-11-13 to 2026-11-14 RL batch-mode optimization and root-cause runs (`examples/agent-sandbox-rl/bench-results/gke/RL_BATCH_FINAL_REPORT.md` on `origin/bench/rl-gke`, PR branch `feat/rl-batch-released-sandbox-delete-rebased` at `ec01bf0d` stacked on `feat/rl-batch-hardening`, measured on pre-rebase tree `74d65bda`).
 > - **Analytical:** derived directly from the code when not isolated in its own A/B run.
 
 **The whole-batch bill** (bench tip, #47 table, batch vs per-claim baseline):
@@ -86,15 +86,18 @@ Requests for one sandbox that becomes Ready, has its pod looked up, and is delet
 | [OPT-27](#opt-27) | Bounded-parallel `acquire_batch` / `release_all` + rollback (`27/N`, `c9600379`) | $N$ serial RTTs -> bounded parallel fan-out | `3.81x` `8k` R2E-Gym wall (`21.7m -> 5.7m`) |
 | [OPT-28](#opt-28) | Memoize on-demand pools + auto-size HTTP/executor pools (`27/N`, `6d773276`, `e7ed074b`) | `2` RPCs/acquire & `1,024`-thread cap -> `0` repeat RPCs, `4,096` cap | `0` errors at `c=1,000..2,350` on GKE |
 | [OPT-30](#opt-30) | Zero-`GET` `acquire()`, watch-backed `is_alive()`, & `size=0` seed batch (`27/N`, `e4ba2706`) | Eager Pod `GET` + `1,000` serial prechecks -> `0` hot-path `GET`s | Eliminates `GET` per acquire & step boundary |
-| [OPT-31](#opt-31) | Direct background `Sandbox` + `Pod` delete on release (`c5`, `2eb5ef6d`, `3a14c1dc`) | K8s GC lag stalls warm-pool refill -> immediate slot reclaim | R2E `500x2x8` `~1,007 s -> ~223 s` (`4.5x`) |
-| [OPT-32](#opt-32) | Skip `aiohttp` per-request proxy and `.netrc` lookups (`c5`, `feffbac2`, `03390885`) | `23` driver threads -> `3` threads; `-10-20%` CPU | `1,000`-claim burst `191-211/s -> ~240/s` |
-| [OPT-33](#opt-33) | Event-loop-native batch claims (`AsyncBatchClaims`) (`c5`, `b386d881`) | Thread-pool hop per claim op -> native `asyncio` | Eliminates executor scheduling overhead |
-| [OPT-34](#opt-34) | Multiplexed event-loop WebSocket pod exec (`handle.aexec()`) (`c5`, `b386d881`) | `1` thread + `ApiClient`/exec -> shared async WS client | `c=1,000`: `~3,000` threads / `~1,050` sockets -> `3` / `68` |
-| [OPT-35](#opt-35) | Prewarm `64` keep-alive TLS connections per cluster (`c5`, `93f93fc9`) | Cold TCP+TLS handshakes on first burst -> pre-established | `c=1,000` burst + first exec `12.5 s -> 5.4 s` |
-| [OPT-36](#opt-36) | Raw watch pass-through & zero-decode create/delete drains (`c5`, `b386d881`) | Model serialize + JSON decode -> raw dict / byte drain | Cuts event-loop CPU under `1,000`-claim bursts |
-| [OPT-37](#opt-37) | Single paginated namespace `LIST` for warm pools (`c5`, `b386d881`) | $O(P)$ per-pool `GET`s -> `1` paginated `LIST` | Eliminates `500`-pool precheck/refresh fan-out |
-| [OPT-38](#opt-38) | Hybrid release coalescing & sibling-aware deferred tail release (`c5`, `b386d881`, `2f87f7a9`) | Blind `deletecollection` or premature/stalled tail -> adaptive | Never starves a waiting sibling `acquire()` |
-| [OPT-39](#opt-39) | Pipelined readiness seeding & `250 ms` prefetch yield (`c5`, `5f87abe9`) + tuned defaults (`50e4531b`) | Prefetch competes with active step -> foreground wins | `c=500`: `267/s vs 91/s`; TTFI P50 `2.9 s vs 10.0 s` |
+| [OPT-31](#opt-31) | Grouped direct `Sandbox` + `Pod` `deletecollection` on release (`c5`, `20583e9d`, `ec8dead1`, `046df8d5`) | K8s GC lag (`~13 obj/s`) + `1.26 ms`/release GIL -> `2` calls/`50` releases | R2E `500x2x8` `1,015 s -> 207 s` (`4.9x` on slow-GC cluster) |
+| [OPT-32](#opt-32) | Skip `aiohttp` per-request proxy and `.netrc` lookups (`c5`, `4e2be5a1`, `0ff44339`) | `23` driver threads -> `3` threads; `-10-20%` CPU | `1,000`-claim burst `191-211/s -> ~240/s` |
+| [OPT-33](#opt-33) | Event-loop-native batch claims (`AsyncBatchClaims`) (`c5`, `21971e63`) | Thread-pool hop per claim op -> native `asyncio` | Eliminates executor scheduling overhead |
+| [OPT-34](#opt-34) | Multiplexed event-loop WebSocket pod exec (`handle.aexec()`) (`c5`, `21971e63`) | `1` thread + `ApiClient`/exec -> shared async WS client | `c=1,000`: `~3,000` threads / `~1,050` sockets -> `3` / `68` |
+| [OPT-35](#opt-35) | Prewarm `64` keep-alive TLS connections per cluster (`c5`, `26c9cb4a`) | Cold TCP+TLS handshakes on first burst -> pre-established | `c=1,000` burst + first exec `12.5 s -> 5.0 s` |
+| [OPT-36](#opt-36) | Raw watch pass-through & zero-decode create/delete drains (`c5`, `21971e63`) | Model serialize + JSON decode -> raw dict / byte drain | Cuts event-loop CPU under `1,000`-claim bursts |
+| [OPT-37](#opt-37) | Single paginated namespace `LIST` for warm pools (`c5`, `21971e63`) | $O(P)$ per-pool `GET`s -> `1` paginated `LIST` | Eliminates `500`-pool precheck/refresh fan-out |
+| [OPT-38](#opt-38) | Per-task streaming step release & in-flight-acquire bulk guard (`c5`, `bcb8b9cd`, `733a1972`) | `0.5 s` end-of-step `release_members` barrier -> `0.02 s` tail + safe `release_all` | Multi-step `250x2x6` `112.4-113.1 s -> 107.6 s` (`-4.6%`) |
+| [OPT-39](#opt-39) | Pipelined readiness seeding & `250 ms` prefetch yield (`c5`, `10e49a38`) + tuned defaults (`69ec0353`) | Prefetch competes with active step -> foreground wins | `c=500`: `260/s vs 92/s`; TTFI P50 `2.7 s vs 10.9 s` |
+| [OPT-40](#opt-40) | Pre-upgrade WebSocket `exec` fast-connect retry (`c5`, `14cf3c74`) | `30 s` `aiohttp` `sock_connect` timeout on lost SYN -> `10 s` x `3` pre-connect retries | Targets `4` handshake timeouts in `270k` tasks with `0` double-exec risk |
+| [OPT-41](#opt-41) | Compact ordinal-range tombstones (`_OrdinalRanges`) for `_released` (`c5`, `c14bbc90`) | `87-99 B` retained per released claim (`~90 MB / 1M`) -> merged integer intervals | `840 B` total after `200,000` releases ($O(\text{holes})$) |
+| [OPT-42](#opt-42) | Capped unbound-claim admission window (`max_unbound_claims=256`, `5 s` cap) (`c5`, `1873af18`, `765ae0a4`) | `4/8` exact-fit `1k` bursts cold-start `18-54` tail claims -> **`0/8` cold bursts** | Preserves `201-258 claims/s` while capping cold-pool wait at `5 s` |
 
 ---
 
@@ -515,24 +518,27 @@ Per-event and per-pool cost must depend on what changed, never on total batch si
 
 ## 2. Event-loop-native driver, multiplexed exec & GC-stall elimination (`Campaign 5`)
 
-In `27/N`, `AsyncSandboxFleet` still bridged into synchronous `SandboxFleet` / `SandboxBatch` and `kubernetes.stream` via `loop.run_in_executor(...)`. At `c = 1,000` concurrent rollouts, Campaign 5 (`RL_BATCH_OPTIMIZATIONS.md`, `feat/c5-batch-rebased-300d05e7`) eliminated the worker-thread bridge completely and solved a `4.5x` cluster-side warm-pool refill stall.
+In `27/N`, `AsyncSandboxFleet` still bridged into synchronous `SandboxFleet` / `SandboxBatch` and `kubernetes.stream` via `loop.run_in_executor(...)`. At `c = 1,000` concurrent rollouts, Campaign 5 (`RL_BATCH_FINAL_REPORT.md`, `feat/rl-batch-released-sandbox-delete-rebased` at `ec01bf0d`) eliminated the worker-thread bridge completely, solved a `4.9x` cluster-side warm-pool refill stall without burning Python GIL time, pruned long-lived batch tombstones, and eliminated exact-fit warm-pool cold launches.
 
 <a id="opt-31"></a>
 
-### OPT-31 Direct background `Sandbox` + `Pod` deletion on release (`c5`, `2eb5ef6d`, `3a14c1dc`)
+### OPT-31 Grouped direct `Sandbox` + `Pod` `deletecollection` on release (`c5`, `20583e9d`, `ff25d9c4`, `ec8dead1`, `df95d2cd`, `046df8d5`)
 
-- **What bottleneck it hits:** When a rollout finishes and deletes its `SandboxClaim`, `SandboxWarmPool` cannot finish refilling node capacity (or freeing node `maxPods` / pod IPAM slots) until the claimed `Sandbox` and its backing `Pod` actually terminate. By default, deleting a `SandboxClaim` relies on **Kubernetes's built-in `GarbageCollectorController`** (watching dependency graphs via informers) to cascade the delete from `SandboxClaim -> Sandbox -> Pod`. On GKE clusters that had been running heavy churn for several days (`4 days old`), cascading GC lagged severely behind burst releases, starving warm-pool refills and stalling multi-step R2E `500x2x8` runs at **`993-1,010 s`** (and `250x2x6` multi-step at `251-456 s`)!
-- **How it works under the hood:** Immediately after a released claim's own `DELETE` succeeds, a small best-effort background pool (bounded at **`min(16, max_in_flight)`** in `3a14c1dc` so low-concurrency fleets never send 16 extra requests) issues a direct `DELETE` on the `Sandbox` and then on its `Pod`, bypassing the Kubernetes GC queue so the kubelet starts tearing down the container immediately!
+- **What bottleneck it hits:**
+  1. **Cluster GC rate limit (`~13.3 objects/s`):** Deleting a `SandboxClaim` relies on Kubernetes's `GarbageCollectorController` to cascade the delete from `SandboxClaim -> Sandbox -> Pod`. On two of our three GKE clusters (`324` APF seats), `kube-system-service-accounts` GC traffic was pinned flat at `~40 req/s` (`3` requests per dependent: `GET` object, `GET` owner -> `404`, `DELETE` = `13.3 objects/s`, or `~6.7 claims/s` across `Sandbox + Pod`), leaving finished pods occupying node memory (`Insufficient memory`) and stalling R2E `500x2x8` runs at **`1,004-1,027 s`** ([GKE-18](gke-benchmarking.md#gke-18))!
+  2. **Per-object Python GIL cost (`1.26 ms`/release):** Our initial direct-delete pass (`20583e9d`, `ff25d9c4`) issued `2` sync `DELETE` RPCs per released claim on background worker threads (`min(16, max_in_flight)`). Microbenchmarking showed each per-object pair cost `1.26 ms` of Python GIL time on the driver, regressing eval `500x1` first-exec `avg` (`0.50 s -> 0.56-0.80 s`) and pipelined prefetch (`10-13 s -> 35-41 s`).
+- **How it works under the hood:**
+  1. **Grouped label `deletecollection` (`ec8dead1`, `df95d2cd`):** `Member.claim_uid` (`derive_member`) records `metadata.uid` from the batch watch. `Cluster.delete_released_sandbox` buffers releases over a `100 ms` window (up to `50` claims per batch) and submits `2` label-selected `deletecollection` calls (`agents.x-k8s.io/claim-uid in (...)`, first `sandboxes` then `pods` with `grace_period_seconds=0`) in parallel to an unretried `ApiClient` pool bounded by `min(16, max_in_flight)`, cutting `100` HTTP calls per `50` releases down to **`2` calls**!
+  2. **Fast-GC capability probe (`046df8d5`):** Grouping is safe only when the controller stamps `agents.x-k8s.io/claim-uid` onto claimed `Sandbox`es (never inferred from `Pod` labels, because deleting `Pod`s while unlabeled `Sandbox`es survive makes the controller recreate every `Pod`!). `_sandbox_has_claim_uid_label` reads up to `3` candidate `Sandbox`es from the batch; if fast GC already collected all `3` (`404`, caught on `kind`), it runs one `limit=1` namespace `LIST` for `label_selector="agents.x-k8s.io/claim-uid"` and backs off undecided re-probes exponentially (`1, 2, 4, 8...`) while falling back to by-name deletes ([CLEAN-30](field-guide/clean.md#clean-30)).
 - **Safety guard & fresh-cluster control:**
-  - Runs **strictly after** the `SandboxClaim` delete succeeds (so a live rollout's pod is never deleted early).
-  - **RBAC self-disabling:** Deleting `sandboxes` and `pods` directly requires optional RBAC permissions beyond `sandboxclaims`. On the very first `403 Forbidden`, the background deleter flips a flag and disables itself cleanly for the rest of the process, falling back to standard Kubernetes GC with zero errors!
-  - **Scientific control (`7769066b`):** Re-running the exact same R2E and multi-step benchmarks on a **freshly created** 10-node cluster (where Kubernetes GC cleared sandboxes promptly) yielded `236-243 s` (batch) vs `236-252 s` (`per_claim`) on R2E and `99-102 s` vs `108 s` on multi-step (`~7%` faster), proving that the `4.5x` speedup specifically eliminates slow cluster GC cascading!
-- **Measured result:** On 4-day-old GKE clusters:
-  - **R2E `500x2x8` (20 nodes):** `993-1,010 s -> 209-279 s` (**`~4.5x` faster**)
-  - **Multi-step `250x2x6` (20 nodes):** `251-281 s -> 116-123 s` (**`~2.2x` faster**)
-  - **Multi-step `250x2x6` (10 nodes):** `364-456 s -> 172-199 s` (**`~2.2x` faster**)
-  - **3,000 tasks `500x6` naive / sliding / pipelined (10 nodes):** `390-421 s -> 148-181 s` (**`2.2x-2.6x` faster**)
-- **Code:** `feat/c5-batch-rebased-300d05e7` (`2eb5ef6d`, `3a14c1dc`); `RL_BATCH_OPTIMIZATIONS.md` §1. **Deep dive:** [PERF-26](field-guide/perf.md#perf-26).
+  - Runs **strictly after** the `SandboxClaim` delete succeeds (including whole-batch teardown), verified on `kind` (`GC off` and `fast GC`) with zero replacement `Sandbox`es created.
+  - Self-disables on the first `403 Forbidden` on `delete` (or drops to by-name `delete` if only `deletecollection` returns `403`), and pauses `30 s` after `32` consecutive transport errors.
+  - **Fresh-cluster control:** On a fresh `483`-seat GKE cluster where GC ran at `100-209 req/s`, R2E `500x2x8` measured `229-253 s` (batch) vs `237-240 s` (`per_claim`), proving the `4.9x` multi-step speedup isolates slow cluster GC while grouped deletes restore `0.48-0.57 s` eval first-exec latency!
+- **Measured result:** On `324`-seat GKE clusters (`k3-final` / `k4-final` vs upstream `per_claim`):
+  - **R2E `500x2x8` (20 nodes):** `1,004-1,027 s -> 203-220 s` (**`4.9x` faster**)
+  - **Multi-step `250x2x6` (20 nodes):** `226-270 s -> 107.6-110.0 s` (**`2.0-2.5x` faster**)
+  - **3,000 tasks `500x6` naive / sliding / pipelined (10 nodes):** `393-420 s -> 155-167 s` (**`2.3-2.5x` faster**)
+- **Code:** `cluster.py: delete_released_sandbox`, `_flush_released_sandboxes`, `_sandbox_has_claim_uid_label`; `models.py: Member.claim_uid` (`20583e9d`, `ff25d9c4`, `ec8dead1`, `df95d2cd`, `046df8d5`). **Deep dive:** [PERF-26](field-guide/perf.md#perf-26), [CLEAN-30](field-guide/clean.md#clean-30), [GKE-18](gke-benchmarking.md#gke-18).
 
 <a id="opt-33"></a>
 
@@ -601,65 +607,108 @@ In `27/N`, `AsyncSandboxFleet` still bridged into synchronous `SandboxFleet` / `
 
 <a id="opt-38"></a>
 
-### OPT-38 Hybrid release coalescing & sibling-aware deferred tail release (`c5`, `b386d881`, `2f87f7a9`)
+### OPT-38 Per-task streaming step release & in-flight-acquire bulk guard (`c5`, `bcb8b9cd`, `733a1972`)
 
 - **What bottleneck it hits:**
-  1. `deletecollection` beats individual `DELETE`s on large synchronous wave tails (`500-1,000` claims at once), *but* on small rolling/sliding windows (`1-8` tasks finishing at a time), issuing a label-scoped `deletecollection` + consistent `count_live` list round-trip is heavier than a direct per-claim `DELETE`!
-  2. Deferring releases to coalesce a tail batch saves API calls when the cluster is idle, *but* if another task (`acquire()`) is currently blocked waiting for a warm-pool or node slot, holding onto finished claims in a deferred buffer **starves the waiting `acquire()`**!
+  1. **Step-end `release_members()` barrier (`0.43-0.62 s`/step):** An earlier `AsyncSandboxFleet._process_parallel` pass (`21971e63`, `2c4663a3`) deferred claims finishing after a step's last `acquire()` into a single end-of-step `batch.release_members()` (`deletecollection` + consistent `count_live` list). Controlled A/B testing (`x9` + `y1`, 3 interleaved rounds) proved that end-of-step `release_members()` added `0.43-0.62 s` of pure blocking wall time after the last task on every synchronous step (`step_wall - task_done_all`), while subset `deletecollection` is impossible without adding a per-claim label to every SDK `SandboxClaim` (`CRD` field selectors do not support `metadata.name in (...)`).
+  2. **Shared-batch bulk release vs concurrent `acquire()` (`bcb8b9cd`):** Calling whole-batch `release_members()` inside `release_all()` while another task has an `acquire()` in flight on the same cluster's shared `SandboxBatch` deletes or fences the sibling's pending claim!
 - **How it works under the hood:**
-  1. **Hybrid threshold (`b386d881`):** Large release tails coalesce into a single `deletecollection` (`release_members`), whereas small rolling windows issue lightweight per-claim `release_member` `DELETE`s.
-  2. **Sibling-aware flush (`2f87f7a9`):** Tail release is deferred **only while zero sibling `acquire()` calls are waiting**! The moment any sibling `acquire()` is queued for capacity, pending releases flush immediately so warm-pool refill and pod teardown start without a millisecond of artificial coalescing delay.
-- **Safety guard:** Every deferred claim is still flushed unconditionally on wave barriers, fleet teardown, or error paths so zero claims leak.
-- **Measured result:** Gives batch barriers bulk `deletecollection` efficiency without stalling rolling/pipelined `acquire()` callers.
-- **Code:** `feat/c5-batch-rebased-300d05e7` (`b386d881`, `2f87f7a9`); `RL_BATCH_OPTIMIZATIONS.md` §2. **Deep dive:** [PERF-28](field-guide/perf.md#perf-28).
+  1. **Streaming per-task `release_member` (`733a1972`):** `AsyncSandboxFleet._process_parallel` releases each claim immediately in `finally` when its task finishes (`self.release(handle)` -> `release_member`, bounded by `max_in_flight`), while the background `Sandbox` + `Pod` flusher ([OPT-31](#opt-31)) still coalesces underlying cluster teardowns into `50`-UID `deletecollection` pairs! Whole-fleet `release_all()` and `teardown()` retain bulk `release_members()`.
+  2. **In-flight acquire fence (`bcb8b9cd`):** `SandboxFleet._acquire_in_flight_locked()` checks `_claims_reserved > live_unreleased_handles` once up front under the fleet lock in both sync and async `release_all()`. Whenever a concurrent `acquire()` is in flight, `release_all()` falls back to per-handle `release_member()` instead of sweeping the shared batch.
+- **Safety guard:** Evaluating `_acquire_in_flight_locked()` once before popping any group's handles avoids false positives across multi-group loops, and releasing inside `finally` guarantees raising or cancelled tasks still release their claim and concurrency slot.
+- **Measured result:** Across 3 interleaved rounds on the 20-node GKE cluster (`250x2x6` multi-step):
+  - Step tail (`step_wall - task_done_all`) dropped from **`0.43-0.62 s` to `0.02-0.03 s`**.
+  - Total multi-step wall dropped **`112.4 / 113.1 / 113.1 s -> 107.6 / 107.6 / 107.6 s` (`4.6%` faster, `<0.1 s` spread)**, vs `226-270 s` on `per_claim`.
+- **Code:** `async_fleet.py: _process_parallel`, `release_all`; `fleet.py: _acquire_in_flight_locked`, `release_all` (`bcb8b9cd`, `733a1972`). **Deep dive:** [PERF-28](field-guide/perf.md#perf-28).
 
 <a id="opt-39"></a>
 
-### OPT-39 Pipelined readiness seeding, `250 ms` prefetch yield, and sweep-tuned defaults (`c5`, `5f87abe9`, `50e4531b`)
+### OPT-39 Pipelined readiness seeding, `250 ms` prefetch yield, and sweep-tuned defaults (`c5`, `10e49a38`, `69ec0353`)
 
 - **What bottleneck it hits:**
   1. In **pipelined** rollout strategies (`strategies.py`), background prefetch tasks pre-acquire the *next* window's sandboxes while the *current* window starts executing. If background prefetch creates fire at the exact same instant as foreground window creates, prefetch steals `max_in_flight` slots, `WarmCredit`, and controller reconciliation workers from the active step!
   2. SDK conservative defaults (`create_rps=50`, `max_in_flight=20`) under-utilize a tuned GKE controller, while setting `max_in_flight` too high (`256+`) adds apiserver contention for zero wall-clock gain.
 - **How it works under the hood:**
-  1. **Window readiness seeding + `250 ms` prefetch yield (`5f87abe9`):** Seeds warm-pool readiness counts when each pipelined window starts, and makes background prefetch creates yield up to **`250 ms`** whenever foreground creates are active so foreground tasks always claim warm replicas and controller workers first!
-  2. **Empirical parameter sweeps (`50e4531b` + `RL_BATCH_OPTIMIZATIONS.md` §3):**
-     - Sweeping `max_in_flight` across `64 / 128 / 256` produced the **exact same wall time** (and running two batch clients concurrently got `~0.5x` the single-client rate each), proving claim throughput above `mif=64` is bounded by the **in-cluster controller**, not the Python client!
+  1. **Window readiness seeding + `250 ms` prefetch yield (`10e49a38`):** Seeds warm-pool readiness counts when each pipelined window starts, and makes background prefetch creates yield up to **`250 ms`** whenever foreground creates are active so foreground tasks always claim warm replicas and controller workers first!
+  2. **Empirical parameter sweeps (`69ec0353`, `31b5cfbb`, `RL_BATCH_FINAL_REPORT.md`):**
+     - Sweeping `max_in_flight` across `64 / 128 / 256` produced the **exact same wall time** (and running two aligned batch clients concurrently got `114+112` and `122+96 claims/s` vs `197-256/s` for one client), proving claim throughput above `mif=64` is bounded by the **in-cluster controller** (`500/500` workers busy, `2,000-2,500 patches/s`), not the Python client!
      - Sweeping `create_rps` across `50 / 500 / 2,000` (with warm pools at `50%` of workload size) gave identical wall time (`33.3-33.5 s`, set by kubelet pod start rate `~50 pods/s`), while `create_rps=500` improved TTFI P99 (`9.9 s -> 8.6 s`) without needing `2,000`.
      - Locked in RL defaults **`create_rps=500`, `max_in_flight=64`**.
-- **Measured result (Campaign 5 combined 10-node bursts, `0` errors):**
-  - `1,000` claims at `c=500`: **`267 claims/s`** vs `91/s` (`2.93x`)
-  - `1,000` claims at `c=1,000`: **`246 claims/s`** vs `106/s` (`2.32x`)
-  - TTFI P50 at `c=1,000`: **`2.9 s`** vs `10.0 s` (`3.45x` faster)
-  - Burst + first exec wall at `c=1,000`: **`5.4 s`** vs `12.5 s` (`2.31x` faster)
-  - Eval `500x1` wall at `c=500`: **`15.6 s`** vs `18.6 s`
-- **Code:** `feat/c5-batch-rebased-300d05e7` (`5f87abe9`, `50e4531b`); `RL_BATCH_OPTIMIZATIONS.md` §2 & §3. **Deep dive:** [PERF-28](field-guide/perf.md#perf-28).
+- **Measured result (Campaign 5 final `k3-final`/`k4-final` 10-node bursts vs upstream `per_claim`, `0` batch errors):**
+  - `1,000` claims at `c=500`: **`260 claims/s`** vs `92/s` (`2.8x`)
+  - `1,000` claims at `c=1,000`: **`233 claims/s`** vs `107/s` (`2.2x`)
+  - TTFI P50 at `c=1,000`: **`2.69 s`** vs `10.94 s` (`4.1x` faster)
+  - Burst + first exec wall at `c=1,000`: **`5.04 s`** vs `12.48 s` (`2.5x` faster)
+  - Eval `500x1` wall at `c=500`: **`15.4-16.2 s`** vs `18.3-18.8 s` (TTFI P50 `1.65-1.86 s` vs `3.34-3.41 s`)
+- **Code:** `strategies.py`, `config.py` (`10e49a38`, `69ec0353`, `31b5cfbb`). **Deep dive:** [PERF-28](field-guide/perf.md#perf-28).
+
+<a id="opt-40"></a>
+
+### OPT-40 Pre-upgrade WebSocket `exec` fast-connect retry (`c5`, `14cf3c74`)
+
+- **What bottleneck it hits:** `aiohttp` gives a new TCP/TLS connection `30 s` (`sock_connect`) with zero automatic retries. Across `~270,000` high-concurrency GKE batch tasks (`c=500..1,000` opening hundreds of concurrent WebSocket `/exec` upgrades), `4` tasks hit a lost SYN or load-balancer handshake stall and failed after `30 s` with `aiohttp.ConnectionTimeoutError`.
+- **How it works under the hood:** `_FastWsApiClient` in `cluster.py` sets `sock_connect = 10 s` and wraps `ws_connect` in `_exec_once`. If `aiohttp.ConnectionTimeoutError` or `aiohttp.ClientConnectorError` fires while `connected == False` (before the WebSocket HTTP `101 Switching Protocols` upgrade completes), `_exec_once` raises internal `_ExecNotSent` and retries up to `3` attempts!
+- **Safety guard:** Once `ws_connect` enters its context (`connected = True`), any error propagates immediately without retry, because the remote command may already have started executing inside the sandbox container ([LIB-24](field-guide/lib.md#lib-24)).
+- **Measured result:** Bounds worst-case lost-SYN handshake stalls to `10 s` instead of `30 s` and eliminates single-drop `ConnectionTimeoutError` flakes (`0` connect timeouts across all subsequent `k1`..`k5` suites) with zero duplicate-execution risk.
+- **Code:** `agent_sandbox_rl/cluster.py: _FastWsApiClient._exec_once`, `_ExecNotSent` (`14cf3c74`). **Deep dive:** [LIB-24](field-guide/lib.md#lib-24).
+
+<a id="opt-41"></a>
+
+### OPT-41 Compact ordinal-range tombstones (`_OrdinalRanges`) for `BatchState._released` (`c5`, `c14bbc90`)
+
+- **What bottleneck it hits:** Dynamic RL `SandboxBatch` instances (`size=0`) live across tens or hundreds of thousands of episodes, allocating monotonic claim names `<batch-id>-0`, `<batch-id>-1`, ... and recording every released name permanently in `BatchState._released` so late watch events or duplicate releases stay idempotent ([WATCH-4](field-guide/watch.md#watch-4)). `tracemalloc` measured **`87-99 B` retained per released claim** (`~90 MB` per million episodes, flagged as `F-35` in [PERF-24](field-guide/perf.md#perf-24)).
+- **How it works under the hood:** Once a generated `<batch-id>-<ordinal>` claim has no pending delete and has been seen by the watch (`_settle_released` at `note_deleted`, on create-failed/lost release, or on late watch sight), `BatchState` drops its string key from `_released` and inserts its integer `ordinal` into `_OrdinalRanges` (`_released_settled`: sorted, adjacent-merging `[lo, hi]` intervals queried by binary search via `_is_released()`).
+- **Safety guard:**
+  - Because ordinals never repeat, the number of disjoint intervals in `_OrdinalRanges` cannot exceed `active_members + in_flight_acquires + unsettled_releases + 1`.
+  - Unseen releases (`_released_unseen`), claims with pending deletes (needed for pool lookups in `pending_deletes_in_pool`), re-queued retry deletes, and non-canonical names (such as zero-padded strings) stay in `_released` by string name.
+  - Settling does **not** wait for the watch `DELETED` event (which a `410 Gone` relist can skip), avoiding unbounded leaks under watch compaction. Fuzz-verified against a plain `set` across `300` seeds x `400` operations.
+- **Measured result:** `200,000` acquire-release-delete cycles retain **`840 B` total** instead of `~18 MB` (`>20,000x` memory reduction on settled history).
+- **Code:** `k8s_agent_sandbox/batch_state.py: _OrdinalRanges`, `_settle_released`, `_is_released` (`c14bbc90`). **Deep dive:** [PERF-29](field-guide/perf.md#perf-29).
+
+<a id="opt-42"></a>
+
+### OPT-42 Capped unbound-claim admission window (`max_unbound_claims=256`, `5 s` cap) (`c5`, `1873af18`, `765ae0a4`)
+
+- **What bottleneck it hits:** Firing `1,000` batch claims at `c=1,000` against an exact-fit `1,000`-replica `SandboxWarmPool` cold-launched `18-56` tail claims (`ranks 957-999`) in **`4/8` to `5/8` bursts**, dropping burst throughput from `206-248 claims/s` to `90-109 claims/s` (`claim_max` `9-12 s`) even though `>=` that many original `Ready` warm sandboxes sat unclaimed in the pool! Root-cause tracing ([GKE-20](gke-benchmarking.md#gke-20)) proved two controller behaviors combine: stale second reconciles of already-bound claims temporarily hold the pool's last `Ready` candidates out of the queue (`~60` `adoption write conflict` events per `1k` burst), and claims reconciled while the queue is empty either cold-start immediately or stop retrying once `age > DefaultWarmCandidateGracePeriod` (`2 s` from `creationTimestamp`). Because batch mode creates claims faster than the controller binds them (`~250/s`), tail claims accumulate `>2 s` age before reconciliation!
+- **How it works under the hood:** `BatchClaimConfig.max_unbound_claims` (default **`256`**, `None` or `0` disables) places a per-cluster `_UnboundWindow` gate in front of `BatchClaims.acquire` and `AsyncBatchClaims.acquire`. New creates wait while `256` claims on that cluster are created and not yet `Ready` (about `1 s` of work for a `~250 binds/s` controller), keeping tail claims young enough to stay inside the controller's `2 s` grace window and adopt warm/refill sandboxes instead of cold-starting!
+- **Safety guard (reviewer-caught `max_wait` ceiling):**
+  - **Idle-stall release (`0.5 s`):** If zero acquires finish for `0.5 s` (for example a completely cold pool), all waiters proceed together after paying `0.5 s` once.
+  - **Per-waiter total cap (`5.0 s`, `765ae0a4`):** If slow cold/on-demand claims trickle in every `0.1 s`, the `0.5 s` idle timer resets on each exit and would otherwise pin concurrency at `256 / T` instead of `c / T` (`3.9x` slower at `c=1,000`)! Capping every waiter's total wait at `_UNBOUND_WINDOW_MAX_WAIT_SECONDS = 5.0` guarantees warm `c=1,000` bursts stay gated (`(1000 - 256) / 250 ~= 3 s < 5 s`) while sustained slow/cold pools never throttle past `5 s` ([LOCK-24](field-guide/lock.md#lock-24)). No-op whenever `concurrency <= 256`.
+- **Measured result:** Isolated 8-burst A/B at `c=1,000` on a fresh 10-node GKE cluster (unchanged controller):
+  - Bursts with cold launches dropped from **`4/8` (`20, 30, 18, 54` cold pods) to `0/8`** (`0/12` on older 10-node `k4-final` validation as well).
+  - Burst throughput held at **`201-258 claims/s`** (TTFI P50 `2.9-3.8 s`, P99 `5.2-7.0 s` vs `5.5-9.8 s` without window), and cold-pool `3,000`-task SWE-bench showed zero regression (`155-167 s` vs `150-168 s`).
+- **Code:** `agent_sandbox_rl/batch_claims.py: _UnboundWindow`, `config.py: BatchClaimConfig.max_unbound_claims` (`1873af18`, `765ae0a4`). **Deep dive:** [GKE-20](gke-benchmarking.md#gke-20), [LOCK-24](field-guide/lock.md#lock-24).
 
 ---
 
 ## What we tested and intentionally rejected (`Campaign 5` negative results)
 
-Recording negative results keeps future engineers from re-implementing dead ends (`RL_BATCH_OPTIMIZATIONS.md` §4):
+Recording negative results keeps future engineers from re-implementing dead ends (`RL_BATCH_FINAL_REPORT.md` §4 & Appendix A):
 
 | Experiment | Measured outcome & why we dropped it |
 | :-- | :-- |
+| Higher `max_in_flight` defaults (`256 / 512 / 768`) | `512` regressed eval `500x1` first TTFI (`0.44 -> 1.65 s`) and P50 (`1.95 -> 2.52 s`); `64 / 128 / 256` tied on wall time because the controller saturates at `mif=64` |
 | Exec on extra event loops in worker threads | Zero throughput gain once `aexec()` ran natively on the main `asyncio` loop |
 | Hand-written minimal WebSocket exec client | No faster than `aiohttp` WebSockets in local microbenchmarks; extra maintenance risk |
 | TLS session resumption for `exec` | Saved only `~10%` of handshake cost locally; not worth custom SSL session-ticket plumbing |
 | Restricting TLS key-exchange curves | Faster handshakes, but weakens transport security; **rejected on security grounds** |
-| Concurrent per-claim `DELETE`s ahead of `deletecollection` | `797-983` vs `854-1,004 sandboxes/s`; added complexity for zero gain |
-| Separate concurrency slot budget for per-claim deletes | Zero change in wall-clock time |
-| Cancelling unused warm-pool refill in sliding windows | Inside run-to-run noise (node pod-creation rate `~50 pods/s` dominates) |
+| Concurrent per-claim `DELETE`s ahead of `deletecollection` | `797-983` vs `854-1,004 sandboxes/s`; added complexity for zero gain (`>=90%` of `release_all` time is server-side) |
+| Separate concurrency slot budget for per-claim deletes | Naive `500x2` wall `31.00 s` vs `30.71 s`; zero gain |
+| End-of-step deferred bulk `release_members()` in `_process_parallel` | Cost `0.43-0.62 s`/step (`112.4-113.1 s` vs `107.6 s` per-task on `250x2x6`); backgrounding it collides with the next step's `acquire()`s. Replaced by streaming per-task release ([OPT-38](#opt-38)) |
+| Cancelling unused warm-pool refill `1 s` into sliding windows | `41.6 / 39.8 s` vs `42.4 / 42.1 s`; inside noise because replacement pods already started and the `~8.4 s` window cycle is fixed by pod-start rate ([BENCH-10](gke-benchmarking.md#bench-10)) |
 | Prewarming `> 64` TLS connections | Zero measured benefit because `max_in_flight = 64` caps concurrent bursts |
+| Controller-only held-candidate counter patch (keeping `2 s` grace) | Unit-tested cleanly, but failed on GKE (`2/8` cold bursts before -> `5/12` with patch; wait fired only `15` times) because `DefaultWarmCandidateGracePeriod = 2 s` cut off tail claims by `creationTimestamp` ([GKE-20](gke-benchmarking.md#gke-20)) |
+| Skipping Pod `deletecollection` when `Sandbox` `deletecollection` matches `0` | Breaks fast-GC clusters (`kind`), where Kubernetes GC collects `Sandbox`es in milliseconds (`0` matched) and the `Pod` `deletecollection` (`grace=0`) does the real work destroying `30 s`-grace pods ([CLEAN-30](field-guide/clean.md#clean-30)) |
 
 ---
 
 ## Lessons for your next optimization
 
-- **Ask what each limit protects:** a rate limit on work that never touches the protected resource is pure artificial latency ([OPT-3](#opt-3)).
-- **Measure the heap and `/proc/self` before guessing:** the `69.4 MB` `release()` spike was the unread `deletecollection` body, not the re-list ([OPT-4](#opt-4)); the `23` mystery threads in an `asyncio` process were `aiohttp`'s `.netrc` executor lookups ([OPT-32](#opt-32)).
-- **Always run a control to separate cluster state from code:** testing on a fresh cluster alongside 4-day-old clusters proved the `4.5x` multi-step speedup came from bypassing slow Kubernetes cascading GC rather than client `POST` speed ([OPT-31](#opt-31)).
-- **Sweep parameters to locate the true system ceiling:** when `max_in_flight = 64, 128, 256` give identical wall times, stop tuning the client and look at the controller or kubelet pod start rate ([OPT-39](#opt-39)).
-- **Back every shortcut with a self-healing guard:** non-latching `429` cooldowns ([OPT-3](#opt-3)), single-use pod-IP seeds ([OPT-8](#opt-8)), and `403`-self-disabling direct pod deletes ([OPT-31](#opt-31)) give fast-path performance without fragility.
+- **Ask what each limit protects:** a rate limit on work that never touches the protected resource is pure artificial latency ([OPT-3](#opt-3)), while a concurrency gate without a per-waiter `max_wait` ceiling turns into a steady-state throttle on slow pools ([OPT-42](#opt-42), [LOCK-24](field-guide/lock.md#lock-24)).
+- **Measure the heap, GIL, and `/proc/self` before guessing:** the `69.4 MB` `release()` spike was the unread `deletecollection` body, not the re-list ([OPT-4](#opt-4)); the `23` mystery threads in an `asyncio` process were `aiohttp`'s `.netrc` executor lookups ([OPT-32](#opt-32)); per-object background deletes burned `1.26 ms` of Python GIL per release until grouped by `claim-uid` ([OPT-31](#opt-31)).
+- **Always run a fresh-cluster control and validate fixes on GKE:** testing on a `483`-seat fresh cluster alongside `324`-seat churned clusters isolated the `4.9x` multi-step speedup to `40 req/s` Kubernetes GC throttling ([OPT-31](#opt-31), [GKE-18](gke-benchmarking.md#gke-18)), and GKE testing disproved our first unit-tested controller cold-launch patch before we shipped the wrong fix ([GKE-20](gke-benchmarking.md#gke-20)).
+- **Sweep parameters to locate the true system ceiling:** when `max_in_flight = 64, 128, 256` give identical wall times (or `c = 500, 250, 150` give identical `16-18 tasks/s` cold throughput while cutting TTFI P50 from `18.8 s` to `6.6 s`), stop tuning client I/O and match concurrency to the controller or kubelet rate ([OPT-39](#opt-39), [BENCH-10](gke-benchmarking.md#bench-10)).
+- **Back every shortcut with a self-healing guard:** non-latching `429` cooldowns ([OPT-3](#opt-3)), single-use pod-IP seeds ([OPT-8](#opt-8)), `403`-self-disabling grouped direct deletes with fast-GC list fallback ([OPT-31](#opt-31)), and pre-upgrade-only `_ExecNotSent` retries ([OPT-40](#opt-40)) give fast-path performance without fragility.
 
 ---
 

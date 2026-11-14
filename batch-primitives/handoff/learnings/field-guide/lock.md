@@ -533,6 +533,24 @@ A few terms used throughout: a **lock** (mutex) lets one thread in at a time. A 
 
 </details>
 
+<a id="lock-24"></a>
+
+## LOCK-24 Pair an idle-stall timer with a per-waiter `max_wait` ceiling on any completion-reset admission gate (`_UnboundWindow`), or trickling completions throttle slow pools forever
+
+**Takeaway:** When an admission gate (`max_unbound_claims=256`) releases waiters on `held < limit` or `now - last_exit >= stall` (`0.5 s`), steady slow completions faster than `stall` (`1` exit every `0.1 s` on cold/on-demand pools) continually reset `last_exit` and pin concurrency at `limit / T` instead of `c / T` (`3.9x` slower at `c=1,000`). Always add a per-waiter `now - waiting_since >= max_wait` (`5.0 s`) escape hatch (`1873af18`, `765ae0a4`).
+
+<details>
+<summary>The full story (Campaign 5 review of `_UnboundWindow`: 1873af18, 765ae0a4)</summary>
+
+- **Situation:** To keep tail claims inside the controller's `2 s` warm-candidate grace window during `c=1,000` warm bursts ([GKE-20](../gke-benchmarking.md#gke-20)), `batch_claims.py: _UnboundWindow` gates `BatchClaims.acquire` and `AsyncBatchClaims.acquire` whenever `held >= 256` claims on the cluster are created and not yet `Ready`. To avoid stalling completely cold bursts (where nothing finishes for many seconds), pass 1 (`1873af18`) admitted waiters once `0.5 s` elapsed with zero exits (`idle >= 0.5 s`).
+- **What goes wrong (caught by adversarial code review before making `256` the default):**
+  - On a single cold burst where nothing finishes for `>0.5 s`, all waiters fire the `0.5 s` stall rule together and pay `0.5 s` once.
+  - On a **streaming, sliding, or pipelined** workload over slow-starting pools where each claim takes `T = 6 s` to become `Ready` and completions trickle in every `~25 ms` (`< 0.5 s`), every exit resets `idle_since`! Waiters are then admitted strictly one-for-one at `held == 256`, throttling steady-state throughput from `c / T` down to `256 / T` indefinitely!
+- **What we do:** In `_UnboundWindow._try_take` (`765ae0a4`), admit when `self._held < self._limit or now - idle_since >= self._stall or now - waiting_since >= self._max_wait`, sleeping `min(stall - idle, max_wait - waited)` with `_UNBOUND_WINDOW_MAX_WAIT_SECONDS = 5.0` (above the `~(1000 - 256) / 250 ~= 3 s` drain time of a warm `1k` burst), and use `loop.call_soon` instead of `call_soon_threadsafe` when `exit()` already runs on the waiter's event loop. Pinned by a mutation-checked unit test (`steady exits every 0.1 s with held == limit -> waiter admitted at 5.0 s`).
+- **Related:** [LOCK-10](#lock-10), [LOCK-13](#lock-13), [OPT-42](../optimizations.md#opt-42), [GKE-20](../gke-benchmarking.md#gke-20).
+
+</details>
+
 ---
 
 [Learnings home](../../learnings.md) · [Field guide index](../../learnings.md#sec-field-guide)

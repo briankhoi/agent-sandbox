@@ -539,17 +539,19 @@ This section covers how the batch handle stays fast and lean when a batch holds 
 
 <a id="perf-26"></a>
 
-## PERF-26 Bypass slow Kubernetes cascading garbage collection on churned clusters by deleting released Sandboxes and Pods directly in a bounded background pool
+## PERF-26 Bypass slow Kubernetes cascading garbage collection (`~13 objects/s`) by grouping direct `Sandbox` and `Pod` `deletecollection` calls by `claim-uid`
 
-**Takeaway:** Deleting an owner resource (`SandboxClaim`) frees node capacity only after Kubernetes's `GarbageCollectorController` cascades the delete to child `Sandbox` and `Pod` objects. When heavy multi-day cluster churn lags GC, warm-pool refills stall; issuing best-effort direct `Sandbox` and `Pod` `DELETE`s after claim deletion removes the stall, and a fresh-cluster control isolates GC lag from client bottlenecks.
+**Takeaway:** Deleting an owner resource (`SandboxClaim`) frees node capacity only after Kubernetes's `GarbageCollectorController` cascades the delete to child `Sandbox` and `Pod` objects. On control planes where KCM GC is capped at `~40 req/s` (`3` requests/dependent = `13.3 objects/s`), warm-pool refills stall; grouping direct `Sandbox` and `Pod` `deletecollection` calls (`2` requests per `50` releases by `agents.x-k8s.io/claim-uid`) eliminates both the cluster stall and the `1.26 ms`/release Python GIL cost of per-object background deletes.
 
 <details>
-<summary>The full story (Campaign 5: 2eb5ef6d, 3a14c1dc, 7769066b)</summary>
+<summary>The full story (Campaign 5: 20583e9d, ff25d9c4, ec8dead1, df95d2cd, 046df8d5)</summary>
 
-- **Situation:** On GKE clusters running heavy RL benchmarks for 4 days, synchronous multi-step runs (`250x2x6` and R2E `500x2x8`) stalled waiting for `SandboxWarmPool` replicas to refill between steps (`993-1,010 s` on R2E `500x2x8`). Before this change, `batch` and `per_claim` had nearly identical multi-step wall times (`394-405 s` vs `368-381 s` on the 10-node cluster) because both waited on the cluster to clear released pods.
-- **What goes wrong:** After a `SandboxClaim` is deleted, node `maxPods`, IPAM slots, and warm-pool replacement budgets remain occupied until Kubernetes cascading GC deletes the `Sandbox` and its `Pod`. When cascading GC falls behind burst churn, warm pools sit starved of free slots.
-- **What we do:** In `claim_mode="batch"` (`feat/c5-batch-rebased-300d05e7`, `2eb5ef6d`, `3a14c1dc`), once a released claim's own `DELETE` succeeds, a background pool bounded by `min(16, max_in_flight)` deletes the `Sandbox` and then its `Pod` directly. On the first `403 Forbidden` (if the driver lacks optional `delete` RBAC on `sandboxes`/`pods`), it disables itself cleanly and falls back to standard GC. On the 4-day-old 20-node cluster, R2E `500x2x8` wall dropped from `993-1,010 s` to `209-279 s` (`~4.5x`) and `250x2x6` dropped from `251-281 s` to `116-123 s`. Re-testing on a freshly created 10-node cluster (`7769066b`, where GC cleared sandboxes promptly) gave `236-243 s` vs `236-252 s` on R2E and `99-102 s` vs `108 s` on multi-step, confirming that slow cluster GC was the exact root cause.
-- **Related:** [OPT-31](../optimizations.md#opt-31), [GKE-7](../gke-benchmarking.md#gke-7), [GKE-9](../gke-benchmarking.md#gke-9).
+- **Situation:** On two `324`-seat GKE clusters, synchronous multi-step runs (`250x2x6` and R2E `500x2x8`) stalled waiting for `SandboxWarmPool` replicas to refill between steps (`1,004-1,027 s` on R2E `500x2x8`), whereas a `483`-seat fresh cluster ran in `239 s` (`1.00x`). Read-only `/metrics` forensics traced the stall to KCM `GarbageCollectorController` running flat at `~40 req/s` (`13.3 objects/s`) on the smaller control planes ([GKE-18](../gke-benchmarking.md#gke-18)).
+- **What goes wrong:**
+  1. Leaving `Sandbox` and `Pod` cleanup to `13.3 objects/s` cascading GC leaves hundreds of dead `Running` pods occupying node memory (`Insufficient memory`), starving warm-pool refills.
+  2. Issuing `2` individual `DELETE` calls per release on worker threads (`20583e9d`, `ff25d9c4`) removed the cluster stall (`~4.5x` wall speedup), *but* burned `1.26 ms` of Python GIL per release, regressing eval `500x1` first-exec `avg` (`0.50 s -> 0.56-0.80 s`) and pipelined prefetch (`10-13 s -> 35-41 s`).
+- **What we do:** Stamp `Member.claim_uid` (`ec8dead1`), batch releases over `100 ms` (up to `50` claims), probe whether `Sandbox`es carry `agents.x-k8s.io/claim-uid` (falling back to `3` candidate `GET`s + `1` label `LIST` with power-of-two backoff on fast-GC clusters, `046df8d5`, [CLEAN-30](clean.md#clean-30)), and submit `2` `deletecollection` calls (`sandboxes`, then `pods` with `grace_period_seconds=0`) in parallel to an unretried `ApiClient` pool bounded by `min(16, max_in_flight)` (`df95d2cd`). Self-disables on `403`. R2E `500x2x8` dropped from `1,015 s` to `207 s` (`4.9x`) while eval first-exec returned to `0.48-0.57 s`.
+- **Related:** [OPT-31](../optimizations.md#opt-31), [CLEAN-30](clean.md#clean-30), [GKE-18](../gke-benchmarking.md#gke-18).
 
 </details>
 
@@ -575,17 +577,33 @@ This section covers how the batch handle stays fast and lean when a batch holds 
 
 <a id="perf-28"></a>
 
-## PERF-28 Replace $O(P)$ warm-pool `GET`s with one paginated `LIST`, flush deferred tail releases when a sibling `acquire()` waits, and yield background prefetch to foreground creates
+## PERF-28 Replace $O(P)$ warm-pool `GET`s with one paginated `LIST`, stream per-task step releases while fencing `release_all` on in-flight acquires, and yield prefetch to foreground creates
 
-**Takeaway:** On multi-hundred-pool RL workloads, fetch warm-pool readiness via one paginated namespace `LIST` rather than $P$ `GET`s, coalesce large release tails into `deletecollection` only while no sibling `acquire()` is waiting for capacity, and yield background pipelined prefetch for `250 ms` when foreground creates are active.
+**Takeaway:** On multi-hundred-pool RL workloads, fetch warm-pool readiness via one paginated namespace `LIST` rather than $P$ `GET`s, release each step task's claim immediately on completion (`0.02 s` tail instead of blocking `0.5 s` on end-of-step `release_members()`) while fencing whole-batch `release_all()` whenever an `acquire()` is in flight, and yield background pipelined prefetch for `250 ms` when foreground creates are active.
 
 <details>
-<summary>The full story (Campaign 5: b386d881, 2f87f7a9, 5f87abe9, 50e4531b)</summary>
+<summary>The full story (Campaign 5: 21971e63, 10e49a38, 69ec0353, bcb8b9cd, 733a1972)</summary>
 
-- **Situation:** SWE-bench and R2E-Gym run across `500` distinct single-image `SandboxWarmPool`s under synchronous, sliding-window, and pipelined strategies (`RL_BATCH_OPTIMIZATIONS.md` §2 & §3).
-- **What goes wrong:** Issuing `1` `GET` per pool during prechecks or warm-credit refreshes costs `500` RPCs; running `deletecollection` on tiny sliding-window releases costs more than individual `DELETE`s while holding finished claims in a coalescing buffer stalls sibling `acquire()` calls waiting on capacity; and eager pipelined prefetch steals `WarmCredit` and controller reconciliation seats from the active window.
-- **What we do:** Use one paginated namespace `LIST` for warm-pool prechecks and credit refreshes (`b386d881`); coalesce large release tails into `deletecollection` while keeping small windows per-claim (`b386d881`), deferring tail releases only while zero sibling `acquire()` calls are waiting (`2f87f7a9`); seed warm-pool readiness at pipelined window start while yielding background prefetch up to `250 ms` behind foreground creates (`5f87abe9`); and set RL defaults to `create_rps=500`, `max_in_flight=64` (`50e4531b`), confirmed optimal by `mif=64/128/256` and `rps=50/500/2000` sweeps showing controller and node pod-start (`~50 pods/s`) ceilings above `mif=64`.
+- **Situation:** SWE-bench and R2E-Gym run across `500` distinct single-image `SandboxWarmPool`s under synchronous, sliding-window, and pipelined strategies (`RL_BATCH_FINAL_REPORT.md`).
+- **What goes wrong:** Issuing `1` `GET` per pool during prechecks or warm-credit refreshes costs `500` RPCs; deferring step tail releases into an end-of-step `batch.release_members()` (`deletecollection` + consistent `count_live`) adds `0.43-0.62 s` of blocking wall time after the last task on every synchronous step, while calling `release_members()` inside `release_all()` when a sibling `acquire()` is in flight on the shared batch deletes the sibling's pending claim; and eager pipelined prefetch steals `WarmCredit` and controller reconciliation seats from the active window.
+- **What we do:** Use one paginated namespace `LIST` for warm-pool prechecks and credit refreshes (`21971e63`); release each step task's claim in `finally` as soon as its work finishes (`733a1972`, cutting `250x2x6` multi-step `112.4-113.1 s -> 107.6 s`) while keeping bulk `release_members()` for idle `release_all()` / `teardown()` behind `_acquire_in_flight_locked()` (`bcb8b9cd`); seed warm-pool readiness at pipelined window start while yielding background prefetch up to `250 ms` behind foreground creates (`10e49a38`); and set RL defaults to `create_rps=500`, `max_in_flight=64` (`69ec0353`), confirmed optimal by `mif=64/128/256` and `rps=50/500/2000` sweeps showing controller and node pod-start (`~50 pods/s`) ceilings above `mif=64`.
 - **Related:** [OPT-37](../optimizations.md#opt-37), [OPT-38](../optimizations.md#opt-38), [OPT-39](../optimizations.md#opt-39), [PERF-21](#perf-21).
+
+</details>
+
+<a id="perf-29"></a>
+
+## PERF-29 Prune settled `<batch-id>-<ordinal>` tombstones into merged integer intervals (`_OrdinalRanges`) so long-lived dynamic batches retain $O(\text{holes})$ memory instead of $O(\text{episodes})$
+
+**Takeaway:** A permanent string tombstone set (`BatchState._released`) on a dynamic `SandboxBatch` retains `87-99 B` per released claim (`~90 MB` per million RL episodes). Once a generated `<batch-id>-<ordinal>` claim's delete settles and the watch has seen it, fold its ordinal into sorted, adjacent-merging `[lo, hi]` integer intervals (`_OrdinalRanges`) so `_is_released()` stays permanent in `840 B` total across `200,000` releases.
+
+<details>
+<summary>The full story (Campaign 5: c14bbc90, batch_state.py)</summary>
+
+- **Situation:** `BatchState` allocates monotonic ordinals (`<batch-id>-0`, `<batch-id>-1`, ...) and checks `_is_released(name)` on late watch events, duplicate `release_member` calls, create-failure rollbacks, and `pop_event` (`[WATCH-4](watch.md#watch-4)`). Pipeline 8 (`F-35`, [PERF-24](#perf-24)) and `tracemalloc` at `100k-300k` releases measured `87-99 B` leaked per episode in `_released`.
+- **What goes wrong:** Dropping tombstones on `DELETED` watch events breaks when a `410 Gone` relist skips the `DELETED` event (leaking missed names forever) or if a late event arrives after pruning; keeping string keys forever grows memory linearly with total historical episodes.
+- **What we do:** `batch_state.py: _OrdinalRanges` (`_released_settled`, `c14bbc90`) stores settled ordinals as sorted `[lo, hi]` ranges merged on insertion and queried via `bisect`. A claim stays by string in `_released` only while it has a pending delete (needed for pool lookup in `pending_deletes_in_pool`) or sits in `_released_unseen` (so a late create still triggers a delete), and returns to `_released` if a create retry queues a second delete; non-canonical names (such as zero-padded strings) stay by name. Because ordinals never reuse values, range count is bounded by `live_members + in_flight_acquires + unsettled_releases + 1`. Fuzz-tested (`300` seeds x `400` adds) against a plain `set`; `200,000` settled releases occupy `840 B`.
+- **Related:** [OPT-41](../optimizations.md#opt-41), [PERF-24](#perf-24), [WATCH-4](watch.md#watch-4).
 
 </details>
 

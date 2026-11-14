@@ -228,6 +228,21 @@ These lessons are about how the work went, not what the code does. Most came fro
 
 </details>
 
+<a id="proc-17"></a>
+
+### PROC-17 Separate cluster-bound ceilings from client defects before writing workarounds
+
+**Takeaway:** Before patching a metric where `batch` ties or trails `per_claim`, break down where the time sits: if `>=90%` lives inside server-serial `deletecollection` (`release_all`), a fixed `~8.4 s` kubelet pod-start cycle (`500x2` sliding/pipelined), or a `~250 claims/s` controller reconcile ceiling (`500/500` workers busy), document the server ceiling instead of adding client state or extra labels that cannot move wall time.
+
+<details>
+<summary>The full story (Campaign 5 `abcd` tie/loss investigation)</summary>
+
+- **What happened:** We investigated four comparisons where `batch` looked tied or slower (`3k` TTFI `p50`, `eval 500x1` claim phase, `500x2` sliding/pipelined wall, and `1x1000` burst `release_all` rate on one cluster).
+- **What we found:** Two were measurement/tuning effects ([BENCH-10](gke-benchmarking.md#bench-10)), and two were pure server ceilings: adding `1 s` of artificial sleep to `process` in `500x2` sliding left total wall unchanged (`42.9 s`, because `warm` absorbed the `1 s` inside an invariant `~8.4 s` pod-start pipeline), and local fake-API microbenchmarks showed SDK + fleet `release_all` CPU took `<0.11 ms`/handle (`<10%` of the `0.5 s` call) while parallel per-claim `DELETE`s (`ASRL_X_PAR_RELEASE=64`) gave no speedup (`797-983` vs `854-1,004/s`). Stopping before adding a shard label to every public SDK `SandboxClaim` avoided permanent wire complexity for zero gain.
+- **Related:** [PROC-7](#proc-7), [PROC-9](#proc-9), [BENCH-10](gke-benchmarking.md#bench-10), [OPT-39](optimizations.md#opt-39).
+
+</details>
+
 <a id="sec-git"></a>
 
 ## Stacked PRs and git
@@ -458,6 +473,24 @@ These lessons are about how the work went, not what the code does. Most came fro
 - **What happened:** During long verification runs, two failure modes stalled unattended subagents: (1) `git ls-remote origin` against an SSH remote (`git@github.com:...`) hung until killed whereas HTTPS with `!gh auth git-credential` finished in `1 s`, and (2) a 14-stage pipeline runner paused after an intermediate tool step without sending its final report until nudged.
 - **What we do:** Enforce a three-layer anti-hang protocol across all builders and verifiers: (1) wrap every shell command in `timeout --kill-after=10 <secs>` and pass `GIT_TERMINAL_PROMPT=0` on git network calls, (2) pair every `invoke_subagent` or `send_message` call with `schedule(DurationSeconds=..., TimerCondition=...)` that auto-cancels on timely return and wakes the coordinator to inspect `transcript.jsonl` if the subagent stalls, and (3) combine deterministic 14-stage pipeline execution with three parallel domain-partitioned un-anchored verifiers (`Concurrency/Rollback`, `Watchdog/Handles/SDK`, `Minimalism/Hygiene/Test-Audit`) until all three return `ZERO_FINDINGS`.
 - **Related:** [AGENT-1](#agent-1), [AGENT-8](#agent-8), [CHAOS-1](chaos-verification-suite.md#chaos-1).
+
+</details>
+
+<a id="agent-10"></a>
+
+### AGENT-10 Give each GKE cluster one agent owner, detach runners with `setsid nohup`, kill only by explicit PID, and never `sed -i` an open plan file
+
+**Takeaway:** Long-running multi-cluster benchmark + code campaigns survive server restarts and parallel subagents cleanly when you enforce four operational rules: (1) assign strictly one agent owner per cluster with sentinel-file handoffs (`Y1_T0_DONE`), (2) launch plan runners detached (`setsid nohup ... < /dev/null &`) and write timestamped resume blocks to a tracker so server restarts kill zero in-flight GKE Jobs, (3) kill processes strictly by explicit numeric PID (never `pkill -f` / `pgrep -f`, which matches your own bash wrapper and self-kills!), and (4) never edit an active plan file with `sed -i` (`sed -i` unlinks and replaces the inode while `while read <&3` keeps reading the old inode!).
+
+<details>
+<summary>The full story (Campaign 5 multi-cluster execution)</summary>
+
+- **What went wrong before these rules:**
+  1. `pkill -f` on a runner pattern matched the coordinator's own `bash -c` invocation and terminated the tool call mid-flight.
+  2. Running `sed -i` on an already-started `plan.txt` swapped image tags on disk (`g2 -> g3`), yet the running `exp_plan8.sh` kept reading its open file descriptor on the unlinked inode and executed the old image!
+  3. An agent-server restart mid-campaign stopped all active subagents and timers for two hours, while `setsid nohup` cluster plans kept running to `PLAN_DONE` on all three GKE clusters and were recovered deterministically from `transcript.jsonl` + `runs/*.meta.json`.
+- **What we do:** Isolate subagents into separate git worktrees (`git worktree add`) and single-owner GKE clusters, chain dependent plans on sentinel files (`while [ ! -e Y1_T0_DONE ]; do sleep 10; done`), rewrite plan files only before opening them, and pair code subagents with a warm read-only `"blockers first"` reviewer (`[AGENT-1](#agent-1)`) plus an independent raw-JSON report auditor (`[BENCH-12](gke-benchmarking.md#bench-12)`).
+- **Related:** [AGENT-1](#agent-1), [AGENT-4](#agent-4), [AGENT-9](#agent-9), [BENCH-12](gke-benchmarking.md#bench-12).
 
 </details>
 
